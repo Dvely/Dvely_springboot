@@ -1,0 +1,10 @@
+spring:
+  config:
+    activate:
+      on-profile: local
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver # MySQL JDBC 드라이버 클래스 이름
+    url: jdbc:mysql://localhost:3306/dvely?allowPublicKeyRetrieval=true&useSSL=false # jdbc:mysql://localhost:3306/{데이터베이스명}
+    username: dvely # MySQL 유저 이름
+    password: 1234 # MySQL 비밀번호
