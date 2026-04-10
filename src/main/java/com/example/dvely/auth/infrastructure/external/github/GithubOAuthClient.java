@@ -1,4 +1,4 @@
-package com.example.dvely.auth.infrastructure.github;
+package com.example.dvely.auth.infrastructure.external.github;
 
 import com.example.dvely.auth.application.port.out.GithubOAuthPort;
 import org.springframework.stereotype.Component;

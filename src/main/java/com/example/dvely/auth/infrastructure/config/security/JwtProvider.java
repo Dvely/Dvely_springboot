@@ -1,4 +1,4 @@
-package com.example.dvely.auth.infrastructure.security;
+package com.example.dvely.auth.infrastructure.config.security;
 
 import com.example.dvely.auth.application.port.out.TokenPort;
 import org.springframework.stereotype.Component;
