@@ -23,4 +23,9 @@ public class AuthController {
         var result = authFacade.loginWithGithub(code);
         return new AuthTokenResponse(result.accessToken());
     }
+
+    @DeleteMapping("/logout")
+    public String callback() {
+        return "";
+    }
 }
