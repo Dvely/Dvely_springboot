@@ -23,6 +23,10 @@ public class UserEntity {
     @Column(nullable = false)
     private String username;
 
+    // GitHub App Installation ID (nullable - App 미설치 시 null)
+    @Column(nullable = true)
+    private Long githubInstallationId;
+
     public UserEntity(String githubId, String username) {
         this.githubId = githubId;
         this.username = username;
@@ -32,11 +36,17 @@ public class UserEntity {
         this.username = username;
     }
 
+    public void updateInstallationId(Long installationId) {
+        this.githubInstallationId = installationId;
+    }
+
     public static UserEntity from(User user) {
-        return new UserEntity(user.getGithubId().value(), user.getUsername());
+        UserEntity entity = new UserEntity(user.getGithubId().value(), user.getUsername());
+        entity.githubInstallationId = user.getGithubInstallationId();
+        return entity;
     }
 
     public User toDomain() {
-        return new User(id, new GithubId(githubId), username);
+        return new User(id, new GithubId(githubId), username, githubInstallationId);
     }
 }

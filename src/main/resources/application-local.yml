@@ -8,3 +8,19 @@ spring:
     url: jdbc:mysql://localhost:3306/dvely?allowPublicKeyRetrieval=true&useSSL=false # jdbc:mysql://localhost:3306/{데이터베이스명}
     username: dvely # MySQL 유저 이름
     password: dvely # MySQL 비밀번호
+
+github:
+  oauth:
+    client-id: Ov23lifhshQ4X2Ozuv1i
+    client-secret: 9b07949cc3c7e332e14dcba793aacb0e5047e0e3
+    redirect-uri: http://localhost:8080/api/v1/auth/github/callback
+    scope: "user:email read:user"
+  app:
+    app-id: "your-github-app-id"
+    # 파일 경로 또는 PEM 키 직접 입력 (-----BEGIN RSA PRIVATE KEY----- ...)
+    private-key: /path/to/your-github-app-private-key.pem
+    installation-redirect-uri: http://localhost:8080/api/v1/auth/github/app/callback
+
+jwt:
+  secret: local-dev-secret-key-must-be-at-least-32-characters-long
+  expiration-ms: 86400000

@@ -13,3 +13,22 @@ spring:
     properties:
       hibernate:
         format_sql: true # 출력되는 SQL 쿼리를 보기 좋게 포맷팅
+
+# GitHub OAuth App - 유저 인증/신원
+github:
+  oauth:
+    client-id: ${GITHUB_OAUTH_CLIENT_ID}
+    client-secret: ${GITHUB_OAUTH_CLIENT_SECRET}
+    redirect-uri: ${GITHUB_OAUTH_REDIRECT_URI}
+    scope: "user:email read:user"
+  # GitHub App - 레포 접근/설치 기반 고급 작업
+  app:
+    app-id: ${GITHUB_APP_ID}
+    # 파일 경로 또는 PEM 문자열 직접 입력 모두 지원
+    private-key: ${GITHUB_APP_PRIVATE_KEY}
+    installation-redirect-uri: ${GITHUB_APP_INSTALLATION_REDIRECT_URI}
+
+# 서비스용 JWT (클라이언트에게 발급)
+jwt:
+  secret: ${JWT_SECRET}
+  expiration-ms: ${JWT_EXPIRATION_MS:86400000}

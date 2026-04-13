@@ -14,4 +14,8 @@ public class AuthDomainService {
     public void updateUsername(User user, String username) {
         user.updateUsername(username);
     }
+
+    public void updateInstallationId(User user, Long installationId) {
+        user.updateInstallationId(installationId);
+    }
 }
