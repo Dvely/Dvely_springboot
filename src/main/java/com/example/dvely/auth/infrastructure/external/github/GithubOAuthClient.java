@@ -27,7 +27,6 @@ public class GithubOAuthClient implements GithubOAuthPort {
         return UriComponentsBuilder
                 .fromUriString(GITHUB_BASE_URL + AUTHORIZE_PATH)
                 .queryParam("client_id", properties.oauth().clientId())
-                .queryParam("redirect_uri", properties.oauth().redirectUri())
                 .queryParam("scope", properties.oauth().scope())
                 // TODO: state 파라미터 추가 (CSRF 방지) - Redis 세션으로 구현 권장
                 .build()
