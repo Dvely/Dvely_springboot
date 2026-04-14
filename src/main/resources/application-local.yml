@@ -17,6 +17,7 @@ github:
     scope: "user:email read:user"
   app:
     app-id: "your-github-app-id"
+    webhook-secret: "dldnsgkr"
     # 파일 경로 또는 PEM 키 직접 입력 (-----BEGIN RSA PRIVATE KEY----- ...)
     private-key: /path/to/your-github-app-private-key.pem
     installation-redirect-uri: http://localhost:8080/api/v1/auth/github/app/callback

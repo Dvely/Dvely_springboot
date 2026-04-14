@@ -17,6 +17,7 @@ public record GithubProperties(
     public record AppProperties(
             String appId,
             String privateKey,
-            String installationRedirectUri
+            String installationRedirectUri,
+            String webhookSecret
     ) {}
 }
