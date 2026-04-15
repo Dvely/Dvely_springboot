@@ -16,10 +16,10 @@ github:
     redirect-uri: http://localhost:8080/api/v1/auth/github/callback
     scope: "user:email read:user"
   app:
-    app-id: "your-github-app-id"
+    app-id: "3386167"
     webhook-secret: "dldnsgkr"
     # 파일 경로 또는 PEM 키 직접 입력 (-----BEGIN RSA PRIVATE KEY----- ...)
-    private-key: /path/to/your-github-app-private-key.pem
+    private-key: ./dvely-test-app.2026-04-15.private-key.pem
     installation-redirect-uri: http://localhost:8080/api/v1/auth/github/app/callback
 
 jwt:
