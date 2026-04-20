@@ -2,6 +2,8 @@ package com.example.dvely.auth.infrastructure.external.github;
 
 import com.example.dvely.auth.application.port.out.GithubAppPort;
 import com.example.dvely.auth.infrastructure.config.GithubProperties;
+import com.example.dvely.auth.infrastructure.persistence.entity.InstallationTokenEntity;
+import com.example.dvely.auth.infrastructure.persistence.repository.SpringDataInstallationTokenRepository;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.jsonwebtoken.Jwts;
 import lombok.RequiredArgsConstructor;
@@ -10,6 +12,7 @@ import org.bouncycastle.openssl.PEMKeyPair;
 import org.bouncycastle.openssl.PEMParser;
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.util.UriComponentsBuilder;
@@ -20,6 +23,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.PrivateKey;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
@@ -33,6 +38,7 @@ public class GithubAppClient implements GithubAppPort {
     private static final String GITHUB_BASE_URL = "https://github.com";
 
     private final GithubProperties properties;
+    private final SpringDataInstallationTokenRepository installationTokenRepository;
 
     /**
      * OAuth 유저 토큰으로 해당 유저의 GitHub App 설치 ID 조회
@@ -76,13 +82,35 @@ public class GithubAppClient implements GithubAppPort {
      * 이 토큰으로 해당 installation의 레포, 이슈 등에 접근 가능
      */
     @Override
+    @Transactional
     public String getInstallationToken(long installationId) {
-        String appJwt = generateAppJwt();
+        // 캐시된 토큰이 유효하면 재사용
+        Optional<InstallationTokenEntity> cached = installationTokenRepository.findByInstallationId(installationId);
+        if (cached.isPresent() && cached.get().isValid()) {
+            return cached.get().getToken();
+        }
 
+        // 없거나 만료 임박 → GitHub에서 새로 발급
+        InstallationTokenResponse response = issueInstallationToken(installationId);
+
+        LocalDateTime expiresAt = Instant.parse(response.expiresAt())
+                .atZone(ZoneId.systemDefault())
+                .toLocalDateTime();
+
+        // upsert
+        InstallationTokenEntity entity = cached
+                .orElseGet(() -> new InstallationTokenEntity(installationId, response.token(), expiresAt));
+        entity.update(response.token(), expiresAt);
+        installationTokenRepository.save(entity);
+
+        return response.token();
+    }
+
+    private InstallationTokenResponse issueInstallationToken(long installationId) {
         InstallationTokenResponse response = RestClient.create()
                 .post()
                 .uri(GITHUB_API_BASE_URL + "/app/installations/{id}/access_tokens", installationId)
-                .header("Authorization", "Bearer " + appJwt)
+                .header("Authorization", "Bearer " + generateAppJwt())
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2022-11-28")
                 .retrieve()
@@ -92,7 +120,7 @@ public class GithubAppClient implements GithubAppPort {
             throw new IllegalStateException("Installation Access Token 발급 실패: installation_id=" + installationId);
         }
 
-        return response.token();
+        return response;
     }
 
     /**
