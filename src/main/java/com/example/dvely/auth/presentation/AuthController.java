@@ -4,8 +4,8 @@ import com.example.dvely.auth.application.facade.AuthFacade;
 import com.example.dvely.auth.application.port.out.TokenPort;
 import com.example.dvely.auth.presentation.dto.AuthTokenResponse;
 import com.example.dvely.auth.presentation.dto.GithubUrlResponse;
+import com.example.dvely.common.response.ApiResponse;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -23,8 +23,8 @@ public class AuthController {
      * 프론트에서 이 URL로 리다이렉트 → 유저 GitHub 로그인 → callback으로 code 전달
      */
     @GetMapping("/github/url")
-    public GithubUrlResponse getGithubLoginUrl() {
-        return new GithubUrlResponse(authFacade.getGithubLoginUrl());
+    public ApiResponse<GithubUrlResponse> getGithubLoginUrl() {
+        return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubLoginUrl()));
     }
 
     /**
@@ -32,9 +32,9 @@ public class AuthController {
      * 응답의 githubAppInstalled=false면 /github/app/install-url을 유저에게 제공
      */
     @GetMapping("/github/callback")
-    public AuthTokenResponse githubCallback(@RequestParam String code) {
+    public ApiResponse<AuthTokenResponse> githubCallback(@RequestParam String code) {
         var result = authFacade.loginWithGithub(code);
-        return new AuthTokenResponse(result.accessToken(), result.refreshToken(), result.githubAppInstalled());
+        return ApiResponse.success(new AuthTokenResponse(result.accessToken(), result.refreshToken(), result.githubAppInstalled()));
     }
 
     // ── GitHub App ─────────────────────────────────────────────────────────────
@@ -50,13 +50,12 @@ public class AuthController {
      * https://github.com/apps/{app-slug}/installations/new?state={serviceJwt}
      */
     @GetMapping("/github/app/install-url")
-    public GithubUrlResponse getGithubAppInstallUrl(
+    public ApiResponse<GithubUrlResponse> getGithubAppInstallUrl(
             @RequestHeader("Authorization") String authorization
     ) {
         String token = extractBearerToken(authorization);
-        // JWT 유효성 검증 (만료/변조 시 여기서 예외)
         tokenPort.getUserId(token);
-        return new GithubUrlResponse(authFacade.getGithubAppInstallUrl(token));
+        return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubAppInstallUrl(token)));
     }
 
     /**
@@ -73,20 +72,16 @@ public class AuthController {
      * @param state          install-url 요청 시 포함했던 서비스 JWT
      */
     @GetMapping("/github/app/callback")
-    public ResponseEntity<Void> githubAppCallback(
+    public ApiResponse<Void> githubAppCallback(
             @RequestParam("installation_id") Long installationId,
             @RequestParam(value = "setup_action", defaultValue = "install") String setupAction,
             @RequestParam("state") String state
     ) {
-        if ("delete".equals(setupAction)) {
-            return ResponseEntity.ok().build();
+        if (!"delete".equals(setupAction)) {
+            Long userId = tokenPort.getUserId(state);
+            authFacade.linkGithubApp(userId, installationId);
         }
-
-        // state(JWT) 검증 → userId 추출 → installation 연결
-        Long userId = tokenPort.getUserId(state);
-        authFacade.linkGithubApp(userId, installationId);
-
-        return ResponseEntity.ok().build();
+        return ApiResponse.success();
     }
 
     /**
@@ -94,9 +89,9 @@ public class AuthController {
      * Refresh Token을 받아 새 Access Token + 새 Refresh Token 반환 (Token Rotation)
      */
     @PostMapping("/refresh")
-    public AuthTokenResponse refresh(@RequestBody RefreshRequest request) {
+    public ApiResponse<AuthTokenResponse> refresh(@RequestBody RefreshRequest request) {
         var result = authFacade.refresh(request.refreshToken());
-        return new AuthTokenResponse(result.accessToken(), result.refreshToken(), result.githubAppInstalled());
+        return ApiResponse.success(new AuthTokenResponse(result.accessToken(), result.refreshToken(), result.githubAppInstalled()));
     }
 
     /**
@@ -105,11 +100,11 @@ public class AuthController {
      * - 모든 Refresh Token 폐기
      */
     @DeleteMapping("/logout")
-    public ResponseEntity<Void> logout(@RequestHeader("Authorization") String authorization) {
+    public ApiResponse<Void> logout(@RequestHeader("Authorization") String authorization) {
         String token = extractBearerToken(authorization);
         Long userId = tokenPort.getUserId(token);
         authFacade.logout(userId, token);
-        return ResponseEntity.ok().build();
+        return ApiResponse.success();
     }
 
     public record RefreshRequest(String refreshToken) {}
