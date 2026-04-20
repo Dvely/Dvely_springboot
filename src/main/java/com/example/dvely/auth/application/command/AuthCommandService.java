@@ -48,10 +48,10 @@ public class AuthCommandService {
         GithubId githubId = new GithubId(githubUser.id());
         User user = userRepository.findByGithubId(githubId)
                 .map(existing -> {
-                    authDomainService.updateUsername(existing, githubUser.login());
+                    authDomainService.updateProfile(existing, githubUser.login(), githubUser.avatarUrl());
                     return existing;
                 })
-                .orElseGet(() -> authDomainService.createUser(githubId, githubUser.login()));
+                .orElseGet(() -> authDomainService.createUser(githubId, githubUser.login(), githubUser.avatarUrl()));
 
         // 4. 저장 (GitHub App 설치 여부는 /github/app/callback에서 별도 처리)
         User savedUser = userRepository.save(user);

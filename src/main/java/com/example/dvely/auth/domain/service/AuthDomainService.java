@@ -7,12 +7,12 @@ import org.springframework.stereotype.Component;
 @Component
 public class AuthDomainService {
 
-    public User createUser(GithubId githubId, String username) {
-        return new User(githubId, username);
+    public User createUser(GithubId githubId, String username, String avatarUrl) {
+        return new User(githubId, username, avatarUrl);
     }
 
-    public void updateUsername(User user, String username) {
-        user.updateUsername(username);
+    public void updateProfile(User user, String username, String avatarUrl) {
+        user.updateProfile(username, avatarUrl);
     }
 
     public void updateInstallationId(User user, Long installationId) {

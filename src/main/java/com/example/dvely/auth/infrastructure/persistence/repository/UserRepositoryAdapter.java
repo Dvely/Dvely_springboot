@@ -32,7 +32,7 @@ public class UserRepositoryAdapter implements UserRepository {
         UserEntity entity = springDataUserRepository.findByGithubId(user.getGithubId().value())
                 .orElseGet(() -> UserEntity.from(user));
 
-        entity.updateUsername(user.getUsername());
+        entity.updateProfile(user.getUsername(), user.getAvatarUrl());
         entity.updateInstallationId(user.getGithubInstallationId());
         return springDataUserRepository.save(entity).toDomain();
     }

@@ -36,13 +36,14 @@ public class GithubUserClient implements GithubUserPort {
             throw new IllegalStateException("GitHub 유저 정보 조회 실패: 응답 없음");
         }
 
-        return new GithubUserInfo(String.valueOf(response.id()), response.login());
+        return new GithubUserInfo(String.valueOf(response.id()), response.login(), response.avatarUrl());
     }
 
     private record GithubUserResponse(
             @JsonProperty("id") long id,
             @JsonProperty("login") String login,
             @JsonProperty("name") String name,
-            @JsonProperty("email") String email
+            @JsonProperty("email") String email,
+            @JsonProperty("avatar_url") String avatarUrl
     ) {}
 }
