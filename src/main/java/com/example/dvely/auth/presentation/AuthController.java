@@ -34,7 +34,7 @@ public class AuthController {
     @GetMapping("/github/callback")
     public AuthTokenResponse githubCallback(@RequestParam String code) {
         var result = authFacade.loginWithGithub(code);
-        return new AuthTokenResponse(result.accessToken(), result.githubAppInstalled());
+        return new AuthTokenResponse(result.accessToken(), result.refreshToken(), result.githubAppInstalled());
     }
 
     // ── GitHub App ─────────────────────────────────────────────────────────────
@@ -89,11 +89,30 @@ public class AuthController {
         return ResponseEntity.ok().build();
     }
 
+    /**
+     * Access Token 재발급
+     * Refresh Token을 받아 새 Access Token + 새 Refresh Token 반환 (Token Rotation)
+     */
+    @PostMapping("/refresh")
+    public AuthTokenResponse refresh(@RequestBody RefreshRequest request) {
+        var result = authFacade.refresh(request.refreshToken());
+        return new AuthTokenResponse(result.accessToken(), result.refreshToken(), result.githubAppInstalled());
+    }
+
+    /**
+     * 로그아웃
+     * - Access Token 즉시 무효화 (블랙리스트 등록)
+     * - 모든 Refresh Token 폐기
+     */
     @DeleteMapping("/logout")
-    public ResponseEntity<Void> logout() {
-        // TODO: JWT 블랙리스트 처리 (Redis 등)
+    public ResponseEntity<Void> logout(@RequestHeader("Authorization") String authorization) {
+        String token = extractBearerToken(authorization);
+        Long userId = tokenPort.getUserId(token);
+        authFacade.logout(userId, token);
         return ResponseEntity.ok().build();
     }
+
+    public record RefreshRequest(String refreshToken) {}
 
     private String extractBearerToken(String authorization) {
         if (authorization == null || !authorization.startsWith("Bearer ")) {

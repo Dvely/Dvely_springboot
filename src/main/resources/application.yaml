@@ -31,4 +31,5 @@ github:
 # 서비스용 JWT (클라이언트에게 발급)
 jwt:
   secret: ${JWT_SECRET}
-  expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+  expiration-ms: ${JWT_EXPIRATION_MS:3600000}
+  refresh-expiration-ms: ${JWT_REFRESH_EXPIRATION_MS:2592000000}

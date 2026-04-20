@@ -1,5 +1,6 @@
 package com.example.dvely.auth.infrastructure.config.security;
 
+import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
 import com.example.dvely.auth.application.port.out.TokenPort;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -18,6 +19,7 @@ import java.util.List;
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final TokenPort tokenPort;
+    private final TokenBlacklistPort tokenBlacklistPort;
 
     @Override
     protected void doFilterInternal(
@@ -31,6 +33,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             String token = header.substring(7);
             try {
                 Long userId = tokenPort.getUserId(token);
+                String jti = tokenPort.getJti(token);
+
+                if (tokenBlacklistPort.isRevoked(jti)) {
+                    filterChain.doFilter(request, response);
+                    return;
+                }
+
                 UsernamePasswordAuthenticationToken authentication =
                         new UsernamePasswordAuthenticationToken(
                                 userId,

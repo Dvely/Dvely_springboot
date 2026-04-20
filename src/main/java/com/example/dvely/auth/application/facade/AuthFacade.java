@@ -29,4 +29,12 @@ public class AuthFacade {
     public void linkGithubApp(Long userId, Long installationId) {
         authCommandService.linkGithubApp(userId, installationId);
     }
+
+    public TokenResult refresh(String refreshToken) {
+        return authCommandService.refresh(refreshToken);
+    }
+
+    public void logout(Long userId, String accessToken) {
+        authCommandService.logout(userId, accessToken);
+    }
 }

@@ -1,5 +1,6 @@
 package com.example.dvely.config;
 
+import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
 import com.example.dvely.auth.application.port.out.TokenPort;
 import com.example.dvely.auth.infrastructure.config.security.JwtAuthenticationFilter;
 import org.springframework.context.annotation.Bean;
@@ -21,7 +22,7 @@ import java.util.List;
 public class SecurityConfig {
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http, TokenPort tokenPort) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, TokenPort tokenPort, TokenBlacklistPort tokenBlacklistPort) throws Exception {
         return http
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .csrf(AbstractHttpConfigurer::disable)
@@ -33,6 +34,7 @@ public class SecurityConfig {
                                 "/api/v1/auth/github/url",
                                 "/api/v1/auth/github/callback",
                                 "/api/v1/auth/github/app/callback",
+                                "/api/v1/auth/refresh",
                                 "/api/v1/webhook/github"
                         ).permitAll()
                         // Swagger UI
@@ -44,7 +46,7 @@ public class SecurityConfig {
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(
-                        new JwtAuthenticationFilter(tokenPort),
+                        new JwtAuthenticationFilter(tokenPort, tokenBlacklistPort),
                         UsernamePasswordAuthenticationFilter.class
                 )
                 .build();

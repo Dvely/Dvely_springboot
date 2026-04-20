@@ -10,7 +10,10 @@ import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Date;
+import java.util.UUID;
 
 /**
  * 서비스용 JWT 발급/검증 (HS256)
@@ -28,6 +31,7 @@ public class JwtProvider implements TokenPort {
         Date now = new Date();
 
         return Jwts.builder()
+                .id(UUID.randomUUID().toString())
                 .subject(String.valueOf(userId))
                 .issuedAt(now)
                 .expiration(new Date(now.getTime() + jwtProperties.expirationMs()))
@@ -46,6 +50,35 @@ public class JwtProvider implements TokenPort {
                     .getSubject();
 
             return Long.parseLong(subject);
+        } catch (JwtException | IllegalArgumentException e) {
+            throw new IllegalArgumentException("유효하지 않은 토큰입니다", e);
+        }
+    }
+
+    @Override
+    public String getJti(String token) {
+        try {
+            return Jwts.parser()
+                    .verifyWith(getSigningKey())
+                    .build()
+                    .parseSignedClaims(token)
+                    .getPayload()
+                    .getId();
+        } catch (JwtException | IllegalArgumentException e) {
+            throw new IllegalArgumentException("유효하지 않은 토큰입니다", e);
+        }
+    }
+
+    @Override
+    public LocalDateTime getExpiresAt(String token) {
+        try {
+            Date expiration = Jwts.parser()
+                    .verifyWith(getSigningKey())
+                    .build()
+                    .parseSignedClaims(token)
+                    .getPayload()
+                    .getExpiration();
+            return expiration.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
         } catch (JwtException | IllegalArgumentException e) {
             throw new IllegalArgumentException("유효하지 않은 토큰입니다", e);
         }
