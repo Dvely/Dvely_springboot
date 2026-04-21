@@ -26,8 +26,8 @@ public class AuthFacade {
         return authCommandService.loginWithGithub(new GithubLoginCommand(code));
     }
 
-    public void linkGithubApp(Long userId, Long installationId) {
-        authCommandService.linkGithubApp(userId, installationId);
+    public void linkGithubApp(Long userId, Long installationId, String code) {
+        authCommandService.linkGithubApp(userId, installationId, code);
     }
 
     public TokenResult refresh(String refreshToken) {

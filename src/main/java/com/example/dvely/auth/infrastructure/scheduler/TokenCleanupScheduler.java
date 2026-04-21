@@ -1,6 +1,5 @@
 package com.example.dvely.auth.infrastructure.scheduler;
 
-import com.example.dvely.auth.infrastructure.persistence.repository.SpringDataInstallationTokenRepository;
 import com.example.dvely.auth.infrastructure.persistence.repository.SpringDataRefreshTokenRepository;
 import com.example.dvely.auth.infrastructure.persistence.repository.SpringDataRevokedTokenRepository;
 import lombok.RequiredArgsConstructor;
@@ -18,7 +17,6 @@ public class TokenCleanupScheduler {
 
     private final SpringDataRevokedTokenRepository revokedTokenRepository;
     private final SpringDataRefreshTokenRepository refreshTokenRepository;
-    private final SpringDataInstallationTokenRepository installationTokenRepository;
 
     @Scheduled(cron = "0 0 3 * * *")
     @Transactional
@@ -27,9 +25,7 @@ public class TokenCleanupScheduler {
 
         int deletedRevoked = revokedTokenRepository.deleteExpired(now);
         int deletedRefresh = refreshTokenRepository.deleteExpired(now);
-        int deletedInstallation = installationTokenRepository.deleteExpired(now);
 
-        log.info("토큰 정리 완료 - 블랙리스트: {}건, 리프레시: {}건, 설치토큰: {}건",
-                deletedRevoked, deletedRefresh, deletedInstallation);
+        log.info("토큰 정리 완료 - 블랙리스트: {}건, 리프레시: {}건", deletedRevoked, deletedRefresh);
     }
 }

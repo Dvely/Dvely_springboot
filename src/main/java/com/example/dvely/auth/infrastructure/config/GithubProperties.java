@@ -18,6 +18,8 @@ public record GithubProperties(
             String appId,
             String privateKey,
             String installationRedirectUri,
-            String webhookSecret
+            String webhookSecret,
+            String clientId,
+            String clientSecret
     ) {}
 }

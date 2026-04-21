@@ -2,11 +2,16 @@ package com.example.dvely.auth.presentation;
 
 import com.example.dvely.auth.application.facade.AuthFacade;
 import com.example.dvely.auth.application.port.out.TokenPort;
+import com.example.dvely.auth.infrastructure.config.FrontendProperties;
 import com.example.dvely.auth.presentation.dto.AuthTokenResponse;
 import com.example.dvely.auth.presentation.dto.GithubUrlResponse;
 import com.example.dvely.common.response.ApiResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.net.URI;
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -15,6 +20,7 @@ public class AuthController {
 
     private final AuthFacade authFacade;
     private final TokenPort tokenPort;
+    private final FrontendProperties frontendProperties;
 
     // ── OAuth App ──────────────────────────────────────────────────────────────
 
@@ -72,16 +78,26 @@ public class AuthController {
      * @param state          install-url 요청 시 포함했던 서비스 JWT
      */
     @GetMapping("/github/app/callback")
-    public ApiResponse<Void> githubAppCallback(
+    public ResponseEntity<Void> githubAppCallback(
             @RequestParam("installation_id") Long installationId,
             @RequestParam(value = "setup_action", defaultValue = "install") String setupAction,
-            @RequestParam("state") String state
+            @RequestParam("state") String state,
+            @RequestParam(value = "code", required = false) String code
     ) {
-        if (!"delete".equals(setupAction)) {
-            Long userId = tokenPort.getUserId(state);
-            authFacade.linkGithubApp(userId, installationId);
+        String baseUrl = frontendProperties.redirectUrl();
+        try {
+            if (!"delete".equals(setupAction)) {
+                Long userId = tokenPort.getUserId(state);
+                authFacade.linkGithubApp(userId, installationId, code);
+            }
+            return ResponseEntity.status(HttpStatus.FOUND)
+                    .location(URI.create(baseUrl + "?githubAppLinked=true"))
+                    .build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.FOUND)
+                    .location(URI.create(baseUrl + "?githubAppLinked=false&error=" + e.getMessage()))
+                    .build();
         }
-        return ApiResponse.success();
     }
 
     /**

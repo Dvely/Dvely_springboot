@@ -11,17 +11,28 @@ public interface GithubAppPort {
     Optional<Long> findInstallationId(String oauthToken);
 
     /**
-     * Installation ID로 Installation Access Token 발급
-     * 이 토큰으로 레포 접근 등 고급 API 작업 수행
-     * 유효시간: 1시간
-     */
-    String getInstallationToken(long installationId);
-
-    /**
      * GitHub App 설치 페이지 URL 반환
      * state에 서비스 JWT를 담아 콜백에서 유저를 식별
-     *
-     * @param state 콜백에서 유저 식별에 사용할 값 (서비스 JWT)
      */
     String getInstallationUrl(String state);
+
+    /**
+     * GitHub App User Token 발급
+     * 설치 콜백에서 받은 code로 access_token + refresh_token 교환
+     * access_token 유효시간: 8시간 / refresh_token 유효시간: 6개월
+     */
+    GithubUserTokenInfo getUserToken(String code);
+
+    /**
+     * GitHub App User Token 갱신
+     * refresh_token으로 새 access_token + refresh_token 발급
+     */
+    GithubUserTokenInfo refreshUserToken(String refreshToken);
+
+    record GithubUserTokenInfo(
+            String accessToken,
+            String refreshToken,
+            long expiresInSeconds,
+            long refreshTokenExpiresInSeconds
+    ) {}
 }
