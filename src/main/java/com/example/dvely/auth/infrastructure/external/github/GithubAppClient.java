@@ -126,6 +126,22 @@ public class GithubAppClient implements GithubAppPort {
         );
     }
 
+    private String getInstallationToken(Long installationId) {
+        record TokenResponse(@com.fasterxml.jackson.annotation.JsonProperty("token") String token) {}
+        TokenResponse response = RestClient.create()
+                .post()
+                .uri(GITHUB_API_BASE_URL + "/app/installations/" + installationId + "/access_tokens")
+                .header("Authorization", "Bearer " + generateAppJwt())
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .retrieve()
+                .body(TokenResponse.class);
+        if (response == null || response.token() == null) {
+            throw new IllegalStateException("Installation Access Token 발급 실패");
+        }
+        return response.token();
+    }
+
     // App JWT - 설치 URL의 slug 조회에만 사용
     private String generateAppJwt() {
         PrivateKey privateKey = loadPrivateKey();

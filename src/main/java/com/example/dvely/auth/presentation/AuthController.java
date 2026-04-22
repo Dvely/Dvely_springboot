@@ -81,14 +81,18 @@ public class AuthController {
     public ResponseEntity<Void> githubAppCallback(
             @RequestParam("installation_id") Long installationId,
             @RequestParam(value = "setup_action", defaultValue = "install") String setupAction,
-            @RequestParam("state") String state,
+            @RequestParam(value = "state", required = false) String state,
             @RequestParam(value = "code", required = false) String code
     ) {
         String baseUrl = frontendProperties.redirectUrl();
         try {
             if (!"delete".equals(setupAction)) {
-                Long userId = tokenPort.getUserId(state);
-                authFacade.linkGithubApp(userId, installationId, code);
+                if (state != null) {
+                    Long userId = tokenPort.getUserId(state);
+                    authFacade.linkGithubApp(userId, installationId, code);
+                } else {
+                    authFacade.linkGithubAppByCode(installationId, code);
+                }
             }
             return ResponseEntity.status(HttpStatus.FOUND)
                     .location(URI.create(baseUrl + "?githubAppLinked=true"))

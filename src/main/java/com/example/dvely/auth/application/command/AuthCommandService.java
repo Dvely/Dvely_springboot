@@ -122,6 +122,31 @@ public class AuthCommandService {
     }
 
     /**
+     * GitHub App 설치 설정 페이지(state 없음)에서 오는 콜백 처리
+     * code로 User Token 발급 → GitHub 유저 정보로 DB 유저 식별
+     */
+    @Transactional
+    public void linkGithubAppByCode(Long installationId, String code) {
+        if (code == null) {
+            throw new IllegalArgumentException("code가 없어 유저를 식별할 수 없습니다");
+        }
+
+        GithubAppPort.GithubUserTokenInfo tokenInfo = githubAppPort.getUserToken(code);
+        GithubUserPort.GithubUserInfo githubUser = githubUserPort.getUser(tokenInfo.accessToken());
+
+        User user = userRepository.findByGithubId(new GithubId(githubUser.id()))
+                .orElseThrow(() -> new IllegalStateException("등록된 유저가 아닙니다: githubId=" + githubUser.id()));
+
+        authDomainService.updateInstallationId(user, installationId);
+
+        LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(tokenInfo.expiresInSeconds());
+        user.updateUserToken(tokenInfo.accessToken(), tokenInfo.refreshToken(), expiresAt);
+
+        userRepository.save(user);
+        log.info("GitHub App 연동 완료 (settings 경유): userId={}, installationId={}", user.getId(), installationId);
+    }
+
+    /**
      * GitHub App User Token 갱신
      * Access Token 만료 시 Refresh Token으로 재발급
      */

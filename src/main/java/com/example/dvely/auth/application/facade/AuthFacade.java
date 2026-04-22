@@ -30,6 +30,10 @@ public class AuthFacade {
         authCommandService.linkGithubApp(userId, installationId, code);
     }
 
+    public void linkGithubAppByCode(Long installationId, String code) {
+        authCommandService.linkGithubAppByCode(installationId, code);
+    }
+
     public TokenResult refresh(String refreshToken) {
         return authCommandService.refresh(refreshToken);
     }
