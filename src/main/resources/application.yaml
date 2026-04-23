@@ -4,6 +4,11 @@ spring:
   application:
     name: dvely
 
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
   jpa:
     database: mysql # 사용할 데이터베이스 유형 지정 (MySQL)
     database-platform: org.hibernate.dialect.MySQLDialect # Hibernate에서 사용할 MySQL 방언(dialect) 설정
