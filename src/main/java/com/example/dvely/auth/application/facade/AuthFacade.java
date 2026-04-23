@@ -18,7 +18,27 @@ public class AuthFacade {
         return authQueryService.getGithubLoginUrl();
     }
 
+    public String getGithubAppInstallUrl(String userToken) {
+        return authQueryService.getGithubAppInstallUrl(userToken);
+    }
+
     public TokenResult loginWithGithub(String code) {
         return authCommandService.loginWithGithub(new GithubLoginCommand(code));
+    }
+
+    public void linkGithubApp(Long userId, Long installationId, String code) {
+        authCommandService.linkGithubApp(userId, installationId, code);
+    }
+
+    public void linkGithubAppByCode(Long installationId, String code) {
+        authCommandService.linkGithubAppByCode(installationId, code);
+    }
+
+    public TokenResult refresh(String refreshToken) {
+        return authCommandService.refresh(refreshToken);
+    }
+
+    public void logout(Long userId, String accessToken) {
+        authCommandService.logout(userId, accessToken);
     }
 }
