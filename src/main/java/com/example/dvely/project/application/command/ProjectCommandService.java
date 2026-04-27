@@ -94,7 +94,7 @@ public class ProjectCommandService {
         }
 
         // 2. preview 브랜치 준비를 위임한다.
-        githubRepositoryPort.preparePreviewBranch(project.getSourceRepository());
+        githubRepositoryPort.preparePreviewBranch(ownerUserId, project.getSourceRepository());
 
         Project savedProject = projectRepository.save(project);
         return toBindingResult(savedProject);

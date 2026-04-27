@@ -9,11 +9,11 @@ public interface GithubRepositoryPort {
 
     String createRepository(Long ownerUserId, String repositoryName, RepositoryVisibility visibility);
 
-    List<GithubCommit> getRecentCommits(String repositoryFullName, int limit);
+    List<GithubCommit> getRecentCommits(Long ownerUserId, String repositoryFullName, int limit);
 
-    RepositoryHealthStatus checkRepositoryHealth(String repositoryFullName);
+    RepositoryHealthStatus checkRepositoryHealth(Long ownerUserId, String repositoryFullName);
 
-    void preparePreviewBranch(String repositoryFullName);
+    void preparePreviewBranch(Long ownerUserId, String repositoryFullName);
 
     record GithubCommit(String sha, String message, String author, OffsetDateTime committedAt) {}
 }

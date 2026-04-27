@@ -102,7 +102,7 @@ public class ProjectQueryService {
             return List.of();
         }
 
-        return githubRepositoryPort.getRecentCommits(project.getSourceRepository(), DEFAULT_COMMIT_LIMIT).stream()
+        return githubRepositoryPort.getRecentCommits(ownerUserId, project.getSourceRepository(), DEFAULT_COMMIT_LIMIT).stream()
                 .map(commit -> new CommitResult(commit.sha(), commit.message(), commit.author(), commit.committedAt()))
                 .toList();
     }
@@ -124,7 +124,7 @@ public class ProjectQueryService {
             return new RepositoryHealthResult(RepositoryHealthStatus.REPOSITORY_NOT_FOUND.name());
         }
 
-        RepositoryHealthStatus health = githubRepositoryPort.checkRepositoryHealth(project.getSourceRepository());
+        RepositoryHealthStatus health = githubRepositoryPort.checkRepositoryHealth(ownerUserId, project.getSourceRepository());
         return new RepositoryHealthResult(health.name());
     }
 
