@@ -1,6 +1,7 @@
 package com.example.dvely.deployment.application.facade;
 
 import com.example.dvely.deployment.application.query.DeploymentQueryService;
+import com.example.dvely.deployment.application.result.VersionDetailResult;
 import com.example.dvely.deployment.application.result.VersionResult;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -14,5 +15,9 @@ public class DeploymentFacade {
 
     public List<VersionResult> getVersions(Long ownerUserId, Long projectId) {
         return deploymentQueryService.getVersions(ownerUserId, projectId);
+    }
+
+    public VersionDetailResult getVersionDetail(Long ownerUserId, Long versionId) {
+        return deploymentQueryService.getVersionDetail(ownerUserId, versionId);
     }
 }

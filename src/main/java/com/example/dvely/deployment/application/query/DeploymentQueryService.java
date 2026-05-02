@@ -1,5 +1,6 @@
 package com.example.dvely.deployment.application.query;
 
+import com.example.dvely.deployment.application.result.VersionDetailResult;
 import com.example.dvely.deployment.application.result.VersionResult;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -14,5 +15,11 @@ public class DeploymentQueryService {
     public List<VersionResult> getVersions(Long ownerUserId, Long projectId) {
         // TODO: merge 기준 버전 목록 조회 구현
         return List.of();
+    }
+
+    @Transactional(readOnly = true)
+    public VersionDetailResult getVersionDetail(Long ownerUserId, Long versionId) {
+        // TODO: 버전 상세 조회 구현
+        throw new UnsupportedOperationException("버전 상세 조회 미구현");
     }
 }
