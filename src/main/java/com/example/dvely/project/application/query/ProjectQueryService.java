@@ -3,10 +3,10 @@ package com.example.dvely.project.application.query;
 import com.example.dvely.project.application.port.out.GithubRepositoryPort;
 import com.example.dvely.project.application.result.ActivityLogResult;
 import com.example.dvely.project.application.result.CommitResult;
+import com.example.dvely.project.application.result.GithubRepositoryResult;
 import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectOverviewResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
-import com.example.dvely.project.application.result.RepositoryBindingResult;
 import com.example.dvely.project.application.result.RepositoryHealthResult;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.model.Project;
@@ -30,6 +30,20 @@ public class ProjectQueryService {
     private final ProjectRepository projectRepository;
     private final GithubRepositoryPort githubRepositoryPort;
 
+    public List<GithubRepositoryResult> getGithubRepositories(Long ownerUserId) {
+        return githubRepositoryPort.listRepositories(ownerUserId).stream()
+                .map(repository -> new GithubRepositoryResult(
+                        repository.fullName(),
+                        repository.name(),
+                        repository.owner(),
+                        repository.description(),
+                        repository.privateRepository() ? "PRIVATE" : "PUBLIC",
+                        repository.defaultBranch(),
+                        repository.updatedAt()
+                ))
+                .toList();
+    }
+
     public List<ProjectSummaryResult> getProjects(Long ownerUserId) {
         return projectRepository.findAllByOwnerUserIdAndDeletedFalseOrderByUpdatedAtDesc(ownerUserId).stream()
                 .map(this::toSummaryResult)
@@ -50,7 +64,7 @@ public class ProjectQueryService {
         RepositoryHealthResult repositoryHealth = getRepositoryHealth(ownerUserId, projectId);
         List<String> recentChanges = new ArrayList<>();
         recentChanges.add("deploy status: " + project.getDeployStatus().name());
-        recentChanges.add("repository binding: " + project.getRepositoryBindingStatus().name());
+        recentChanges.add("source repository: " + (project.getSourceRepository() == null ? "none" : project.getSourceRepository()));
         if (latestCommit != null) {
             recentChanges.add("latest commit: " + latestCommit.message());
         }
@@ -105,17 +119,6 @@ public class ProjectQueryService {
         return githubRepositoryPort.getRecentCommits(ownerUserId, project.getSourceRepository(), DEFAULT_COMMIT_LIMIT).stream()
                 .map(commit -> new CommitResult(commit.sha(), commit.message(), commit.author(), commit.committedAt()))
                 .toList();
-    }
-
-    public RepositoryBindingResult getRepositoryBinding(Long ownerUserId, Long projectId) {
-        Project project = findProject(ownerUserId, projectId);
-        return new RepositoryBindingResult(
-                project.getSourceRepository(),
-                project.getDeploymentRepository(),
-                project.getRepositoryVisibility().name(),
-                project.getRepositoryBindingStatus().name(),
-                project.getRepositoryHealthStatus().name()
-        );
     }
 
     public RepositoryHealthResult getRepositoryHealth(Long ownerUserId, Long projectId) {

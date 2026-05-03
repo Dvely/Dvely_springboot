@@ -10,5 +10,12 @@ public interface ProjectRepository {
 
     Optional<Project> findByIdAndOwnerUserIdAndDeletedFalse(Long projectId, Long ownerUserId);
 
+    Optional<Project> findByIdAndOwnerUserId(Long projectId, Long ownerUserId);
+
+    Optional<Project> findFirstByOwnerUserIdAndSourceRepositoryIgnoreCaseAndDeletedFalseOrderByUpdatedAtDesc(
+            Long ownerUserId,
+            String sourceRepository
+    );
+
     Project save(Project project);
 }

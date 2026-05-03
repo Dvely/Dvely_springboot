@@ -7,7 +7,7 @@ public class Conversation {
 
     private final Long id;
     private final Long userId;
-    private final Long projectId;
+    private Long projectId;
     private boolean deleted;
     private LocalDateTime deletedAt;
     private final LocalDateTime createdAt;
@@ -83,5 +83,10 @@ public class Conversation {
         }
         deleted = false;
         deletedAt = null;
+    }
+
+    public void restoreToProject(Long projectId) {
+        this.projectId = Objects.requireNonNull(projectId, "projectId must not be null");
+        restore();
     }
 }

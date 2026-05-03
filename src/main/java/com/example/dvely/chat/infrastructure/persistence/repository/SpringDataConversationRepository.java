@@ -9,6 +9,8 @@ public interface SpringDataConversationRepository extends JpaRepository<Conversa
 
     List<ConversationEntity> findByUserIdAndProjectIdAndDeletedFalseOrderByUpdatedAtDesc(Long userId, Long projectId);
 
+    List<ConversationEntity> findByUserIdAndProjectId(Long userId, Long projectId);
+
     List<ConversationEntity> findByUserIdAndDeletedTrueOrderByUpdatedAtDesc(Long userId);
 
     Optional<ConversationEntity> findByIdAndUserIdAndDeletedFalse(Long conversationId, Long userId);

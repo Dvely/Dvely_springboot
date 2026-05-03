@@ -22,6 +22,13 @@ public class ConversationRepositoryAdapter implements ConversationRepository {
     }
 
     @Override
+    public List<Conversation> findAllByUserIdAndProjectId(Long userId, Long projectId) {
+        return springDataConversationRepository.findByUserIdAndProjectId(userId, projectId).stream()
+                .map(ConversationEntity::toDomain)
+                .toList();
+    }
+
+    @Override
     public List<Conversation> findAllByUserIdAndDeletedTrueOrderByUpdatedAtDesc(Long userId) {
         return springDataConversationRepository.findByUserIdAndDeletedTrueOrderByUpdatedAtDesc(userId).stream()
                 .map(ConversationEntity::toDomain)
@@ -38,6 +45,11 @@ public class ConversationRepositoryAdapter implements ConversationRepository {
     public Optional<Conversation> findByIdAndUserId(Long conversationId, Long userId) {
         return springDataConversationRepository.findByIdAndUserId(conversationId, userId)
                 .map(ConversationEntity::toDomain);
+    }
+
+    @Override
+    public void deleteById(Long conversationId) {
+        springDataConversationRepository.deleteById(conversationId);
     }
 
     @Override

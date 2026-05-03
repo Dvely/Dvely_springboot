@@ -7,4 +7,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface SpringDataChatMessageRepository extends JpaRepository<ChatMessageEntity, Long> {
 
     List<ChatMessageEntity> findByConversationIdOrderByCreatedAtAsc(Long conversationId);
+
+    void deleteAllByConversationId(Long conversationId);
 }

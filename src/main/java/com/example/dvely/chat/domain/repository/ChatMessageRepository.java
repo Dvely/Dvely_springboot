@@ -7,5 +7,7 @@ public interface ChatMessageRepository {
 
     List<ChatMessage> findAllByConversationIdOrderByCreatedAtAsc(Long conversationId);
 
+    void deleteAllByConversationId(Long conversationId);
+
     ChatMessage save(ChatMessage message);
 }

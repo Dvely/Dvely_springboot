@@ -7,8 +7,11 @@ import com.example.dvely.chat.domain.model.ChatMessage;
 import com.example.dvely.chat.domain.model.Conversation;
 import com.example.dvely.chat.domain.repository.ChatMessageRepository;
 import com.example.dvely.chat.domain.repository.ConversationRepository;
+import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,6 +20,8 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class ChatQueryService {
+
+    private static final int TRASH_RETENTION_DAYS = 30;
 
     private final ConversationRepository conversationRepository;
     private final ChatMessageRepository chatMessageRepository;
@@ -37,13 +42,15 @@ public class ChatQueryService {
     }
 
     public List<ConversationResult> getTrashConversations(Long userId) {
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(TRASH_RETENTION_DAYS);
         return conversationRepository.findAllByUserIdAndDeletedTrueOrderByUpdatedAtDesc(userId)
-                .stream()
-                .map(this::toResult)
-                .toList();
+            .stream()
+            .filter(conversation -> isWithinRetention(conversation, cutoff))
+            .map(conversation -> toResult(conversation, resolveTrashProjectId(userId, conversation)))
+            .toList();
     }
 
-        public List<MessageResult> getMessages(Long userId, Long conversationId) {
+    public List<MessageResult> getMessages(Long userId, Long conversationId) {
         conversationRepository.findByIdAndUserIdAndDeletedFalse(conversationId, userId)
             .orElseThrow(() -> new ConversationNotFoundException(conversationId, userId));
 
@@ -51,7 +58,7 @@ public class ChatQueryService {
             .stream()
             .map(this::toMessageResult)
             .toList();
-        }
+    }
 
     private void assertProjectAccessible(Long userId, Long projectId) {
         projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, userId)
@@ -59,9 +66,13 @@ public class ChatQueryService {
     }
 
     private ConversationResult toResult(Conversation conversation) {
+        return toResult(conversation, conversation.getProjectId());
+    }
+
+    private ConversationResult toResult(Conversation conversation, Long projectId) {
         return new ConversationResult(
                 conversation.getId(),
-                conversation.getProjectId(),
+                projectId,
                 conversation.isDeleted(),
                 conversation.getDeletedAt(),
                 conversation.getCreatedAt(),
@@ -78,5 +89,32 @@ public class ChatQueryService {
                 message.getTokenCount(),
                 message.getCreatedAt()
         );
+    }
+
+    private boolean isWithinRetention(Conversation conversation, LocalDateTime cutoff) {
+        if (!conversation.isDeleted()) {
+            return false;
+        }
+        LocalDateTime deletedAt = conversation.getDeletedAt();
+        if (deletedAt == null) {
+            return true;
+        }
+        return !deletedAt.isBefore(cutoff);
+    }
+
+    private Long resolveTrashProjectId(Long userId, Conversation conversation) {
+        Long projectId = conversation.getProjectId();
+        return projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, userId)
+                .map(Project::getId)
+                .orElseGet(() -> findReplacementProjectId(userId, projectId).orElse(projectId));
+    }
+
+    private Optional<Long> findReplacementProjectId(Long userId, Long deletedProjectId) {
+        return projectRepository.findByIdAndOwnerUserId(deletedProjectId, userId)
+                .map(Project::getSourceRepository)
+                .filter(sourceRepository -> sourceRepository != null && !sourceRepository.isBlank())
+                .flatMap(sourceRepository -> projectRepository
+                        .findFirstByOwnerUserIdAndSourceRepositoryIgnoreCaseAndDeletedFalseOrderByUpdatedAtDesc(userId, sourceRepository)
+                        .map(Project::getId));
     }
 }

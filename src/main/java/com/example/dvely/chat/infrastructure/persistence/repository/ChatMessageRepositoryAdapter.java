@@ -21,6 +21,11 @@ public class ChatMessageRepositoryAdapter implements ChatMessageRepository {
     }
 
     @Override
+    public void deleteAllByConversationId(Long conversationId) {
+        springDataChatMessageRepository.deleteAllByConversationId(conversationId);
+    }
+
+    @Override
     public ChatMessage save(ChatMessage message) {
         ChatMessageEntity entity = ChatMessageEntity.from(message);
         return springDataChatMessageRepository.save(entity).toDomain();

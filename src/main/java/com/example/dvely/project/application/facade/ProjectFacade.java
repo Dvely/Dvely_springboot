@@ -2,16 +2,15 @@ package com.example.dvely.project.application.facade;
 
 import com.example.dvely.project.application.command.ProjectCommandService;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
-import com.example.dvely.project.application.command.dto.CreateRepositoryBindingCommand;
+import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
 import com.example.dvely.project.application.command.dto.UpdateProjectCommand;
-import com.example.dvely.project.application.command.dto.UpdateRepositoryBindingCommand;
 import com.example.dvely.project.application.query.ProjectQueryService;
 import com.example.dvely.project.application.result.ActivityLogResult;
 import com.example.dvely.project.application.result.CommitResult;
+import com.example.dvely.project.application.result.GithubRepositoryResult;
 import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectOverviewResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
-import com.example.dvely.project.application.result.RepositoryBindingResult;
 import com.example.dvely.project.application.result.RepositoryHealthResult;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -32,20 +31,12 @@ public class ProjectFacade {
         return projectCommandService.updateProject(ownerUserId, projectId, command);
     }
 
-    public void deleteProject(Long ownerUserId, Long projectId) {
-        projectCommandService.deleteProject(ownerUserId, projectId);
+    public void deleteProject(Long ownerUserId, Long projectId, ProjectDeleteMode deleteMode) {
+        projectCommandService.deleteProject(ownerUserId, projectId, deleteMode);
     }
 
-    public RepositoryBindingResult createRepositoryBinding(Long ownerUserId,
-                                                           Long projectId,
-                                                           CreateRepositoryBindingCommand command) {
-        return projectCommandService.createRepositoryBinding(ownerUserId, projectId, command);
-    }
-
-    public RepositoryBindingResult updateRepositoryBinding(Long ownerUserId,
-                                                           Long projectId,
-                                                           UpdateRepositoryBindingCommand command) {
-        return projectCommandService.updateRepositoryBinding(ownerUserId, projectId, command);
+    public List<GithubRepositoryResult> getGithubRepositories(Long ownerUserId) {
+        return projectQueryService.getGithubRepositories(ownerUserId);
     }
 
     public List<ProjectSummaryResult> getProjects(Long ownerUserId) {
@@ -66,10 +57,6 @@ public class ProjectFacade {
 
     public List<CommitResult> getCommits(Long ownerUserId, Long projectId) {
         return projectQueryService.getCommits(ownerUserId, projectId);
-    }
-
-    public RepositoryBindingResult getRepositoryBinding(Long ownerUserId, Long projectId) {
-        return projectQueryService.getRepositoryBinding(ownerUserId, projectId);
     }
 
     public RepositoryHealthResult getRepositoryHealth(Long ownerUserId, Long projectId) {
