@@ -175,26 +175,11 @@ public class Project {
         this.status = Objects.requireNonNull(status, "status must not be null");
     }
 
-    public void bindRepository(String sourceRepository,
-                               String deploymentRepository,
-                               RepositoryVisibility visibility) {
+    public void bindRepository(String sourceRepository, RepositoryVisibility visibility) {
         this.sourceRepository = requireText(sourceRepository, "sourceRepository");
-        this.deploymentRepository = requireText(deploymentRepository, "deploymentRepository");
+        this.deploymentRepository = this.sourceRepository;
         this.repositoryVisibility = Objects.requireNonNull(visibility, "repositoryVisibility must not be null");
         this.repositoryBindingStatus = RepositoryBindingStatus.BOUND;
-    }
-
-    public void updateRepositoryBinding(String deploymentRepository, RepositoryVisibility visibility) {
-        if (repositoryBindingStatus != RepositoryBindingStatus.BOUND) {
-            throw new IllegalStateException("Repository is not bound yet.");
-        }
-
-        if (deploymentRepository != null && !deploymentRepository.isBlank()) {
-            this.deploymentRepository = deploymentRepository.trim();
-        }
-        if (visibility != null) {
-            this.repositoryVisibility = visibility;
-        }
     }
 
     public void updateRepositoryHealth(RepositoryHealthStatus healthStatus) {

@@ -2,17 +2,17 @@ package com.example.dvely.project.infrastructure.mapper;
 
 import com.example.dvely.project.application.result.ActivityLogResult;
 import com.example.dvely.project.application.result.CommitResult;
+import com.example.dvely.project.application.result.GithubRepositoryResult;
 import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectOverviewResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
-import com.example.dvely.project.application.result.RepositoryBindingResult;
 import com.example.dvely.project.application.result.RepositoryHealthResult;
 import com.example.dvely.project.presentation.dto.response.ProjectActivityLogResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCommitResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse;
+import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectOverviewResponse;
-import com.example.dvely.project.presentation.dto.response.RepositoryBindingResponse;
 import com.example.dvely.project.presentation.dto.response.RepositoryHealthResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectSummaryResponse;
 import java.time.Duration;
@@ -24,6 +24,18 @@ public class ProjectMapper {
 
     public ProjectCreateResponse toCreateResponse(ProjectDetailResult result) {
         return new ProjectCreateResponse(result.projectId(), result.name(), result.status());
+    }
+
+    public GithubRepositoryResponse toGithubRepositoryResponse(GithubRepositoryResult result) {
+        return new GithubRepositoryResponse(
+                result.fullName(),
+                result.name(),
+                result.owner(),
+                result.description(),
+                result.visibility(),
+                result.defaultBranch(),
+                result.updatedAt()
+        );
     }
 
     public ProjectSummaryResponse toSummaryResponse(ProjectSummaryResult result) {
@@ -69,16 +81,6 @@ public class ProjectMapper {
 
     public ProjectCommitResponse toCommitResponse(CommitResult result) {
         return new ProjectCommitResponse(result.sha(), result.message(), result.author(), result.committedAt());
-    }
-
-    public RepositoryBindingResponse toRepositoryBindingResponse(RepositoryBindingResult result) {
-        return new RepositoryBindingResponse(
-                result.sourceRepository(),
-                result.deploymentRepository(),
-                result.visibility(),
-                result.status(),
-                result.health()
-        );
     }
 
     public RepositoryHealthResponse toRepositoryHealthResponse(RepositoryHealthResult result) {

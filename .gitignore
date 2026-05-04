@@ -41,3 +41,9 @@ out/
 
 ### Notion ###
 .notion/
+
+### DS_Store ###
+.DS_Store
+
+### Dvely_FE_test ###
+Dvely_FE_test/
