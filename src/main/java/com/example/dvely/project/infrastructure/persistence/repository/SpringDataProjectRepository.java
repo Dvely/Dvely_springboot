@@ -10,4 +10,11 @@ public interface SpringDataProjectRepository extends JpaRepository<ProjectEntity
     List<ProjectEntity> findByOwnerUserIdAndDeletedFalseOrderByUpdatedAtDesc(Long ownerUserId);
 
     Optional<ProjectEntity> findByIdAndOwnerUserIdAndDeletedFalse(Long projectId, Long ownerUserId);
+
+    Optional<ProjectEntity> findByIdAndOwnerUserId(Long projectId, Long ownerUserId);
+
+    Optional<ProjectEntity> findFirstByOwnerUserIdAndSourceRepositoryIgnoreCaseAndDeletedFalseOrderByUpdatedAtDesc(
+            Long ownerUserId,
+            String sourceRepository
+    );
 }

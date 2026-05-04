@@ -28,6 +28,22 @@ public class ProjectRepositoryAdapter implements ProjectRepository {
     }
 
     @Override
+    public Optional<Project> findByIdAndOwnerUserId(Long projectId, Long ownerUserId) {
+        return springDataProjectRepository.findByIdAndOwnerUserId(projectId, ownerUserId)
+                .map(ProjectEntity::toDomain);
+    }
+
+    @Override
+    public Optional<Project> findFirstByOwnerUserIdAndSourceRepositoryIgnoreCaseAndDeletedFalseOrderByUpdatedAtDesc(
+            Long ownerUserId,
+            String sourceRepository
+    ) {
+        return springDataProjectRepository
+                .findFirstByOwnerUserIdAndSourceRepositoryIgnoreCaseAndDeletedFalseOrderByUpdatedAtDesc(ownerUserId, sourceRepository)
+                .map(ProjectEntity::toDomain);
+    }
+
+    @Override
     public Project save(Project project) {
         ProjectEntity entity;
         if (project.getId() == null) {
