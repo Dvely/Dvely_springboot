@@ -17,7 +17,10 @@ import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -95,20 +98,73 @@ public class DeploymentQueryService {
 
     @Transactional(readOnly = true)
     public List<VersionResult> getVersions(Long ownerUserId, Long projectId) {
-        // TODO: merge 기준 버전 목록 조회 구현
-        return List.of();
+        List<DeploymentHistory> histories = deploymentHistoryRepository
+                .findByProjectIdOrderByTriggeredAtDesc(projectId);
+
+        // versionLabel 기준으로 그룹화 후 각 버전의 최신 이력만 추출 (null 제외)
+        Map<String, DeploymentHistory> latestByVersion = histories.stream()
+                .filter(h -> h.getVersionLabel() != null && !h.getVersionLabel().isBlank())
+                .collect(Collectors.toMap(
+                        DeploymentHistory::getVersionLabel,
+                        h -> h,
+                        (existing, replacement) -> existing  // 이미 최신순 정렬이므로 첫 번째 유지
+                ));
+
+        return latestByVersion.values().stream()
+                .sorted(Comparator.comparing(DeploymentHistory::getTriggeredAt).reversed())
+                .map(h -> new VersionResult(
+                        h.getId(),
+                        h.getVersionLabel(),
+                        null,   // commitSha: DB에 미저장, 필요 시 GitHub API 추가
+                        null,   // title: DB에 미저장, 필요 시 GitHub API 추가
+                        h.getStatus().name(),
+                        h.getTriggeredAt()
+                ))
+                .toList();
     }
 
     @Transactional(readOnly = true)
     public VersionDetailResult getVersionDetail(Long ownerUserId, Long versionId) {
-        // TODO: 버전 상세 조회 구현
-        throw new UnsupportedOperationException("버전 상세 조회 미구현");
+        DeploymentHistory history = deploymentHistoryRepository.findById(versionId)
+                .orElseThrow(() -> new IllegalArgumentException("버전을 찾을 수 없습니다. versionId=" + versionId));
+
+        return new VersionDetailResult(
+                history.getId(),
+                history.getVersionLabel(),
+                null,   // commitSha
+                null,   // title
+                null,   // description
+                history.getStatus().name(),
+                history.getDeployedUrl(),
+                null,   // mergedBy
+                null,   // mergedByAvatarUrl
+                null,   // prNumber
+                history.getTriggeredAt()
+        );
     }
 
     @Transactional(readOnly = true)
     public List<DeploymentCandidateResult> getDeploymentCandidates(Long ownerUserId, Long projectId) {
-        // TODO: 배포 이력 중 LIVE, PREVIEW_READY 상태인 버전만 조회
-        return List.of();
+        return deploymentHistoryRepository.findByProjectIdOrderByTriggeredAtDesc(projectId).stream()
+                .filter(h -> h.getVersionLabel() != null && !h.getVersionLabel().isBlank())
+                .filter(h -> h.getStatus() == DeployStatus.LIVE)
+                .collect(Collectors.toMap(
+                        DeploymentHistory::getVersionLabel,
+                        h -> h,
+                        (existing, replacement) -> existing
+                ))
+                .values().stream()
+                .sorted(Comparator.comparing(DeploymentHistory::getTriggeredAt).reversed())
+                .map(h -> new DeploymentCandidateResult(
+                        h.getId(),
+                        h.getVersionLabel(),
+                        null,
+                        null,
+                        h.getStatus().name(),
+                        h.getDeployedUrl(),
+                        h.getUpdatedAt()
+                ))
+                .toList();
     }
 
     @Transactional(readOnly = true)

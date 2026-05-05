@@ -27,7 +27,7 @@ import java.util.HexFormat;
 public class WebhookService {
 
     private final GithubProperties githubProperties;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private final ProjectRepository projectRepository;
     private final DeploymentHistoryRepository deploymentHistoryRepository;
 
