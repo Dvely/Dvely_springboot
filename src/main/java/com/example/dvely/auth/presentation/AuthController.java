@@ -36,7 +36,7 @@ public class AuthController {
     )
     @GetMapping("/github/url")
     public ApiResponse<GithubUrlResponse> getGithubLoginUrl() {
-        return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubLoginUrl()));
+        return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubLoginUrl().url()));
     }
 
     @Operation(
@@ -47,8 +47,11 @@ public class AuthController {
                           "GitHub OAuth 인증 후 리다이렉트되는 URL에 연결합니다."
     )
     @GetMapping("/github/callback")
-    public ApiResponse<AuthTokenResponse> githubCallback(@RequestParam String code) {
-        var result = authFacade.loginWithGithub(code);
+    public ApiResponse<AuthTokenResponse> githubCallback(
+            @RequestParam String code,
+            @RequestParam String state
+    ) {
+        var result = authFacade.loginWithGithub(code, state);
         return ApiResponse.success(new AuthTokenResponse(result.accessToken(), result.refreshToken(), result.githubAppInstalled()));
     }
 

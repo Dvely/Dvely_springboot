@@ -23,12 +23,12 @@ public class GithubOAuthClient implements GithubOAuthPort {
      * 유저가 이 URL로 이동 → GitHub 로그인 → redirect_uri로 code 전달
      */
     @Override
-    public String getAuthorizeUrl() {
+    public String getAuthorizeUrl(String state) {
         return UriComponentsBuilder
                 .fromUriString(GITHUB_BASE_URL + AUTHORIZE_PATH)
                 .queryParam("client_id", properties.oauth().clientId())
                 .queryParam("scope", properties.oauth().scope())
-                // TODO: state 파라미터 추가 (CSRF 방지) - Redis 세션으로 구현 권장
+                .queryParam("state", state)
                 .build()
                 .toUriString();
     }

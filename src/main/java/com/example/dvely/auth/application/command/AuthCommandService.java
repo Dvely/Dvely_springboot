@@ -14,6 +14,7 @@ import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.service.AuthDomainService;
 import com.example.dvely.auth.domain.value.GithubId;
 import com.example.dvely.auth.infrastructure.config.JwtProperties;
+import com.example.dvely.auth.infrastructure.oauth.OAuthStateManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -36,6 +37,7 @@ public class AuthCommandService {
     private final TokenPort tokenPort;
     private final TokenBlacklistPort tokenBlacklistPort;
     private final JwtProperties jwtProperties;
+    private final OAuthStateManager oAuthStateManager;
 
     /**
      * GitHub OAuth 로그인
@@ -43,6 +45,7 @@ public class AuthCommandService {
      */
     @Transactional
     public TokenResult loginWithGithub(GithubLoginCommand command) {
+        oAuthStateManager.verify(command.state());
         String oauthToken = githubOAuthPort.getAccessToken(command.code());
         GithubUserPort.GithubUserInfo githubUser = githubUserPort.getUser(oauthToken);
 
