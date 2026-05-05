@@ -13,6 +13,7 @@ public class DeploymentHistory {
     private final String versionLabel;
     private final String deployedUrl;
     private DeployStatus status;
+    private Long workflowRunId;
     private final LocalDateTime triggeredAt;
     private LocalDateTime updatedAt;
 
@@ -27,6 +28,7 @@ public class DeploymentHistory {
         this.versionLabel = versionLabel;
         this.deployedUrl = Objects.requireNonNull(deployedUrl);
         this.status = DeployStatus.IN_PROGRESS;
+        this.workflowRunId = null;
         this.triggeredAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
     }
@@ -38,6 +40,7 @@ public class DeploymentHistory {
                               String versionLabel,
                               String deployedUrl,
                               DeployStatus status,
+                              Long workflowRunId,
                               LocalDateTime triggeredAt,
                               LocalDateTime updatedAt) {
         this.id = id;
@@ -46,6 +49,7 @@ public class DeploymentHistory {
         this.versionLabel = versionLabel;
         this.deployedUrl = deployedUrl;
         this.status = status;
+        this.workflowRunId = workflowRunId;
         this.triggeredAt = triggeredAt;
         this.updatedAt = updatedAt;
     }
@@ -60,12 +64,17 @@ public class DeploymentHistory {
         this.updatedAt = LocalDateTime.now();
     }
 
-    public Long getId()                        { return id; }
-    public Long getProjectId()                 { return projectId; }
+    public void assignRunId(Long runId) {
+        this.workflowRunId = runId;
+    }
+
+    public Long getId()                           { return id; }
+    public Long getProjectId()                    { return projectId; }
     public DeployTargetType getDeployTargetType() { return deployTargetType; }
-    public String getVersionLabel()            { return versionLabel; }
-    public String getDeployedUrl()             { return deployedUrl; }
-    public DeployStatus getStatus()            { return status; }
-    public LocalDateTime getTriggeredAt()      { return triggeredAt; }
-    public LocalDateTime getUpdatedAt()        { return updatedAt; }
+    public String getVersionLabel()               { return versionLabel; }
+    public String getDeployedUrl()                { return deployedUrl; }
+    public DeployStatus getStatus()               { return status; }
+    public Long getWorkflowRunId()                { return workflowRunId; }
+    public LocalDateTime getTriggeredAt()         { return triggeredAt; }
+    public LocalDateTime getUpdatedAt()           { return updatedAt; }
 }

@@ -5,6 +5,8 @@ import com.example.dvely.deployment.application.command.dto.DeployCommand;
 import com.example.dvely.deployment.application.query.DeploymentQueryService;
 import com.example.dvely.deployment.application.result.DeploymentCandidateResult;
 import com.example.dvely.deployment.application.result.DeploymentHistoryResult;
+import com.example.dvely.deployment.application.result.DeploymentLogsResult;
+import com.example.dvely.deployment.application.result.DeploymentStatusResult;
 import com.example.dvely.deployment.application.result.DeployResult;
 import com.example.dvely.deployment.application.result.VersionDetailResult;
 import com.example.dvely.deployment.application.result.VersionResult;
@@ -27,6 +29,10 @@ public class DeploymentFacade {
         return deploymentQueryService.getDeploymentHistories(projectId);
     }
 
+    public DeploymentStatusResult getDeploymentStatus(Long historyId) {
+        return deploymentQueryService.getDeploymentStatus(historyId);
+    }
+
     public List<VersionResult> getVersions(Long ownerUserId, Long projectId) {
         return deploymentQueryService.getVersions(ownerUserId, projectId);
     }
@@ -37,5 +43,9 @@ public class DeploymentFacade {
 
     public List<DeploymentCandidateResult> getDeploymentCandidates(Long ownerUserId, Long projectId) {
         return deploymentQueryService.getDeploymentCandidates(ownerUserId, projectId);
+    }
+
+    public DeploymentLogsResult getDeploymentLogs(Long historyId) {
+        return deploymentQueryService.getDeploymentLogs(historyId);
     }
 }

@@ -4,12 +4,16 @@ import com.example.dvely.deployment.application.command.dto.DeployCommand;
 import com.example.dvely.deployment.application.facade.DeploymentFacade;
 import com.example.dvely.deployment.application.result.DeploymentCandidateResult;
 import com.example.dvely.deployment.application.result.DeploymentHistoryResult;
+import com.example.dvely.deployment.application.result.DeploymentLogsResult;
+import com.example.dvely.deployment.application.result.DeploymentStatusResult;
 import com.example.dvely.deployment.application.result.DeployResult;
 import com.example.dvely.deployment.application.result.VersionDetailResult;
 import com.example.dvely.deployment.application.result.VersionResult;
 import com.example.dvely.deployment.presentation.dto.request.DeployRequest;
 import com.example.dvely.deployment.presentation.dto.response.DeploymentCandidateResponse;
 import com.example.dvely.deployment.presentation.dto.response.DeploymentHistoryResponse;
+import com.example.dvely.deployment.presentation.dto.response.DeploymentLogsResponse;
+import com.example.dvely.deployment.presentation.dto.response.DeploymentStatusResponse;
 import com.example.dvely.deployment.presentation.dto.response.DeployResponse;
 import com.example.dvely.deployment.presentation.dto.response.VersionDetailResponse;
 import com.example.dvely.deployment.presentation.dto.response.VersionResponse;
@@ -51,6 +55,33 @@ public class DeploymentController {
     ) {
         DeployCommand command = new DeployCommand(request.deployTargetType(), request.versionName());
         return toDeployResponse(deploymentFacade.deploy(userId, projectId, command));
+    }
+
+    @Operation(
+            summary = "배포 상태 조회",
+            description = "특정 배포의 현재 상태를 반환합니다. " +
+                          "status가 IN_PROGRESS인 경우 GitHub Actions의 실시간 빌드 상태(buildStatus)도 함께 반환합니다. " +
+                          "buildStatus: queued(대기 중) | in_progress(빌드 중) | completed(빌드 완료). " +
+                          "status가 LIVE 또는 FAILED이면 buildStatus는 null입니다."
+    )
+    @GetMapping("/api/v1/deployments/{deploymentId}")
+    public DeploymentStatusResponse getDeploymentStatus(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @Parameter(description = "조회할 배포 이력 ID") @PathVariable Long deploymentId
+    ) {
+        DeploymentStatusResult result = deploymentFacade.getDeploymentStatus(deploymentId);
+        return new DeploymentStatusResponse(
+                result.historyId(),
+                result.projectId(),
+                result.deployTargetType(),
+                result.versionLabel(),
+                result.deployedUrl(),
+                result.status(),
+                result.buildStatus(),
+                result.buildConclusion(),
+                result.triggeredAt(),
+                result.updatedAt()
+        );
     }
 
     @Operation(
@@ -96,6 +127,21 @@ public class DeploymentController {
         return deploymentFacade.getDeploymentCandidates(userId, projectId).stream()
                 .map(this::toCandidateResponse)
                 .toList();
+    }
+
+    @Operation(
+            summary = "배포 로그 조회",
+            description = "특정 배포의 GitHub Actions 빌드 로그를 반환합니다. " +
+                          "jobs 필드에는 각 Job의 step별 실행 상태가 포함됩니다. " +
+                          "logText에는 첫 번째 Job의 전체 로그 텍스트가 포함됩니다. " +
+                          "workflowRunId가 null인 경우 run_id가 아직 기록되지 않은 상태입니다."
+    )
+    @GetMapping("/api/v1/deployments/{deploymentId}/logs")
+    public DeploymentLogsResponse getDeploymentLogs(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @Parameter(description = "조회할 배포 이력 ID") @PathVariable Long deploymentId
+    ) {
+        return toLogsResponse(deploymentFacade.getDeploymentLogs(deploymentId));
     }
 
     @Operation(
@@ -157,6 +203,26 @@ public class DeploymentController {
                 result.deployStatus(),
                 result.deployedUrl(),
                 result.deployedAt()
+        );
+    }
+
+    private DeploymentLogsResponse toLogsResponse(DeploymentLogsResult result) {
+        return new DeploymentLogsResponse(
+                result.historyId(),
+                result.workflowRunId(),
+                result.jobs().stream()
+                        .map(j -> new DeploymentLogsResponse.JobResponse(
+                                j.jobId(),
+                                j.name(),
+                                j.status(),
+                                j.conclusion(),
+                                j.steps().stream()
+                                        .map(s -> new DeploymentLogsResponse.StepResponse(
+                                                s.number(), s.name(), s.status(), s.conclusion()))
+                                        .toList()
+                        ))
+                        .toList(),
+                result.logText()
         );
     }
 

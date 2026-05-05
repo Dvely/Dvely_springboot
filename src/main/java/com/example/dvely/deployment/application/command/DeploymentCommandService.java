@@ -64,6 +64,7 @@ public class DeploymentCommandService {
 
         // 빌드 워크플로우 트리거
         String ref = command.deployTargetType() == DeployTargetType.LATEST ? MAIN_BRANCH : versionLabel;
+        LocalDateTime triggerTime = LocalDateTime.now();
         ensureAndTriggerWorkflow(userToken, sourceRepo, project.getTemplateType(), ref);
 
         // 배포 이력 저장 + 프로젝트 상태 IN_PROGRESS 전환
@@ -72,8 +73,17 @@ public class DeploymentCommandService {
         project.updateDeployment(DeployStatus.IN_PROGRESS, pagesUrl, versionLabel);
         projectRepository.save(project);
 
-        log.info("배포 트리거 완료: projectId={}, historyId={}, version={}, url={}",
-                projectId, history.getId(), versionLabel, pagesUrl);
+        // run_id 폴링 후 이력에 저장 (최대 5회, 3초 간격)
+        Long runId = githubActionsPort.pollRunId(
+                userToken, sourceRepo, DeployWorkflowTemplate.fileName(),
+                triggerTime, 5, 3000);
+        if (runId != null) {
+            history.assignRunId(runId);
+            deploymentHistoryRepository.save(history);
+        }
+
+        log.info("배포 트리거 완료: projectId={}, historyId={}, runId={}, version={}, url={}",
+                projectId, history.getId(), runId, versionLabel, pagesUrl);
 
         return new DeployResult(
                 history.getId(),

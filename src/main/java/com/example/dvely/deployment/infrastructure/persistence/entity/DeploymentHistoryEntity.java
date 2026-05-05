@@ -42,6 +42,9 @@ public class DeploymentHistoryEntity {
     @Column(name = "status", nullable = false)
     private String status;
 
+    @Column(name = "workflow_run_id")
+    private Long workflowRunId;
+
     @CreationTimestamp
     @Column(name = "triggered_at", updatable = false)
     private LocalDateTime triggeredAt;
@@ -74,6 +77,7 @@ public class DeploymentHistoryEntity {
 
     public void updateFrom(DeploymentHistory history) {
         this.status = history.getStatus().name();
+        this.workflowRunId = history.getWorkflowRunId();
     }
 
     public DeploymentHistory toDomain() {
@@ -84,6 +88,7 @@ public class DeploymentHistoryEntity {
                 versionLabel,
                 deployedUrl,
                 DeployStatus.valueOf(status),
+                workflowRunId,
                 triggeredAt,
                 updatedAt
         );
