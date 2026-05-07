@@ -1,9 +1,7 @@
 package com.example.dvely.deployment.infrastructure.workflow;
 
-/**
- * 프로젝트 templateType에 맞는 GitHub Actions 배포 워크플로우를 생성한다.
- * 워크플로우는 sourceRepository에 생성되며, 빌드 후 결과물을 gh-pages 브랜치에 push한다.
- */
+import com.example.dvely.deployment.domain.value.PackageManager;
+
 public class DeployWorkflowTemplate {
 
     private static final String WORKFLOW_FILE = "dvely-deploy.yml";
@@ -13,84 +11,145 @@ public class DeployWorkflowTemplate {
     }
 
     /**
-     * templateType 기반으로 워크플로우 YAML 문자열을 생성한다.
-     * @param templateType 프로젝트 템플릿 종류 (react, vue, nextjs 등)
-     * @param publishDir   빌드 결과물 디렉토리 (null 이면 templateType으로 추론)
+     * @param templateType  프로젝트 프레임워크 종류
+     * @param publishDir    빌드 결과물 경로 (null 이면 templateType 으로 추론)
+     * @param pm            감지된 패키지 매니저
+     * @param nodeVersion   감지된 Node.js 주 버전 (예: "20")
      */
-    public static String generate(String templateType, String publishDir) {
-        String buildCommand = resolveBuildCommand(templateType);
-        String outDir = publishDir != null ? publishDir : resolvePublishDir(templateType);
+    public static String generate(String templateType, String publishDir,
+                                  PackageManager pm, String nodeVersion) {
+        String buildCmd = resolveBuildCommand(templateType, pm);
+        String outDir   = publishDir != null ? publishDir : resolvePublishDir(templateType);
 
-        return """
-                name: Dvely Deploy to GitHub Pages
+        StringBuilder w = new StringBuilder();
 
-                on:
-                  workflow_dispatch:
+        // ── 헤더 ─────────────────────────────────────────────────────────────
+        w.append("name: Dvely Deploy to GitHub Pages\n\n");
+        w.append("on:\n");
+        w.append("  workflow_dispatch:\n\n");
+        w.append("permissions:\n");
+        w.append("  contents: write\n");
+        w.append("  pages: write\n\n");
+        w.append("jobs:\n");
+        w.append("  deploy:\n");
+        w.append("    runs-on: ubuntu-latest\n");
+        w.append("    steps:\n");
 
-                permissions:
-                  contents: write
-                  pages: write
+        // ── Checkout ─────────────────────────────────────────────────────────
+        w.append("      - name: Checkout\n");
+        w.append("        uses: actions/checkout@v4\n\n");
 
-                jobs:
-                  deploy:
-                    runs-on: ubuntu-latest
-                    steps:
-                      - name: Checkout
-                        uses: actions/checkout@v4
+        // ── 런타임 설정 (pnpm/bun setup + Node.js) ───────────────────────────
+        w.append(runtimeSetupSteps(pm, nodeVersion));
 
-                      - name: Setup Node.js
-                        uses: actions/setup-node@v4
-                        with:
-                          node-version: '20'
+        // ── base path 해석 ────────────────────────────────────────────────────
+        w.append("      - name: Resolve base path\n");
+        w.append("        id: base\n");
+        w.append("        run: |\n");
+        w.append("          REPO=\"${{ github.event.repository.name }}\"\n");
+        w.append("          OWNER=\"${{ github.repository_owner }}\"\n");
+        w.append("          if [ \"$REPO\" = \"${OWNER}.github.io\" ]; then\n");
+        w.append("            echo \"path=/\" >> $GITHUB_OUTPUT\n");
+        w.append("          else\n");
+        w.append("            echo \"path=/${REPO}/\" >> $GITHUB_OUTPUT\n");
+        w.append("          fi\n\n");
 
-                      - name: Resolve base path
-                        id: base
-                        run: |
-                          REPO="${{ github.event.repository.name }}"
-                          OWNER="${{ github.repository_owner }}"
-                          if [ "$REPO" = "${OWNER}.github.io" ]; then
-                            echo "path=/" >> $GITHUB_OUTPUT
-                          else
-                            echo "path=/${REPO}/" >> $GITHUB_OUTPUT
-                          fi
+        // ── 의존성 설치 ───────────────────────────────────────────────────────
+        w.append("      - name: Install dependencies\n");
+        w.append("        run: ").append(pm.installCommand()).append("\n\n");
 
-                      - name: Install dependencies
-                        run: npm install
+        // ── 빌드 ─────────────────────────────────────────────────────────────
+        w.append("      - name: Build\n");
+        w.append("        run: ").append(buildCmd).append("\n");
+        w.append("        env:\n");
+        w.append("          PUBLIC_URL: ${{ steps.base.outputs.path }}\n");
+        w.append("          VITE_BASE_URL: ${{ steps.base.outputs.path }}\n");
+        w.append("          BASE_PATH: ${{ steps.base.outputs.path }}\n");
+        w.append("\n");
 
-                      - name: Build
-                        run: %s
-                        env:
-                          PUBLIC_URL: ${{ steps.base.outputs.path }}
-                          VITE_BASE_URL: ${{ steps.base.outputs.path }}
-                          BASE_PATH: ${{ steps.base.outputs.path }}
+        // ── SPA 라우팅 404 대응 ───────────────────────────────────────────────
+        w.append("      - name: Copy index.html to 404.html\n");
+        w.append("        run: cp ").append(outDir).append("/index.html ")
+         .append(outDir).append("/404.html\n\n");
 
-                      - name: Deploy to gh-pages
-                        uses: peaceiris/actions-gh-pages@v4
-                        with:
-                          github_token: ${{ secrets.GITHUB_TOKEN }}
-                          publish_dir: %s
-                """.formatted(buildCommand, outDir);
+        // ── gh-pages 배포 ─────────────────────────────────────────────────────
+        w.append("      - name: Deploy to gh-pages\n");
+        w.append("        uses: peaceiris/actions-gh-pages@v4\n");
+        w.append("        with:\n");
+        w.append("          github_token: ${{ secrets.GITHUB_TOKEN }}\n");
+        w.append("          publish_dir: ").append(outDir).append("\n");
+
+        return w.toString();
     }
 
-    private static String resolveBuildCommand(String templateType) {
-        if (templateType == null) return resolveViteBuildCommand();
-        return switch (templateType.toLowerCase()) {
-            case "cra", "create-react-app" -> "npm run build";
-            case "nextjs", "next"           -> "npm run build && npm run export";
-            default                         -> resolveViteBuildCommand();
+    // ── 런타임 setup 스텝 ─────────────────────────────────────────────────────
+
+    private static String runtimeSetupSteps(PackageManager pm, String nodeVersion) {
+        return switch (pm) {
+            case NPM  -> nodeSetupStep("npm",  nodeVersion);
+            case YARN -> nodeSetupStep("yarn", nodeVersion);
+            case PNPM -> pnpmSetupStep() + nodeSetupStep("pnpm", nodeVersion);
+            case BUN  -> bunSetupStep();
         };
     }
 
-    private static String resolveViteBuildCommand() {
-        return "npx vite build --base=${{ steps.base.outputs.path }}";
+    private static String nodeSetupStep(String cache, String nodeVersion) {
+        return "      - name: Setup Node.js\n"
+             + "        uses: actions/setup-node@v4\n"
+             + "        with:\n"
+             + "          node-version: '" + nodeVersion + "'\n"
+             + "          cache: '" + cache + "'\n"
+             + "\n";
     }
+
+    private static String pnpmSetupStep() {
+        return "      - name: Setup pnpm\n"
+             + "        uses: pnpm/action-setup@v4\n"
+             + "        with:\n"
+             + "          version: latest\n"
+             + "\n";
+    }
+
+    private static String bunSetupStep() {
+        return "      - name: Setup Bun\n"
+             + "        uses: oven-sh/setup-bun@v2\n"
+             + "        with:\n"
+             + "          bun-version: latest\n"
+             + "\n";
+    }
+
+    // ── 빌드 명령어 ───────────────────────────────────────────────────────────
+
+    private static String resolveBuildCommand(String templateType, PackageManager pm) {
+        if (templateType == null) return viteBuildCommand(pm);
+        return switch (templateType.toLowerCase()) {
+            case "cra", "create-react-app"          -> pm.runScript("build");
+            case "nextjs", "next"                   -> pm.runScript("build");
+            case "gatsby"                           -> pm.runScript("build");
+            case "svelte", "sveltekit"              -> pm.runScript("build");
+            case "nuxt", "nuxtjs", "nuxt3"          -> pm.runScript("generate");
+            case "astro"                            -> pm.runScript("build");
+            case "vue", "vue-cli", "vue3"           -> pm.runScript("build");
+            default                                 -> viteBuildCommand(pm);
+        };
+    }
+
+    private static String viteBuildCommand(PackageManager pm) {
+        return pm.execBin("vite build --base=${{ steps.base.outputs.path }}");
+    }
+
+    // ── 빌드 결과물 디렉토리 ─────────────────────────────────────────────────
 
     private static String resolvePublishDir(String templateType) {
         if (templateType == null) return "./dist";
         return switch (templateType.toLowerCase()) {
-            case "cra", "create-react-app" -> "./build";
-            case "nextjs", "next"           -> "./out";
-            default                          -> "./dist";
+            case "cra", "create-react-app"          -> "./build";
+            case "nextjs", "next"                   -> "./out";
+            case "gatsby"                           -> "./public";
+            case "svelte", "sveltekit"              -> "./build";
+            case "nuxt", "nuxtjs"                   -> "./dist";
+            case "nuxt3"                            -> "./.output/public";
+            default                                 -> "./dist";
         };
     }
 }

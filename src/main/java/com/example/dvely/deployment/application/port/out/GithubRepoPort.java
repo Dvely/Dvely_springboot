@@ -1,6 +1,20 @@
 package com.example.dvely.deployment.application.port.out;
 
+import com.example.dvely.deployment.domain.value.PackageManager;
+
 public interface GithubRepoPort {
+
+    /**
+     * 저장소 루트의 lock 파일을 확인해 사용 중인 패키지 매니저를 반환한다.
+     * 감지 우선순위: bun.lockb / bun.lock → pnpm-lock.yaml → yarn.lock → package-lock.json → NPM(기본값)
+     */
+    PackageManager detectPackageManager(String userToken, String repoFullName);
+
+    /**
+     * 저장소의 .nvmrc 또는 .node-version 파일을 확인해 Node.js 주 버전 번호를 문자열로 반환한다.
+     * 파일이 없거나 파싱 불가 시 "20"을 반환한다.
+     */
+    String detectNodeVersion(String userToken, String repoFullName);
 
     /**
      * head 브랜치가 base 브랜치보다 앞선 커밋이 있는지 확인한다.

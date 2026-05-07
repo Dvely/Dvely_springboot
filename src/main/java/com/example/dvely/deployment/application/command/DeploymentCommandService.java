@@ -11,6 +11,7 @@ import com.example.dvely.deployment.application.result.DeployResult;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import com.example.dvely.deployment.domain.value.DeployTargetType;
+import com.example.dvely.deployment.domain.value.PackageManager;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.model.Project;
@@ -194,7 +195,11 @@ public class DeploymentCommandService {
     private void ensureAndTriggerWorkflow(String userToken, String sourceRepo,
                                           String templateType, String ref) {
         String workflowFile = DeployWorkflowTemplate.fileName();
-        String content = DeployWorkflowTemplate.generate(templateType, null);
+        PackageManager pm = githubRepoPort.detectPackageManager(userToken, sourceRepo);
+        log.info("패키지 매니저 감지: repo={}, pm={}", sourceRepo, pm);
+        String nodeVersion = githubRepoPort.detectNodeVersion(userToken, sourceRepo);
+        log.info("Node.js 버전 감지: repo={}, version={}", sourceRepo, nodeVersion);
+        String content = DeployWorkflowTemplate.generate(templateType, null, pm, nodeVersion);
         githubActionsPort.createOrUpdateWorkflow(userToken, sourceRepo, workflowFile, content);
 
         triggerWithRetry(userToken, sourceRepo, workflowFile, ref);

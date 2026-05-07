@@ -1,6 +1,7 @@
 package com.example.dvely.deployment.infrastructure.external;
 
 import com.example.dvely.deployment.application.port.out.GithubRepoPort;
+import com.example.dvely.deployment.domain.value.PackageManager;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.extern.slf4j.Slf4j;
@@ -8,11 +9,14 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Component
@@ -148,6 +152,71 @@ public class GithubRepoClient implements GithubRepoPort {
         }
     }
 
+    @Override
+    public PackageManager detectPackageManager(String userToken, String repoFullName) {
+        String[] parts = splitRepo(repoFullName);
+        Set<String> rootFiles = listRootFileNames(userToken, parts[0], parts[1]);
+
+        if (rootFiles.contains("bun.lockb") || rootFiles.contains("bun.lock")) return PackageManager.BUN;
+        if (rootFiles.contains("pnpm-lock.yaml"))                               return PackageManager.PNPM;
+        if (rootFiles.contains("yarn.lock"))                                    return PackageManager.YARN;
+        return PackageManager.NPM;
+    }
+
+    @Override
+    public String detectNodeVersion(String userToken, String repoFullName) {
+        String[] parts = splitRepo(repoFullName);
+        for (String file : List.of(".nvmrc", ".node-version")) {
+            String content = fetchFileContent(userToken, parts[0], parts[1], file);
+            if (content != null) {
+                String version = extractMajorVersion(content.trim());
+                if (version != null) {
+                    log.info("Node.js 버전 감지: repo={}, file={}, version={}", repoFullName, file, version);
+                    return version;
+                }
+            }
+        }
+        log.info("Node.js 버전 파일 없음, 기본값(20) 사용: repo={}", repoFullName);
+        return "20";
+    }
+
+    private String fetchFileContent(String userToken, String owner, String repo, String path) {
+        try {
+            FileContentResponse response = restClient(userToken)
+                    .get()
+                    .uri(API_BASE + "/repos/{owner}/{repo}/contents/{path}", owner, repo, path)
+                    .retrieve()
+                    .body(FileContentResponse.class);
+            if (response == null || response.content() == null) return null;
+            // GitHub returns base64-encoded content with embedded newlines
+            return new String(Base64.getDecoder().decode(response.content().replaceAll("\\s", "")));
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 404) return null;
+            log.warn("파일 조회 실패: {}/{}/{}: {}", owner, repo, path, e.getMessage());
+            return null;
+        }
+    }
+
+    private static String extractMajorVersion(String raw) {
+        Matcher m = Pattern.compile("(\\d+)").matcher(raw);
+        return m.find() ? m.group(1) : null;
+    }
+
+    private Set<String> listRootFileNames(String userToken, String owner, String repo) {
+        try {
+            List<ContentEntry> entries = restClient(userToken)
+                    .get()
+                    .uri(API_BASE + "/repos/{owner}/{repo}/contents/", owner, repo)
+                    .retrieve()
+                    .body(new org.springframework.core.ParameterizedTypeReference<List<ContentEntry>>() {});
+            if (entries == null) return Set.of();
+            return entries.stream().map(ContentEntry::name).collect(Collectors.toSet());
+        } catch (RestClientResponseException e) {
+            log.warn("루트 파일 목록 조회 실패, npm 기본값 사용: repo={}/{}, status={}", owner, repo, e.getStatusCode().value());
+            return Set.of();
+        }
+    }
+
     // ── 내부 헬퍼 ────────────────────────────────────────────────────────────
 
     private Integer findOpenPullRequest(String userToken, String owner, String repo,
@@ -213,6 +282,16 @@ public class GithubRepoClient implements GithubRepoPort {
     }
 
     // ── Response DTOs ────────────────────────────────────────────────────────
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record FileContentResponse(
+            @JsonProperty("content") String content
+    ) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record ContentEntry(
+            @JsonProperty("name") String name
+    ) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     private record CompareResponse(
