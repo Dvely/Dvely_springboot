@@ -13,6 +13,8 @@ import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepositor
 import com.example.dvely.deployment.domain.value.DeployTargetType;
 import com.example.dvely.deployment.domain.value.PackageManager;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
+import com.example.dvely.common.exception.ForbiddenException;
+import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
@@ -132,14 +134,14 @@ public class DeploymentCommandService {
                 .orElseThrow(() -> new ProjectNotFoundException(projectId, ownerUserId));
 
         if (project.getRepositoryBindingStatus() != RepositoryBindingStatus.BOUND) {
-            throw new IllegalStateException(
+            throw new ForbiddenException(
                     "GitHub 저장소가 연결되지 않은 프로젝트입니다. 먼저 저장소를 연결해 주세요. projectId=" + projectId);
         }
         if (project.getDeploymentRepository() == null || project.getDeploymentRepository().isBlank()) {
-            throw new IllegalStateException("배포 저장소가 설정되지 않은 프로젝트입니다. projectId=" + projectId);
+            throw new ForbiddenException("배포 저장소가 설정되지 않은 프로젝트입니다. projectId=" + projectId);
         }
         if (project.getSourceRepository() == null || project.getSourceRepository().isBlank()) {
-            throw new IllegalStateException("소스 저장소가 설정되지 않은 프로젝트입니다. projectId=" + projectId);
+            throw new ForbiddenException("소스 저장소가 설정되지 않은 프로젝트입니다. projectId=" + projectId);
         }
         return project;
     }
@@ -148,7 +150,7 @@ public class DeploymentCommandService {
 
     private User resolveUser(Long ownerUserId) {
         User user = userRepository.findById(ownerUserId)
-                .orElseThrow(() -> new IllegalStateException("유저를 찾을 수 없습니다. userId=" + ownerUserId));
+                .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다. userId=" + ownerUserId));
 
         if (user.isUserAccessTokenExpired()) {
             authCommandService.refreshGithubUserToken(ownerUserId);

@@ -1,6 +1,7 @@
 package com.example.dvely.auth.infrastructure.oauth;
 
 import com.example.dvely.auth.infrastructure.config.JwtProperties;
+import com.example.dvely.common.exception.UnauthorizedException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -30,7 +31,7 @@ public class OAuthStateManager {
 
     public void verify(String state) {
         if (state == null || !state.contains(".")) {
-            throw new IllegalArgumentException("유효하지 않은 OAuth state 형식입니다");
+            throw new UnauthorizedException("유효하지 않은 OAuth state 형식입니다");
         }
 
         int dotIndex = state.lastIndexOf('.');
@@ -38,13 +39,13 @@ public class OAuthStateManager {
         String signature = state.substring(dotIndex + 1);
 
         if (!sign(encodedPayload).equals(signature)) {
-            throw new IllegalArgumentException("OAuth state 서명이 일치하지 않습니다");
+            throw new UnauthorizedException("OAuth state 서명이 일치하지 않습니다");
         }
 
         String payload = new String(Base64.getUrlDecoder().decode(encodedPayload), StandardCharsets.UTF_8);
         long issuedAt = Long.parseLong(payload.split(":")[0]);
         if (Instant.now().getEpochSecond() - issuedAt > EXPIRY_SECONDS) {
-            throw new IllegalArgumentException("OAuth state가 만료되었습니다");
+            throw new UnauthorizedException("OAuth state가 만료되었습니다");
         }
     }
 

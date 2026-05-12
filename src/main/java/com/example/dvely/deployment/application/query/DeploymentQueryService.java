@@ -17,6 +17,7 @@ import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
+import com.example.dvely.common.exception.NotFoundException;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -37,7 +38,7 @@ public class DeploymentQueryService {
     @Transactional(readOnly = true)
     public DeploymentStatusResult getDeploymentStatus(Long historyId) {
         DeploymentHistory history = deploymentHistoryRepository.findById(historyId)
-                .orElseThrow(() -> new IllegalArgumentException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));
+                .orElseThrow(() -> new NotFoundException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));
 
         // LIVE/FAILED는 DB 상태만 반환 (GitHub Actions 조회 불필요)
         if (history.getStatus() != DeployStatus.IN_PROGRESS) {
@@ -46,10 +47,10 @@ public class DeploymentQueryService {
 
         // IN_PROGRESS: GitHub Actions에서 실시간 빌드 상태 조회
         Project project = projectRepository.findById(history.getProjectId())
-                .orElseThrow(() -> new IllegalStateException("프로젝트를 찾을 수 없습니다. projectId=" + history.getProjectId()));
+                .orElseThrow(() -> new NotFoundException("프로젝트를 찾을 수 없습니다. projectId=" + history.getProjectId()));
 
         User user = userRepository.findById(project.getOwnerUserId())
-                .orElseThrow(() -> new IllegalStateException("유저를 찾을 수 없습니다."));
+                .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다."));
 
         WorkflowRunStatus runStatus = githubActionsPort.getLatestRunStatus(
                 user.getGithubUserAccessToken(),
@@ -126,7 +127,7 @@ public class DeploymentQueryService {
     @Transactional(readOnly = true)
     public VersionDetailResult getVersionDetail(Long ownerUserId, Long versionId) {
         DeploymentHistory history = deploymentHistoryRepository.findById(versionId)
-                .orElseThrow(() -> new IllegalArgumentException("버전을 찾을 수 없습니다. versionId=" + versionId));
+                .orElseThrow(() -> new NotFoundException("버전을 찾을 수 없습니다. versionId=" + versionId));
 
         return new VersionDetailResult(
                 history.getId(),
@@ -170,7 +171,7 @@ public class DeploymentQueryService {
     @Transactional(readOnly = true)
     public DeploymentLogsResult getDeploymentLogs(Long historyId) {
         DeploymentHistory history = deploymentHistoryRepository.findById(historyId)
-                .orElseThrow(() -> new IllegalArgumentException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));
+                .orElseThrow(() -> new NotFoundException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));
 
         Long runId = history.getWorkflowRunId();
         if (runId == null) {
@@ -178,10 +179,10 @@ public class DeploymentQueryService {
         }
 
         Project project = projectRepository.findById(history.getProjectId())
-                .orElseThrow(() -> new IllegalStateException("프로젝트를 찾을 수 없습니다."));
+                .orElseThrow(() -> new NotFoundException("프로젝트를 찾을 수 없습니다."));
 
         User user = userRepository.findById(project.getOwnerUserId())
-                .orElseThrow(() -> new IllegalStateException("유저를 찾을 수 없습니다."));
+                .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다."));
 
         DeploymentLogs logs = githubActionsPort.getJobLogs(
                 user.getGithubUserAccessToken(),

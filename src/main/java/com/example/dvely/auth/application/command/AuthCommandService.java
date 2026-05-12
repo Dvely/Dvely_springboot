@@ -15,6 +15,9 @@ import com.example.dvely.auth.domain.service.AuthDomainService;
 import com.example.dvely.auth.domain.value.GithubId;
 import com.example.dvely.auth.infrastructure.config.JwtProperties;
 import com.example.dvely.auth.infrastructure.oauth.OAuthStateManager;
+import com.example.dvely.common.exception.ForbiddenException;
+import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.common.exception.UnauthorizedException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -71,10 +74,10 @@ public class AuthCommandService {
     @Transactional
     public TokenResult refresh(String rawToken) {
         RefreshToken refreshToken = refreshTokenRepository.findByToken(rawToken)
-                .orElseThrow(() -> new IllegalArgumentException("유효하지 않은 리프레시 토큰입니다"));
+                .orElseThrow(() -> new UnauthorizedException("유효하지 않은 리프레시 토큰입니다"));
 
         if (!refreshToken.isValid()) {
-            throw new IllegalArgumentException("만료되었거나 이미 사용된 리프레시 토큰입니다");
+            throw new UnauthorizedException("만료되었거나 이미 사용된 리프레시 토큰입니다");
         }
 
         Long userId = refreshToken.getUserId();
@@ -82,7 +85,7 @@ public class AuthCommandService {
         refreshTokenRepository.save(refreshToken);
 
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalArgumentException("유저를 찾을 수 없습니다: " + userId));
+                .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
 
         String newAccessToken = tokenPort.createToken(userId);
         String newRefreshToken = issueRefreshToken(userId);
@@ -109,7 +112,7 @@ public class AuthCommandService {
     @Transactional
     public void linkGithubApp(Long userId, Long installationId, String code) {
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalArgumentException("유저를 찾을 수 없습니다: " + userId));
+                .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
 
         authDomainService.updateInstallationId(user, installationId);
 
@@ -138,7 +141,7 @@ public class AuthCommandService {
         GithubUserPort.GithubUserInfo githubUser = githubUserPort.getUser(tokenInfo.accessToken());
 
         User user = userRepository.findByGithubId(new GithubId(githubUser.id()))
-                .orElseThrow(() -> new IllegalStateException("등록된 유저가 아닙니다: githubId=" + githubUser.id()));
+                .orElseThrow(() -> new NotFoundException("등록된 유저가 아닙니다: githubId=" + githubUser.id()));
 
         authDomainService.updateInstallationId(user, installationId);
 
@@ -156,10 +159,10 @@ public class AuthCommandService {
     @Transactional
     public void refreshGithubUserToken(Long userId) {
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalArgumentException("유저를 찾을 수 없습니다: " + userId));
+                .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
 
         if (user.getGithubUserRefreshToken() == null) {
-            throw new IllegalStateException("GitHub App이 연동되지 않았습니다");
+            throw new ForbiddenException("GitHub App이 연동되지 않았습니다");
         }
 
         GithubAppPort.GithubUserTokenInfo tokenInfo = githubAppPort.refreshUserToken(user.getGithubUserRefreshToken());

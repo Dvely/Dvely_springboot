@@ -2,6 +2,7 @@ package com.example.dvely.auth.infrastructure.config.security;
 
 import com.example.dvely.auth.application.port.out.TokenPort;
 import com.example.dvely.auth.infrastructure.config.JwtProperties;
+import com.example.dvely.common.exception.UnauthorizedException;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
@@ -51,7 +52,7 @@ public class JwtProvider implements TokenPort {
 
             return Long.parseLong(subject);
         } catch (JwtException | IllegalArgumentException e) {
-            throw new IllegalArgumentException("유효하지 않은 토큰입니다", e);
+            throw new UnauthorizedException("유효하지 않은 토큰입니다");
         }
     }
 
@@ -65,7 +66,7 @@ public class JwtProvider implements TokenPort {
                     .getPayload()
                     .getId();
         } catch (JwtException | IllegalArgumentException e) {
-            throw new IllegalArgumentException("유효하지 않은 토큰입니다", e);
+            throw new UnauthorizedException("유효하지 않은 토큰입니다");
         }
     }
 
@@ -80,7 +81,7 @@ public class JwtProvider implements TokenPort {
                     .getExpiration();
             return expiration.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
         } catch (JwtException | IllegalArgumentException e) {
-            throw new IllegalArgumentException("유효하지 않은 토큰입니다", e);
+            throw new UnauthorizedException("유효하지 않은 토큰입니다");
         }
     }
 
