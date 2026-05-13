@@ -1,10 +1,14 @@
 package com.example.dvely.domainbinding.application.command;
 
+import com.example.dvely.auth.application.command.AuthCommandService;
+import com.example.dvely.auth.domain.model.User;
+import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import com.example.dvely.domainbinding.application.command.dto.BindDomainCommand;
 import com.example.dvely.domainbinding.application.port.out.CloudflareDnsPort;
 import com.example.dvely.domainbinding.application.port.out.DnsLookupPort;
+import com.example.dvely.domainbinding.application.port.out.HostingCustomDomainPort;
 import com.example.dvely.domainbinding.application.result.DomainBindingResult;
 import com.example.dvely.domainbinding.domain.model.DomainBinding;
 import com.example.dvely.domainbinding.domain.repository.DomainBindingRepository;
@@ -27,19 +31,24 @@ public class DomainBindingCommandService {
 
     private final ProjectRepository projectRepository;
     private final DeploymentHistoryRepository deploymentHistoryRepository;
+    private final UserRepository userRepository;
+    private final AuthCommandService authCommandService;
     private final DomainBindingRepository domainBindingRepository;
     private final CloudflareDnsPort cloudflareDnsPort;
     private final DnsLookupPort dnsLookupPort;
+    private final HostingCustomDomainPort hostingCustomDomainPort;
     private final CloudflareProperties cloudflareProperties;
 
     @Transactional
     public DomainBindingResult bindDomain(Long ownerUserId, Long projectId, BindDomainCommand command) {
         Project project = resolveProject(ownerUserId, projectId);
         if (command.type() == DomainType.MANAGED_SUBDOMAIN) {
-            return bindManagedSubdomain(project, command);
+            User user = resolveUser(ownerUserId);
+            return bindManagedSubdomain(project, user, command);
         }
         if (command.type() == DomainType.CUSTOM_DOMAIN) {
-            return bindCustomDomain(project, command);
+            User user = resolveUser(ownerUserId);
+            return bindCustomDomain(project, user, command);
         }
         throw new IllegalArgumentException("구매형 도메인 연결은 아직 외부 registrar 연동 후 지원됩니다.");
     }
@@ -47,12 +56,15 @@ public class DomainBindingCommandService {
     @Transactional
     public DomainBindingResult checkVerification(Long ownerUserId, Long domainId) {
         DomainBinding domain = resolveDomainOwnedBy(domainId, ownerUserId);
+        Project project = resolveProject(ownerUserId, domain.getProjectId());
+        User user = resolveUser(ownerUserId);
         boolean connected = switch (domain.getType()) {
             case MANAGED_SUBDOMAIN -> cloudflareDnsPort.recordExists(
                     domain.getHostname(),
                     domain.getCloudflareRecordId()
-            );
-            case CUSTOM_DOMAIN -> isCustomDomainConnected(domain);
+            ) && isPagesCustomDomainConfigured(user, project, domain.getHostname());
+            case CUSTOM_DOMAIN -> isCustomDomainConnected(domain)
+                    && isPagesCustomDomainConfigured(user, project, domain.getHostname());
             case PURCHASABLE_DOMAIN -> throw new IllegalArgumentException(
                     "구매형 도메인 검증은 아직 지원되지 않습니다. domainId=" + domainId);
         };
@@ -63,17 +75,21 @@ public class DomainBindingCommandService {
     @Transactional
     public void deleteDomain(Long ownerUserId, Long domainId) {
         DomainBinding domain = resolveDomainOwnedBy(domainId, ownerUserId);
+        Project project = resolveProject(ownerUserId, domain.getProjectId());
+        User user = resolveUser(ownerUserId);
+        removePagesCustomDomainIfMatches(user, project, domain.getHostname());
         if (domain.getType() == DomainType.MANAGED_SUBDOMAIN) {
             cloudflareDnsPort.deleteRecord(domain.getHostname(), domain.getCloudflareRecordId());
         }
         domainBindingRepository.deleteById(domain.getId());
     }
 
-    private DomainBindingResult bindManagedSubdomain(Project project, BindDomainCommand command) {
+    private DomainBindingResult bindManagedSubdomain(Project project, User user, BindDomainCommand command) {
         String label = normalizeLabel(command.label());
         String hostname = label + "." + cloudflareProperties.managedDomainOrDefault();
         ensureHostnameAvailable(hostname);
         String dnsTarget = resolveManagedDnsTarget(project);
+        String deploymentRepository = resolveDeploymentRepository(project);
         DomainBinding domain = new DomainBinding(
                 project.getId(),
                 DomainType.MANAGED_SUBDOMAIN,
@@ -83,17 +99,28 @@ public class DomainBindingCommandService {
                 dnsTarget
         );
         String recordId = cloudflareDnsPort.createCnameRecord(hostname, dnsTarget);
-        domain.assignCloudflareRecord(recordId);
+        try {
+            hostingCustomDomainPort.setCustomDomain(user.getGithubUserAccessToken(), deploymentRepository, hostname);
+            domain.assignCloudflareRecord(recordId);
+        } catch (RuntimeException e) {
+            cloudflareDnsPort.deleteRecord(hostname, recordId);
+            throw e;
+        }
         return toResult(domainBindingRepository.save(domain));
     }
 
-    private DomainBindingResult bindCustomDomain(Project project, BindDomainCommand command) {
+    private DomainBindingResult bindCustomDomain(Project project, User user, BindDomainCommand command) {
         String hostname = normalizeHostname(command.hostname());
         ensureHostnameAvailable(hostname);
         VerificationMethod method = command.verificationMethod() == null
                 ? VerificationMethod.CNAME
                 : command.verificationMethod();
         String dnsTarget = resolveDeploymentDnsTarget(project);
+        hostingCustomDomainPort.setCustomDomain(
+                user.getGithubUserAccessToken(),
+                resolveDeploymentRepository(project),
+                hostname
+        );
         DomainBinding domain = new DomainBinding(
                 project.getId(),
                 DomainType.CUSTOM_DOMAIN,
@@ -124,6 +151,22 @@ public class DomainBindingCommandService {
                         "Project not found. projectId=" + projectId + ", ownerUserId=" + ownerUserId));
     }
 
+    private User resolveUser(Long ownerUserId) {
+        User user = userRepository.findById(ownerUserId)
+                .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다. userId=" + ownerUserId));
+
+        if (user.isUserAccessTokenExpired()) {
+            authCommandService.refreshGithubUserToken(ownerUserId);
+            user = userRepository.findById(ownerUserId)
+                    .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다. userId=" + ownerUserId));
+        }
+
+        if (user.getGithubUserAccessToken() == null || user.getGithubUserAccessToken().isBlank()) {
+            throw new IllegalArgumentException("GitHub App User Token이 없습니다. GitHub App 권한을 갱신해 주세요.");
+        }
+        return user;
+    }
+
     private DomainBinding resolveDomainOwnedBy(Long domainId, Long ownerUserId) {
         DomainBinding domain = domainBindingRepository.findById(domainId)
                 .orElseThrow(() -> new NotFoundException("도메인을 찾을 수 없습니다. domainId=" + domainId));
@@ -149,6 +192,31 @@ public class DomainBindingCommandService {
             throw new IllegalArgumentException("도메인을 연결할 배포 URL이 없습니다. 먼저 배포를 완료해 주세요.");
         }
         return normalizeDnsTarget(deployedUrl);
+    }
+
+    private String resolveDeploymentRepository(Project project) {
+        String deploymentRepository = project.getDeploymentRepository();
+        if (deploymentRepository == null || deploymentRepository.isBlank()) {
+            throw new IllegalArgumentException(
+                    "호스팅 custom domain을 설정할 배포 저장소가 없습니다. projectId=" + project.getId());
+        }
+        return deploymentRepository;
+    }
+
+    private boolean isPagesCustomDomainConfigured(User user, Project project, String hostname) {
+        return hostingCustomDomainPort.isCustomDomainConfigured(
+                user.getGithubUserAccessToken(),
+                resolveDeploymentRepository(project),
+                hostname
+        );
+    }
+
+    private void removePagesCustomDomainIfMatches(User user, Project project, String hostname) {
+        hostingCustomDomainPort.removeCustomDomainIfMatches(
+                user.getGithubUserAccessToken(),
+                resolveDeploymentRepository(project),
+                hostname
+        );
     }
 
     private String normalizeDnsTarget(String value) {
