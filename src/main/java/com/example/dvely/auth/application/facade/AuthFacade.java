@@ -2,6 +2,7 @@ package com.example.dvely.auth.application.facade;
 
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.application.command.dto.GithubLoginCommand;
+import com.example.dvely.auth.application.command.dto.LoginUrlResult;
 import com.example.dvely.auth.application.command.dto.TokenResult;
 import com.example.dvely.auth.application.query.AuthQueryService;
 import lombok.RequiredArgsConstructor;
@@ -14,7 +15,7 @@ public class AuthFacade {
     private final AuthCommandService authCommandService;
     private final AuthQueryService authQueryService;
 
-    public String getGithubLoginUrl() {
+    public LoginUrlResult getGithubLoginUrl() {
         return authQueryService.getGithubLoginUrl();
     }
 
@@ -22,8 +23,8 @@ public class AuthFacade {
         return authQueryService.getGithubAppInstallUrl(userToken);
     }
 
-    public TokenResult loginWithGithub(String code) {
-        return authCommandService.loginWithGithub(new GithubLoginCommand(code));
+    public TokenResult loginWithGithub(String code, String state) {
+        return authCommandService.loginWithGithub(new GithubLoginCommand(code, state));
     }
 
     public void linkGithubApp(Long userId, Long installationId, String code) {

@@ -6,6 +6,9 @@ import com.example.dvely.auth.infrastructure.config.FrontendProperties;
 import com.example.dvely.auth.presentation.dto.AuthTokenResponse;
 import com.example.dvely.auth.presentation.dto.GithubUrlResponse;
 import com.example.dvely.common.response.ApiResponse;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -13,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
 
+@Tag(name = "Auth", description = "GitHub OAuth 및 GitHub App 연동을 통한 인증 API. 로그인, 토큰 갱신, 로그아웃 흐름을 제공합니다.")
 @RestController
 @RequestMapping("/api/v1/auth")
 @RequiredArgsConstructor
@@ -24,65 +28,64 @@ public class AuthController {
 
     // ── OAuth App ──────────────────────────────────────────────────────────────
 
-    /**
-     * GitHub OAuth 로그인 URL 반환
-     * 프론트에서 이 URL로 리다이렉트 → 유저 GitHub 로그인 → callback으로 code 전달
-     */
+    @Operation(
+            summary = "GitHub OAuth 로그인 URL 조회",
+            description = "GitHub OAuth 로그인 페이지 URL을 반환합니다. " +
+                          "프론트엔드에서 이 URL로 리다이렉트하면 유저가 GitHub에서 로그인 후 callback으로 code가 전달됩니다. " +
+                          "로그인 버튼 클릭 시 호출합니다."
+    )
     @GetMapping("/github/url")
     public ApiResponse<GithubUrlResponse> getGithubLoginUrl() {
-        return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubLoginUrl()));
+        return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubLoginUrl().url()));
     }
 
-    /**
-     * GitHub OAuth 콜백
-     * 응답의 githubAppInstalled=false면 /github/app/install-url을 유저에게 제공
-     */
+    @Operation(
+            summary = "GitHub OAuth 콜백",
+            description = "GitHub로부터 전달된 code를 받아 서비스 JWT와 Refresh Token을 발급합니다. " +
+                          "응답의 githubAppInstalled가 false이면 GitHub App 설치가 필요하므로 " +
+                          "/api/v1/auth/github/app/install-url로 유저를 유도해야 합니다. " +
+                          "GitHub OAuth 인증 후 리다이렉트되는 URL에 연결합니다."
+    )
     @GetMapping("/github/callback")
-    public ApiResponse<AuthTokenResponse> githubCallback(@RequestParam String code) {
-        var result = authFacade.loginWithGithub(code);
+    public ApiResponse<AuthTokenResponse> githubCallback(
+            @RequestParam String code,
+            @RequestParam String state
+    ) {
+        var result = authFacade.loginWithGithub(code, state);
         return ApiResponse.success(new AuthTokenResponse(result.accessToken(), result.refreshToken(), result.githubAppInstalled()));
     }
 
     // ── GitHub App ─────────────────────────────────────────────────────────────
 
-    /**
-     * GitHub App 설치 URL 반환
-     *
-     * 로그인한 유저의 JWT를 state 파라미터에 포함시켜 URL 생성
-     * GitHub가 설치 완료 후 state를 그대로 콜백으로 돌려줌
-     * → 별도 세션 없이도 어떤 유저가 설치했는지 식별 가능
-     *
-     * 반환 예시:
-     * https://github.com/apps/{app-slug}/installations/new?state={serviceJwt}
-     */
+    @Operation(
+            summary = "GitHub App 설치 URL 조회",
+            description = "GitHub App 설치 페이지 URL을 반환합니다. " +
+                          "JWT를 state 파라미터에 담아 URL을 생성하며, GitHub이 설치 완료 후 state를 그대로 콜백으로 돌려줘 " +
+                          "별도 세션 없이 설치한 유저를 식별합니다. " +
+                          "githubAppInstalled가 false인 유저에게 GitHub App 연동을 유도할 때 호출합니다."
+    )
     @GetMapping("/github/app/install-url")
     public ApiResponse<GithubUrlResponse> getGithubAppInstallUrl(
-            @RequestHeader("Authorization") String authorization
+            @Parameter(hidden = true) @RequestHeader("Authorization") String authorization
     ) {
         String token = extractBearerToken(authorization);
         tokenPort.getUserId(token);
         return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubAppInstallUrl(token)));
     }
 
-    /**
-     * GitHub App 설치 완료 콜백
-     *
-     * GitHub이 설치 후 브라우저를 이 URL로 리다이렉트:
-     *   /callback?installation_id=xxx&setup_action=install&state={serviceJwt}
-     *
-     * state(= 설치 전에 넣어둔 서비스 JWT)를 검증해 유저를 식별
-     * Authorization 헤더 불필요 - 브라우저 리다이렉트라 헤더를 실을 수 없음
-     *
-     * @param installationId GitHub이 발급한 App Installation ID
-     * @param setupAction    "install" | "update" | "delete"
-     * @param state          install-url 요청 시 포함했던 서비스 JWT
-     */
+    @Operation(
+            summary = "GitHub App 설치 완료 콜백",
+            description = "GitHub App 설치 후 GitHub이 브라우저를 이 URL로 리다이렉트합니다. " +
+                          "state(설치 전 발급한 서비스 JWT)로 유저를 식별하고 Installation ID를 DB에 저장합니다. " +
+                          "state가 없는 경우(GitHub App settings 경유 설치)에는 code로 GitHub 유저를 조회해 연동합니다. " +
+                          "처리 완료 후 프론트엔드로 리다이렉트합니다. 직접 호출하는 API가 아니라 GitHub이 호출합니다."
+    )
     @GetMapping("/github/app/callback")
     public ResponseEntity<Void> githubAppCallback(
-            @RequestParam("installation_id") Long installationId,
-            @RequestParam(value = "setup_action", defaultValue = "install") String setupAction,
-            @RequestParam(value = "state", required = false) String state,
-            @RequestParam(value = "code", required = false) String code
+            @Parameter(description = "GitHub이 발급한 App Installation ID") @RequestParam("installation_id") Long installationId,
+            @Parameter(description = "install | update | delete") @RequestParam(value = "setup_action", defaultValue = "install") String setupAction,
+            @Parameter(description = "설치 요청 시 포함했던 서비스 JWT (settings 경유 시 없을 수 있음)") @RequestParam(value = "state", required = false) String state,
+            @Parameter(hidden = true) @RequestParam(value = "code", required = false) String code
     ) {
         String baseUrl = frontendProperties.redirectUrl();
         try {
@@ -104,23 +107,25 @@ public class AuthController {
         }
     }
 
-    /**
-     * Access Token 재발급
-     * Refresh Token을 받아 새 Access Token + 새 Refresh Token 반환 (Token Rotation)
-     */
+    @Operation(
+            summary = "Access Token 재발급",
+            description = "만료된 Access Token을 Refresh Token으로 교체합니다. " +
+                          "Token Rotation 방식으로 동작하며, 새 Access Token과 새 Refresh Token을 함께 반환합니다. " +
+                          "API 호출 중 401 응답을 받으면 이 엔드포인트로 토큰을 재발급한 뒤 요청을 재시도합니다."
+    )
     @PostMapping("/refresh")
     public ApiResponse<AuthTokenResponse> refresh(@RequestBody RefreshRequest request) {
         var result = authFacade.refresh(request.refreshToken());
         return ApiResponse.success(new AuthTokenResponse(result.accessToken(), result.refreshToken(), result.githubAppInstalled()));
     }
 
-    /**
-     * 로그아웃
-     * - Access Token 즉시 무효화 (블랙리스트 등록)
-     * - 모든 Refresh Token 폐기
-     */
+    @Operation(
+            summary = "로그아웃",
+            description = "현재 Access Token을 블랙리스트에 등록해 즉시 무효화하고, 해당 유저의 모든 Refresh Token을 폐기합니다. " +
+                          "로그아웃 버튼 클릭 시 호출하며, 이후 클라이언트에서 저장된 토큰을 삭제해야 합니다."
+    )
     @DeleteMapping("/logout")
-    public ApiResponse<Void> logout(@RequestHeader("Authorization") String authorization) {
+    public ApiResponse<Void> logout(@Parameter(hidden = true) @RequestHeader("Authorization") String authorization) {
         String token = extractBearerToken(authorization);
         Long userId = tokenPort.getUserId(token);
         authFacade.logout(userId, token);

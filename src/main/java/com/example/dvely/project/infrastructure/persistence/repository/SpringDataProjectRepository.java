@@ -17,4 +17,6 @@ public interface SpringDataProjectRepository extends JpaRepository<ProjectEntity
             Long ownerUserId,
             String sourceRepository
     );
+
+    Optional<ProjectEntity> findFirstBySourceRepositoryIgnoreCase(String sourceRepository);
 }

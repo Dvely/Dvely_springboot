@@ -29,6 +29,13 @@ public interface GithubAppPort {
      */
     GithubUserTokenInfo refreshUserToken(String refreshToken);
 
+    /**
+     * GitHub App Installation Access Token 발급 (server-to-server)
+     * User Token으로 불가능한 작업(워크플로우 파일 생성 등)에 사용
+     * 유효시간: 1시간
+     */
+    String getInstallationToken(Long installationId);
+
     record GithubUserTokenInfo(
             String accessToken,
             String refreshToken,

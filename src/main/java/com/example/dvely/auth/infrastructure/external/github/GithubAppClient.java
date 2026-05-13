@@ -126,7 +126,8 @@ public class GithubAppClient implements GithubAppPort {
         );
     }
 
-    private String getInstallationToken(Long installationId) {
+    @Override
+    public String getInstallationToken(Long installationId) {
         record TokenResponse(@com.fasterxml.jackson.annotation.JsonProperty("token") String token) {}
         TokenResponse response = RestClient.create()
                 .post()
