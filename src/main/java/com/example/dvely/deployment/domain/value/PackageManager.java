@@ -5,9 +5,9 @@ public enum PackageManager {
 
     public String installCommand() {
         return switch (this) {
-            case NPM  -> "npm ci";
-            case YARN -> "yarn install --frozen-lockfile";
-            case PNPM -> "pnpm install --frozen-lockfile";
+            case NPM  -> "npm install";
+            case YARN -> "yarn install";
+            case PNPM -> "pnpm install";
             case BUN  -> "bun install";
         };
     }

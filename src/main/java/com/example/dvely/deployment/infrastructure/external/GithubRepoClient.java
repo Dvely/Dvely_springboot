@@ -13,6 +13,7 @@ import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -161,6 +162,46 @@ public class GithubRepoClient implements GithubRepoPort {
         if (rootFiles.contains("pnpm-lock.yaml"))                               return PackageManager.PNPM;
         if (rootFiles.contains("yarn.lock"))                                    return PackageManager.YARN;
         return PackageManager.NPM;
+    }
+
+    @Override
+    public String detectFrameworkType(String userToken, String repoFullName) {
+        String[] parts = splitRepo(repoFullName);
+        Set<String> rootFiles = listRootFileNames(userToken, parts[0], parts[1]);
+        String packageJson = Optional.ofNullable(
+                fetchFileContent(userToken, parts[0], parts[1], "package.json")
+        ).orElse("");
+
+        // CRA: react-scripts 가 가장 명확한 지표
+        if (packageJson.contains("\"react-scripts\"")) return "cra";
+
+        // config 파일 기반 감지 (의존성보다 우선)
+        if (hasAny(rootFiles, "next.config.js", "next.config.mjs", "next.config.ts")) return "nextjs";
+        if (hasAny(rootFiles, "gatsby-config.js", "gatsby-config.ts", "gatsby-config.mjs")) return "gatsby";
+        if (hasAny(rootFiles, "svelte.config.js", "svelte.config.ts")) return "sveltekit";
+        if (hasAny(rootFiles, "astro.config.mjs", "astro.config.js", "astro.config.ts")) return "astro";
+        if (hasAny(rootFiles, "nuxt.config.js", "nuxt.config.ts")) return "nuxt";
+        if (hasAny(rootFiles, "vue.config.js", "vue.config.ts")) return "vue-cli";
+        if (hasAny(rootFiles, "vite.config.js", "vite.config.ts") && packageJson.contains("\"vue\"")) return "vue";
+
+        // package.json 의존성 기반 감지 (fallback)
+        if (packageJson.contains("\"next\""))             return "nextjs";
+        if (packageJson.contains("\"gatsby\""))           return "gatsby";
+        if (packageJson.contains("\"@sveltejs/kit\""))    return "sveltekit";
+        if (packageJson.contains("\"astro\""))            return "astro";
+        if (packageJson.contains("\"nuxt\""))             return "nuxt";
+        if (packageJson.contains("\"@vue/cli-service\"")) return "vue-cli";
+        if (packageJson.contains("\"vue\""))              return "vue";
+
+        log.info("프레임워크 감지 불가, 저장된 templateType 사용: repo={}", repoFullName);
+        return null;
+    }
+
+    private static boolean hasAny(Set<String> files, String... names) {
+        for (String name : names) {
+            if (files.contains(name)) return true;
+        }
+        return false;
     }
 
     @Override

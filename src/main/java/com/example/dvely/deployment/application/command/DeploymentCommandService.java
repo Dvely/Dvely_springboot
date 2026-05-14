@@ -201,7 +201,10 @@ public class DeploymentCommandService {
         log.info("패키지 매니저 감지: repo={}, pm={}", sourceRepo, pm);
         String nodeVersion = githubRepoPort.detectNodeVersion(userToken, sourceRepo);
         log.info("Node.js 버전 감지: repo={}, version={}", sourceRepo, nodeVersion);
-        String content = DeployWorkflowTemplate.generate(templateType, null, pm, nodeVersion);
+        String detectedType = githubRepoPort.detectFrameworkType(userToken, sourceRepo);
+        String resolvedType = detectedType != null ? detectedType : templateType;
+        log.info("프레임워크 타입: repo={}, detected={}, stored={}, resolved={}", sourceRepo, detectedType, templateType, resolvedType);
+        String content = DeployWorkflowTemplate.generate(resolvedType, null, pm, nodeVersion);
         githubActionsPort.createOrUpdateWorkflow(userToken, sourceRepo, workflowFile, content);
 
         triggerWithRetry(userToken, sourceRepo, workflowFile, ref);
