@@ -7,6 +7,9 @@ build/
 
 ### github app key ###
 *.pem
+.env
+.env.*
+!.env.example
 
 ### STS ###
 .apt_generated

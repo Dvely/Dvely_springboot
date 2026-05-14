@@ -1,4 +1,6 @@
 spring:
+  config:
+    import: optional:file:.env[.properties]
   profiles:
     active: local
   application:
@@ -47,3 +49,13 @@ encrypt:
 # 프론트엔드 URL (GitHub App 설치 완료 후 리다이렉트)
 frontend:
   redirect-url: ${FRONTEND_REDIRECT_URL:http://localhost:5173}
+
+# Cloudflare DNS - managed subdomain automation
+cloudflare:
+  api-token: ${CLOUDFLARE_API_TOKEN:}
+  zone-id: ${CLOUDFLARE_ZONE_ID:}
+  managed-domain: ${CLOUDFLARE_MANAGED_DOMAIN:qeploy.com}
+  managed-target: ${CLOUDFLARE_MANAGED_TARGET:}
+  api-base-url: ${CLOUDFLARE_API_BASE_URL:https://api.cloudflare.com/client/v4}
+  ttl: ${CLOUDFLARE_TTL:1}
+  proxied: ${CLOUDFLARE_PROXIED:true}
