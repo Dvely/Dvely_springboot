@@ -7,3 +7,12 @@ spring:
     url: ${DB_URL}
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
+
+cloudflare:
+  api-token:
+  zone-id:
+  managed-domain: qeploy.com
+  managed-target:
+  api-base-url: https://api.cloudflare.com/client/v4
+  ttl: 1
+  proxied: true

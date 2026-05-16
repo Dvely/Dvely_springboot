@@ -1,6 +1,4 @@
 spring:
-  config:
-    import: optional:file:.env[.properties]
   profiles:
     active: local
   application:
@@ -52,10 +50,10 @@ frontend:
 
 # Cloudflare DNS - managed subdomain automation
 cloudflare:
-  api-token: ${CLOUDFLARE_API_TOKEN:}
-  zone-id: ${CLOUDFLARE_ZONE_ID:}
-  managed-domain: ${CLOUDFLARE_MANAGED_DOMAIN:qeploy.com}
-  managed-target: ${CLOUDFLARE_MANAGED_TARGET:}
-  api-base-url: ${CLOUDFLARE_API_BASE_URL:https://api.cloudflare.com/client/v4}
-  ttl: ${CLOUDFLARE_TTL:1}
-  proxied: ${CLOUDFLARE_PROXIED:true}
+  api-token:
+  zone-id:
+  managed-domain: qeploy.com
+  managed-target:
+  api-base-url: https://api.cloudflare.com/client/v4
+  ttl: 1
+  proxied: true
