@@ -6,15 +6,19 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.project.application.command.dto.ConnectProjectRepositoryCommand;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
 import com.example.dvely.project.application.facade.ProjectFacade;
 import com.example.dvely.project.application.result.GithubRepositoryResult;
 import com.example.dvely.project.application.result.ProjectDetailResult;
+import com.example.dvely.project.application.result.ProjectRepositoryResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
+import com.example.dvely.project.presentation.dto.request.ConnectProjectRepositoryRequest;
 import com.example.dvely.project.presentation.dto.request.CreateProjectRequest;
 import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectSummaryResponse;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -59,13 +63,9 @@ class ProjectControllerTest {
     void createProject_delegatesUsingAuthenticatedUserIdAndRequestBody() {
         CreateProjectRequest request = new CreateProjectRequest(
                 "my-landing",
-                "create",
-                "my-landing-repo",
-                null,
                 "blank",
                 null,
-                "fast",
-                "private"
+                "fast"
         );
 
         ProjectDetailResult result = new ProjectDetailResult(
@@ -90,16 +90,56 @@ class ProjectControllerTest {
         CreateProjectCommand captured = commandCaptor.getValue();
 
         assertThat(captured.name()).isEqualTo("my-landing");
-        assertThat(captured.repositoryMode()).isEqualTo("create");
-        assertThat(captured.repositoryName()).isEqualTo("my-landing-repo");
-        assertThat(captured.repositoryFullName()).isNull();
         assertThat(captured.startMode()).isEqualTo("blank");
         assertThat(captured.draftMode()).isEqualTo("fast");
-        assertThat(captured.repositoryVisibility()).isEqualTo("private");
 
         assertThat(actual.projectId()).isEqualTo(11L);
         assertThat(actual.name()).isEqualTo("my-landing");
         assertThat(actual.status()).isEqualTo("DRAFT");
+    }
+
+    @Test
+    void connectRepository_delegatesUsingAuthenticatedUserIdProjectIdAndRequestBody() {
+        ConnectProjectRepositoryRequest request = new ConnectProjectRepositoryRequest(
+                "existing",
+                null,
+                "octo/repo",
+                "PUBLIC"
+        );
+        ProjectRepositoryResult result = new ProjectRepositoryResult(
+                11L,
+                "octo/repo",
+                "PUBLIC",
+                "BOUND",
+                "HEALTHY"
+        );
+        ProjectRepositoryResponse response = new ProjectRepositoryResponse(
+                11L,
+                "octo/repo",
+                "PUBLIC",
+                "BOUND",
+                "HEALTHY"
+        );
+
+        when(projectFacade.connectRepository(eq(1L), eq(11L), any(ConnectProjectRepositoryCommand.class)))
+                .thenReturn(result);
+        when(projectMapper.toProjectRepositoryResponse(result)).thenReturn(response);
+
+        ProjectRepositoryResponse actual = projectController.connectRepository(1L, 11L, request);
+
+        ArgumentCaptor<ConnectProjectRepositoryCommand> commandCaptor =
+                ArgumentCaptor.forClass(ConnectProjectRepositoryCommand.class);
+        verify(projectFacade).connectRepository(eq(1L), eq(11L), commandCaptor.capture());
+        ConnectProjectRepositoryCommand captured = commandCaptor.getValue();
+
+        assertThat(captured.repositoryMode()).isEqualTo("existing");
+        assertThat(captured.repositoryName()).isNull();
+        assertThat(captured.repositoryFullName()).isEqualTo("octo/repo");
+        assertThat(captured.repositoryVisibility()).isEqualTo("PUBLIC");
+
+        assertThat(actual.projectId()).isEqualTo(11L);
+        assertThat(actual.repositoryFullName()).isEqualTo("octo/repo");
+        assertThat(actual.bindingStatus()).isEqualTo("BOUND");
     }
 
     @Test

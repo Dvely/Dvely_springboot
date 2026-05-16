@@ -1,10 +1,12 @@
 package com.example.dvely.project.presentation;
 
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
+import com.example.dvely.project.application.command.dto.ConnectProjectRepositoryCommand;
 import com.example.dvely.project.application.command.dto.UpdateProjectCommand;
 import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
 import com.example.dvely.project.application.facade.ProjectFacade;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
+import com.example.dvely.project.presentation.dto.request.ConnectProjectRepositoryRequest;
 import com.example.dvely.project.presentation.dto.request.CreateProjectRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectRequest;
 import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
@@ -13,6 +15,7 @@ import com.example.dvely.project.presentation.dto.response.ProjectCommitResponse
 import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectOverviewResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.RepositoryHealthResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectSummaryResponse;
 import jakarta.validation.Valid;
@@ -44,15 +47,24 @@ public class ProjectController {
                                                @Valid @RequestBody CreateProjectRequest request) {
         var result = projectFacade.createProject(ownerUserId, new CreateProjectCommand(
                 request.name(),
+                request.startMode(),
+                request.templateType(),
+                request.draftMode()
+        ));
+        return projectMapper.toCreateResponse(result);
+    }
+
+    @PostMapping("/{projectId}/repository")
+    public ProjectRepositoryResponse connectRepository(@AuthenticationPrincipal Long ownerUserId,
+                                                       @PathVariable Long projectId,
+                                                       @Valid @RequestBody ConnectProjectRepositoryRequest request) {
+        var result = projectFacade.connectRepository(ownerUserId, projectId, new ConnectProjectRepositoryCommand(
                 request.repositoryMode(),
                 request.repositoryName(),
                 request.repositoryFullName(),
-                request.startMode(),
-                request.templateType(),
-                request.draftMode(),
                 request.repositoryVisibility()
         ));
-        return projectMapper.toCreateResponse(result);
+        return projectMapper.toProjectRepositoryResponse(result);
     }
 
     @GetMapping("/github/repositories")
