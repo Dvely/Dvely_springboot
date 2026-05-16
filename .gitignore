@@ -9,7 +9,6 @@ build/
 *.pem
 .env
 .env.*
-!.env.example
 
 ### STS ###
 .apt_generated

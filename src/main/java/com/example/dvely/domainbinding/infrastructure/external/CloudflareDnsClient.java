@@ -88,7 +88,7 @@ public class CloudflareDnsClient implements CloudflareDnsPort {
     private void ensureConfigured() {
         if (!properties.configured()) {
             throw new IllegalStateException(
-                    "Cloudflare 설정이 없습니다. CLOUDFLARE_API_TOKEN과 CLOUDFLARE_ZONE_ID를 설정해 주세요.");
+                    "Cloudflare 설정이 없습니다. cloudflare.api-token과 cloudflare.zone-id를 yml에 설정해 주세요.");
         }
     }
 
