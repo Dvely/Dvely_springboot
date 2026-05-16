@@ -5,6 +5,7 @@ import com.example.dvely.project.application.result.CommitResult;
 import com.example.dvely.project.application.result.GithubRepositoryResult;
 import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectOverviewResult;
+import com.example.dvely.project.application.result.ProjectRepositoryResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
 import com.example.dvely.project.application.result.RepositoryHealthResult;
 import com.example.dvely.project.presentation.dto.response.ProjectActivityLogResponse;
@@ -13,6 +14,7 @@ import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse
 import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse;
 import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectOverviewResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.RepositoryHealthResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectSummaryResponse;
 import java.time.Duration;
@@ -59,6 +61,16 @@ public class ProjectMapper {
                 result.draftMode(),
                 result.createdAt(),
                 result.updatedAt()
+        );
+    }
+
+    public ProjectRepositoryResponse toProjectRepositoryResponse(ProjectRepositoryResult result) {
+        return new ProjectRepositoryResponse(
+                result.projectId(),
+                result.repositoryFullName(),
+                result.repositoryVisibility(),
+                result.bindingStatus(),
+                result.repositoryHealth()
         );
     }
 

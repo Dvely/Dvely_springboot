@@ -1,6 +1,7 @@
 package com.example.dvely.project.application.facade;
 
 import com.example.dvely.project.application.command.ProjectCommandService;
+import com.example.dvely.project.application.command.dto.ConnectProjectRepositoryCommand;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
 import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
 import com.example.dvely.project.application.command.dto.UpdateProjectCommand;
@@ -10,6 +11,7 @@ import com.example.dvely.project.application.result.CommitResult;
 import com.example.dvely.project.application.result.GithubRepositoryResult;
 import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectOverviewResult;
+import com.example.dvely.project.application.result.ProjectRepositoryResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
 import com.example.dvely.project.application.result.RepositoryHealthResult;
 import java.util.List;
@@ -25,6 +27,12 @@ public class ProjectFacade {
 
     public ProjectDetailResult createProject(Long ownerUserId, CreateProjectCommand command) {
         return projectCommandService.createProject(ownerUserId, command);
+    }
+
+    public ProjectRepositoryResult connectRepository(Long ownerUserId,
+                                                     Long projectId,
+                                                     ConnectProjectRepositoryCommand command) {
+        return projectCommandService.connectRepository(ownerUserId, projectId, command);
     }
 
     public ProjectDetailResult updateProject(Long ownerUserId, Long projectId, UpdateProjectCommand command) {

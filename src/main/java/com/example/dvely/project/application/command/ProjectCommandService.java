@@ -1,16 +1,19 @@
 package com.example.dvely.project.application.command;
 
 import com.example.dvely.chat.application.command.ChatCommandService;
+import com.example.dvely.project.application.command.dto.ConnectProjectRepositoryCommand;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
 import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
 import com.example.dvely.project.application.command.dto.UpdateProjectCommand;
 import com.example.dvely.project.application.port.out.GithubRepositoryPort;
 import com.example.dvely.project.application.port.out.UserProfilePort;
 import com.example.dvely.project.application.result.ProjectDetailResult;
+import com.example.dvely.project.application.result.ProjectRepositoryResult;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.service.ProjectDomainService;
+import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +32,27 @@ public class ProjectCommandService {
 
     @Transactional
     public ProjectDetailResult createProject(Long ownerUserId, CreateProjectCommand command) {
+        Project project = projectDomainService.create(
+                ownerUserId,
+                command.name(),
+                command.startMode(),
+                command.templateType(),
+                normalizeDraftMode(command.draftMode()),
+                RepositoryVisibility.PRIVATE
+        );
+        Project savedProject = projectRepository.save(project);
+        return toDetailResult(savedProject);
+    }
+
+    @Transactional
+    public ProjectRepositoryResult connectRepository(Long ownerUserId,
+                                                     Long projectId,
+                                                     ConnectProjectRepositoryCommand command) {
+        Project project = getProject(ownerUserId, projectId);
+        if (project.hasSourceRepository()) {
+            throw new IllegalStateException("이미 GitHub 저장소가 연결된 프로젝트입니다: " + project.getSourceRepository());
+        }
+
         RepositoryVisibility visibility = RepositoryVisibility.from(command.repositoryVisibility());
         String repositoryMode = normalizeRepositoryMode(command.repositoryMode());
         String repositoryFullName;
@@ -48,19 +72,12 @@ public class ProjectCommandService {
             repositoryFullName = githubRepositoryPort.createRepository(ownerUserId, repositoryName, visibility);
         }
 
-        Project project = projectDomainService.create(
-                ownerUserId,
-                command.name(),
-                command.startMode(),
-                command.templateType(),
-                normalizeDraftMode(command.draftMode()),
-                visibility
-        );
-        project.bindRepository(repositoryFullName, visibility);
         githubRepositoryPort.preparePreviewBranch(ownerUserId, repositoryFullName);
+        project.bindRepository(repositoryFullName, visibility);
+        project.updateRepositoryHealth(RepositoryHealthStatus.HEALTHY);
 
         Project savedProject = projectRepository.save(project);
-        return toDetailResult(savedProject);
+        return toRepositoryResult(savedProject);
     }
 
     @Transactional
@@ -149,6 +166,16 @@ public class ProjectCommandService {
                 project.getDraftMode(),
                 project.getCreatedAt(),
                 project.getUpdatedAt()
+        );
+    }
+
+    private ProjectRepositoryResult toRepositoryResult(Project project) {
+        return new ProjectRepositoryResult(
+                project.getId(),
+                project.getSourceRepository(),
+                project.getRepositoryVisibility().name(),
+                project.getRepositoryBindingStatus().name(),
+                project.getRepositoryHealthStatus().name()
         );
     }
 
