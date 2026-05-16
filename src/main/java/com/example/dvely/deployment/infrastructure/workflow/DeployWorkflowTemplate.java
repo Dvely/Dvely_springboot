@@ -125,13 +125,28 @@ public class DeployWorkflowTemplate {
 
     private static String resolveConfigStep(String type, PackageManager pm) {
         return switch (type) {
-            case "nextjs", "next"      -> nextjsConfigStep();
-            case "vue-cli", "vue_cli"  -> vueCliConfigStep();
-            case "svelte", "sveltekit" -> sveltekitConfigStep(pm);
-            case "gatsby"              -> gatsbyConfigStep();
-            case "astro"               -> astroConfigStep();
-            default                    -> "";
+            case "cra", "create-react-app" -> craConfigStep();
+            case "nextjs", "next"          -> nextjsConfigStep();
+            case "vue-cli", "vue_cli"      -> vueCliConfigStep();
+            case "svelte", "sveltekit"     -> sveltekitConfigStep(pm);
+            case "gatsby"                  -> gatsbyConfigStep();
+            case "astro"                   -> astroConfigStep();
+            default                        -> "";
         };
+    }
+
+    /**
+     * CRA: package.json 의 homepage 필드를 base path 로 덮어씀.
+     * homepage: "." 처럼 상대경로로 설정된 경우 PUBLIC_URL env 만으로는 불안정하므로
+     * 빌드 전 직접 수정하여 CRA 가 올바른 절대 경로로 빌드하도록 강제.
+     */
+    private static String craConfigStep() {
+        return "      - name: Configure CRA homepage\n"
+             + "        run: |\n"
+             + "          BASE=\"${{ steps.base.outputs.path }}\"\n"
+             + "          node -e \"const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.homepage='$BASE';fs.writeFileSync('package.json',JSON.stringify(p,null,2));\"\n"
+             + "          echo \"package.json homepage 설정 완료: $BASE\"\n"
+             + "\n";
     }
 
     /**

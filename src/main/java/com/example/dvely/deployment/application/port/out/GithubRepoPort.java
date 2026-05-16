@@ -17,6 +17,12 @@ public interface GithubRepoPort {
     String detectNodeVersion(String userToken, String repoFullName);
 
     /**
+     * 저장소의 package.json 의존성과 config 파일을 분석해 프레임워크 타입을 반환한다.
+     * 감지 불가 시 null 을 반환한다.
+     */
+    String detectFrameworkType(String userToken, String repoFullName);
+
+    /**
      * head 브랜치가 base 브랜치보다 앞선 커밋이 있는지 확인한다.
      * true = 새 커밋 있음(merge 필요), false = 동일(merge 불필요)
      */
