@@ -1,12 +1,12 @@
 SET NAMES utf8mb4;
 
 ALTER TABLE domains
-    ADD COLUMN IF NOT EXISTS domain_type VARCHAR(30) NOT NULL DEFAULT 'CUSTOM_DOMAIN' AFTER domain_name,
-    ADD COLUMN IF NOT EXISTS status VARCHAR(30) NOT NULL DEFAULT 'VERIFYING' AFTER domain_type,
-    ADD COLUMN IF NOT EXISTS verification_method VARCHAR(10) NULL AFTER status,
-    ADD COLUMN IF NOT EXISTS dns_target VARCHAR(512) NULL AFTER verification_method,
-    ADD COLUMN IF NOT EXISTS cloudflare_record_id VARCHAR(100) NULL AFTER dns_target,
-    ADD COLUMN IF NOT EXISTS last_checked_at DATETIME NULL AFTER cloudflare_record_id;
+    ADD COLUMN domain_type VARCHAR(30) NOT NULL DEFAULT 'CUSTOM_DOMAIN' AFTER domain_name,
+    ADD COLUMN status VARCHAR(30) NOT NULL DEFAULT 'VERIFYING' AFTER domain_type,
+    ADD COLUMN verification_method VARCHAR(10) NULL AFTER status,
+    ADD COLUMN dns_target VARCHAR(512) NULL AFTER verification_method,
+    ADD COLUMN cloudflare_record_id VARCHAR(100) NULL AFTER dns_target,
+    ADD COLUMN last_checked_at DATETIME NULL AFTER cloudflare_record_id;
 
 UPDATE domains
 SET domain_type = CASE
