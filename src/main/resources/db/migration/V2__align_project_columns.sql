@@ -1,20 +1,20 @@
 SET NAMES utf8mb4;
 
 ALTER TABLE repositories
-    ADD COLUMN IF NOT EXISTS project_name VARCHAR(255) NOT NULL DEFAULT 'untitled-project' AFTER user_id,
-    ADD COLUMN IF NOT EXISTS project_status VARCHAR(50) NOT NULL DEFAULT 'DRAFT' AFTER project_name,
-    ADD COLUMN IF NOT EXISTS start_mode VARCHAR(50) NOT NULL DEFAULT 'blank' AFTER project_status,
-    ADD COLUMN IF NOT EXISTS template_type VARCHAR(100) NULL AFTER start_mode,
-    ADD COLUMN IF NOT EXISTS draft_mode VARCHAR(50) NOT NULL DEFAULT 'fast' AFTER template_type,
-    ADD COLUMN IF NOT EXISTS deploy_status VARCHAR(50) NOT NULL DEFAULT 'DRAFT' AFTER draft_mode,
-    ADD COLUMN IF NOT EXISTS current_url VARCHAR(512) NULL AFTER deploy_status,
-    ADD COLUMN IF NOT EXISTS current_version VARCHAR(100) NULL AFTER current_url,
-    ADD COLUMN IF NOT EXISTS source_repository VARCHAR(255) NULL AFTER current_version,
-    ADD COLUMN IF NOT EXISTS deployment_repository VARCHAR(255) NULL AFTER source_repository,
-    ADD COLUMN IF NOT EXISTS repository_visibility VARCHAR(20) NOT NULL DEFAULT 'PRIVATE' AFTER deployment_repository,
-    ADD COLUMN IF NOT EXISTS binding_status VARCHAR(30) NOT NULL DEFAULT 'NOT_BOUND' AFTER repository_visibility,
-    ADD COLUMN IF NOT EXISTS repository_health VARCHAR(30) NOT NULL DEFAULT 'UNKNOWN_ERROR' AFTER binding_status,
-    ADD COLUMN IF NOT EXISTS is_deleted TINYINT(1) NOT NULL DEFAULT 0 AFTER repository_health;
+    ADD COLUMN project_name VARCHAR(255) NOT NULL DEFAULT 'untitled-project' AFTER user_id,
+    ADD COLUMN project_status VARCHAR(50) NOT NULL DEFAULT 'DRAFT' AFTER project_name,
+    ADD COLUMN start_mode VARCHAR(50) NOT NULL DEFAULT 'blank' AFTER project_status,
+    ADD COLUMN template_type VARCHAR(100) NULL AFTER start_mode,
+    ADD COLUMN draft_mode VARCHAR(50) NOT NULL DEFAULT 'fast' AFTER template_type,
+    ADD COLUMN deploy_status VARCHAR(50) NOT NULL DEFAULT 'DRAFT' AFTER draft_mode,
+    ADD COLUMN current_url VARCHAR(512) NULL AFTER deploy_status,
+    ADD COLUMN current_version VARCHAR(100) NULL AFTER current_url,
+    ADD COLUMN source_repository VARCHAR(255) NULL AFTER current_version,
+    ADD COLUMN deployment_repository VARCHAR(255) NULL AFTER source_repository,
+    ADD COLUMN repository_visibility VARCHAR(20) NOT NULL DEFAULT 'PRIVATE' AFTER deployment_repository,
+    ADD COLUMN binding_status VARCHAR(30) NOT NULL DEFAULT 'NOT_BOUND' AFTER repository_visibility,
+    ADD COLUMN repository_health VARCHAR(30) NOT NULL DEFAULT 'UNKNOWN_ERROR' AFTER binding_status,
+    ADD COLUMN is_deleted TINYINT(1) NOT NULL DEFAULT 0 AFTER repository_health;
 
 UPDATE repositories
 SET project_name = CASE

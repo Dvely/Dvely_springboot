@@ -1,6 +1,6 @@
 SET NAMES utf8mb4;
 
-CREATE TABLE deployment_histories (
+CREATE TABLE IF NOT EXISTS deployment_histories (
     history_id      BIGINT       NOT NULL AUTO_INCREMENT,
     project_id      BIGINT       NOT NULL COMMENT 'Dvely 프로젝트 ID',
     deploy_target_type VARCHAR(20) NOT NULL COMMENT 'LATEST | VERSION',
