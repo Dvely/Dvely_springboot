@@ -38,6 +38,10 @@ public class GithubRepoClient implements GithubRepoPort {
                     .body(CompareResponse.class);
             return response != null && response.aheadBy() > 0;
         } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 404) {
+                log.warn("[GithubRepoClient] 브랜치 비교 404 (head 브랜치 없음) → false 반환: repo={} base={} head={}", repoFullName, base, head);
+                return false;
+            }
             throw new IllegalStateException(githubError("브랜치 비교 실패", e), e);
         }
     }
