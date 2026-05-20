@@ -55,7 +55,10 @@ public class DecisionAgentService {
 
             3. DOMAIN_BIND — User wants to connect or configure a custom domain.
                Parameters:
-               - "domain": the domain name mentioned (empty string if not mentioned)
+               - "domain": the domain value — use one of two formats:
+                 * Label only (no dots) for a managed subdomain (e.g. "my-app" → my-app.dvely.app)
+                 * Full hostname (with dots) for a custom domain (e.g. "www.mysite.com")
+                 * Empty string if no domain is mentioned
                - "instruction": a complete domain-configuration directive written for a domain agent
 
             4. CHAT — Anything that does not fit CODE, DEPLOY, or DOMAIN_BIND.

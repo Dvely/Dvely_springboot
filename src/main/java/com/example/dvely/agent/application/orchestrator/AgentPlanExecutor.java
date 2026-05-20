@@ -7,6 +7,7 @@ import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.application.service.DeployAgentService;
+import com.example.dvely.agent.application.service.DomainBindAgentService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,9 +21,10 @@ import java.time.Instant;
 @RequiredArgsConstructor
 public class AgentPlanExecutor {
 
-    private final CodeAgentService   codeAgentService;
-    private final DeployAgentService deployAgentService;
-    private final TaskStore          taskStore;
+    private final CodeAgentService       codeAgentService;
+    private final DeployAgentService     deployAgentService;
+    private final DomainBindAgentService domainBindAgentService;
+    private final TaskStore              taskStore;
 
     @Async("agentExecutor")
     public void execute(AgentPlan plan, String taskId, Long userId) {
@@ -56,7 +58,7 @@ public class AgentPlanExecutor {
         return switch (step.agentType()) {
             case CODE        -> handleCode(step, aiProvider, userId, projectId);
             case DEPLOY      -> handleDeploy(step, userId, taskId, projectId);
-            case DOMAIN_BIND -> handleDomainBind(step);
+            case DOMAIN_BIND -> handleDomainBind(step, userId, taskId, projectId);
             case CHAT        -> handleChat(step);
         };
     }
@@ -75,12 +77,11 @@ public class AgentPlanExecutor {
         return deployAgentService.execute(step, userId, taskId, projectId);
     }
 
-    private CodeResult handleDomainBind(AgentStep step) {
-        log.info("[DOMAIN_BIND 에이전트] 도메인 연결 요청 수신");
+    private CodeResult handleDomainBind(AgentStep step, Long userId, String taskId, Long projectId) {
+        log.info("[DOMAIN_BIND 에이전트] 도메인 연결 요청 수신 | userId={} projectId={}", userId, projectId);
         log.info("  domain      : {}", step.parameters().getOrDefault("domain", ""));
         log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
-        // TODO: DomainBindingAgentService.execute(step) 연결 예정
-        return null;
+        return domainBindAgentService.execute(step, userId, taskId, projectId);
     }
 
     private CodeResult handleChat(AgentStep step) {

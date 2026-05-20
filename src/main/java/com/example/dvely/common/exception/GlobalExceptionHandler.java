@@ -5,6 +5,7 @@ import com.example.dvely.common.response.ErrorCode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -34,6 +35,14 @@ public class GlobalExceptionHandler {
         log.warn("Validation failed: {}", message);
         return ResponseEntity.badRequest()
                 .body(ApiResponse.error(ErrorCode.BAD_REQUEST, message));
+    }
+
+    // 400 - 요청 본문 파싱 실패 (잘못된 JSON, Content-Type 오류 등)
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMessageNotReadable(HttpMessageNotReadableException e) {
+        log.warn("Message not readable: {}", e.getMessage());
+        return ResponseEntity.badRequest()
+                .body(ApiResponse.error(ErrorCode.BAD_REQUEST, "요청 본문을 읽을 수 없습니다. JSON 형식과 Content-Type을 확인해주세요."));
     }
 
     // 400 - 잘못된 요청 인자
