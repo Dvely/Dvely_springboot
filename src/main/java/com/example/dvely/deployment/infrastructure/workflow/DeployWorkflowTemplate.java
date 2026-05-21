@@ -75,7 +75,10 @@ public class DeployWorkflowTemplate {
         w.append("          [ -f ").append(outDir).append("/index.html ]");
         w.append(" && cp ").append(outDir).append("/index.html ").append(outDir).append("/404.html || true\n\n");
 
-        // ── 8. gh-pages 배포 ──────────────────────────────────────────────────
+        // ── 8. 기존 custom domain 보존 ───────────────────────────────────────
+        w.append(preserveCustomDomainStep(outDir));
+
+        // ── 9. gh-pages 배포 ──────────────────────────────────────────────────
         w.append("      - name: Deploy to gh-pages\n");
         w.append("        uses: peaceiris/actions-gh-pages@v4\n");
         w.append("        with:\n");
@@ -331,5 +334,26 @@ public class DeployWorkflowTemplate {
             case "astro"                   -> "./dist";
             default                        -> "./dist";
         };
+    }
+
+    private static String preserveCustomDomainStep(String outDir) {
+        return "      - name: Preserve custom domain\n"
+             + "        run: |\n"
+             + "          mkdir -p " + outDir + "\n"
+             + "          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then\n"
+             + "            if git fetch origin gh-pages --depth=1; then\n"
+             + "              if git show FETCH_HEAD:CNAME > /tmp/dvely-cname 2>/dev/null; then\n"
+             + "                cp /tmp/dvely-cname " + outDir + "/CNAME\n"
+             + "                echo \"기존 CNAME 파일 보존 완료\"\n"
+             + "              else\n"
+             + "                echo \"기존 CNAME 파일 없음\"\n"
+             + "              fi\n"
+             + "            else\n"
+             + "              echo \"gh-pages 브랜치 fetch 실패\"\n"
+             + "            fi\n"
+             + "          else\n"
+             + "            echo \"gh-pages 브랜치 없음\"\n"
+             + "          fi\n"
+             + "\n";
     }
 }
