@@ -18,30 +18,31 @@ public class UserEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "user_id")
     private Long id;
 
-    @Column(nullable = false, unique = true)
+    @Column(name = "github_user_id", unique = true)
     private String githubId;
 
-    @Column(nullable = false)
+    @Column(name = "user_name")
     private String username;
 
-    @Column(nullable = true)
+    @Column(name = "avatar_url")
     private String avatarUrl;
 
-    @Column(nullable = true)
+    @Column(name = "github_installation_id")
     private Long githubInstallationId;
 
     // GitHub App User Token (AES-256-GCM 암호화 저장)
-    @Column(nullable = true)
+    @Column(name = "github_user_access_token", columnDefinition = "TEXT")
     @Convert(converter = AesEncryptor.class)
     private String githubUserAccessToken;
 
-    @Column(nullable = true)
+    @Column(name = "github_user_refresh_token", columnDefinition = "TEXT")
     @Convert(converter = AesEncryptor.class)
     private String githubUserRefreshToken;
 
-    @Column(nullable = true)
+    @Column(name = "user_access_token_expires_at")
     private LocalDateTime userAccessTokenExpiresAt;
 
     public UserEntity(String githubId, String username, String avatarUrl) {
