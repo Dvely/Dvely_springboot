@@ -2,7 +2,7 @@ package com.example.dvely.deployment.application.port.out;
 
 public interface GithubPagesPort {
 
-    record PagesInfo(boolean enabled, String url, String sourceBranch) {}
+    record PagesInfo(boolean enabled, String url, String sourceBranch, String customDomain) {}
 
     /**
      * 저장소의 GitHub Pages 활성화 여부 및 현재 설정 조회
@@ -22,7 +22,7 @@ public interface GithubPagesPort {
      * PUT /repos/{owner}/{repo}/pages
      * @return GitHub Pages URL
      */
-    String updatePagesSource(String userToken, String repoFullName, String branch);
+    String updatePagesSource(String userToken, String repoFullName, String branch, String customDomain);
 
     /**
      * 특정 tag가 가리키는 커밋 SHA를 조회해 새 브랜치를 생성한다.

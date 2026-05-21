@@ -3,19 +3,18 @@ package com.example.dvely.deployment.infrastructure.external;
 import com.example.dvely.deployment.application.port.out.GithubPagesPort;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.HashMap;
+import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
-
-import java.util.Map;
 
 @Slf4j
 @Component
 public class GithubPagesClient implements GithubPagesPort {
 
     private static final String API_BASE = "https://api.github.com";
-    private static final String PAGES_BRANCH = "gh-pages";
 
     @Override
     public PagesInfo getPages(String userToken, String repoFullName) {
@@ -28,12 +27,12 @@ public class GithubPagesClient implements GithubPagesPort {
                     .body(PagesResponse.class);
 
             if (response == null) {
-                return new PagesInfo(false, null, null);
+                return new PagesInfo(false, null, null, null);
             }
-            return new PagesInfo(response.isActive(), response.htmlUrl(), response.sourceBranch());
+            return new PagesInfo(true, response.htmlUrl(), response.sourceBranch(), response.cname());
         } catch (RestClientResponseException e) {
             if (e.getStatusCode().value() == 404) {
-                return new PagesInfo(false, null, null);
+                return new PagesInfo(false, null, null, null);
             }
             throw new IllegalStateException(githubError("GitHub Pages 정보 조회 실패", e), e);
         }
@@ -64,14 +63,19 @@ public class GithubPagesClient implements GithubPagesPort {
     }
 
     @Override
-    public String updatePagesSource(String userToken, String repoFullName, String branch) {
+    public String updatePagesSource(String userToken, String repoFullName, String branch, String customDomain) {
         String[] parts = splitRepo(repoFullName);
+        Map<String, Object> body = new HashMap<>();
+        body.put("source", Map.of("branch", branch, "path", "/"));
+        if (customDomain != null && !customDomain.isBlank()) {
+            body.put("cname", customDomain);
+        }
 
         try {
             restClient(userToken)
                     .put()
                     .uri(API_BASE + "/repos/{owner}/{repo}/pages", parts[0], parts[1])
-                    .body(Map.of("source", Map.of("branch", branch, "path", "/")))
+                    .body(body)
                     .retrieve()
                     .toBodilessEntity();
         } catch (RestClientResponseException e) {
@@ -251,10 +255,10 @@ public class GithubPagesClient implements GithubPagesPort {
     private record PagesResponse(
             @JsonProperty("html_url") String htmlUrl,
             @JsonProperty("status") String status,
-            @JsonProperty("source") SourceDto source
+            @JsonProperty("source") SourceDto source,
+            @JsonProperty("cname") String cname
     ) {
         String sourceBranch() { return source != null ? source.branch() : null; }
-        boolean isActive() { return "built".equals(status) || "building".equals(status) || "queued".equals(status); }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

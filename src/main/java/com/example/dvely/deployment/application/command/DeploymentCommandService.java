@@ -186,7 +186,7 @@ public class DeploymentCommandService {
             return pagesInfo.url();
         }
         log.info("GitHub Pages 소스 변경: repo={}, {} → {}", deploymentRepo, pagesInfo.sourceBranch(), branch);
-        return githubPagesPort.updatePagesSource(userToken, deploymentRepo, branch);
+        return githubPagesPort.updatePagesSource(userToken, deploymentRepo, branch, pagesInfo.customDomain());
     }
 
     // ── 빌드 워크플로우 보장 및 트리거 ──────────────────────────────────────

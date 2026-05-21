@@ -5,9 +5,13 @@ SET NAMES utf8mb4;
 
 CREATE TABLE users (
     user_id BIGINT NOT NULL AUTO_INCREMENT,
-    github_user_id VARCHAR(255) NOT NULL COMMENT 'GitHub 고유 ID',
-    user_name VARCHAR(255) NOT NULL COMMENT 'GitHub username',
+    github_user_id VARCHAR(255) NULL COMMENT 'GitHub 고유 ID',
+    user_name VARCHAR(255) NULL COMMENT 'GitHub username',
     avatar_url VARCHAR(512) NULL COMMENT 'GitHub 프로필 이미지 URL',
+    github_installation_id BIGINT NULL COMMENT 'GitHub App Installation ID',
+    github_user_access_token TEXT NULL COMMENT 'AES encrypted GitHub App user access token',
+    github_user_refresh_token TEXT NULL COMMENT 'AES encrypted GitHub App user refresh token',
+    user_access_token_expires_at DATETIME NULL COMMENT 'GitHub App user access token expiration',
     access_token TEXT NULL COMMENT 'GitHub API 호출용 Access Token(암호화 저장 권장)',
     scope VARCHAR(255) NULL COMMENT '토큰 권한 범위 (예: repo, workflow 등)',
     token_expires_at DATETIME NULL COMMENT 'Access Token 만료 시간 (없을 수도 있음)',
@@ -15,6 +19,29 @@ CREATE TABLE users (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '계정 수정 일시',
     PRIMARY KEY (user_id),
     UNIQUE KEY uk_users_github_user_id (github_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE refresh_tokens (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    token VARCHAR(36) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    revoked TINYINT(1) NOT NULL DEFAULT 0,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_refresh_tokens_token (token),
+    KEY idx_refresh_tokens_user_id (user_id),
+    CONSTRAINT fk_refresh_tokens_user
+        FOREIGN KEY (user_id)
+        REFERENCES users (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE revoked_access_tokens (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    jti VARCHAR(36) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_revoked_access_tokens_jti (jti),
+    KEY idx_revoked_tokens_jti (jti)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE cloud_connections (
