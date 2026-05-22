@@ -74,6 +74,21 @@ public class AuthController {
     }
 
     @Operation(
+            summary = "GitHub App User Token 재인증 URL 조회",
+            description = "App 재설치 없이 만료된 GitHub App User Token만 재발급받는 URL을 반환합니다. " +
+                          "githubAppInstalled는 true지만 githubAppTokenLinked가 false인 유저에게 사용합니다. " +
+                          "이 URL로 이동하면 기존 설치 권한은 유지된 채로 User Token만 새로 발급되어 콜백으로 돌아옵니다."
+    )
+    @GetMapping("/github/app/reauthorize-url")
+    public ApiResponse<GithubUrlResponse> getGithubAppReauthorizeUrl(
+            @Parameter(hidden = true) @RequestHeader("Authorization") String authorization
+    ) {
+        String token = extractBearerToken(authorization);
+        Long userId = tokenPort.getUserId(token);
+        return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubAppReauthorizeUrl(userId, token)));
+    }
+
+    @Operation(
             summary = "GitHub App 설치 완료 콜백",
             description = "GitHub App 설치 후 GitHub이 브라우저를 이 URL로 리다이렉트합니다. " +
                           "state(설치 전 발급한 서비스 JWT)로 유저를 식별하고 Installation ID를 DB에 저장합니다. " +
@@ -82,7 +97,7 @@ public class AuthController {
     )
     @GetMapping("/github/app/callback")
     public ResponseEntity<Void> githubAppCallback(
-            @Parameter(description = "GitHub이 발급한 App Installation ID") @RequestParam("installation_id") Long installationId,
+            @Parameter(description = "GitHub이 발급한 App Installation ID. 재인증 콜백에서는 없을 수 있음") @RequestParam(value = "installation_id", required = false) Long installationId,
             @Parameter(description = "install | update | delete") @RequestParam(value = "setup_action", defaultValue = "install") String setupAction,
             @Parameter(description = "설치 요청 시 포함했던 서비스 JWT (settings 경유 시 없을 수 있음)") @RequestParam(value = "state", required = false) String state,
             @Parameter(hidden = true) @RequestParam(value = "code", required = false) String code
@@ -93,8 +108,10 @@ public class AuthController {
                 if (state != null) {
                     Long userId = tokenPort.getUserId(state);
                     authFacade.linkGithubApp(userId, installationId, code);
-                } else {
+                } else if (installationId != null) {
                     authFacade.linkGithubAppByCode(installationId, code);
+                } else {
+                    throw new IllegalArgumentException("installation_id와 state가 모두 없어 유저를 식별할 수 없습니다.");
                 }
             }
             return ResponseEntity.status(HttpStatus.FOUND)

@@ -23,6 +23,10 @@ public class AuthFacade {
         return authQueryService.getGithubAppInstallUrl(userToken);
     }
 
+    public String getGithubAppReauthorizeUrl(Long userId, String userToken) {
+        return authQueryService.getGithubAppReauthorizeUrl(userId, userToken);
+    }
+
     public TokenResult loginWithGithub(String code, String state) {
         return authCommandService.loginWithGithub(new GithubLoginCommand(code, state));
     }

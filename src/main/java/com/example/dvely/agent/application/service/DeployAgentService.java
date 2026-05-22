@@ -17,6 +17,8 @@ import com.example.dvely.deployment.domain.value.DeployTargetType;
 import com.example.dvely.project.application.port.out.GithubRepositoryPort;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.project.domain.value.RepositoryBindingStatus;
+import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -60,10 +62,23 @@ public class DeployAgentService {
             String username    = user.getUsername();
 
             if (projectId != null) {
-                project = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, userId)
-                        .orElseThrow(() -> new IllegalStateException("프로젝트를 찾을 수 없습니다: " + projectId));
-                log.info("[DeployAgent] 기존 프로젝트 저장소로 push: {}", project.getSourceRepository());
-                pushSourceToGithub(containerId, userToken, username, project.getSourceRepository(), false);
+                Optional<Project> found = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, userId);
+                boolean bound = found.isPresent()
+                        && found.get().getRepositoryBindingStatus() == RepositoryBindingStatus.BOUND;
+
+                if (bound) {
+                    // BOUND 프로젝트 존재 → 해당 저장소로 push
+                    project = found.get();
+                    log.info("[DeployAgent] 기존 프로젝트 저장소로 push: {}", project.getSourceRepository());
+                    pushSourceToGithub(containerId, userToken, username, project.getSourceRepository(), false);
+                } else {
+                    // NOT_BOUND 또는 저장소 없음 → 신규 저장소 생성 후 push
+                    log.info("[DeployAgent] projectId={} 저장소 미연결, 신규 저장소로 push", projectId);
+                    String repoName     = resolveRepoName(step, userId, containerId, taskId);
+                    String repoFullName = ensureGithubRepo(userId, username, repoName);
+                    pushSourceToGithub(containerId, userToken, username, repoFullName, true);
+                    project = findOrCreateProject(userId, repoName, repoFullName);
+                }
             } else {
                 String repoName     = resolveRepoName(step, userId, containerId, taskId);
                 String repoFullName = ensureGithubRepo(userId, username, repoName);
@@ -77,6 +92,11 @@ public class DeployAgentService {
             log.info("[DeployAgent] 컨테이너 없음, 기존 프로젝트 직접 배포 | projectId={}", projectId);
             project = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, userId)
                     .orElseThrow(() -> new IllegalStateException("프로젝트를 찾을 수 없습니다: " + projectId));
+
+            // NOT_BOUND인 경우 프로젝트 이름 기반으로 GitHub 저장소 자동 연결 시도
+            if (project.getRepositoryBindingStatus() != RepositoryBindingStatus.BOUND) {
+                project = autoBindRepository(project, userId);
+            }
 
         } else {
             throw new IllegalStateException("배포할 코드가 없습니다. 코드 생성 또는 기존 프로젝트 ID가 필요합니다.");
@@ -223,6 +243,34 @@ public class DeployAgentService {
         dockerService.exec(containerId, "cd /workspace/app && git push origin gh-pages --force");
         dockerService.exec(containerId, "cd /workspace/app && git checkout main");
         log.info("[DeployAgent] gh-pages 플레이스홀더 생성 완료");
+    }
+
+    // ── NOT_BOUND 프로젝트 자동 바인딩 ────────────────────────────────────────────
+
+    private Project autoBindRepository(Project project, Long userId) {
+        User user = resolveUser(userId);
+        String username = user.getUsername();
+        String candidateRepo = username + "/" + sanitize(project.getName());
+        log.info("[DeployAgent] NOT_BOUND 프로젝트 저장소 자동 탐색: candidate={}", candidateRepo);
+
+        if (githubRepositoryPort.repositoryExists(userId, candidateRepo)) {
+            Optional<GithubRepositoryPort.GithubRepository> repo =
+                    githubRepositoryPort.getRepository(userId, candidateRepo);
+            if (repo.isPresent()) {
+                RepositoryVisibility visibility = repo.get().privateRepository()
+                        ? RepositoryVisibility.PRIVATE : RepositoryVisibility.PUBLIC;
+                project.bindRepository(candidateRepo, visibility);
+                project.updateRepositoryHealth(RepositoryHealthStatus.HEALTHY);
+                Project saved = projectRepository.save(project);
+                log.info("[DeployAgent] 자동 바인딩 완료: projectId={}, repo={}", saved.getId(), candidateRepo);
+                return saved;
+            }
+        }
+
+        throw new IllegalStateException(
+                "프로젝트(id=" + project.getId() + ")에 GitHub 저장소가 연결되어 있지 않습니다. " +
+                "POST /api/v1/projects/" + project.getId() + "/repository API를 통해 먼저 저장소를 연결하거나, " +
+                "GitHub 저장소 이름을 '" + candidateRepo + "'으로 생성해주세요.");
     }
 
     // ── 유틸 ───────────────────────────────────────────────────────────────────

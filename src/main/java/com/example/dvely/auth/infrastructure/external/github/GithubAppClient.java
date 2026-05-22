@@ -73,6 +73,16 @@ public class GithubAppClient implements GithubAppPort {
                 .toUriString();
     }
 
+    @Override
+    public String getReauthorizeUrl(Long installationId, String state) {
+        return UriComponentsBuilder
+                .fromUriString(GITHUB_BASE_URL + "/login/oauth/authorize")
+                .queryParam("client_id", properties.app().clientId())
+                .queryParam("state", state)
+                .build()
+                .toUriString();
+    }
+
     /**
      * GitHub App User Token 발급
      * 설치 콜백의 code → access_token(8h) + refresh_token(6개월)
@@ -111,8 +121,15 @@ public class GithubAppClient implements GithubAppPort {
                 .retrieve()
                 .body(UserTokenResponse.class);
 
-        if (response == null || response.accessToken() == null) {
-            throw new IllegalStateException("GitHub App User Token 발급/갱신 실패");
+        if (response == null) {
+            throw new IllegalStateException("GitHub App User Token 발급/갱신 실패: 응답 없음");
+        }
+        if (response.error() != null) {
+            throw new IllegalStateException("GitHub App User Token 발급/갱신 실패: " + response.error()
+                    + (response.errorDescription() != null ? " - " + response.errorDescription() : ""));
+        }
+        if (response.accessToken() == null) {
+            throw new IllegalStateException("GitHub App User Token 발급/갱신 실패: access_token 없음");
         }
         return response;
     }
@@ -121,8 +138,8 @@ public class GithubAppClient implements GithubAppPort {
         return new GithubUserTokenInfo(
                 response.accessToken(),
                 response.refreshToken(),
-                response.expiresIn(),
-                response.refreshTokenExpiresIn()
+                response.expiresIn() != null ? response.expiresIn() : 28800L,
+                response.refreshTokenExpiresIn() != null ? response.refreshTokenExpiresIn() : 15897600L
         );
     }
 
@@ -213,10 +230,12 @@ public class GithubAppClient implements GithubAppPort {
 
     private record UserTokenResponse(
             @JsonProperty("access_token") String accessToken,
-            @JsonProperty("expires_in") long expiresIn,
+            @JsonProperty("expires_in") Long expiresIn,
             @JsonProperty("refresh_token") String refreshToken,
-            @JsonProperty("refresh_token_expires_in") long refreshTokenExpiresIn,
-            @JsonProperty("token_type") String tokenType
+            @JsonProperty("refresh_token_expires_in") Long refreshTokenExpiresIn,
+            @JsonProperty("token_type") String tokenType,
+            @JsonProperty("error") String error,
+            @JsonProperty("error_description") String errorDescription
     ) {}
 
     private record AppInfoResponse(
