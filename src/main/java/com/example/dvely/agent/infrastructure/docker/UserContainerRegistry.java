@@ -27,21 +27,25 @@ public class UserContainerRegistry {
 
     @PostConstruct
     public void restoreFromDocker() {
-        List<Container> containers = dockerService.listAgentContainers();
-        for (Container c : containers) {
-            String userIdStr = c.getLabels() == null ? null : c.getLabels().get("dvely.userId");
-            if (userIdStr == null) continue;
-            Long userId = Long.parseLong(userIdStr);
-            Integer hostPort = Arrays.stream(c.getPorts())
-                    .filter(p -> p.getPrivatePort() != null && p.getPrivatePort() == 3000 && p.getPublicPort() != null)
-                    .map(ContainerPort::getPublicPort)
-                    .findFirst().orElse(null);
-            if (hostPort != null) {
-                registry.put(userId, new UserContainerInfo(c.getId(), hostPort, Instant.now()));
-                log.info("[ContainerRegistry] 복구: userId={} containerId={} port={}", userId, c.getId(), hostPort);
+        try {
+            List<Container> containers = dockerService.listAgentContainers();
+            for (Container c : containers) {
+                String userIdStr = c.getLabels() == null ? null : c.getLabels().get("dvely.userId");
+                if (userIdStr == null) continue;
+                Long userId = Long.parseLong(userIdStr);
+                Integer hostPort = Arrays.stream(c.getPorts())
+                        .filter(p -> p.getPrivatePort() != null && p.getPrivatePort() == 3000 && p.getPublicPort() != null)
+                        .map(ContainerPort::getPublicPort)
+                        .findFirst().orElse(null);
+                if (hostPort != null) {
+                    registry.put(userId, new UserContainerInfo(c.getId(), hostPort, Instant.now()));
+                    log.info("[ContainerRegistry] 복구: userId={} containerId={} port={}", userId, c.getId(), hostPort);
+                }
             }
+            log.info("[ContainerRegistry] 서버 재시작 후 {}개 컨테이너 복구 완료", registry.size());
+        } catch (Exception e) {
+            log.warn("[ContainerRegistry] Docker에 연결할 수 없어 컨테이너 복구를 건너뜁니다: {}", e.getMessage());
         }
-        log.info("[ContainerRegistry] 서버 재시작 후 {}개 컨테이너 복구 완료", registry.size());
     }
 
     public Optional<UserContainerInfo> find(Long userId) {
