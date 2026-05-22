@@ -44,7 +44,14 @@ public class DeployWorkflowTemplate {
         w.append("        run: |\n");
         w.append("          REPO=\"${{ github.event.repository.name }}\"\n");
         w.append("          OWNER=\"${{ github.repository_owner }}\"\n");
-        w.append("          if [ \"$REPO\" = \"${OWNER}.github.io\" ]; then\n");
+        w.append("          PAGES_JSON=$(curl -fsS \\\n");
+        w.append("            -H \"Authorization: Bearer ${{ github.token }}\" \\\n");
+        w.append("            -H \"Accept: application/vnd.github+json\" \\\n");
+        w.append("            -H \"X-GitHub-Api-Version: 2022-11-28\" \\\n");
+        w.append("            \"https://api.github.com/repos/${GITHUB_REPOSITORY}/pages\" || true)\n");
+        w.append("          CNAME=$(printf '%s' \"$PAGES_JSON\" | node -e \"let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d||'{}');process.stdout.write(j.cname||'')}catch{}})\")\n");
+        w.append("          echo \"cname=${CNAME}\" >> $GITHUB_OUTPUT\n");
+        w.append("          if [ \"$REPO\" = \"${OWNER}.github.io\" ] || [ -n \"$CNAME\" ]; then\n");
         w.append("            echo \"path=/\" >> $GITHUB_OUTPUT\n");
         w.append("            echo \"base=\" >> $GITHUB_OUTPUT\n");
         w.append("          else\n");
@@ -340,6 +347,12 @@ public class DeployWorkflowTemplate {
         return "      - name: Preserve custom domain\n"
              + "        run: |\n"
              + "          mkdir -p " + outDir + "\n"
+             + "          CNAME=\"${{ steps.base.outputs.cname }}\"\n"
+             + "          if [ -n \"$CNAME\" ]; then\n"
+             + "            printf '%s\\n' \"$CNAME\" > " + outDir + "/CNAME\n"
+             + "            echo \"GitHub Pages custom domain CNAME 파일 생성 완료\"\n"
+             + "            exit 0\n"
+             + "          fi\n"
              + "          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then\n"
              + "            if git fetch origin gh-pages --depth=1; then\n"
              + "              if git show FETCH_HEAD:CNAME > /tmp/dvely-cname 2>/dev/null; then\n"
