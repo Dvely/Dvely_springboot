@@ -33,8 +33,11 @@ public class DockerContainerService {
     private final DockerClient dockerClient;
 
     public DockerContainerService() {
+        String dockerHost = System.getProperty("os.name").toLowerCase().contains("win")
+                ? "npipe:////./pipe/docker_engine"
+                : "unix:///var/run/docker.sock";
         var config = DefaultDockerClientConfig.createDefaultConfigBuilder()
-                .withDockerHost("unix:///var/run/docker.sock")
+                .withDockerHost(dockerHost)
                 .build();
         var httpClient = new OkDockerHttpClient.Builder()
                 .dockerHost(config.getDockerHost())

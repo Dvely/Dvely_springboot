@@ -3,6 +3,7 @@ package com.example.dvely.config;
 import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
 import com.example.dvely.auth.application.port.out.TokenPort;
 import com.example.dvely.auth.infrastructure.config.security.JwtAuthenticationFilter;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -42,8 +43,16 @@ public class SecurityConfig {
                                 "/swagger-ui/**",
                                 "/v3/api-docs/**"
                         ).permitAll()
+                        // Spring Boot 에러 핸들링 경로 (404 등이 정상 동작하려면 필요)
+                        .requestMatchers("/error").permitAll()
                         // 나머지는 JWT 인증 필요
                         .anyRequest().authenticated()
+                )
+                .exceptionHandling(e -> e
+                        .authenticationEntryPoint((request, response, ex) ->
+                                response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Unauthorized"))
+                        .accessDeniedHandler((request, response, ex) ->
+                                response.sendError(HttpServletResponse.SC_FORBIDDEN, "Forbidden"))
                 )
                 .addFilterBefore(
                         new JwtAuthenticationFilter(tokenPort, tokenBlacklistPort),
