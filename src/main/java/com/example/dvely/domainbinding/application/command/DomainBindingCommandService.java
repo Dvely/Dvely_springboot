@@ -194,11 +194,6 @@ public class DomainBindingCommandService {
         if (cloudflareProperties.hasManagedTarget()) {
             return normalizeDnsTarget(cloudflareProperties.managedTargetOrNull());
         }
-        // GitHub Pages: source_repository owner에서 직접 파생 (current_url은 커스텀 도메인으로 오염될 수 있음)
-        if (project.getSourceRepository() != null && project.getSourceRepository().contains("/")) {
-            String owner = project.getSourceRepository().split("/")[0];
-            return owner.toLowerCase() + ".github.io";
-        }
         return resolveDeploymentDnsTarget(project);
     }
 
