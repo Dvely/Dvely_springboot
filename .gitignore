@@ -18,7 +18,7 @@ build/
 .settings
 .springBeans
 .sts4-cache
-bin/
+bin/d
 !**/src/main/**/bin/
 !**/src/test/**/bin/
 
@@ -49,3 +49,7 @@ out/
 
 ### Dvely_FE_test ###
 Dvely_FE_test/
+
+### Local config ###
+gradle.properties
+src/main/resources/application-local.yml

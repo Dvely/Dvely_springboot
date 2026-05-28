@@ -68,4 +68,10 @@ public class User {
         this.githubUserRefreshToken = refreshToken;
         this.userAccessTokenExpiresAt = expiresAt;
     }
+
+    public void clearGithubAppToken() {
+        this.githubUserAccessToken = null;
+        this.githubUserRefreshToken = null;
+        this.userAccessTokenExpiresAt = null;
+    }
 }

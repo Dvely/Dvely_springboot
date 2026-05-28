@@ -41,6 +41,7 @@ public class AuthCommandService {
     private final TokenBlacklistPort tokenBlacklistPort;
     private final JwtProperties jwtProperties;
     private final OAuthStateManager oAuthStateManager;
+    private final GithubTokenCleaner githubTokenCleaner;
 
     /**
      * GitHub OAuth 로그인
@@ -114,7 +115,10 @@ public class AuthCommandService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
 
-        authDomainService.updateInstallationId(user, installationId);
+        // 재인증 콜백은 installation_id 없이 올 수 있음 — 저장된 값 유지
+        if (installationId != null) {
+            authDomainService.updateInstallationId(user, installationId);
+        }
 
         if (code != null) {
             GithubAppPort.GithubUserTokenInfo tokenInfo = githubAppPort.getUserToken(code);
@@ -124,7 +128,8 @@ public class AuthCommandService {
         }
 
         userRepository.save(user);
-        log.info("GitHub App 연동 완료: userId={}, installationId={}", userId, installationId);
+        log.info("GitHub App 연동 완료: userId={}, installationId={}", userId,
+                installationId != null ? installationId : user.getGithubInstallationId());
     }
 
     /**
@@ -162,15 +167,22 @@ public class AuthCommandService {
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
 
         if (user.getGithubUserRefreshToken() == null) {
-            throw new ForbiddenException("GitHub App이 연동되지 않았습니다");
+            throw new ForbiddenException("GitHub App이 연동되지 않았습니다. GitHub App을 다시 설치해 주세요.");
         }
 
-        GithubAppPort.GithubUserTokenInfo tokenInfo = githubAppPort.refreshUserToken(user.getGithubUserRefreshToken());
-        LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(tokenInfo.expiresInSeconds());
-        user.updateUserToken(tokenInfo.accessToken(), tokenInfo.refreshToken(), expiresAt);
-        userRepository.save(user);
-
-        log.info("GitHub App User Token 갱신 완료: userId={}", userId);
+        try {
+            GithubAppPort.GithubUserTokenInfo tokenInfo = githubAppPort.refreshUserToken(user.getGithubUserRefreshToken());
+            LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(tokenInfo.expiresInSeconds());
+            githubTokenCleaner.saveAndCommit(userId, tokenInfo.accessToken(), tokenInfo.refreshToken(), expiresAt);
+            log.info("GitHub App User Token 갱신 완료: userId={}", userId);
+        } catch (IllegalStateException e) {
+            if (e.getMessage() != null && e.getMessage().contains("bad_refresh_token")) {
+                // REQUIRES_NEW 트랜잭션으로 커밋 — 현재 트랜잭션이 롤백되어도 클리어는 유지됨
+                githubTokenCleaner.clearAndCommit(userId);
+                throw new ForbiddenException("GitHub App 연동이 만료되었습니다. GitHub App을 다시 설치해 주세요.");
+            }
+            throw e;
+        }
     }
 
     private String issueRefreshToken(Long userId) {

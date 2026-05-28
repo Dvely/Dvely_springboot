@@ -17,6 +17,12 @@ public interface GithubAppPort {
     String getInstallationUrl(String state);
 
     /**
+     * GitHub App User Token 재인증 URL 반환
+     * 이미 설치된 App의 권한은 유지하면서 만료된 User Token만 재발급받는 경로
+     */
+    String getReauthorizeUrl(Long installationId, String state);
+
+    /**
      * GitHub App User Token 발급
      * 설치 콜백에서 받은 code로 access_token + refresh_token 교환
      * access_token 유효시간: 8시간 / refresh_token 유효시간: 6개월

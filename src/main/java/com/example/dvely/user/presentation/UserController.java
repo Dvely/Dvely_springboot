@@ -22,7 +22,8 @@ public class UserController {
     @Operation(
             summary = "내 정보 조회",
             description = "JWT로 인증된 현재 로그인 유저의 프로필 정보를 반환합니다. " +
-                          "헤더, 사이드바 등 로그인 상태 표시 및 GitHub App 설치 여부 확인에 사용합니다."
+                          "헤더, 사이드바 등 로그인 상태 표시 및 GitHub App 토큰 상태 확인에 사용합니다. " +
+                          "githubAppRefreshTokenExpiresAt이 현재 시각보다 과거이면 GitHub App 재설치가 필요합니다."
     )
     @GetMapping("/me")
     public ApiResponse<UserResponse> getMe(@AuthenticationPrincipal Long userId) {
