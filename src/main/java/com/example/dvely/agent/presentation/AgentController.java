@@ -3,10 +3,12 @@ package com.example.dvely.agent.presentation;
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
+import com.example.dvely.agent.application.service.SessionDiffService;
 import com.example.dvely.agent.application.service.DecisionAgentService;
 import com.example.dvely.agent.infrastructure.docker.UserContainerRegistry;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.agent.presentation.dto.CommitDiffResponse;
 import com.example.dvely.agent.presentation.dto.DecisionRequest;
 import com.example.dvely.agent.presentation.dto.DecisionResponse;
 import com.example.dvely.agent.presentation.dto.TaskStatusResponse;
@@ -39,6 +41,7 @@ public class AgentController {
     private final TaskStore             taskStore;
     private final UserContainerRegistry containerRegistry;
     private final InputWaitStore        inputWaitStore;
+    private final SessionDiffService    sessionDiffService;
 
     @Operation(
             summary = "에이전트 요청 제출",
@@ -105,6 +108,27 @@ public class AgentController {
         }
         boolean accepted = inputWaitStore.supply(taskId, request.value());
         return accepted ? ResponseEntity.ok().build() : ResponseEntity.notFound().build();
+    }
+
+    @Operation(
+            summary = "코드 변경 diff 조회",
+            description = "현재 사용자의 Docker 컨테이너(/workspace/app)에서 변경된 코드의 diff를 반환합니다. " +
+                          "clone된 프로젝트의 경우 HEAD 대비 변경사항을, 신규 생성 프로젝트의 경우 전체 파일을 added 상태로 반환합니다."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "diff 반환"),
+            @ApiResponse(responseCode = "404", description = "실행 중인 컨테이너 없음 또는 존재하지 않는 sessionId"),
+            @ApiResponse(responseCode = "401", description = "인증 필요")
+    })
+    @GetMapping("/session/{sessionId}/diff")
+    public ResponseEntity<CommitDiffResponse> getDiff(
+            @AuthenticationPrincipal Long userId,
+            @Parameter(description = "에이전트 태스크 ID (taskId)", example = "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+            @PathVariable String sessionId) {
+        AgentTask task = taskStore.get(sessionId);
+        if (task == null) return ResponseEntity.notFound().build();
+        CommitDiffResponse diff = sessionDiffService.getDiff(userId, sessionId);
+        return ResponseEntity.ok(diff);
     }
 
     @Operation(
