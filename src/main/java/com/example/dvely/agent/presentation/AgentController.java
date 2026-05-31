@@ -1,10 +1,9 @@
 package com.example.dvely.agent.presentation;
 
-import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentTask;
-import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
+import com.example.dvely.agent.application.facade.AgentFacade;
+import com.example.dvely.agent.application.result.AgentSubmitResult;
 import com.example.dvely.agent.application.service.SessionDiffService;
-import com.example.dvely.agent.application.service.DecisionAgentService;
 import com.example.dvely.agent.infrastructure.docker.UserContainerRegistry;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
@@ -36,8 +35,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AgentController {
 
-    private final DecisionAgentService  decisionAgentService;
-    private final AgentOrchestrator     agentOrchestrator;
+    private final AgentFacade           agentFacade;
     private final TaskStore             taskStore;
     private final UserContainerRegistry containerRegistry;
     private final InputWaitStore        inputWaitStore;
@@ -59,9 +57,8 @@ public class AgentController {
             @AuthenticationPrincipal Long userId,
             @Valid @RequestBody DecisionRequest request) {
 
-        AgentPlan plan   = decisionAgentService.decide(request.content(), request.aiProvider(), request.projectId());
-        String    taskId = agentOrchestrator.submitAsync(plan, userId);
-        return new DecisionResponse(plan.steps(), plan.reasoning(), request.aiProvider(), taskId);
+        AgentSubmitResult result = agentFacade.submit(userId, request.projectId(), request.content(), request.aiProvider());
+        return new DecisionResponse(result.plan().steps(), result.plan().reasoning(), request.aiProvider(), result.taskId());
     }
 
     @Operation(
