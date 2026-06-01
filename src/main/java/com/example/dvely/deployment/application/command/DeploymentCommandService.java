@@ -66,9 +66,9 @@ public class DeploymentCommandService {
         String pagesUrl     = deployToPages(userToken, deploymentRepo, deployBranch);
 
         // 빌드 워크플로우 트리거
-        String ref = command.deployTargetType() == DeployTargetType.LATEST ? MAIN_BRANCH : versionLabel;
+        String checkoutRef = command.deployTargetType() == DeployTargetType.LATEST ? MAIN_BRANCH : versionLabel;
         LocalDateTime triggerTime = LocalDateTime.now();
-        ensureAndTriggerWorkflow(userToken, sourceRepo, project.getTemplateType(), ref);
+        ensureAndTriggerWorkflow(userToken, sourceRepo, project.getTemplateType(), MAIN_BRANCH, checkoutRef);
 
         // 배포 이력 저장 + 프로젝트 상태 IN_PROGRESS 전환
         DeploymentHistory history = deploymentHistoryRepository.save(
@@ -195,7 +195,7 @@ public class DeploymentCommandService {
     private static final long WORKFLOW_TRIGGER_RETRY_INTERVAL_MS = 3000;
 
     private void ensureAndTriggerWorkflow(String userToken, String sourceRepo,
-                                          String templateType, String ref) {
+                                          String templateType, String dispatchRef, String checkoutRef) {
         String workflowFile = DeployWorkflowTemplate.fileName();
         PackageManager pm = githubRepoPort.detectPackageManager(userToken, sourceRepo);
         log.info("패키지 매니저 감지: repo={}, pm={}", sourceRepo, pm);
@@ -207,14 +207,16 @@ public class DeploymentCommandService {
         String content = DeployWorkflowTemplate.generate(resolvedType, null, pm, nodeVersion);
         githubActionsPort.createOrUpdateWorkflow(userToken, sourceRepo, workflowFile, content);
 
-        triggerWithRetry(userToken, sourceRepo, workflowFile, ref);
+        triggerWithRetry(userToken, sourceRepo, workflowFile, dispatchRef, checkoutRef);
     }
 
-    private void triggerWithRetry(String userToken, String sourceRepo, String workflowFile, String ref) {
+    private void triggerWithRetry(String userToken, String sourceRepo, String workflowFile,
+                                  String dispatchRef, String checkoutRef) {
         for (int attempt = 1; attempt <= WORKFLOW_TRIGGER_MAX_RETRY; attempt++) {
             try {
-                githubActionsPort.triggerWorkflow(userToken, sourceRepo, workflowFile, ref);
-                log.info("워크플로우 dispatch 성공: repo={}, ref={}", sourceRepo, ref);
+                githubActionsPort.triggerWorkflow(userToken, sourceRepo, workflowFile, dispatchRef, checkoutRef);
+                log.info("워크플로우 dispatch 성공: repo={}, dispatchRef={}, checkoutRef={}",
+                        sourceRepo, dispatchRef, checkoutRef);
                 return;
             } catch (IllegalStateException e) {
                 if (attempt == WORKFLOW_TRIGGER_MAX_RETRY) {

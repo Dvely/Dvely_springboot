@@ -127,6 +127,7 @@ class DomainBindingCommandServiceTest {
                 "user-token",
                 "octo/repo",
                 DeployWorkflowTemplate.fileName(),
+                "main",
                 "v1.0.0"
         );
         verify(deploymentHistoryRepository, never()).findByProjectIdOrderByTriggeredAtDesc(11L);

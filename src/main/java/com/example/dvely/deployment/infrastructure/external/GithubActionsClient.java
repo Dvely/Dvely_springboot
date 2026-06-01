@@ -79,20 +79,40 @@ public class GithubActionsClient implements GithubActionsPort {
     }
 
     @Override
-    public void triggerWorkflow(String userToken, String repoFullName, String workflowFileName, String ref) {
+    public void triggerWorkflow(String userToken, String repoFullName, String workflowFileName,
+                                String dispatchRef, String checkoutRef) {
         String[] parts = splitRepo(repoFullName);
         try {
             restClient(userToken)
                     .post()
                     .uri(API_BASE + "/repos/{owner}/{repo}/actions/workflows/{file}/dispatches",
                             parts[0], parts[1], workflowFileName)
-                    .body(Map.of("ref", ref))
+                    .body(workflowDispatchBody(dispatchRef, checkoutRef))
                     .retrieve()
                     .toBodilessEntity();
-            log.info("워크플로우 dispatch 트리거: repo={}, workflow={}, ref={}", repoFullName, workflowFileName, ref);
+            log.info("워크플로우 dispatch 트리거: repo={}, workflow={}, dispatchRef={}, checkoutRef={}",
+                    repoFullName, workflowFileName, dispatchRef, checkoutRef);
         } catch (RestClientResponseException e) {
             throw new IllegalStateException(githubError("워크플로우 트리거 실패", e), e);
         }
+    }
+
+    private Map<String, Object> workflowDispatchBody(String dispatchRef, String checkoutRef) {
+        String normalizedCheckoutRef = normalizeOptionalRef(checkoutRef);
+        if (normalizedCheckoutRef == null || normalizedCheckoutRef.equals(dispatchRef)) {
+            return Map.of("ref", dispatchRef);
+        }
+        return Map.of(
+                "ref", dispatchRef,
+                "inputs", Map.of("checkout_ref", normalizedCheckoutRef)
+        );
+    }
+
+    private String normalizeOptionalRef(String ref) {
+        if (ref == null || ref.isBlank()) {
+            return null;
+        }
+        return ref.trim();
     }
 
     private FileContentResponse getFileContent(String userToken, String owner, String repo, String workflowFileName) {

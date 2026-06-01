@@ -9,7 +9,12 @@ public interface GithubActionsPort {
 
     void createOrUpdateWorkflow(String userToken, String repoFullName, String workflowFileName, String content);
 
-    void triggerWorkflow(String userToken, String repoFullName, String workflowFileName, String ref);
+    default void triggerWorkflow(String userToken, String repoFullName, String workflowFileName, String ref) {
+        triggerWorkflow(userToken, repoFullName, workflowFileName, ref, null);
+    }
+
+    void triggerWorkflow(String userToken, String repoFullName, String workflowFileName,
+                         String dispatchRef, String checkoutRef);
 
     WorkflowRunStatus getLatestRunStatus(String userToken, String repoFullName,
                                          String workflowFileName, LocalDateTime afterTime);
