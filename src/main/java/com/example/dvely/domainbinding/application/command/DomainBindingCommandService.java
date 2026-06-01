@@ -286,6 +286,7 @@ public class DomainBindingCommandService {
                     userToken,
                     sourceRepository,
                     DeployWorkflowTemplate.fileName(),
+                    MAIN_BRANCH,
                     resolveCurrentDeploymentRef(project)
             );
             log.info("custom domain 적용 후 Pages 재배포 트리거 완료: projectId={}, repo={}",
@@ -304,10 +305,11 @@ public class DomainBindingCommandService {
         return MAIN_BRANCH;
     }
 
-    private void triggerWorkflowWithRetry(String userToken, String sourceRepository, String workflowFile, String ref) {
+    private void triggerWorkflowWithRetry(String userToken, String sourceRepository, String workflowFile,
+                                          String dispatchRef, String checkoutRef) {
         for (int attempt = 1; attempt <= WORKFLOW_TRIGGER_MAX_RETRY; attempt++) {
             try {
-                githubActionsPort.triggerWorkflow(userToken, sourceRepository, workflowFile, ref);
+                githubActionsPort.triggerWorkflow(userToken, sourceRepository, workflowFile, dispatchRef, checkoutRef);
                 return;
             } catch (IllegalStateException e) {
                 if (attempt == WORKFLOW_TRIGGER_MAX_RETRY) {

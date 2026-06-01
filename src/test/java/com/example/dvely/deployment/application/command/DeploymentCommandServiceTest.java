@@ -132,6 +132,13 @@ class DeploymentCommandServiceTest {
                 eq(DeployWorkflowTemplate.fileName()),
                 any(String.class)
         );
+        verify(githubActionsPort).triggerWorkflow(
+                "user-token",
+                "octo/repo",
+                DeployWorkflowTemplate.fileName(),
+                "main",
+                "v1.0.0"
+        );
     }
 
     private Project boundProject() {

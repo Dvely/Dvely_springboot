@@ -33,4 +33,13 @@ class DeployWorkflowTemplateTest {
         assertThat(workflow).contains("echo \"path=/\" >> $GITHUB_OUTPUT");
         assertThat(workflow).contains("echo \"path=/${REPO}/\" >> $GITHUB_OUTPUT");
     }
+
+    @Test
+    void generate_acceptsCheckoutRefInputForVersionBuilds() {
+        String workflow = DeployWorkflowTemplate.generate("vue", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("  workflow_dispatch:\n    inputs:");
+        assertThat(workflow).contains("      checkout_ref:");
+        assertThat(workflow).contains("          ref: ${{ inputs.checkout_ref || github.ref_name }}");
+    }
 }
