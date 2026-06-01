@@ -20,7 +20,12 @@ public class DeployWorkflowTemplate {
         // ── 헤더 ─────────────────────────────────────────────────────────────
         w.append("name: Dvely Deploy to GitHub Pages\n\n");
         w.append("on:\n");
-        w.append("  workflow_dispatch:\n\n");
+        w.append("  workflow_dispatch:\n");
+        w.append("    inputs:\n");
+        w.append("      checkout_ref:\n");
+        w.append("        description: 'Git ref to checkout and build'\n");
+        w.append("        required: false\n");
+        w.append("        type: string\n\n");
         w.append("permissions:\n");
         w.append("  contents: write\n");
         w.append("  pages: write\n\n");
@@ -31,7 +36,9 @@ public class DeployWorkflowTemplate {
 
         // ── 1. Checkout ───────────────────────────────────────────────────────
         w.append("      - name: Checkout\n");
-        w.append("        uses: actions/checkout@v4\n\n");
+        w.append("        uses: actions/checkout@v4\n");
+        w.append("        with:\n");
+        w.append("          ref: ${{ inputs.checkout_ref || github.ref_name }}\n\n");
 
         // ── 2. 런타임 설정 ────────────────────────────────────────────────────
         w.append(runtimeSetupSteps(pm, nodeVersion));
