@@ -68,7 +68,7 @@ public class DomainBindAgentService {
 
     private String askUserForDomain(Long userId, String taskId) {
         String question = "연결할 도메인을 입력해주세요.\n"
-                + "- 관리형 서브도메인: 라벨만 입력 (예: my-app → my-app.dvely.app)\n"
+                + "- 관리형 서브도메인: 라벨만 입력 (예: my-app → my-app.qeploy.com)\n"
                 + "- 커스텀 도메인: 전체 주소 입력 (예: www.mysite.com)";
 
         taskStore.markWaitingInput(taskId, question);
