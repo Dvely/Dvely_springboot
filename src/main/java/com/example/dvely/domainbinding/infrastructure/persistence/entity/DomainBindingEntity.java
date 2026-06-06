@@ -28,7 +28,7 @@ public class DomainBindingEntity {
     @Column(name = "domain_id")
     private Long id;
 
-    @Column(name = "repository_id", nullable = false)
+    @Column(name = "project_id", nullable = false)
     private Long projectId;
 
     @Column(name = "domain_name", nullable = false)

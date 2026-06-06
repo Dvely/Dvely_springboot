@@ -28,7 +28,7 @@ public class ConversationEntity {
     @Column(name = "user_id", nullable = false)
     private Long userId;
 
-    @Column(name = "repository_id", nullable = false)
+    @Column(name = "project_id", nullable = false)
     private Long projectId;
 
     @Column(name = "is_deleted", nullable = false)

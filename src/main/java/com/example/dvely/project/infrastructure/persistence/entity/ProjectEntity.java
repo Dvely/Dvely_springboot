@@ -20,14 +20,14 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 @Entity
-@Table(name = "repositories")
+@Table(name = "projects")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ProjectEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    @Column(name = "repository_id")
+    @Column(name = "project_id")
     private Long id;
 
     @Column(name = "user_id", nullable = false)
