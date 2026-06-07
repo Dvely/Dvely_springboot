@@ -107,7 +107,7 @@ public class DeploymentCommandService {
             log.info("preview → main 새 커밋 있음, PR 생성 및 merge: repo={}", sourceRepo);
             int prNumber = githubRepoPort.createOrGetPullRequest(
                     userToken, sourceRepo, PREVIEW_BRANCH, MAIN_BRANCH,
-                    "[Dvely] Deploy preview to main");
+                    "[Qeploy] Deploy preview to main");
             githubRepoPort.mergePullRequest(userToken, sourceRepo, prNumber);
             log.info("PR merge 완료: repo={}, pr=#{}", sourceRepo, prNumber);
         } else {

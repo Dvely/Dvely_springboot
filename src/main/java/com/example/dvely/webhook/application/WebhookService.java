@@ -3,6 +3,7 @@ package com.example.dvely.webhook.application;
 import com.example.dvely.auth.infrastructure.config.GithubProperties;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
+import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
@@ -75,7 +76,7 @@ public class WebhookService {
             String conclusion   = workflowRun.path("conclusion").asText();
             String repoFullName = root.path("repository").path("full_name").asText();
 
-            if (!"dvely deploy to github pages".equalsIgnoreCase(workflowName)) {
+            if (!DeployWorkflowTemplate.isQeployWorkflowName(workflowName)) {
                 return;
             }
             if (!"completed".equals(runStatus)) {

@@ -59,7 +59,7 @@ public class DomainBindAgentService {
             // 점이 있으면 커스텀 도메인 (예: www.mysite.com)
             return new BindDomainCommand(DomainType.CUSTOM_DOMAIN, null, domain, null);
         } else {
-            // 점이 없으면 관리형 서브도메인 라벨 (예: my-app → my-app.dvely.app)
+            // 점이 없으면 관리형 서브도메인 라벨 (예: my-app → my-app.qeploy.com)
             return new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, domain, null, null);
         }
     }
@@ -68,7 +68,7 @@ public class DomainBindAgentService {
 
     private String askUserForDomain(Long userId, String taskId) {
         String question = "연결할 도메인을 입력해주세요.\n"
-                + "- 관리형 서브도메인: 라벨만 입력 (예: my-app → my-app.dvely.app)\n"
+                + "- 관리형 서브도메인: 라벨만 입력 (예: my-app → my-app.qeploy.com)\n"
                 + "- 커스텀 도메인: 전체 주소 입력 (예: www.mysite.com)";
 
         taskStore.markWaitingInput(taskId, question);

@@ -58,10 +58,10 @@ public class GithubActionsClient implements GithubActionsPort {
 
         String encoded = Base64.getEncoder().encodeToString(content.getBytes());
         Map<String, Object> body = existing != null
-                ? Map.of("message", "chore: update dvely deploy workflow",
+                ? Map.of("message", "chore: update qeploy deploy workflow",
                          "content", encoded,
                          "sha", existing.sha())
-                : Map.of("message", "chore: add dvely deploy workflow",
+                : Map.of("message", "chore: add qeploy deploy workflow",
                          "content", encoded);
 
         try {

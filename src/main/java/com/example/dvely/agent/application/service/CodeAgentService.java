@@ -272,8 +272,8 @@ public class CodeAgentService {
         dockerService.exec(containerId,
                 "node -e \"require('fs').writeFileSync('/tmp/.git-credentials', Buffer.from('" + credB64 + "', 'base64').toString('utf8'))\"");
         dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
-        dockerService.exec(containerId, "git config --global user.email 'agent@dvely.app'");
-        dockerService.exec(containerId, "git config --global user.name 'Dvely Agent'");
+        dockerService.exec(containerId, "git config --global user.email 'agent@qeploy.com'");
+        dockerService.exec(containerId, "git config --global user.name 'Qeploy Agent'");
 
         String appExists = dockerService.exec(containerId, "[ -d /workspace/app/.git ] && echo yes || echo no").trim();
 

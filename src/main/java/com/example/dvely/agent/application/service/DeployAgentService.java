@@ -205,8 +205,8 @@ public class DeployAgentService {
         dockerService.exec(containerId, "apk add --no-cache git");
         writeGitCredentials(containerId, username, userToken);
         dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
-        dockerService.exec(containerId, "git config --global user.email 'agent@dvely.app'");
-        dockerService.exec(containerId, "git config --global user.name 'Dvely Agent'");
+        dockerService.exec(containerId, "git config --global user.email 'agent@qeploy.com'");
+        dockerService.exec(containerId, "git config --global user.name 'Qeploy Agent'");
 
         String remoteUrl = "https://github.com/" + repoFullName + ".git";
         boolean hasGit = "yes".equals(
@@ -222,7 +222,7 @@ public class DeployAgentService {
 
         dockerService.exec(containerId, "cd /workspace/app && git add -A");
         dockerService.exec(containerId,
-                "cd /workspace/app && git diff --cached --quiet || git commit -m 'feat: deploy via Dvely Agent'");
+                "cd /workspace/app && git diff --cached --quiet || git commit -m 'feat: deploy via Qeploy Agent'");
         dockerService.exec(containerId, "cd /workspace/app && git push -u origin main --force");
 
         if (isNew) {
@@ -294,7 +294,7 @@ public class DeployAgentService {
     }
 
     private String defaultRepoName(Long userId) {
-        return "dvely-project-" + userId;
+        return "qeploy-project-" + userId;
     }
 
     private String buildSummary(String repoFullName, String pagesUrl) {

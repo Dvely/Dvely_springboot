@@ -4,7 +4,7 @@ import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-@ConfigurationProperties(prefix = "dvely.ai")
+@ConfigurationProperties(prefix = "qeploy.ai")
 @Getter
 @Setter
 public class AiProperties {

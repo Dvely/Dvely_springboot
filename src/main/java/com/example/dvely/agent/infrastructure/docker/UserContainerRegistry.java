@@ -21,6 +21,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class UserContainerRegistry {
 
     private static final Duration TTL = Duration.ofMinutes(30);
+    private static final String USER_ID_LABEL = "qeploy.userId";
+    private static final String LEGACY_USER_ID_LABEL = "dvely.userId";
 
     private final DockerContainerService                      dockerService;
     private final ConcurrentHashMap<Long, UserContainerInfo> registry = new ConcurrentHashMap<>();
@@ -30,7 +32,7 @@ public class UserContainerRegistry {
         try {
             List<Container> containers = dockerService.listAgentContainers();
             for (Container c : containers) {
-                String userIdStr = c.getLabels() == null ? null : c.getLabels().get("dvely.userId");
+                String userIdStr = resolveUserIdLabel(c.getLabels());
                 if (userIdStr == null) continue;
                 Long userId = Long.parseLong(userIdStr);
                 Integer hostPort = Arrays.stream(c.getPorts())
@@ -46,6 +48,13 @@ public class UserContainerRegistry {
         } catch (Exception e) {
             log.warn("[ContainerRegistry] Docker에 연결할 수 없어 컨테이너 복구를 건너뜁니다: {}", e.getMessage());
         }
+    }
+
+    static String resolveUserIdLabel(java.util.Map<String, String> labels) {
+        if (labels == null) {
+            return null;
+        }
+        return labels.getOrDefault(USER_ID_LABEL, labels.get(LEGACY_USER_ID_LABEL));
     }
 
     public Optional<UserContainerInfo> find(Long userId) {

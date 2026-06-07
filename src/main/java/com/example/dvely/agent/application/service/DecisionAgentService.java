@@ -23,7 +23,7 @@ public class DecisionAgentService {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private static final String SYSTEM_PROMPT = """
-            You are a decision-making agent for Dvely, an automated web project deployment platform.
+            You are a decision-making agent for Qeploy, an automated web project deployment platform.
             Analyze the user's message, identify ALL intents, and return them as an ordered list of steps.
 
             For each step, write the "instruction" as a complete, self-contained natural language request
@@ -56,7 +56,7 @@ public class DecisionAgentService {
             3. DOMAIN_BIND — User wants to connect or configure a custom domain.
                Parameters:
                - "domain": the domain value — use one of two formats:
-                 * Label only (no dots) for a managed subdomain (e.g. "my-app" → my-app.dvely.app)
+                 * Label only (no dots) for a managed subdomain (e.g. "my-app" → my-app.qeploy.com)
                  * Full hostname (with dots) for a custom domain (e.g. "www.mysite.com")
                  * Empty string if no domain is mentioned
                - "instruction": a complete domain-configuration directive written for a domain agent

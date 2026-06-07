@@ -10,7 +10,7 @@ public record ConnectProjectRepositoryRequest(
         @Schema(description = "새 저장소 생성 시 사용할 저장소 이름", example = "my-landing-repo")
         String repositoryName,
 
-        @Schema(description = "기존 저장소 연결 시 owner/repo 형식의 전체 이름", example = "dvely/my-landing-repo")
+        @Schema(description = "기존 저장소 연결 시 owner/repo 형식의 전체 이름", example = "qeploy/my-landing-repo")
         String repositoryFullName,
 
         @Schema(description = "새 저장소 생성 시 공개 범위. 값이 없으면 PRIVATE", allowableValues = {"PUBLIC", "PRIVATE"}, example = "PRIVATE")

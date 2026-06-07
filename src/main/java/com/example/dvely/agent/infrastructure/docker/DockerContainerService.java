@@ -20,6 +20,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -29,6 +30,9 @@ public class DockerContainerService {
     private static final String IMAGE          = "node:20-alpine";
     private static final int    CONTAINER_PORT = 3000;
     private static final long   EXEC_TIMEOUT_MIN = 10L;
+    private static final String AGENT_LABEL = "qeploy.agent";
+    private static final String USER_ID_LABEL = "qeploy.userId";
+    private static final String LEGACY_AGENT_LABEL = "dvely.agent";
 
     private final DockerClient dockerClient;
 
@@ -59,8 +63,8 @@ public class DockerContainerService {
                         .withPortBindings(portBindings)
                         .withMemory(1024 * 1024 * 1024L))
                 .withLabels(Map.of(
-                        "dvely.agent",  "true",
-                        "dvely.userId", String.valueOf(userId)
+                        AGENT_LABEL,  "true",
+                        USER_ID_LABEL, String.valueOf(userId)
                 ))
                 .withCmd("tail", "-f", "/dev/null")
                 .exec();
@@ -71,8 +75,15 @@ public class DockerContainerService {
     }
 
     public List<com.github.dockerjava.api.model.Container> listAgentContainers() {
+        Map<String, com.github.dockerjava.api.model.Container> containers = new LinkedHashMap<>();
+        listContainersByLabel(AGENT_LABEL).forEach(container -> containers.put(container.getId(), container));
+        listContainersByLabel(LEGACY_AGENT_LABEL).forEach(container -> containers.put(container.getId(), container));
+        return List.copyOf(containers.values());
+    }
+
+    private List<com.github.dockerjava.api.model.Container> listContainersByLabel(String label) {
         return dockerClient.listContainersCmd()
-                .withLabelFilter(List.of("dvely.agent=true"))
+                .withLabelFilter(List.of(label + "=true"))
                 .exec();
     }
 

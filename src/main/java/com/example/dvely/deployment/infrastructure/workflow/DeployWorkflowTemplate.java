@@ -4,10 +4,22 @@ import com.example.dvely.deployment.domain.value.PackageManager;
 
 public class DeployWorkflowTemplate {
 
-    private static final String WORKFLOW_FILE = "dvely-deploy.yml";
+    private static final String WORKFLOW_FILE = "qeploy-deploy.yml";
+    private static final String LEGACY_WORKFLOW_FILE = "dvely-deploy.yml";
+    private static final String WORKFLOW_NAME = "Qeploy Deploy to GitHub Pages";
+    private static final String LEGACY_WORKFLOW_NAME = "Dvely Deploy to GitHub Pages";
 
     public static String fileName() {
         return WORKFLOW_FILE;
+    }
+
+    public static String legacyFileName() {
+        return LEGACY_WORKFLOW_FILE;
+    }
+
+    public static boolean isQeployWorkflowName(String workflowName) {
+        return WORKFLOW_NAME.equalsIgnoreCase(workflowName)
+                || LEGACY_WORKFLOW_NAME.equalsIgnoreCase(workflowName);
     }
 
     public static String generate(String templateType, String publishDir,
@@ -18,7 +30,7 @@ public class DeployWorkflowTemplate {
         StringBuilder w = new StringBuilder();
 
         // ── 헤더 ─────────────────────────────────────────────────────────────
-        w.append("name: Dvely Deploy to GitHub Pages\n\n");
+        w.append("name: ").append(WORKFLOW_NAME).append("\n\n");
         w.append("on:\n");
         w.append("  workflow_dispatch:\n");
         w.append("    inputs:\n");
@@ -362,8 +374,8 @@ public class DeployWorkflowTemplate {
              + "          fi\n"
              + "          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then\n"
              + "            if git fetch origin gh-pages --depth=1; then\n"
-             + "              if git show FETCH_HEAD:CNAME > /tmp/dvely-cname 2>/dev/null; then\n"
-             + "                cp /tmp/dvely-cname " + outDir + "/CNAME\n"
+             + "              if git show FETCH_HEAD:CNAME > /tmp/qeploy-cname 2>/dev/null; then\n"
+             + "                cp /tmp/qeploy-cname " + outDir + "/CNAME\n"
              + "                echo \"기존 CNAME 파일 보존 완료\"\n"
              + "              else\n"
              + "                echo \"기존 CNAME 파일 없음\"\n"

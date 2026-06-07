@@ -57,6 +57,13 @@ public class DeploymentQueryService {
                 project.getSourceRepository(),
                 DeployWorkflowTemplate.fileName(),
                 history.getTriggeredAt());
+        if (runStatus.runId() == null) {
+            runStatus = githubActionsPort.getLatestRunStatus(
+                    user.getGithubUserAccessToken(),
+                    project.getSourceRepository(),
+                    DeployWorkflowTemplate.legacyFileName(),
+                    history.getTriggeredAt());
+        }
 
         return toStatusResult(history, runStatus);
     }
