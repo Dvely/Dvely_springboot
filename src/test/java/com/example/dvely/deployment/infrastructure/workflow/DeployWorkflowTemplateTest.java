@@ -15,12 +15,24 @@ class DeployWorkflowTemplateTest {
         assertThat(workflow).contains("CNAME=\"${{ steps.base.outputs.cname }}\"");
         assertThat(workflow).contains("printf '%s\\n' \"$CNAME\" > ./dist/CNAME");
         assertThat(workflow).contains("git fetch origin gh-pages --depth=1");
-        assertThat(workflow).contains("git show FETCH_HEAD:CNAME > /tmp/dvely-cname");
-        assertThat(workflow).contains("cp /tmp/dvely-cname ./dist/CNAME");
+        assertThat(workflow).contains("git show FETCH_HEAD:CNAME > /tmp/qeploy-cname");
+        assertThat(workflow).contains("cp /tmp/qeploy-cname ./dist/CNAME");
         assertThat(workflow).containsSubsequence(
                 "      - name: Preserve custom domain",
                 "      - name: Deploy to gh-pages"
         );
+    }
+
+    @Test
+    void generate_usesQeployBrandAndKeepsLegacyWorkflowCompatibility() {
+        String workflow = DeployWorkflowTemplate.generate("vue", null, PackageManager.NPM, "20");
+
+        assertThat(DeployWorkflowTemplate.fileName()).isEqualTo("qeploy-deploy.yml");
+        assertThat(DeployWorkflowTemplate.legacyFileName()).isEqualTo("dvely-deploy.yml");
+        assertThat(DeployWorkflowTemplate.isQeployWorkflowName("Qeploy Deploy to GitHub Pages")).isTrue();
+        assertThat(DeployWorkflowTemplate.isQeployWorkflowName("Dvely Deploy to GitHub Pages")).isTrue();
+        assertThat(workflow).contains("name: Qeploy Deploy to GitHub Pages");
+        assertThat(workflow).doesNotContain("Dvely");
     }
 
     @Test

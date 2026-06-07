@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -50,7 +51,7 @@ public class UserContainerRegistry {
         }
     }
 
-    static String resolveUserIdLabel(java.util.Map<String, String> labels) {
+    static String resolveUserIdLabel(Map<String, String> labels) {
         if (labels == null) {
             return null;
         }
