@@ -24,8 +24,8 @@ cloudflare:
 qeploy:
   ai:
     anthropic:
-      api-key: ${QEPLOY_AI_ANTHROPIC_API_KEY:${DVELY_AI_ANTHROPIC_API_KEY:${ANTHROPIC_API_KEY:}}}
-      model: ${QEPLOY_AI_ANTHROPIC_MODEL:${DVELY_AI_ANTHROPIC_MODEL:claude-opus-4-5-20251101}}
+      api-key: ${QEPLOY_AI_ANTHROPIC_API_KEY:${ANTHROPIC_API_KEY:}}
+      model: ${QEPLOY_AI_ANTHROPIC_MODEL:claude-opus-4-5-20251101}
     openai:
-      api-key: ${QEPLOY_AI_OPENAI_API_KEY:${DVELY_AI_OPENAI_API_KEY:${OPENAI_API_KEY:}}}
-      model: ${QEPLOY_AI_OPENAI_MODEL:${DVELY_AI_OPENAI_MODEL:gpt-4o}}
+      api-key: ${QEPLOY_AI_OPENAI_API_KEY:${OPENAI_API_KEY:}}
+      model: ${QEPLOY_AI_OPENAI_MODEL:gpt-4o}

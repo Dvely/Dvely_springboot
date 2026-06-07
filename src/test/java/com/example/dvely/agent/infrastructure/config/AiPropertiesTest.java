@@ -21,27 +21,27 @@ class AiPropertiesTest {
     }
 
     @Test
-    void bindsLegacyEnvironmentVariablesAsFallback() throws IOException {
+    void bindsCommonApiKeyEnvironmentVariablesAsFallback() throws IOException {
         MockEnvironment environment = new MockEnvironment()
-                .withProperty("DVELY_AI_ANTHROPIC_API_KEY", "legacy-anthropic-key")
-                .withProperty("DVELY_AI_OPENAI_API_KEY", "legacy-openai-key");
+                .withProperty("ANTHROPIC_API_KEY", "common-anthropic-key")
+                .withProperty("OPENAI_API_KEY", "common-openai-key");
         addProfileProperties(environment, "application-dev.yml");
 
         AiProperties properties = Binder.get(environment)
                 .bind("qeploy.ai", Bindable.of(AiProperties.class))
                 .orElseThrow(() -> new IllegalStateException("qeploy.ai 설정 바인딩 실패"));
 
-        assertThat(properties.getAnthropic().getApiKey()).isEqualTo("legacy-anthropic-key");
-        assertThat(properties.getOpenai().getApiKey()).isEqualTo("legacy-openai-key");
+        assertThat(properties.getAnthropic().getApiKey()).isEqualTo("common-anthropic-key");
+        assertThat(properties.getOpenai().getApiKey()).isEqualTo("common-openai-key");
     }
 
     @Test
-    void prefersQeployEnvironmentVariablesOverLegacyValues() throws IOException {
+    void prefersQeployEnvironmentVariablesOverCommonValues() throws IOException {
         MockEnvironment environment = new MockEnvironment()
                 .withProperty("QEPLOY_AI_ANTHROPIC_API_KEY", "qeploy-anthropic-key")
-                .withProperty("DVELY_AI_ANTHROPIC_API_KEY", "legacy-anthropic-key")
+                .withProperty("ANTHROPIC_API_KEY", "common-anthropic-key")
                 .withProperty("QEPLOY_AI_OPENAI_API_KEY", "qeploy-openai-key")
-                .withProperty("DVELY_AI_OPENAI_API_KEY", "legacy-openai-key");
+                .withProperty("OPENAI_API_KEY", "common-openai-key");
         addProfileProperties(environment, "application-prod.yml");
 
         AiProperties properties = Binder.get(environment)
