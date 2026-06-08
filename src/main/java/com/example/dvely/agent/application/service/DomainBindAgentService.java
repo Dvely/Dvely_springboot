@@ -1,7 +1,6 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
-import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
@@ -89,8 +88,7 @@ public class DomainBindAgentService {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("도메인 입력 대기 중 인터럽트 발생");
         } finally {
-            taskStore.save(taskStore.get(taskId)
-                    .withStatus(TaskStatus.RUNNING, null, null, null));
+            taskStore.markRunning(taskId);
         }
     }
 

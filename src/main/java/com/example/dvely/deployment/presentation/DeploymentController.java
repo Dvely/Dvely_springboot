@@ -69,7 +69,7 @@ public class DeploymentController {
             @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
             @Parameter(description = "조회할 배포 이력 ID") @PathVariable Long deploymentId
     ) {
-        DeploymentStatusResult result = deploymentFacade.getDeploymentStatus(deploymentId);
+        DeploymentStatusResult result = deploymentFacade.getDeploymentStatus(userId, deploymentId);
         return new DeploymentStatusResponse(
                 result.historyId(),
                 result.projectId(),
@@ -94,7 +94,7 @@ public class DeploymentController {
             @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
             @Parameter(description = "조회할 프로젝트 ID") @PathVariable Long projectId
     ) {
-        return deploymentFacade.getDeploymentHistories(projectId).stream()
+        return deploymentFacade.getDeploymentHistories(userId, projectId).stream()
                 .map(this::toHistoryResponse)
                 .toList();
     }
@@ -141,7 +141,7 @@ public class DeploymentController {
             @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
             @Parameter(description = "조회할 배포 이력 ID") @PathVariable Long deploymentId
     ) {
-        return toLogsResponse(deploymentFacade.getDeploymentLogs(deploymentId));
+        return toLogsResponse(deploymentFacade.getDeploymentLogs(userId, deploymentId));
     }
 
     @Operation(

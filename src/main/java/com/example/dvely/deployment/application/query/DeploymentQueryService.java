@@ -36,9 +36,10 @@ public class DeploymentQueryService {
     private final GithubActionsPort githubActionsPort;
 
     @Transactional(readOnly = true)
-    public DeploymentStatusResult getDeploymentStatus(Long historyId) {
+    public DeploymentStatusResult getDeploymentStatus(Long ownerUserId, Long historyId) {
         DeploymentHistory history = deploymentHistoryRepository.findById(historyId)
                 .orElseThrow(() -> new NotFoundException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));
+        Project project = findOwnedProject(ownerUserId, history.getProjectId());
 
         // LIVE/FAILED는 DB 상태만 반환 (GitHub Actions 조회 불필요)
         if (history.getStatus() != DeployStatus.IN_PROGRESS) {
@@ -46,10 +47,7 @@ public class DeploymentQueryService {
         }
 
         // IN_PROGRESS: GitHub Actions에서 실시간 빌드 상태 조회
-        Project project = projectRepository.findById(history.getProjectId())
-                .orElseThrow(() -> new NotFoundException("프로젝트를 찾을 수 없습니다. projectId=" + history.getProjectId()));
-
-        User user = userRepository.findById(project.getOwnerUserId())
+        User user = userRepository.findById(ownerUserId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다."));
 
         WorkflowRunStatus runStatus = githubActionsPort.getLatestRunStatus(
@@ -84,7 +82,8 @@ public class DeploymentQueryService {
     }
 
     @Transactional(readOnly = true)
-    public List<DeploymentHistoryResult> getDeploymentHistories(Long projectId) {
+    public List<DeploymentHistoryResult> getDeploymentHistories(Long ownerUserId, Long projectId) {
+        findOwnedProject(ownerUserId, projectId);
         return deploymentHistoryRepository.findByProjectIdOrderByTriggeredAtDesc(projectId)
                 .stream()
                 .map(this::toResult)
@@ -106,6 +105,7 @@ public class DeploymentQueryService {
 
     @Transactional(readOnly = true)
     public List<VersionResult> getVersions(Long ownerUserId, Long projectId) {
+        findOwnedProject(ownerUserId, projectId);
         List<DeploymentHistory> histories = deploymentHistoryRepository
                 .findByProjectIdOrderByTriggeredAtDesc(projectId);
 
@@ -135,6 +135,7 @@ public class DeploymentQueryService {
     public VersionDetailResult getVersionDetail(Long ownerUserId, Long versionId) {
         DeploymentHistory history = deploymentHistoryRepository.findById(versionId)
                 .orElseThrow(() -> new NotFoundException("버전을 찾을 수 없습니다. versionId=" + versionId));
+        findOwnedProject(ownerUserId, history.getProjectId());
 
         return new VersionDetailResult(
                 history.getId(),
@@ -153,6 +154,7 @@ public class DeploymentQueryService {
 
     @Transactional(readOnly = true)
     public List<DeploymentCandidateResult> getDeploymentCandidates(Long ownerUserId, Long projectId) {
+        findOwnedProject(ownerUserId, projectId);
         return deploymentHistoryRepository.findByProjectIdOrderByTriggeredAtDesc(projectId).stream()
                 .filter(h -> h.getVersionLabel() != null && !h.getVersionLabel().isBlank())
                 .filter(h -> h.getStatus() == DeployStatus.LIVE)
@@ -176,19 +178,17 @@ public class DeploymentQueryService {
     }
 
     @Transactional(readOnly = true)
-    public DeploymentLogsResult getDeploymentLogs(Long historyId) {
+    public DeploymentLogsResult getDeploymentLogs(Long ownerUserId, Long historyId) {
         DeploymentHistory history = deploymentHistoryRepository.findById(historyId)
                 .orElseThrow(() -> new NotFoundException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));
+        Project project = findOwnedProject(ownerUserId, history.getProjectId());
 
         Long runId = history.getWorkflowRunId();
         if (runId == null) {
             return new DeploymentLogsResult(historyId, null, List.of(), "");
         }
 
-        Project project = projectRepository.findById(history.getProjectId())
-                .orElseThrow(() -> new NotFoundException("프로젝트를 찾을 수 없습니다."));
-
-        User user = userRepository.findById(project.getOwnerUserId())
+        User user = userRepository.findById(ownerUserId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다."));
 
         DeploymentLogs logs = githubActionsPort.getJobLogs(
@@ -210,5 +210,11 @@ public class DeploymentQueryService {
                 .toList();
 
         return new DeploymentLogsResult(historyId, runId, jobResults, logs.logText());
+    }
+
+    private Project findOwnedProject(Long ownerUserId, Long projectId) {
+        return projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, ownerUserId)
+                .orElseThrow(() -> new NotFoundException(
+                        "프로젝트를 찾을 수 없습니다. projectId=" + projectId + ", ownerUserId=" + ownerUserId));
     }
 }

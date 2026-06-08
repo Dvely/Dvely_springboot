@@ -28,7 +28,7 @@ public class InputWaitStore {
             return false;
         }
         future.complete(value);
-        log.info("[InputWaitStore] 입력 전달 완료: taskId={} value={}", taskId, value);
+        log.info("[InputWaitStore] 입력 전달 완료: taskId={}", taskId);
         return true;
     }
 

@@ -17,5 +17,8 @@ public record DecisionRequest(
         AiProvider aiProvider,
 
         @Schema(description = "수정할 기존 프로젝트 ID. null이면 신규 프로젝트로 처리", example = "42", nullable = true)
-        Long projectId
+        Long projectId,
+
+        @Schema(description = "요청이 시작된 대화 ID", example = "7", nullable = true)
+        Long conversationId
 ) {}

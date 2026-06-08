@@ -1,12 +1,15 @@
 package com.example.dvely.deployment.application.query;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.value.GithubId;
+import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort.WorkflowRunStatus;
 import com.example.dvely.deployment.application.result.DeploymentStatusResult;
@@ -74,7 +77,7 @@ class DeploymentQueryServiceTest {
         User user = activeUser();
 
         when(deploymentHistoryRepository.findById(101L)).thenReturn(Optional.of(history));
-        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
         when(userRepository.findById(1L)).thenReturn(Optional.of(user));
         when(githubActionsPort.getLatestRunStatus(
                 "user-token",
@@ -89,7 +92,7 @@ class DeploymentQueryServiceTest {
                 triggeredAt
         )).thenReturn(new WorkflowRunStatus(501L, "in_progress", null));
 
-        DeploymentStatusResult result = queryService.getDeploymentStatus(101L);
+        DeploymentStatusResult result = queryService.getDeploymentStatus(1L, 101L);
 
         assertThat(result.buildStatus()).isEqualTo("in_progress");
         verify(githubActionsPort).getLatestRunStatus(
@@ -97,6 +100,85 @@ class DeploymentQueryServiceTest {
                 "octo/repo",
                 DeployWorkflowTemplate.legacyFileName(),
                 triggeredAt
+        );
+    }
+
+    @Test
+    void getDeploymentStatus_rejectsHistoryOwnedByAnotherUser() {
+        DeploymentHistory history = deploymentHistory(DeployStatus.IN_PROGRESS, 501L);
+        when(deploymentHistoryRepository.findById(101L)).thenReturn(Optional.of(history));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 2L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> queryService.getDeploymentStatus(2L, 101L))
+                .isInstanceOf(NotFoundException.class);
+
+        verifyNoInteractions(userRepository, githubActionsPort);
+    }
+
+    @Test
+    void getDeploymentHistories_rejectsProjectOwnedByAnotherUser() {
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 2L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> queryService.getDeploymentHistories(2L, 11L))
+                .isInstanceOf(NotFoundException.class);
+
+        verifyNoInteractions(deploymentHistoryRepository);
+    }
+
+    @Test
+    void getVersions_rejectsProjectOwnedByAnotherUser() {
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 2L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> queryService.getVersions(2L, 11L))
+                .isInstanceOf(NotFoundException.class);
+
+        verifyNoInteractions(deploymentHistoryRepository);
+    }
+
+    @Test
+    void getVersionDetail_rejectsHistoryOwnedByAnotherUser() {
+        when(deploymentHistoryRepository.findById(101L))
+                .thenReturn(Optional.of(deploymentHistory(DeployStatus.LIVE, 501L)));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 2L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> queryService.getVersionDetail(2L, 101L))
+                .isInstanceOf(NotFoundException.class);
+    }
+
+    @Test
+    void getDeploymentCandidates_rejectsProjectOwnedByAnotherUser() {
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 2L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> queryService.getDeploymentCandidates(2L, 11L))
+                .isInstanceOf(NotFoundException.class);
+
+        verifyNoInteractions(deploymentHistoryRepository);
+    }
+
+    @Test
+    void getDeploymentLogs_rejectsHistoryOwnedByAnotherUser() {
+        when(deploymentHistoryRepository.findById(101L))
+                .thenReturn(Optional.of(deploymentHistory(DeployStatus.LIVE, 501L)));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 2L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> queryService.getDeploymentLogs(2L, 101L))
+                .isInstanceOf(NotFoundException.class);
+
+        verifyNoInteractions(userRepository, githubActionsPort);
+    }
+
+    private DeploymentHistory deploymentHistory(DeployStatus status, Long workflowRunId) {
+        LocalDateTime now = LocalDateTime.now();
+        return new DeploymentHistory(
+                101L,
+                11L,
+                DeployTargetType.LATEST,
+                "v1.0.0",
+                "https://octo.github.io/repo/",
+                status,
+                workflowRunId,
+                now,
+                now
         );
     }
 

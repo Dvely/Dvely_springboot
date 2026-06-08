@@ -27,6 +27,7 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -53,6 +54,7 @@ public class DeployAgentService {
 
         Optional<UserContainerInfo> containerOpt = containerRegistry.find(userId);
         Project project;
+        boolean sourceChanged = false;
 
         if (containerOpt.isPresent()) {
             // CODE 스텝이 선행된 경우 — 컨테이너의 코드를 GitHub에 push 후 배포
@@ -70,20 +72,23 @@ public class DeployAgentService {
                     // BOUND 프로젝트 존재 → 해당 저장소로 push
                     project = found.get();
                     log.info("[DeployAgent] 기존 프로젝트 저장소로 push: {}", project.getSourceRepository());
-                    pushSourceToGithub(containerId, userToken, username, project.getSourceRepository(), false);
+                    pushSourceToGithub(containerId, userToken, username, project.getSourceRepository(), false, taskId);
+                    sourceChanged = true;
                 } else {
                     // NOT_BOUND 또는 저장소 없음 → 신규 저장소 생성 후 push
                     log.info("[DeployAgent] projectId={} 저장소 미연결, 신규 저장소로 push", projectId);
                     String repoName     = resolveRepoName(step, userId, containerId, taskId);
                     String repoFullName = ensureGithubRepo(userId, username, repoName);
-                    pushSourceToGithub(containerId, userToken, username, repoFullName, true);
+                    pushSourceToGithub(containerId, userToken, username, repoFullName, true, taskId);
+                    sourceChanged = true;
                     project = findOrCreateProject(userId, repoName, repoFullName);
                 }
             } else {
                 String repoName     = resolveRepoName(step, userId, containerId, taskId);
                 String repoFullName = ensureGithubRepo(userId, username, repoName);
                 log.info("[DeployAgent] 신규 저장소 push: {}", repoFullName);
-                pushSourceToGithub(containerId, userToken, username, repoFullName, true);
+                pushSourceToGithub(containerId, userToken, username, repoFullName, true, taskId);
+                sourceChanged = true;
                 project = findOrCreateProject(userId, repoName, repoFullName);
             }
 
@@ -100,6 +105,13 @@ public class DeployAgentService {
 
         } else {
             throw new IllegalStateException("배포할 코드가 없습니다. 코드 생성 또는 기존 프로젝트 ID가 필요합니다.");
+        }
+
+        if (sourceChanged) {
+            String summary = buildPreviewSummary(project.getSourceRepository(), taskId);
+            log.info("[DeployAgent] preview 브랜치 반영 완료 | repository={} taskId={}",
+                    project.getSourceRepository(), taskId);
+            return new CodeResult(null, summary);
         }
 
         // GitHub Pages 배포 (Pages 활성화 + 워크플로우 생성/트리거 + 폴링)
@@ -149,12 +161,13 @@ public class DeployAgentService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return defaultRepoName(userId);
+        } catch (CancellationException e) {
+            throw e;
         } catch (Exception e) {
             log.warn("[DeployAgent] 입력 대기 오류: {}", e.getMessage());
             return defaultRepoName(userId);
         } finally {
-            taskStore.save(taskStore.get(taskId)
-                    .withStatus(com.example.dvely.agent.application.dto.TaskStatus.RUNNING, null, null, null));
+            taskStore.markRunning(taskId);
         }
     }
 
@@ -201,7 +214,7 @@ public class DeployAgentService {
     // ── Docker → GitHub 소스 푸시 ──────────────────────────────────────────────
 
     private void pushSourceToGithub(String containerId, String userToken, String username,
-                                    String repoFullName, boolean isNew) {
+                                    String repoFullName, boolean isNew, String taskId) {
         dockerService.exec(containerId, "apk add --no-cache git");
         writeGitCredentials(containerId, username, userToken);
         dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
@@ -214,35 +227,18 @@ public class DeployAgentService {
 
         if (!hasGit) {
             if (isNew) writeGitignore(containerId);
-            dockerService.exec(containerId, "cd /workspace/app && git init -b main");
+            dockerService.exec(containerId, "cd /workspace/app && git init -b preview");
             dockerService.exec(containerId, "cd /workspace/app && git remote add origin " + remoteUrl);
         } else {
             dockerService.exec(containerId, "cd /workspace/app && git remote set-url origin " + remoteUrl);
+            dockerService.exec(containerId, "cd /workspace/app && git checkout -B preview");
         }
 
         dockerService.exec(containerId, "cd /workspace/app && git add -A");
         dockerService.exec(containerId,
-                "cd /workspace/app && git diff --cached --quiet || git commit -m 'feat: deploy via Qeploy Agent'");
-        dockerService.exec(containerId, "cd /workspace/app && git push -u origin main --force");
-
-        if (isNew) {
-            createGhPagesPlaceholder(containerId);
-        }
-    }
-
-    private void createGhPagesPlaceholder(String containerId) {
-        String html = "<!DOCTYPE html><html><head><title>Deploying...</title></head>"
-                + "<body><p>Building your project, please wait.</p></body></html>";
-        String b64  = Base64.getEncoder().encodeToString(html.getBytes(StandardCharsets.UTF_8));
-
-        dockerService.exec(containerId, "cd /workspace/app && git checkout --orphan gh-pages");
-        dockerService.exec(containerId, "cd /workspace/app && git rm -rf . --ignore-unmatch -q");
-        dockerService.exec(containerId,
-                "node -e \"require('fs').writeFileSync('/workspace/app/index.html', Buffer.from('" + b64 + "', 'base64').toString('utf8'))\"");
-        dockerService.exec(containerId, "cd /workspace/app && git add index.html && git commit -m 'chore: initialize gh-pages'");
-        dockerService.exec(containerId, "cd /workspace/app && git push origin gh-pages --force");
-        dockerService.exec(containerId, "cd /workspace/app && git checkout main");
-        log.info("[DeployAgent] gh-pages 플레이스홀더 생성 완료");
+                "cd /workspace/app && git diff --cached --quiet || git commit -m 'feat: apply Qeploy Agent task "
+                        + taskId + "'");
+        dockerService.exec(containerId, "cd /workspace/app && git push -u origin preview");
     }
 
     // ── NOT_BOUND 프로젝트 자동 바인딩 ────────────────────────────────────────────
@@ -304,5 +300,15 @@ public class DeployAgentService {
                 - 배포 URL: %s
                 - 빌드가 완료되면 수 분 내 접근 가능합니다.
                 """, repoFullName, pagesUrl);
+    }
+
+    private String buildPreviewSummary(String repoFullName, String taskId) {
+        return String.format("""
+                변경 사항을 preview 브랜치에 저장했습니다.
+                - 저장소: https://github.com/%s
+                - 브랜치: preview
+                - 요청 ID: %s
+                - main 반영과 배포에는 승인이 필요합니다.
+                """, repoFullName, taskId);
     }
 }

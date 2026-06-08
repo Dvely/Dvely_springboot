@@ -287,8 +287,8 @@ public class CodeAgentService {
                 dockerService.exec(containerId, "git clone " + cloneUrl + " /workspace/app");
                 log.info("[CodeAgent] 다른 repo 감지, 재clone: {}", sourceRepo);
             } else {
-                dockerService.exec(containerId, "cd /workspace/app && git pull origin HEAD --rebase");
-                log.info("[CodeAgent] 기존 repo pull: {}", sourceRepo);
+                dockerService.exec(containerId, "cd /workspace/app && git fetch origin");
+                log.info("[CodeAgent] 기존 repo fetch: {}", sourceRepo);
             }
         } else {
             // 처음 clone
@@ -296,6 +296,13 @@ public class CodeAgentService {
             dockerService.exec(containerId, "git clone " + cloneUrl + " /workspace/app");
             log.info("[CodeAgent] 저장소 clone 완료: {}", sourceRepo);
         }
+
+        dockerService.exec(containerId,
+                "cd /workspace/app && git fetch origin preview 2>/dev/null || true");
+        dockerService.exec(containerId,
+                "cd /workspace/app && "
+                        + "(git show-ref --verify --quiet refs/remotes/origin/preview "
+                        + "&& git checkout -B preview origin/preview || git checkout -B preview)");
 
         // clone 후 의존성 설치
         String pkgJson = dockerService.exec(containerId, "[ -f /workspace/app/package.json ] && echo yes || echo no").trim();

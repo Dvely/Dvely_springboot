@@ -56,8 +56,13 @@ public class AgentController {
             @AuthenticationPrincipal Long userId,
             @Valid @RequestBody DecisionRequest request) {
 
-        AgentPlan plan   = decisionAgentService.decide(request.content(), request.aiProvider(), request.projectId());
-        String    taskId = agentOrchestrator.submitAsync(plan, userId);
+        Long projectId = agentOrchestrator.resolveProjectId(
+                userId,
+                request.projectId(),
+                request.conversationId()
+        );
+        AgentPlan plan   = decisionAgentService.decide(request.content(), request.aiProvider(), projectId);
+        String    taskId = agentOrchestrator.submitAsync(plan, userId, request.conversationId());
         return new DecisionResponse(plan.steps(), plan.reasoning(), request.aiProvider(), taskId);
     }
 
@@ -73,9 +78,10 @@ public class AgentController {
     })
     @GetMapping("/tasks/{taskId}")
     public ResponseEntity<TaskStatusResponse> getTaskStatus(
+            @AuthenticationPrincipal Long userId,
             @Parameter(description = "에이전트 태스크 ID", example = "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
             @PathVariable String taskId) {
-        AgentTask task = taskStore.get(taskId);
+        AgentTask task = taskStore.getOwned(taskId, userId);
         if (task == null) return ResponseEntity.notFound().build();
         return ResponseEntity.ok(new TaskStatusResponse(
                 task.taskId(), task.status(), task.previewUrl(), task.summary(), task.error(), task.question()
@@ -94,17 +100,35 @@ public class AgentController {
     })
     @PostMapping("/tasks/{taskId}/input")
     public ResponseEntity<Void> submitInput(
+            @AuthenticationPrincipal Long userId,
             @Parameter(description = "에이전트 태스크 ID", example = "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
             @PathVariable String taskId,
             @Valid @RequestBody TaskInputRequest request) {
 
-        AgentTask task = taskStore.get(taskId);
+        AgentTask task = taskStore.getOwned(taskId, userId);
         if (task == null) return ResponseEntity.notFound().build();
         if (task.status() != com.example.dvely.agent.application.dto.TaskStatus.WAITING_INPUT) {
             return ResponseEntity.badRequest().build();
         }
         boolean accepted = inputWaitStore.supply(taskId, request.value());
         return accepted ? ResponseEntity.ok().build() : ResponseEntity.notFound().build();
+    }
+
+    @Operation(summary = "에이전트 태스크 취소", description = "현재 사용자가 소유한 대기 또는 실행 중 태스크를 취소합니다.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "204", description = "태스크 취소 완료"),
+            @ApiResponse(responseCode = "404", description = "존재하지 않거나 소유하지 않은 taskId")
+    })
+    @DeleteMapping("/tasks/{taskId}")
+    public ResponseEntity<Void> cancelTask(
+            @AuthenticationPrincipal Long userId,
+            @Parameter(description = "에이전트 태스크 ID")
+            @PathVariable String taskId) {
+        if (!taskStore.cancel(taskId, userId)) {
+            return ResponseEntity.notFound().build();
+        }
+        inputWaitStore.cancel(taskId);
+        return ResponseEntity.noContent().build();
     }
 
     @Operation(

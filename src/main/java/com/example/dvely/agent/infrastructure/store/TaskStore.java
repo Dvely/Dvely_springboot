@@ -2,9 +2,9 @@ package com.example.dvely.agent.infrastructure.store;
 
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.TaskStatus;
-import org.springframework.stereotype.Component;
-
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.springframework.stereotype.Component;
 
 @Component
 public class TaskStore {
@@ -15,8 +15,19 @@ public class TaskStore {
         store.put(task.taskId(), task);
     }
 
-    public AgentTask get(String taskId) {
-        return store.get(taskId);
+    public AgentTask getOwned(String taskId, Long ownerUserId) {
+        AgentTask task = store.get(taskId);
+        if (task == null || !task.ownerUserId().equals(ownerUserId)) {
+            return null;
+        }
+        return task;
+    }
+
+    public void markRunning(String taskId) {
+        store.computeIfPresent(taskId, (key, existing) ->
+                existing.status() == TaskStatus.CANCELLED
+                        ? existing
+                        : existing.withStatus(TaskStatus.RUNNING, null, null, null));
     }
 
     public void markDone(String taskId, String previewUrl, String summary) {
@@ -28,11 +39,36 @@ public class TaskStore {
     }
 
     public void markWaitingInput(String taskId, String question) {
-        store.computeIfPresent(taskId, (k, existing) -> existing.withWaitingInput(question));
+        store.computeIfPresent(taskId, (key, existing) ->
+                existing.status() == TaskStatus.CANCELLED
+                        ? existing
+                        : existing.withWaitingInput(question));
+    }
+
+    public boolean cancel(String taskId, Long ownerUserId) {
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        store.computeIfPresent(taskId, (key, existing) -> {
+            if (!existing.ownerUserId().equals(ownerUserId)
+                    || existing.status() == TaskStatus.DONE
+                    || existing.status() == TaskStatus.FAILED
+                    || existing.status() == TaskStatus.CANCELLED) {
+                return existing;
+            }
+            cancelled.set(true);
+            return existing.withStatus(TaskStatus.CANCELLED, null, null, null);
+        });
+        return cancelled.get();
+    }
+
+    public boolean isCancelled(String taskId) {
+        AgentTask task = store.get(taskId);
+        return task != null && task.status() == TaskStatus.CANCELLED;
     }
 
     private void update(String taskId, TaskStatus status, String previewUrl, String summary, String error) {
         store.computeIfPresent(taskId, (k, existing) ->
-                existing.withStatus(status, previewUrl, summary, error));
+                existing.status() == TaskStatus.CANCELLED
+                        ? existing
+                        : existing.withStatus(status, previewUrl, summary, error));
     }
 }

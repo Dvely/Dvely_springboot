@@ -2,8 +2,6 @@ package com.example.dvely.agent.application.orchestrator;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
-import com.example.dvely.agent.application.dto.AgentTask;
-import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.application.service.DeployAgentService;
@@ -13,8 +11,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
-
-import java.time.Instant;
 
 @Slf4j
 @Component
@@ -31,12 +27,16 @@ public class AgentPlanExecutor {
         log.info("=== AgentPlan 실행 시작: taskId={} | 총 {}단계 | reasoning={} ===",
                 taskId, plan.steps().size(), plan.reasoning());
 
-        taskStore.save(new AgentTask(taskId, TaskStatus.RUNNING, null, null, null, null, Instant.now()));
+        taskStore.markRunning(taskId);
 
         try {
             String previewUrl = null;
             String summary    = null;
             for (int i = 0; i < plan.steps().size(); i++) {
+                if (taskStore.isCancelled(taskId)) {
+                    log.info("=== AgentPlan 취소됨: taskId={} ===", taskId);
+                    return;
+                }
                 AgentStep step = plan.steps().get(i);
                 log.info("--- Step [{}/{}] agentType={} ---", i + 1, plan.steps().size(), step.agentType());
                 CodeResult result = dispatch(step, plan.aiProvider(), userId, taskId, plan.projectId());
@@ -49,6 +49,10 @@ public class AgentPlanExecutor {
             log.info("=== AgentPlan 실행 완료: taskId={} | previewUrl={} ===", taskId, previewUrl);
 
         } catch (Exception e) {
+            if (taskStore.isCancelled(taskId)) {
+                log.info("=== AgentPlan 취소됨: taskId={} ===", taskId);
+                return;
+            }
             taskStore.markFailed(taskId, e.getMessage());
             log.error("=== AgentPlan 실행 실패: taskId={} ===", taskId, e);
         }
