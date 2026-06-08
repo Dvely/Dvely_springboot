@@ -5,6 +5,7 @@ import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.ExecCreateCmdResponse;
 import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
@@ -46,6 +47,10 @@ public class DockerContainerService {
         this.dockerClient = DockerClientImpl.getInstance(config, httpClient);
     }
 
+    DockerContainerService(DockerClient dockerClient) {
+        this.dockerClient = dockerClient;
+    }
+
     public String createAndStartContainer(Long userId) {
         pullImageIfNeeded();
 
@@ -80,6 +85,9 @@ public class DockerContainerService {
         InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
         Ports.Binding[] bindings = inspect.getNetworkSettings().getPorts()
                 .getBindings().get(ExposedPort.tcp(CONTAINER_PORT));
+        if (bindings == null || bindings.length == 0) {
+            throw new IllegalStateException("컨테이너 포트 바인딩 없음: containerId=" + containerId);
+        }
         return Integer.parseInt(bindings[0].getHostPortSpec());
     }
 
@@ -121,10 +129,15 @@ public class DockerContainerService {
     public void removeContainer(String containerId) {
         try {
             dockerClient.stopContainerCmd(containerId).withTimeout(5).exec();
+        } catch (NotFoundException e) {
+            log.info("컨테이너 이미 없음 (stop 건너뜀): id={}", containerId);
+            return;
+        }
+        try {
             dockerClient.removeContainerCmd(containerId).exec();
             log.info("Docker 컨테이너 제거: id={}", containerId);
-        } catch (Exception e) {
-            log.warn("컨테이너 제거 실패: {}", containerId, e);
+        } catch (NotFoundException e) {
+            log.info("컨테이너 이미 없음 (remove 건너뜀): id={}", containerId);
         }
     }
 

@@ -15,7 +15,11 @@ public class InputWaitStore {
     /** 호출 즉시 반환되는 Future를 등록하고 반환. DeployAgentService가 .get()으로 블록한다. */
     public CompletableFuture<String> register(String taskId) {
         CompletableFuture<String> future = new CompletableFuture<>();
-        pending.put(taskId, future);
+        CompletableFuture<String> existing = pending.putIfAbsent(taskId, future);
+        if (existing != null) {
+            log.warn("[InputWaitStore] 이미 등록된 taskId, 기존 future 반환: taskId={}", taskId);
+            return existing;
+        }
         log.debug("[InputWaitStore] 입력 대기 등록: taskId={}", taskId);
         return future;
     }
@@ -27,9 +31,13 @@ public class InputWaitStore {
             log.warn("[InputWaitStore] 대기 중인 taskId 없음: {}", taskId);
             return false;
         }
-        future.complete(value);
-        log.info("[InputWaitStore] 입력 전달 완료: taskId={} value={}", taskId, value);
-        return true;
+        boolean completed = future.complete(value);
+        if (completed) {
+            log.info("[InputWaitStore] 입력 전달 완료: taskId={} value={}", taskId, value);
+        } else {
+            log.warn("[InputWaitStore] future 이미 완료됨 (타임아웃/취소 선행): taskId={}", taskId);
+        }
+        return completed;
     }
 
     /** 타임아웃 등으로 정리할 때 사용 */

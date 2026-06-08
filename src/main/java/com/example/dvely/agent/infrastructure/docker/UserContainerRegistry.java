@@ -63,10 +63,14 @@ public class UserContainerRegistry {
     }
 
     public void remove(Long userId) {
-        UserContainerInfo info = registry.remove(userId);
-        if (info != null) {
+        UserContainerInfo info = registry.get(userId);
+        if (info == null) return;
+        try {
             dockerService.removeContainer(info.containerId());
-            log.info("[ContainerRegistry] 제거: userId={} containerId={}", userId, info.containerId());
+            registry.remove(userId);
+            log.info("[ContainerRegistry] 제거 완료: userId={} containerId={}", userId, info.containerId());
+        } catch (Exception e) {
+            log.error("[ContainerRegistry] Docker 컨테이너 제거 실패, 레지스트리 유지 (TTL 재시도 예정): userId={} containerId={}", userId, info.containerId(), e);
         }
     }
 
