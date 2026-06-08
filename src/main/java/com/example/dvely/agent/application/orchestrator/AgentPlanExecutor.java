@@ -2,10 +2,12 @@ package com.example.dvely.agent.application.orchestrator;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
+import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
+import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -21,6 +23,7 @@ public class AgentPlanExecutor {
     private final DeployAgentService     deployAgentService;
     private final DomainBindAgentService domainBindAgentService;
     private final TaskStore              taskStore;
+    private final AgentMessageService    agentMessageService;
 
     @Async("agentExecutor")
     public void execute(AgentPlan plan, String taskId, Long userId) {
@@ -46,6 +49,12 @@ public class AgentPlanExecutor {
                 }
             }
             taskStore.markDone(taskId, previewUrl, summary);
+            taskStore.removePlan(taskId);
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    summary == null || summary.isBlank() ? "작업을 완료했습니다." : summary
+            );
             log.info("=== AgentPlan 실행 완료: taskId={} | previewUrl={} ===", taskId, previewUrl);
 
         } catch (Exception e) {
@@ -54,8 +63,20 @@ public class AgentPlanExecutor {
                 return;
             }
             taskStore.markFailed(taskId, e.getMessage());
+            taskStore.removePlan(taskId);
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    "작업 중 오류가 발생했습니다: " + safeMessage(e)
+            );
             log.error("=== AgentPlan 실행 실패: taskId={} ===", taskId, e);
         }
+    }
+
+    private String safeMessage(Exception exception) {
+        return exception.getMessage() == null || exception.getMessage().isBlank()
+                ? "알 수 없는 오류"
+                : exception.getMessage();
     }
 
     private CodeResult dispatch(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, Long userId, String taskId, Long projectId) {

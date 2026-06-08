@@ -1,6 +1,7 @@
 package com.example.dvely.agent.infrastructure.store;
 
 import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -10,6 +11,7 @@ import org.springframework.stereotype.Component;
 public class TaskStore {
 
     private final ConcurrentHashMap<String, AgentTask> store = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AgentPlan> plans = new ConcurrentHashMap<>();
 
     public void save(AgentTask task) {
         store.put(task.taskId(), task);
@@ -21,6 +23,26 @@ public class TaskStore {
             return null;
         }
         return task;
+    }
+
+    public AgentTask get(String taskId) {
+        return store.get(taskId);
+    }
+
+    public void savePlan(String taskId, AgentPlan plan) {
+        plans.put(taskId, plan);
+    }
+
+    public AgentPlan getPlan(String taskId) {
+        return plans.get(taskId);
+    }
+
+    public void removePlan(String taskId) {
+        plans.remove(taskId);
+    }
+
+    public void markWaitingApproval(String taskId, String summary) {
+        update(taskId, TaskStatus.WAITING_APPROVAL, null, summary, null);
     }
 
     public void markRunning(String taskId) {
@@ -55,6 +77,7 @@ public class TaskStore {
                 return existing;
             }
             cancelled.set(true);
+            plans.remove(taskId);
             return existing.withStatus(TaskStatus.CANCELLED, null, null, null);
         });
         return cancelled.get();

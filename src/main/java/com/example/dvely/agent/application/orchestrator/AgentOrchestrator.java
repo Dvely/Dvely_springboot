@@ -1,13 +1,26 @@
 package com.example.dvely.agent.application.orchestrator;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
+import com.example.dvely.agent.application.dto.AgentStep;
+import com.example.dvely.agent.application.dto.AgentSubmission;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.TaskStatus;
+import com.example.dvely.agent.application.service.AgentMessageService;
+import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.approval.domain.model.Approval;
+import com.example.dvely.approval.domain.repository.ApprovalRepository;
+import com.example.dvely.approval.domain.value.ApprovalType;
 import com.example.dvely.chat.domain.model.Conversation;
 import com.example.dvely.chat.domain.repository.ConversationRepository;
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
+import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -22,8 +35,11 @@ public class AgentOrchestrator {
     private final TaskStore              taskStore;
     private final ProjectRepository      projectRepository;
     private final ConversationRepository conversationRepository;
+    private final ProjectApprovalPolicyRepository policyRepository;
+    private final ApprovalRepository approvalRepository;
+    private final AgentMessageService agentMessageService;
 
-    public String submitAsync(AgentPlan plan, Long userId, Long conversationId) {
+    public AgentSubmission submit(AgentPlan plan, Long userId, Long conversationId) {
         Long projectId = resolveProjectId(userId, plan.projectId(), conversationId);
         AgentPlan normalizedPlan = new AgentPlan(plan.steps(), plan.reasoning(), plan.aiProvider(), projectId);
         String taskId = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
@@ -39,8 +55,103 @@ public class AgentOrchestrator {
                 null,
                 Instant.now()
         ));
-        agentPlanExecutor.execute(normalizedPlan, taskId, userId);
-        return taskId;
+        taskStore.savePlan(taskId, normalizedPlan);
+
+        List<Approval> approvals = createRequiredApprovals(normalizedPlan, taskId, userId, conversationId);
+        if (approvals.isEmpty()) {
+            agentMessageService.appendAssistant(conversationId, "승인 정책에 따라 작업을 시작합니다.");
+            executeApproved(taskId);
+            return new AgentSubmission(taskId, TaskStatus.RUNNING, List.of());
+        }
+
+        String approvalSummary = buildApprovalMessage(approvals);
+        taskStore.markWaitingApproval(taskId, approvalSummary);
+        agentMessageService.appendAssistant(conversationId, approvalSummary);
+        return new AgentSubmission(
+                taskId,
+                TaskStatus.WAITING_APPROVAL,
+                approvals.stream().map(Approval::getId).toList()
+        );
+    }
+
+    public void executeApproved(String taskId) {
+        AgentTask task = taskStore.get(taskId);
+        AgentPlan plan = taskStore.getPlan(taskId);
+        if (task == null || plan == null) {
+            throw new IllegalStateException("실행할 Agent task를 찾을 수 없습니다. taskId=" + taskId);
+        }
+        taskStore.markRunning(taskId);
+        agentPlanExecutor.execute(plan, taskId, task.ownerUserId());
+    }
+
+    public void reject(String taskId, Long ownerUserId) {
+        if (!taskStore.cancel(taskId, ownerUserId)) {
+            throw new IllegalStateException("거절할 Agent task를 찾을 수 없습니다. taskId=" + taskId);
+        }
+    }
+
+    private List<Approval> createRequiredApprovals(AgentPlan plan,
+                                                   String taskId,
+                                                   Long userId,
+                                                   Long conversationId) {
+        ProjectApprovalPolicy policy = resolvePolicy(plan.projectId());
+        Map<ApprovalType, String> summaries = new LinkedHashMap<>();
+        for (AgentStep step : plan.steps()) {
+            ApprovalType type = toApprovalType(step.agentType());
+            if (type == null || !policy.requires(type)) {
+                continue;
+            }
+            summaries.putIfAbsent(type, summarize(step));
+        }
+
+        List<Approval> approvals = new ArrayList<>();
+        summaries.forEach((type, summary) -> approvals.add(approvalRepository.save(new Approval(
+                userId,
+                plan.projectId(),
+                conversationId,
+                taskId,
+                type,
+                summary
+        ))));
+        return approvals;
+    }
+
+    private ProjectApprovalPolicy resolvePolicy(Long projectId) {
+        if (projectId == null) {
+            return new ProjectApprovalPolicy(null);
+        }
+        return policyRepository.findByProjectId(projectId)
+                .orElseGet(() -> new ProjectApprovalPolicy(projectId));
+    }
+
+    private ApprovalType toApprovalType(AgentType agentType) {
+        return switch (agentType) {
+            case CODE -> ApprovalType.CHANGE;
+            case DEPLOY -> ApprovalType.DEPLOYMENT;
+            case DOMAIN_BIND -> ApprovalType.DOMAIN_BINDING;
+            case CHAT -> null;
+        };
+    }
+
+    private String summarize(AgentStep step) {
+        String instruction = step.parameters().getOrDefault("instruction", "").trim();
+        if (instruction.isEmpty()) {
+            instruction = step.agentType().name() + " 작업";
+        }
+        return instruction.length() <= 200 ? instruction : instruction.substring(0, 197) + "...";
+    }
+
+    private String buildApprovalMessage(List<Approval> approvals) {
+        StringBuilder message = new StringBuilder("작업 계획을 만들었습니다. 승인 후 실행합니다.");
+        for (Approval approval : approvals) {
+            message.append("\n- [")
+                    .append(approval.getId())
+                    .append("] ")
+                    .append(approval.getType())
+                    .append(": ")
+                    .append(approval.getSummary());
+        }
+        return message.toString();
     }
 
     public Long resolveProjectId(Long userId, Long requestedProjectId, Long conversationId) {

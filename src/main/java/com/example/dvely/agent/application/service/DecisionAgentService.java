@@ -11,6 +11,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -96,10 +97,19 @@ public class DecisionAgentService {
             """;
 
     public AgentPlan decide(String userMessage, AiProvider provider, Long projectId) {
-        String prompt = projectId != null
-                ? userMessage + "\n\n[Context: This is a modification request for an existing project (projectId=" + projectId + "). Do NOT scaffold a new project.]"
-                : userMessage;
-        List<LlmMessage> messages = List.of(new LlmMessage("user", prompt));
+        return decide(List.of(new LlmMessage("user", userMessage)), provider, projectId);
+    }
+
+    public AgentPlan decide(List<LlmMessage> conversation, AiProvider provider, Long projectId) {
+        List<LlmMessage> messages = new ArrayList<>(conversation);
+        if (projectId != null) {
+            messages.add(new LlmMessage(
+                    "user",
+                    "[Project context: projectId=" + projectId
+                            + ". Treat the latest user request as a modification of this existing project. "
+                            + "Do not scaffold a new project.]"
+            ));
+        }
         String raw = llmRouter.route(provider).complete(SYSTEM_PROMPT, messages);
         log.info("의사결정 완료: provider={}, projectId={}, raw={}", provider, projectId, raw);
         return parse(raw, provider, projectId);

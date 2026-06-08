@@ -24,6 +24,9 @@ class ProjectSchemaTest {
         assertEquals(1, columnCount("deployments", "project_id"));
         assertEquals(1, columnCount("domains", "project_id"));
         assertEquals(1, columnCount("chat_sessions", "project_id"));
+        assertEquals(1, tableCount("project_approval_policies"));
+        assertEquals(1, tableCount("approvals"));
+        assertEquals(1, columnCount("approvals", "task_id"));
 
         String v13Applied = jdbcTemplate.queryForObject(
                 """
@@ -35,6 +38,17 @@ class ProjectSchemaTest {
         );
 
         assertTrue("1".equals(v13Applied) || "true".equalsIgnoreCase(v13Applied));
+
+        String v14Applied = jdbcTemplate.queryForObject(
+                """
+                        select coalesce(max(success), 0)
+                        from flyway_schema_history
+                        where version = '14'
+                        """,
+                String.class
+        );
+
+        assertTrue("1".equals(v14Applied) || "true".equalsIgnoreCase(v14Applied));
     }
 
     private Integer tableCount(String tableName) {

@@ -1,6 +1,7 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
+import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
@@ -28,6 +29,7 @@ public class DomainBindAgentService {
     private final DomainBindingFacade domainBindingFacade;
     private final TaskStore           taskStore;
     private final InputWaitStore      inputWaitStore;
+    private final AgentMessageService agentMessageService;
 
     public CodeResult execute(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[DomainBindAgent] 도메인 연결 시작 | userId={} taskId={} projectId={}", userId, taskId, projectId);
@@ -71,6 +73,8 @@ public class DomainBindAgentService {
                 + "- 커스텀 도메인: 전체 주소 입력 (예: www.mysite.com)";
 
         taskStore.markWaitingInput(taskId, question);
+        AgentTask task = taskStore.get(taskId);
+        agentMessageService.appendAssistant(task == null ? null : task.conversationId(), question);
         log.info("[DomainBindAgent] 사용자 입력 대기 중 | taskId={}", taskId);
 
         CompletableFuture<String> future = inputWaitStore.register(taskId);

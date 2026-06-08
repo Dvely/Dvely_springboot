@@ -1,5 +1,10 @@
 package com.example.dvely.chat.application.command;
 
+import com.example.dvely.agent.application.dto.AgentPlan;
+import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
+import com.example.dvely.agent.application.service.AgentMessageService;
+import com.example.dvely.agent.application.service.DecisionAgentService;
+import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.chat.application.result.ConversationResult;
 import com.example.dvely.chat.application.result.MessageResult;
 import com.example.dvely.chat.domain.exception.ConversationNotFoundException;
@@ -25,6 +30,9 @@ public class ChatCommandService {
     private final ConversationRepository conversationRepository;
     private final ChatMessageRepository chatMessageRepository;
     private final ProjectRepository projectRepository;
+    private final DecisionAgentService decisionAgentService;
+    private final AgentOrchestrator agentOrchestrator;
+    private final AgentMessageService agentMessageService;
 
     @Transactional
     public ConversationResult createConversation(Long userId, Long projectId) {
@@ -78,8 +86,30 @@ public class ChatCommandService {
         Conversation conversation = conversationRepository.findByIdAndUserIdAndDeletedFalse(conversationId, userId)
                 .orElseThrow(() -> new ConversationNotFoundException(conversationId, userId));
 
-        ChatMessage message = new ChatMessage(conversation.getId(), ChatRole.USER, content, 0);
-        return toMessageResult(chatMessageRepository.save(message));
+        ChatMessage message = chatMessageRepository.save(
+                new ChatMessage(conversation.getId(), ChatRole.USER, content, 0)
+        );
+
+        try {
+            AgentPlan plan = decisionAgentService.decide(
+                    agentMessageService.getConversationContext(conversationId),
+                    AiProvider.ANTHROPIC,
+                    conversation.getProjectId()
+            );
+            agentOrchestrator.submit(plan, userId, conversationId);
+        } catch (RuntimeException exception) {
+            agentMessageService.appendAssistant(
+                    conversationId,
+                    "요청을 분석하지 못했습니다: " + safeMessage(exception)
+            );
+        }
+        return toMessageResult(message);
+    }
+
+    private String safeMessage(RuntimeException exception) {
+        return exception.getMessage() == null || exception.getMessage().isBlank()
+                ? "알 수 없는 오류"
+                : exception.getMessage();
     }
 
     private void assertProjectAccessible(Long userId, Long projectId) {

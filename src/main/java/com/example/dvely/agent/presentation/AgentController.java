@@ -1,6 +1,7 @@
 package com.example.dvely.agent.presentation;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
+import com.example.dvely.agent.application.dto.AgentSubmission;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.service.DecisionAgentService;
@@ -61,9 +62,16 @@ public class AgentController {
                 request.projectId(),
                 request.conversationId()
         );
-        AgentPlan plan   = decisionAgentService.decide(request.content(), request.aiProvider(), projectId);
-        String    taskId = agentOrchestrator.submitAsync(plan, userId, request.conversationId());
-        return new DecisionResponse(plan.steps(), plan.reasoning(), request.aiProvider(), taskId);
+        AgentPlan plan = decisionAgentService.decide(request.content(), request.aiProvider(), projectId);
+        AgentSubmission submission = agentOrchestrator.submit(plan, userId, request.conversationId());
+        return new DecisionResponse(
+                plan.steps(),
+                plan.reasoning(),
+                request.aiProvider(),
+                submission.taskId(),
+                submission.status().name(),
+                submission.approvalIds()
+        );
     }
 
     @Operation(

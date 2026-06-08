@@ -5,10 +5,13 @@ import com.example.dvely.project.application.command.dto.ConnectProjectRepositor
 import com.example.dvely.project.application.command.dto.UpdateProjectCommand;
 import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
 import com.example.dvely.project.application.facade.ProjectFacade;
+import com.example.dvely.project.application.result.ProjectChatSettingsResult;
+import com.example.dvely.project.application.service.ProjectChatSettingsService;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
 import com.example.dvely.project.presentation.dto.request.ConnectProjectRepositoryRequest;
 import com.example.dvely.project.presentation.dto.request.CreateProjectRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectRequest;
+import com.example.dvely.project.presentation.dto.request.UpdateProjectChatSettingsRequest;
 import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectActivityLogResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCommitResponse;
@@ -16,6 +19,7 @@ import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse
 import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectOverviewResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectChatSettingsResponse;
 import com.example.dvely.project.presentation.dto.response.RepositoryHealthResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectSummaryResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -45,6 +49,7 @@ public class ProjectController {
 
     private final ProjectFacade projectFacade;
     private final ProjectMapper projectMapper;
+    private final ProjectChatSettingsService projectChatSettingsService;
 
     @Operation(
             summary = "프로젝트 생성",
@@ -199,5 +204,41 @@ public class ProjectController {
             @Parameter(description = "저장소 상태를 확인할 프로젝트 ID") @PathVariable Long projectId
     ) {
         return projectMapper.toRepositoryHealthResponse(projectFacade.getRepositoryHealth(ownerUserId, projectId));
+    }
+
+    @Operation(summary = "프로젝트 Chat 승인 정책 조회")
+    @GetMapping("/{projectId}/settings/chat")
+    public ProjectChatSettingsResponse getChatSettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long projectId
+    ) {
+        return toChatSettingsResponse(projectChatSettingsService.get(ownerUserId, projectId));
+    }
+
+    @Operation(summary = "프로젝트 Chat 승인 정책 수정")
+    @PatchMapping("/{projectId}/settings/chat")
+    public ProjectChatSettingsResponse updateChatSettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long projectId,
+            @Valid @RequestBody UpdateProjectChatSettingsRequest request
+    ) {
+        return toChatSettingsResponse(projectChatSettingsService.update(
+                ownerUserId,
+                projectId,
+                request.changeApprovalRequired(),
+                request.deploymentApprovalRequired(),
+                request.domainApprovalRequired(),
+                request.infraApprovalRequired()
+        ));
+    }
+
+    private ProjectChatSettingsResponse toChatSettingsResponse(ProjectChatSettingsResult result) {
+        return new ProjectChatSettingsResponse(
+                result.projectId(),
+                result.changeApprovalRequired(),
+                result.deploymentApprovalRequired(),
+                result.domainApprovalRequired(),
+                result.infraApprovalRequired()
+        );
     }
 }

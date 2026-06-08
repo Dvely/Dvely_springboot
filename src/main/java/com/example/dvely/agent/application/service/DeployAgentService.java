@@ -1,6 +1,7 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
+import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.docker.UserContainerInfo;
@@ -48,6 +49,7 @@ public class DeployAgentService {
     private final DeploymentFacade       deploymentFacade;
     private final TaskStore              taskStore;
     private final InputWaitStore         inputWaitStore;
+    private final AgentMessageService    agentMessageService;
 
     public CodeResult execute(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[DeployAgent] 배포 시작 | userId={} taskId={} projectId={}", userId, taskId, projectId);
@@ -108,18 +110,18 @@ public class DeployAgentService {
         }
 
         if (sourceChanged) {
-            String summary = buildPreviewSummary(project.getSourceRepository(), taskId);
-            log.info("[DeployAgent] preview 브랜치 반영 완료 | repository={} taskId={}",
+            log.info("[DeployAgent] 승인된 변경을 preview 브랜치에 반영 | repository={} taskId={}",
                     project.getSourceRepository(), taskId);
-            return new CodeResult(null, summary);
         }
 
-        // GitHub Pages 배포 (Pages 활성화 + 워크플로우 생성/트리거 + 폴링)
+        // AgentPlanExecutor는 필요한 승인이 모두 끝난 뒤에만 이 서비스를 호출한다.
         DeployResult result = deploymentFacade.deploy(userId, project.getId(),
                 new DeployCommand(DeployTargetType.LATEST, null));
 
         String pagesUrl = result.pagesUrl();
-        String summary  = buildSummary(project.getSourceRepository(), pagesUrl);
+        String summary = sourceChanged
+                ? buildApprovedChangeSummary(project.getSourceRepository(), taskId, pagesUrl)
+                : buildSummary(project.getSourceRepository(), pagesUrl);
         log.info("[DeployAgent] 배포 완료 | pagesUrl={}", pagesUrl);
         return new CodeResult(null, summary);
     }
@@ -147,6 +149,8 @@ public class DeployAgentService {
                 + "소문자, 숫자, 하이픈만 사용 가능합니다.";
 
         taskStore.markWaitingInput(taskId, question);
+        AgentTask task = taskStore.get(taskId);
+        agentMessageService.appendAssistant(task == null ? null : task.conversationId(), question);
         log.info("[DeployAgent] 사용자 입력 대기 중 | taskId={}", taskId);
 
         CompletableFuture<String> future = inputWaitStore.register(taskId);
@@ -302,13 +306,13 @@ public class DeployAgentService {
                 """, repoFullName, pagesUrl);
     }
 
-    private String buildPreviewSummary(String repoFullName, String taskId) {
+    private String buildApprovedChangeSummary(String repoFullName, String taskId, String pagesUrl) {
         return String.format("""
-                변경 사항을 preview 브랜치에 저장했습니다.
+                승인된 변경 사항을 배포했습니다.
                 - 저장소: https://github.com/%s
-                - 브랜치: preview
                 - 요청 ID: %s
-                - main 반영과 배포에는 승인이 필요합니다.
-                """, repoFullName, taskId);
+                - 배포 URL: %s
+                - preview 브랜치 변경을 main에 반영하고 배포 workflow를 시작했습니다.
+                """, repoFullName, taskId, pagesUrl);
     }
 }
