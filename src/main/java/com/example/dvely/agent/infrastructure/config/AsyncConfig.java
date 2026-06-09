@@ -23,4 +23,15 @@ public class AsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    @Bean("agentEventExecutor")
+    public Executor agentEventExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(10);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("agent-event-");
+        executor.initialize();
+        return executor;
+    }
 }

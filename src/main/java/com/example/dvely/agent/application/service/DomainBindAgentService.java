@@ -1,10 +1,9 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
-import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.exception.AgentInputRequiredException;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
-import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.domainbinding.application.command.dto.BindDomainCommand;
 import com.example.dvely.domainbinding.application.facade.DomainBindingFacade;
 import com.example.dvely.domainbinding.application.result.DomainBindingResult;
@@ -14,22 +13,14 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class DomainBindAgentService {
 
-    private static final long INPUT_TIMEOUT = 5L; // 분
-
     private final DomainBindingFacade domainBindingFacade;
-    private final TaskStore           taskStore;
     private final InputWaitStore      inputWaitStore;
-    private final AgentMessageService agentMessageService;
 
     public CodeResult execute(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[DomainBindAgent] 도메인 연결 시작 | userId={} taskId={} projectId={}", userId, taskId, projectId);
@@ -72,28 +63,10 @@ public class DomainBindAgentService {
                 + "- 관리형 서브도메인: 라벨만 입력 (예: my-app → my-app.qeploy.com)\n"
                 + "- 커스텀 도메인: 전체 주소 입력 (예: www.mysite.com)";
 
-        taskStore.markWaitingInput(taskId, question);
-        AgentTask task = taskStore.get(taskId);
-        agentMessageService.appendAssistant(task == null ? null : task.conversationId(), question);
-        log.info("[DomainBindAgent] 사용자 입력 대기 중 | taskId={}", taskId);
-
-        CompletableFuture<String> future = inputWaitStore.register(taskId);
-        try {
-            String answer = future.get(INPUT_TIMEOUT, TimeUnit.MINUTES);
-            String domain = answer.trim();
-            if (domain.isEmpty()) throw new IllegalArgumentException("도메인 값이 비어 있습니다.");
-            return domain;
-        } catch (TimeoutException e) {
-            inputWaitStore.cancel(taskId);
-            throw new IllegalStateException("도메인 입력 대기 시간이 초과되었습니다.");
-        } catch (ExecutionException e) {
-            throw new IllegalStateException("도메인 입력 처리 중 오류: " + e.getCause().getMessage(), e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("도메인 입력 대기 중 인터럽트 발생");
-        } finally {
-            taskStore.markRunning(taskId);
-        }
+        return inputWaitStore.consume(taskId)
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .orElseThrow(() -> new AgentInputRequiredException(question));
     }
 
     // ── 요약 생성 ──────────────────────────────────────────────────────────────

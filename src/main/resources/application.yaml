@@ -49,6 +49,16 @@ encrypt:
 frontend:
   redirect-url: ${FRONTEND_REDIRECT_URL:http://localhost:5173}
 
+qeploy:
+  preview:
+    gateway-base-url: ${QEPLOY_PREVIEW_GATEWAY_BASE_URL:http://localhost:8080}
+    ttl: ${QEPLOY_PREVIEW_TTL:30m}
+    cleanup-interval-ms: ${QEPLOY_PREVIEW_CLEANUP_INTERVAL_MS:60000}
+  agent:
+    worker:
+      poll-interval-ms: ${QEPLOY_AGENT_WORKER_POLL_INTERVAL_MS:1000}
+      heartbeat-interval-ms: ${QEPLOY_AGENT_WORKER_HEARTBEAT_INTERVAL_MS:30000}
+
 # Cloudflare DNS - managed subdomain automation
 cloudflare:
   api-token:

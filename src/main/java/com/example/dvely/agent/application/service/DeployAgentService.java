@@ -1,13 +1,10 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
-import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.exception.AgentInputRequiredException;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
-import com.example.dvely.agent.infrastructure.docker.UserContainerInfo;
-import com.example.dvely.agent.infrastructure.docker.UserContainerRegistry;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
-import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -21,6 +18,8 @@ import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
+import com.example.dvely.preview.application.result.PreviewSessionInfo;
+import com.example.dvely.preview.application.service.PreviewSessionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -28,33 +27,25 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Optional;
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class DeployAgentService {
 
-    private static final long INPUT_TIMEOUT = 5L; // 분
-
     private final DockerContainerService dockerService;
-    private final UserContainerRegistry  containerRegistry;
+    private final PreviewSessionService  previewSessionService;
     private final GithubRepositoryPort   githubRepositoryPort;
     private final UserRepository         userRepository;
     private final AuthCommandService     authCommandService;
     private final ProjectRepository      projectRepository;
     private final DeploymentFacade       deploymentFacade;
-    private final TaskStore              taskStore;
     private final InputWaitStore         inputWaitStore;
-    private final AgentMessageService    agentMessageService;
 
     public CodeResult execute(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[DeployAgent] 배포 시작 | userId={} taskId={} projectId={}", userId, taskId, projectId);
 
-        Optional<UserContainerInfo> containerOpt = containerRegistry.find(userId);
+        Optional<PreviewSessionInfo> containerOpt = previewSessionService.findByTaskId(taskId);
         Project project;
         boolean sourceChanged = false;
 
@@ -148,31 +139,11 @@ public class DeployAgentService {
                 + "(예: my-react-app, todo-kanban)\n"
                 + "소문자, 숫자, 하이픈만 사용 가능합니다.";
 
-        taskStore.markWaitingInput(taskId, question);
-        AgentTask task = taskStore.get(taskId);
-        agentMessageService.appendAssistant(task == null ? null : task.conversationId(), question);
-        log.info("[DeployAgent] 사용자 입력 대기 중 | taskId={}", taskId);
-
-        CompletableFuture<String> future = inputWaitStore.register(taskId);
-        try {
-            String answer = future.get(INPUT_TIMEOUT, TimeUnit.MINUTES);
-            String name   = sanitize(answer.trim());
-            return name.isEmpty() ? defaultRepoName(userId) : name;
-        } catch (TimeoutException e) {
-            log.warn("[DeployAgent] 입력 대기 타임아웃 → 기본 이름 사용");
-            inputWaitStore.cancel(taskId);
-            return defaultRepoName(userId);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return defaultRepoName(userId);
-        } catch (CancellationException e) {
-            throw e;
-        } catch (Exception e) {
-            log.warn("[DeployAgent] 입력 대기 오류: {}", e.getMessage());
-            return defaultRepoName(userId);
-        } finally {
-            taskStore.markRunning(taskId);
-        }
+        return inputWaitStore.consume(taskId)
+                .map(String::trim)
+                .map(this::sanitize)
+                .filter(name -> !name.isEmpty())
+                .orElseThrow(() -> new AgentInputRequiredException(question));
     }
 
     // ── User 조회 및 토큰 갱신 ──────────────────────────────────────────────────

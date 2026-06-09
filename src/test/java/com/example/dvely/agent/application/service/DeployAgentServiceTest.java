@@ -12,10 +12,7 @@ import static org.mockito.Mockito.when;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
-import com.example.dvely.agent.infrastructure.docker.UserContainerInfo;
-import com.example.dvely.agent.infrastructure.docker.UserContainerRegistry;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
-import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -32,6 +29,8 @@ import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
+import com.example.dvely.preview.application.result.PreviewSessionInfo;
+import com.example.dvely.preview.application.service.PreviewSessionService;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Map;
@@ -43,7 +42,7 @@ class DeployAgentServiceTest {
     @Test
     void deploysApprovedRequestAfterPushingRequestCommitToPreview() {
         DockerContainerService dockerService = mock(DockerContainerService.class);
-        UserContainerRegistry containerRegistry = mock(UserContainerRegistry.class);
+        PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
         AuthCommandService authCommandService = mock(AuthCommandService.class);
@@ -51,19 +50,27 @@ class DeployAgentServiceTest {
         DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
         DeployAgentService service = new DeployAgentService(
                 dockerService,
-                containerRegistry,
+                previewSessionService,
                 githubRepositoryPort,
                 userRepository,
                 authCommandService,
                 projectRepository,
                 deploymentFacade,
-                new TaskStore(),
-                new InputWaitStore(),
-                mock(AgentMessageService.class)
+                mock(InputWaitStore.class)
         );
         Project project = boundProject();
-        when(containerRegistry.find(1L))
-                .thenReturn(Optional.of(new UserContainerInfo("container-1", 3000, Instant.now())));
+        when(previewSessionService.findByTaskId("task123"))
+                .thenReturn(Optional.of(new PreviewSessionInfo(
+                        "session-1",
+                        1L,
+                        11L,
+                        21L,
+                        "task123",
+                        "container-1",
+                        3000,
+                        "https://preview.qeploy.com/session-1/",
+                        LocalDateTime.now().plusMinutes(30)
+                )));
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(project));

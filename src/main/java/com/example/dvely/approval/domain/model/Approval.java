@@ -68,6 +68,10 @@ public class Approval {
         decide(ApprovalStatus.REJECTED);
     }
 
+    public void cancel() {
+        decide(ApprovalStatus.CANCELLED);
+    }
+
     private void decide(ApprovalStatus decision) {
         if (status != ApprovalStatus.PENDING) {
             throw new IllegalStateException("이미 처리된 승인입니다. approvalId=" + id);

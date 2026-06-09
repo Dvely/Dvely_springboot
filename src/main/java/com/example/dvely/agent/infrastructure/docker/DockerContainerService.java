@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +33,10 @@ public class DockerContainerService {
     private static final long   EXEC_TIMEOUT_MIN = 10L;
     private static final String AGENT_LABEL = "qeploy.agent";
     private static final String USER_ID_LABEL = "qeploy.userId";
+    private static final String PREVIEW_SESSION_ID_LABEL = "qeploy.previewSessionId";
+    private static final String PROJECT_ID_LABEL = "qeploy.projectId";
+    private static final String CONVERSATION_ID_LABEL = "qeploy.conversationId";
+    private static final String TASK_ID_LABEL = "qeploy.taskId";
     private static final String LEGACY_AGENT_LABEL = "dvely.agent";
 
     private final DockerClient dockerClient;
@@ -50,28 +55,46 @@ public class DockerContainerService {
         this.dockerClient = DockerClientImpl.getInstance(config, httpClient);
     }
 
-    public String createAndStartContainer(Long userId) {
+    public String createAndStartContainer(Long userId,
+                                          String previewSessionId,
+                                          Long projectId,
+                                          Long conversationId,
+                                          String taskId) {
         pullImageIfNeeded();
 
         ExposedPort exposedPort = ExposedPort.tcp(CONTAINER_PORT);
         Ports portBindings = new Ports();
         portBindings.bind(exposedPort, Ports.Binding.bindPort(0));
 
+        Map<String, String> labels = new HashMap<>();
+        labels.put(AGENT_LABEL, "true");
+        labels.put(USER_ID_LABEL, String.valueOf(userId));
+        putLabel(labels, PREVIEW_SESSION_ID_LABEL, previewSessionId);
+        putLabel(labels, PROJECT_ID_LABEL, projectId);
+        putLabel(labels, CONVERSATION_ID_LABEL, conversationId);
+        putLabel(labels, TASK_ID_LABEL, taskId);
+
         CreateContainerResponse container = dockerClient.createContainerCmd(IMAGE)
                 .withExposedPorts(exposedPort)
                 .withHostConfig(HostConfig.newHostConfig()
                         .withPortBindings(portBindings)
                         .withMemory(1024 * 1024 * 1024L))
-                .withLabels(Map.of(
-                        AGENT_LABEL,  "true",
-                        USER_ID_LABEL, String.valueOf(userId)
-                ))
+                .withLabels(labels)
                 .withCmd("tail", "-f", "/dev/null")
                 .exec();
 
         dockerClient.startContainerCmd(container.getId()).exec();
         log.info("Docker 컨테이너 시작: id={} userId={}", container.getId(), userId);
         return container.getId();
+    }
+
+    public boolean isContainerRunning(String containerId) {
+        try {
+            InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
+            return inspect.getState() != null && Boolean.TRUE.equals(inspect.getState().getRunning());
+        } catch (Exception exception) {
+            return false;
+        }
     }
 
     public List<com.github.dockerjava.api.model.Container> listAgentContainers() {
@@ -145,6 +168,12 @@ public class DockerContainerService {
             log.info("Docker 이미지 준비 완료: {}", IMAGE);
         } catch (Exception e) {
             log.warn("이미지 pull 실패 (로컬에 존재할 수 있음): {}", e.getMessage());
+        }
+    }
+
+    private void putLabel(Map<String, String> labels, String key, Object value) {
+        if (value != null) {
+            labels.put(key, String.valueOf(value));
         }
     }
 }

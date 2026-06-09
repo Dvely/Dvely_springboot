@@ -10,6 +10,7 @@ import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
+import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
 import com.example.dvely.chat.domain.model.Conversation;
 import com.example.dvely.chat.domain.repository.ConversationRepository;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -31,7 +33,6 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class AgentOrchestrator {
 
-    private final AgentPlanExecutor      agentPlanExecutor;
     private final TaskStore              taskStore;
     private final ProjectRepository      projectRepository;
     private final ConversationRepository conversationRepository;
@@ -39,6 +40,7 @@ public class AgentOrchestrator {
     private final ApprovalRepository approvalRepository;
     private final AgentMessageService agentMessageService;
 
+    @Transactional
     public AgentSubmission submit(AgentPlan plan, Long userId, Long conversationId) {
         Long projectId = resolveProjectId(userId, plan.projectId(), conversationId);
         AgentPlan normalizedPlan = new AgentPlan(plan.steps(), plan.reasoning(), plan.aiProvider(), projectId);
@@ -60,8 +62,8 @@ public class AgentOrchestrator {
         List<Approval> approvals = createRequiredApprovals(normalizedPlan, taskId, userId, conversationId);
         if (approvals.isEmpty()) {
             agentMessageService.appendAssistant(conversationId, "승인 정책에 따라 작업을 시작합니다.");
-            executeApproved(taskId);
-            return new AgentSubmission(taskId, TaskStatus.RUNNING, List.of());
+            taskStore.enqueue(taskId);
+            return new AgentSubmission(taskId, TaskStatus.QUEUED, List.of());
         }
 
         String approvalSummary = buildApprovalMessage(approvals);
@@ -80,14 +82,39 @@ public class AgentOrchestrator {
         if (task == null || plan == null) {
             throw new IllegalStateException("실행할 Agent task를 찾을 수 없습니다. taskId=" + taskId);
         }
-        taskStore.markRunning(taskId);
-        agentPlanExecutor.execute(plan, taskId, task.ownerUserId());
+        if (task.status() == TaskStatus.FAILED) {
+            if (!taskStore.retry(taskId, task.ownerUserId())) {
+                throw new IllegalStateException("재시도할 수 없는 Agent task입니다. taskId=" + taskId);
+            }
+            return;
+        }
+        taskStore.enqueue(taskId);
     }
 
     public void reject(String taskId, Long ownerUserId) {
         if (!taskStore.cancel(taskId, ownerUserId)) {
             throw new IllegalStateException("거절할 Agent task를 찾을 수 없습니다. taskId=" + taskId);
         }
+    }
+
+    @Transactional
+    public boolean cancel(String taskId, Long ownerUserId) {
+        if (!taskStore.cancel(taskId, ownerUserId)) {
+            return false;
+        }
+        approvalRepository.findByTaskIdOrderByIdAsc(taskId).stream()
+                .filter(approval -> approval.getStatus() == ApprovalStatus.PENDING)
+                .forEach(approval -> {
+                    approval.cancel();
+                    approvalRepository.save(approval);
+                });
+        return true;
+    }
+
+    public boolean retry(String taskId, Long ownerUserId) {
+        boolean pendingApproval = approvalRepository.findByTaskIdOrderByIdAsc(taskId).stream()
+                .anyMatch(approval -> approval.getStatus() == ApprovalStatus.PENDING);
+        return !pendingApproval && taskStore.retry(taskId, ownerUserId);
     }
 
     private List<Approval> createRequiredApprovals(AgentPlan plan,
