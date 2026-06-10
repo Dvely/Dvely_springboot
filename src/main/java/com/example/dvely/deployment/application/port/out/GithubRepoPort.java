@@ -1,6 +1,7 @@
 package com.example.dvely.deployment.application.port.out;
 
 import com.example.dvely.deployment.domain.value.PackageManager;
+import java.time.LocalDateTime;
 
 public interface GithubRepoPort {
 
@@ -49,9 +50,30 @@ public interface GithubRepoPort {
      */
     boolean isCommitTagged(String userToken, String repoFullName, String commitSha);
 
+    String findSequentialTagForCommit(String userToken, String repoFullName, String commitSha);
+
     /**
      * 순차 태그(v1, v2, ...)를 생성하고 태그명을 반환한다.
      * 기존 최대 번호에서 +1. 태그가 없으면 v1부터 시작한다.
      */
     String createNextSequentialTag(String userToken, String repoFullName, String commitSha);
+
+    String resolveCommitSha(String userToken, String repoFullName, String ref);
+
+    ReleaseMetadata getReleaseMetadata(
+            String userToken,
+            String repoFullName,
+            String commitSha,
+            Integer preferredPrNumber
+    );
+
+    record ReleaseMetadata(
+            String commitSha,
+            String title,
+            String description,
+            String mergedBy,
+            String mergedByAvatarUrl,
+            Integer prNumber,
+            LocalDateTime mergedAt
+    ) {}
 }

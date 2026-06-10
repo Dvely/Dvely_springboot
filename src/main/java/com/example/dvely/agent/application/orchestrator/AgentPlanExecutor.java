@@ -59,9 +59,6 @@ public class AgentPlanExecutor {
                     if (step.agentType() == com.example.dvely.agent.domain.value.AgentType.CODE) {
                         changeService.record(taskId, summary);
                     }
-                    if (step.agentType() == com.example.dvely.agent.domain.value.AgentType.DEPLOY) {
-                        changeService.markDeployed(taskId);
-                    }
                 }
                 taskStore.markStepCompleted(taskId, i + 1);
             }

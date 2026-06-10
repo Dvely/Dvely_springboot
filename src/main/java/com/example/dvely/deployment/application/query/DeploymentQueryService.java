@@ -2,6 +2,7 @@ package com.example.dvely.deployment.application.query;
 
 import com.example.dvely.deployment.application.port.out.GithubActionsPort;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort.DeploymentLogs;
+import com.example.dvely.deployment.application.port.out.GithubActionsPort.WorkflowRunMatch;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort.WorkflowRunStatus;
 import com.example.dvely.deployment.application.result.DeploymentCandidateResult;
 import com.example.dvely.deployment.application.result.DeploymentHistoryResult;
@@ -41,7 +42,7 @@ public class DeploymentQueryService {
                 .orElseThrow(() -> new NotFoundException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));
         Project project = findOwnedProject(ownerUserId, history.getProjectId());
 
-        // LIVE/FAILED는 DB 상태만 반환 (GitHub Actions 조회 불필요)
+        // queue 대기 또는 완료 상태는 DB 상태만 반환한다.
         if (history.getStatus() != DeployStatus.IN_PROGRESS) {
             return toStatusResult(history, null);
         }
@@ -50,17 +51,37 @@ public class DeploymentQueryService {
         User user = userRepository.findById(ownerUserId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다."));
 
-        WorkflowRunStatus runStatus = githubActionsPort.getLatestRunStatus(
-                user.getGithubUserAccessToken(),
-                project.getSourceRepository(),
-                DeployWorkflowTemplate.fileName(),
-                history.getTriggeredAt());
-        if (runStatus.runId() == null) {
+        WorkflowRunStatus runStatus;
+        if (history.getWorkflowRunId() != null) {
+            runStatus = githubActionsPort.getWorkflowRunStatus(
+                    user.getGithubUserAccessToken(),
+                    project.getSourceRepository(),
+                    history.getWorkflowRunId()
+            );
+        } else if (history.getCorrelationId() != null
+                && !history.getCorrelationId().startsWith("legacy-")) {
+            WorkflowRunMatch match = githubActionsPort.findWorkflowRun(
+                    user.getGithubUserAccessToken(),
+                    project.getSourceRepository(),
+                    DeployWorkflowTemplate.fileName(),
+                    history.getCorrelationId(),
+                    history.getWorkflowHeadSha(),
+                    history.getTriggeredAt()
+            );
+            runStatus = new WorkflowRunStatus(match.runId(), match.status(), match.conclusion());
+        } else {
             runStatus = githubActionsPort.getLatestRunStatus(
+                    user.getGithubUserAccessToken(),
+                    project.getSourceRepository(),
+                    DeployWorkflowTemplate.fileName(),
+                    history.getTriggeredAt());
+            if (runStatus.runId() == null) {
+                runStatus = githubActionsPort.getLatestRunStatus(
                     user.getGithubUserAccessToken(),
                     project.getSourceRepository(),
                     DeployWorkflowTemplate.legacyFileName(),
                     history.getTriggeredAt());
+            }
         }
 
         return toStatusResult(history, runStatus);
@@ -123,10 +144,10 @@ public class DeploymentQueryService {
                 .map(h -> new VersionResult(
                         h.getId(),
                         h.getVersionLabel(),
-                        null,   // commitSha: DB에 미저장, 필요 시 GitHub API 추가
-                        null,   // title: DB에 미저장, 필요 시 GitHub API 추가
+                        h.getCommitSha(),
+                        h.getTitle(),
                         h.getStatus().name(),
-                        h.getTriggeredAt()
+                        h.getMergedAt() == null ? h.getTriggeredAt() : h.getMergedAt()
                 ))
                 .toList();
     }
@@ -140,15 +161,15 @@ public class DeploymentQueryService {
         return new VersionDetailResult(
                 history.getId(),
                 history.getVersionLabel(),
-                null,   // commitSha
-                null,   // title
-                null,   // description
+                history.getCommitSha(),
+                history.getTitle(),
+                history.getDescription(),
                 history.getStatus().name(),
                 history.getDeployedUrl(),
-                null,   // mergedBy
-                null,   // mergedByAvatarUrl
-                null,   // prNumber
-                history.getTriggeredAt()
+                history.getMergedBy(),
+                history.getMergedByAvatarUrl(),
+                history.getPrNumber(),
+                history.getMergedAt() == null ? history.getTriggeredAt() : history.getMergedAt()
         );
     }
 
@@ -168,8 +189,8 @@ public class DeploymentQueryService {
                 .map(h -> new DeploymentCandidateResult(
                         h.getId(),
                         h.getVersionLabel(),
-                        null,
-                        null,
+                        h.getCommitSha(),
+                        h.getTitle(),
                         h.getStatus().name(),
                         h.getDeployedUrl(),
                         h.getUpdatedAt()

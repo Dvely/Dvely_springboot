@@ -22,6 +22,17 @@ public class DeployWorkflowTemplate {
                 || LEGACY_WORKFLOW_NAME.equalsIgnoreCase(workflowName);
     }
 
+    public static String runTitle(String correlationId) {
+        return "Qeploy deployment " + correlationId;
+    }
+
+    public static String correlationIdFromRunTitle(String runTitle) {
+        String prefix = "Qeploy deployment ";
+        return runTitle != null && runTitle.startsWith(prefix)
+                ? runTitle.substring(prefix.length()).trim()
+                : null;
+    }
+
     public static String generate(String templateType, String publishDir,
                                   PackageManager pm, String nodeVersion) {
         String type   = templateType == null ? "" : templateType.toLowerCase();
@@ -31,9 +42,14 @@ public class DeployWorkflowTemplate {
 
         // ── 헤더 ─────────────────────────────────────────────────────────────
         w.append("name: ").append(WORKFLOW_NAME).append("\n\n");
+        w.append("run-name: Qeploy deployment ${{ inputs.deployment_id }}\n\n");
         w.append("on:\n");
         w.append("  workflow_dispatch:\n");
         w.append("    inputs:\n");
+        w.append("      deployment_id:\n");
+        w.append("        description: 'Qeploy deployment correlation ID'\n");
+        w.append("        required: false\n");
+        w.append("        type: string\n");
         w.append("      checkout_ref:\n");
         w.append("        description: 'Git ref to checkout and build'\n");
         w.append("        required: false\n");

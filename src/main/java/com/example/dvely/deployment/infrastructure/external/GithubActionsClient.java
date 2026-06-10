@@ -1,6 +1,7 @@
 package com.example.dvely.deployment.infrastructure.external;
 
 import com.example.dvely.deployment.application.port.out.GithubActionsPort;
+import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.extern.slf4j.Slf4j;
@@ -80,14 +81,14 @@ public class GithubActionsClient implements GithubActionsPort {
 
     @Override
     public void triggerWorkflow(String userToken, String repoFullName, String workflowFileName,
-                                String dispatchRef, String checkoutRef) {
+                                String dispatchRef, String checkoutRef, String correlationId) {
         String[] parts = splitRepo(repoFullName);
         try {
             restClient(userToken)
                     .post()
                     .uri(API_BASE + "/repos/{owner}/{repo}/actions/workflows/{file}/dispatches",
                             parts[0], parts[1], workflowFileName)
-                    .body(workflowDispatchBody(dispatchRef, checkoutRef))
+                    .body(workflowDispatchBody(dispatchRef, checkoutRef, correlationId))
                     .retrieve()
                     .toBodilessEntity();
             log.info("워크플로우 dispatch 트리거: repo={}, workflow={}, dispatchRef={}, checkoutRef={}",
@@ -97,14 +98,25 @@ public class GithubActionsClient implements GithubActionsPort {
         }
     }
 
-    private Map<String, Object> workflowDispatchBody(String dispatchRef, String checkoutRef) {
+    private Map<String, Object> workflowDispatchBody(String dispatchRef,
+                                                     String checkoutRef,
+                                                     String correlationId) {
         String normalizedCheckoutRef = normalizeOptionalRef(checkoutRef);
-        if (normalizedCheckoutRef == null || normalizedCheckoutRef.equals(dispatchRef)) {
+        String normalizedCorrelationId = normalizeOptionalRef(correlationId);
+        if (normalizedCorrelationId == null
+                && (normalizedCheckoutRef == null || normalizedCheckoutRef.equals(dispatchRef))) {
             return Map.of("ref", dispatchRef);
+        }
+        Map<String, String> inputs = new java.util.HashMap<>();
+        if (normalizedCheckoutRef != null && !normalizedCheckoutRef.equals(dispatchRef)) {
+            inputs.put("checkout_ref", normalizedCheckoutRef);
+        }
+        if (normalizedCorrelationId != null) {
+            inputs.put("deployment_id", normalizedCorrelationId);
         }
         return Map.of(
                 "ref", dispatchRef,
-                "inputs", Map.of("checkout_ref", normalizedCheckoutRef)
+                "inputs", Map.copyOf(inputs)
         );
     }
 
@@ -159,26 +171,111 @@ public class GithubActionsClient implements GithubActionsPort {
     }
 
     @Override
-    public Long pollRunId(String userToken, String repoFullName, String workflowFileName,
-                          LocalDateTime afterTime, int maxRetries, long retryIntervalMs) {
+    public WorkflowRunMatch findWorkflowRun(String userToken,
+                                            String repoFullName,
+                                            String workflowFileName,
+                                            String correlationId,
+                                            String expectedHeadSha,
+                                            LocalDateTime afterTime) {
+        WorkflowRunsResponse response = getWorkflowRuns(
+                userToken,
+                repoFullName,
+                workflowFileName,
+                afterTime
+        );
+        if (response == null || response.workflowRuns() == null) {
+            return new WorkflowRunMatch(null, null, "queued", null);
+        }
+        String expectedTitle = DeployWorkflowTemplate.runTitle(correlationId);
+        return response.workflowRuns().stream()
+                .filter(run -> expectedTitle.equals(run.displayTitle()))
+                .filter(run -> expectedHeadSha == null || expectedHeadSha.equals(run.headSha()))
+                .findFirst()
+                .map(run -> new WorkflowRunMatch(
+                        run.id(),
+                        run.headSha(),
+                        run.status(),
+                        run.conclusion()
+                ))
+                .orElseGet(() -> new WorkflowRunMatch(null, null, "queued", null));
+    }
+
+    @Override
+    public WorkflowRunMatch pollWorkflowRun(String userToken,
+                                            String repoFullName,
+                                            String workflowFileName,
+                                            String correlationId,
+                                            String expectedHeadSha,
+                                            LocalDateTime afterTime,
+                                            int maxRetries,
+                                            long retryIntervalMs) {
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
-            WorkflowRunStatus status = getLatestRunStatus(userToken, repoFullName, workflowFileName, afterTime);
-            if (status.runId() != null) {
-                log.info("워크플로우 run_id 확인: repo={}, runId={}", repoFullName, status.runId());
-                return status.runId();
+            WorkflowRunMatch match = findWorkflowRun(
+                    userToken,
+                    repoFullName,
+                    workflowFileName,
+                    correlationId,
+                    expectedHeadSha,
+                    afterTime
+            );
+            if (match.runId() != null) {
+                return match;
             }
             if (attempt < maxRetries) {
-                log.debug("run_id 아직 없음, {}ms 후 재시도 ({}/{})", retryIntervalMs, attempt, maxRetries);
-                try {
-                    Thread.sleep(retryIntervalMs);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return null;
-                }
+                sleep(retryIntervalMs);
             }
         }
-        log.warn("run_id 폴링 실패: repo={}, 최대 {}회 시도", repoFullName, maxRetries);
-        return null;
+        return new WorkflowRunMatch(null, null, "queued", null);
+    }
+
+    @Override
+    public WorkflowRunStatus getWorkflowRunStatus(String userToken,
+                                                  String repoFullName,
+                                                  Long runId) {
+        String[] parts = splitRepo(repoFullName);
+        try {
+            WorkflowRunDto run = restClient(userToken)
+                    .get()
+                    .uri(API_BASE + "/repos/{owner}/{repo}/actions/runs/{runId}",
+                            parts[0], parts[1], runId)
+                    .retrieve()
+                    .body(WorkflowRunDto.class);
+            return run == null
+                    ? new WorkflowRunStatus(null, "queued", null)
+                    : new WorkflowRunStatus(run.id(), run.status(), run.conclusion());
+        } catch (RestClientResponseException e) {
+            log.warn("workflow run 단건 조회 실패: repo={} runId={}", repoFullName, runId);
+            return new WorkflowRunStatus(runId, "queued", null);
+        }
+    }
+
+    private WorkflowRunsResponse getWorkflowRuns(String userToken,
+                                                 String repoFullName,
+                                                 String workflowFileName,
+                                                 LocalDateTime afterTime) {
+        String[] parts = splitRepo(repoFullName);
+        String createdFilter = afterTime.minusMinutes(1)
+                .atOffset(ZoneOffset.UTC)
+                .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+        try {
+            return restClient(userToken)
+                    .get()
+                    .uri(API_BASE + "/repos/{owner}/{repo}/actions/workflows/{file}/runs?per_page=30&event=workflow_dispatch&created=>={created}",
+                            parts[0], parts[1], workflowFileName, createdFilter)
+                    .retrieve()
+                    .body(WorkflowRunsResponse.class);
+        } catch (RestClientResponseException e) {
+            log.warn("workflow run 목록 조회 실패: repo={} correlation 조회 불가", repoFullName);
+            return null;
+        }
+    }
+
+    private void sleep(long retryIntervalMs) {
+        try {
+            Thread.sleep(retryIntervalMs);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Override
@@ -271,7 +368,9 @@ public class GithubActionsClient implements GithubActionsPort {
     private record WorkflowRunDto(
             @JsonProperty("id") Long id,
             @JsonProperty("status") String status,
-            @JsonProperty("conclusion") String conclusion
+            @JsonProperty("conclusion") String conclusion,
+            @JsonProperty("display_title") String displayTitle,
+            @JsonProperty("head_sha") String headSha
     ) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)

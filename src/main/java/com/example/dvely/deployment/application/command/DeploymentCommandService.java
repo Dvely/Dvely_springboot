@@ -3,26 +3,29 @@ package com.example.dvely.deployment.application.command;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
+import com.example.dvely.common.exception.ForbiddenException;
+import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.deployment.application.command.dto.DeployCommand;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort;
+import com.example.dvely.deployment.application.port.out.GithubActionsPort.WorkflowRunMatch;
 import com.example.dvely.deployment.application.port.out.GithubPagesPort;
 import com.example.dvely.deployment.application.port.out.GithubRepoPort;
+import com.example.dvely.deployment.application.port.out.GithubRepoPort.ReleaseMetadata;
 import com.example.dvely.deployment.application.result.DeployResult;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import com.example.dvely.deployment.domain.value.DeployTargetType;
 import com.example.dvely.deployment.domain.value.PackageManager;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
-import com.example.dvely.common.exception.ForbiddenException;
-import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
-import java.time.LocalDateTime;
+import java.time.Duration;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +38,8 @@ public class DeploymentCommandService {
     private static final String RELEASE_BRANCH_PREFIX = "release/";
     private static final String PREVIEW_BRANCH = "preview";
     private static final String MAIN_BRANCH = "main";
+    private static final int WORKFLOW_TRIGGER_MAX_RETRY = 5;
+    private static final long WORKFLOW_TRIGGER_RETRY_INTERVAL_MS = 3000;
 
     private final ProjectRepository projectRepository;
     private final UserRepository userRepository;
@@ -47,92 +52,192 @@ public class DeploymentCommandService {
     @Transactional
     public DeployResult deploy(Long ownerUserId, Long projectId, DeployCommand command) {
         Project project = resolveProject(ownerUserId, projectId);
-        User user = resolveUser(ownerUserId);
+        DeploymentHistory history = deploymentHistoryRepository.save(new DeploymentHistory(
+                ownerUserId,
+                projectId,
+                command.deployTargetType(),
+                command.versionName(),
+                command.taskId()
+        ));
+        project.updateDeployment(DeployStatus.PENDING, project.getCurrentUrl(), project.getCurrentVersion());
+        projectRepository.save(project);
+        log.info("배포 요청 저장: projectId={} historyId={} correlationId={}",
+                projectId, history.getId(), history.getCorrelationId());
+        return toResult(history);
+    }
 
-        String userToken     = user.getGithubUserAccessToken();
-        String sourceRepo    = project.getSourceRepository();
+    @Async("deploymentExecutor")
+    public void executeQueued(Long historyId) {
+        try {
+            execute(historyId);
+        } catch (Exception exception) {
+            handleExecutionFailure(historyId, exception);
+        }
+    }
+
+    public void execute(Long historyId) {
+        DeploymentHistory history = deploymentHistoryRepository.findById(historyId)
+                .orElseThrow(() -> new IllegalStateException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));
+        if (history.getStatus() != DeployStatus.IN_PROGRESS || history.getLeaseOwner() == null) {
+            return;
+        }
+
+        Project project = resolveProject(history.getOwnerUserId(), history.getProjectId());
+        User user = resolveUser(history.getOwnerUserId());
+        String userToken = user.getGithubUserAccessToken();
+        String sourceRepo = project.getSourceRepository();
         String deploymentRepo = project.getDeploymentRepository();
 
-        String versionLabel;
+        ensureWorkflow(userToken, sourceRepo, project.getTemplateType());
 
-        if (command.deployTargetType() == DeployTargetType.LATEST) {
-            versionLabel = deployLatest(userToken, sourceRepo);
-        } else {
-            versionLabel = command.versionName();
-        }
+        ReleaseSelection release = prepareRelease(userToken, sourceRepo, history);
+        String deployBranch = resolveDeployBranch(
+                userToken,
+                deploymentRepo,
+                history.getDeployTargetType(),
+                release.versionLabel()
+        );
+        String pagesUrl = deployToPages(userToken, deploymentRepo, deployBranch);
+        String workflowHeadSha = githubRepoPort.getHeadCommitSha(
+                userToken,
+                sourceRepo,
+                MAIN_BRANCH
+        );
 
-        // GitHub Pages 설정
-        String deployBranch = resolveDeployBranch(userToken, deploymentRepo, command, versionLabel);
-        String pagesUrl     = deployToPages(userToken, deploymentRepo, deployBranch);
-
-        // 빌드 워크플로우 트리거
-        String checkoutRef = command.deployTargetType() == DeployTargetType.LATEST ? MAIN_BRANCH : versionLabel;
-        LocalDateTime triggerTime = LocalDateTime.now();
-        ensureAndTriggerWorkflow(userToken, sourceRepo, project.getTemplateType(), MAIN_BRANCH, checkoutRef);
-
-        // 배포 이력 저장 + 프로젝트 상태 IN_PROGRESS 전환
-        DeploymentHistory history = deploymentHistoryRepository.save(
-                new DeploymentHistory(projectId, command.deployTargetType(), versionLabel, pagesUrl));
-        project.updateDeployment(DeployStatus.IN_PROGRESS, pagesUrl, versionLabel);
-        projectRepository.save(project);
-
-        // run_id 폴링 후 이력에 저장 (최대 5회, 3초 간격)
-        Long runId = githubActionsPort.pollRunId(
-                userToken, sourceRepo, DeployWorkflowTemplate.fileName(),
-                triggerTime, 5, 3000);
-        if (runId != null) {
-            history.assignRunId(runId);
-            deploymentHistoryRepository.save(history);
-        }
-
-        log.info("배포 트리거 완료: projectId={}, historyId={}, runId={}, version={}, url={}",
-                projectId, history.getId(), runId, versionLabel, pagesUrl);
-
-        return new DeployResult(
-                history.getId(),
-                projectId,
-                command.deployTargetType().name(),
-                versionLabel,
-                DeployStatus.IN_PROGRESS.name(),
+        history.prepare(
+                release.versionLabel(),
                 pagesUrl,
+                workflowHeadSha,
+                release.metadata()
+        );
+        history = deploymentHistoryRepository.save(history);
+        if (isLatestProjectDeployment(history)) {
+            project.updateDeployment(DeployStatus.IN_PROGRESS, pagesUrl, release.versionLabel());
+            projectRepository.save(project);
+        }
+
+        WorkflowRunMatch existingRun = githubActionsPort.findWorkflowRun(
+                userToken,
+                sourceRepo,
+                DeployWorkflowTemplate.fileName(),
+                history.getCorrelationId(),
+                workflowHeadSha,
                 history.getTriggeredAt()
         );
+        if (existingRun.runId() != null) {
+            finishDispatch(history, existingRun);
+            return;
+        }
+
+        String checkoutRef = history.getDeployTargetType() == DeployTargetType.LATEST
+                ? MAIN_BRANCH
+                : release.versionLabel();
+        triggerWithRetry(
+                userToken,
+                sourceRepo,
+                DeployWorkflowTemplate.fileName(),
+                MAIN_BRANCH,
+                checkoutRef,
+                history.getCorrelationId()
+        );
+
+        WorkflowRunMatch run = githubActionsPort.pollWorkflowRun(
+                userToken,
+                sourceRepo,
+                DeployWorkflowTemplate.fileName(),
+                history.getCorrelationId(),
+                workflowHeadSha,
+                history.getTriggeredAt(),
+                5,
+                3000
+        );
+        finishDispatch(history, run);
     }
 
-    // ── LATEST 배포: preview → main merge + 태그 보장 ────────────────────────
+    private void finishDispatch(DeploymentHistory history, WorkflowRunMatch run) {
+        history.markDispatched(run.runId(), run.headSha());
+        deploymentHistoryRepository.save(history);
+        log.info("배포 workflow 연결: historyId={} runId={} correlationId={} version={}",
+                history.getId(), run.runId(), history.getCorrelationId(), history.getVersionLabel());
+    }
 
-    private String deployLatest(String userToken, String sourceRepo) {
-        // 1. preview와 main 차이 확인 후 필요 시 PR 생성 + merge
+    private void handleExecutionFailure(Long historyId, Exception exception) {
+        DeploymentHistory history = deploymentHistoryRepository.findById(historyId).orElse(null);
+        if (history == null || history.getStatus() == DeployStatus.LIVE) {
+            return;
+        }
+        String message = exception.getMessage() == null
+                ? exception.getClass().getSimpleName()
+                : exception.getMessage();
+        history.retry(message, Duration.ofSeconds(Math.max(5, history.getAttempt() * 5L)));
+        deploymentHistoryRepository.save(history);
+        if (history.getStatus() == DeployStatus.FAILED && isLatestProjectDeployment(history)) {
+            projectRepository.findById(history.getProjectId()).ifPresent(project -> {
+                project.updateDeployment(
+                        DeployStatus.FAILED,
+                        history.getDeployedUrl(),
+                        history.getVersionLabel()
+                );
+                projectRepository.save(project);
+            });
+        }
+        log.error("배포 worker 실행 실패: historyId={} attempt={}/{} status={}",
+                historyId, history.getAttempt(), history.getMaxAttempts(), history.getStatus(), exception);
+    }
+
+    private boolean isLatestProjectDeployment(DeploymentHistory history) {
+        return deploymentHistoryRepository.findLatestByProjectId(history.getProjectId())
+                .map(latest -> latest.getId().equals(history.getId()))
+                .orElse(false);
+    }
+
+    private ReleaseSelection prepareRelease(String userToken,
+                                            String sourceRepo,
+                                            DeploymentHistory history) {
+        if (history.getDeployTargetType() == DeployTargetType.VERSION) {
+            String commitSha = githubRepoPort.resolveCommitSha(
+                    userToken,
+                    sourceRepo,
+                    history.getVersionLabel()
+            );
+            ReleaseMetadata metadata = githubRepoPort.getReleaseMetadata(
+                    userToken,
+                    sourceRepo,
+                    commitSha,
+                    null
+            );
+            return new ReleaseSelection(history.getVersionLabel(), metadata);
+        }
+
+        Integer prNumber = null;
         if (githubRepoPort.hasNewCommits(userToken, sourceRepo, MAIN_BRANCH, PREVIEW_BRANCH)) {
-            log.info("preview → main 새 커밋 있음, PR 생성 및 merge: repo={}", sourceRepo);
-            int prNumber = githubRepoPort.createOrGetPullRequest(
-                    userToken, sourceRepo, PREVIEW_BRANCH, MAIN_BRANCH,
-                    "[Qeploy] Deploy preview to main");
+            prNumber = githubRepoPort.createOrGetPullRequest(
+                    userToken,
+                    sourceRepo,
+                    PREVIEW_BRANCH,
+                    MAIN_BRANCH,
+                    "[Qeploy] Deploy preview to main"
+            );
             githubRepoPort.mergePullRequest(userToken, sourceRepo, prNumber);
-            log.info("PR merge 완료: repo={}, pr=#{}", sourceRepo, prNumber);
-        } else {
-            log.info("preview와 main 동일, PR/merge 생략: repo={}", sourceRepo);
         }
 
-        // 2. main HEAD에 태그 없으면 순차 태그 생성
         String mainSha = githubRepoPort.getHeadCommitSha(userToken, sourceRepo, MAIN_BRANCH);
-        if (!githubRepoPort.isCommitTagged(userToken, sourceRepo, mainSha)) {
-            String tag = githubRepoPort.createNextSequentialTag(userToken, sourceRepo, mainSha);
-            log.info("순차 태그 생성: repo={}, tag={}", sourceRepo, tag);
-            return tag;
+        String versionLabel = githubRepoPort.findSequentialTagForCommit(userToken, sourceRepo, mainSha);
+        if (versionLabel == null) {
+            versionLabel = githubRepoPort.createNextSequentialTag(userToken, sourceRepo, mainSha);
         }
-
-        // 이미 태그 달린 경우 — 최신 순차 태그 조회는 별도 필요 없이 null 반환 후 상위에서 처리
-        // (태그명이 필요하면 추가 조회 가능, 현재는 null 허용)
-        return null;
+        ReleaseMetadata metadata = githubRepoPort.getReleaseMetadata(
+                userToken,
+                sourceRepo,
+                mainSha,
+                prNumber
+        );
+        return new ReleaseSelection(versionLabel, metadata);
     }
-
-    // ── 프로젝트 검증 ──────────────────────────────────────────────────────────
 
     private Project resolveProject(Long ownerUserId, Long projectId) {
         Project project = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, ownerUserId)
                 .orElseThrow(() -> new ProjectNotFoundException(projectId, ownerUserId));
-
         if (project.getRepositoryBindingStatus() != RepositoryBindingStatus.BOUND) {
             throw new ForbiddenException(
                     "GitHub 저장소가 연결되지 않은 프로젝트입니다. 먼저 저장소를 연결해 주세요. projectId=" + projectId);
@@ -146,12 +251,9 @@ public class DeploymentCommandService {
         return project;
     }
 
-    // ── 유저 조회 및 토큰 자동 갱신 ──────────────────────────────────────────
-
     private User resolveUser(Long ownerUserId) {
         User user = userRepository.findById(ownerUserId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다. userId=" + ownerUserId));
-
         if (user.isUserAccessTokenExpired()) {
             authCommandService.refreshGithubUserToken(ownerUserId);
             user = userRepository.findById(ownerUserId)
@@ -160,78 +262,110 @@ public class DeploymentCommandService {
         return user;
     }
 
-    // ── 배포 브랜치 결정 ──────────────────────────────────────────────────────
-
-    private String resolveDeployBranch(String userToken, String deploymentRepo,
-                                       DeployCommand command, String versionLabel) {
-        if (command.deployTargetType() == DeployTargetType.LATEST) {
+    private String resolveDeployBranch(String userToken,
+                                       String deploymentRepo,
+                                       DeployTargetType deployTargetType,
+                                       String versionLabel) {
+        if (deployTargetType == DeployTargetType.LATEST) {
             return PAGES_BRANCH;
         }
-        String branchName = RELEASE_BRANCH_PREFIX + command.versionName();
+        String branchName = RELEASE_BRANCH_PREFIX + versionLabel;
         return githubPagesPort.createBranchFromTag(
-                userToken, deploymentRepo, command.versionName(), branchName);
+                userToken,
+                deploymentRepo,
+                versionLabel,
+                branchName
+        );
     }
-
-    // ── GitHub Pages 설정 ─────────────────────────────────────────────────────
 
     private String deployToPages(String userToken, String deploymentRepo, String branch) {
         GithubPagesPort.PagesInfo pagesInfo = githubPagesPort.getPages(userToken, deploymentRepo);
-
         if (!pagesInfo.enabled()) {
-            log.info("GitHub Pages 미활성화 → 활성화: repo={}, branch={}", deploymentRepo, branch);
             return githubPagesPort.enablePages(userToken, deploymentRepo, branch);
         }
         if (branch.equals(pagesInfo.sourceBranch())) {
-            log.info("GitHub Pages 소스 브랜치 동일, 업데이트 생략: repo={}, branch={}", deploymentRepo, branch);
             return pagesInfo.url();
         }
-        log.info("GitHub Pages 소스 변경: repo={}, {} → {}", deploymentRepo, pagesInfo.sourceBranch(), branch);
-        return githubPagesPort.updatePagesSource(userToken, deploymentRepo, branch, pagesInfo.customDomain());
+        return githubPagesPort.updatePagesSource(
+                userToken,
+                deploymentRepo,
+                branch,
+                pagesInfo.customDomain()
+        );
     }
 
-    // ── 빌드 워크플로우 보장 및 트리거 ──────────────────────────────────────
-
-    private static final int WORKFLOW_TRIGGER_MAX_RETRY = 5;
-    private static final long WORKFLOW_TRIGGER_RETRY_INTERVAL_MS = 3000;
-
-    private void ensureAndTriggerWorkflow(String userToken, String sourceRepo,
-                                          String templateType, String dispatchRef, String checkoutRef) {
-        String workflowFile = DeployWorkflowTemplate.fileName();
-        PackageManager pm = githubRepoPort.detectPackageManager(userToken, sourceRepo);
-        log.info("패키지 매니저 감지: repo={}, pm={}", sourceRepo, pm);
+    private void ensureWorkflow(String userToken, String sourceRepo, String templateType) {
+        PackageManager packageManager = githubRepoPort.detectPackageManager(userToken, sourceRepo);
         String nodeVersion = githubRepoPort.detectNodeVersion(userToken, sourceRepo);
-        log.info("Node.js 버전 감지: repo={}, version={}", sourceRepo, nodeVersion);
         String detectedType = githubRepoPort.detectFrameworkType(userToken, sourceRepo);
         String resolvedType = detectedType != null ? detectedType : templateType;
-        log.info("프레임워크 타입: repo={}, detected={}, stored={}, resolved={}", sourceRepo, detectedType, templateType, resolvedType);
-        String content = DeployWorkflowTemplate.generate(resolvedType, null, pm, nodeVersion);
-        githubActionsPort.createOrUpdateWorkflow(userToken, sourceRepo, workflowFile, content);
-
-        triggerWithRetry(userToken, sourceRepo, workflowFile, dispatchRef, checkoutRef);
+        String content = DeployWorkflowTemplate.generate(
+                resolvedType,
+                null,
+                packageManager,
+                nodeVersion
+        );
+        githubActionsPort.createOrUpdateWorkflow(
+                userToken,
+                sourceRepo,
+                DeployWorkflowTemplate.fileName(),
+                content
+        );
     }
 
-    private void triggerWithRetry(String userToken, String sourceRepo, String workflowFile,
-                                  String dispatchRef, String checkoutRef) {
+    private void triggerWithRetry(String userToken,
+                                  String sourceRepo,
+                                  String workflowFile,
+                                  String dispatchRef,
+                                  String checkoutRef,
+                                  String correlationId) {
         for (int attempt = 1; attempt <= WORKFLOW_TRIGGER_MAX_RETRY; attempt++) {
             try {
-                githubActionsPort.triggerWorkflow(userToken, sourceRepo, workflowFile, dispatchRef, checkoutRef);
-                log.info("워크플로우 dispatch 성공: repo={}, dispatchRef={}, checkoutRef={}",
-                        sourceRepo, dispatchRef, checkoutRef);
+                githubActionsPort.triggerWorkflow(
+                        userToken,
+                        sourceRepo,
+                        workflowFile,
+                        dispatchRef,
+                        checkoutRef,
+                        correlationId
+                );
                 return;
-            } catch (IllegalStateException e) {
+            } catch (IllegalStateException exception) {
                 if (attempt == WORKFLOW_TRIGGER_MAX_RETRY) {
                     throw new IllegalStateException(
-                            "워크플로우 트리거 실패 (" + WORKFLOW_TRIGGER_MAX_RETRY + "회 재시도 초과): " + e.getMessage(), e);
+                            "워크플로우 트리거 실패 (" + WORKFLOW_TRIGGER_MAX_RETRY + "회 재시도 초과): "
+                                    + exception.getMessage(),
+                            exception
+                    );
                 }
-                log.warn("워크플로우 dispatch 실패, {}초 후 재시도 ({}/{}): {}",
-                        WORKFLOW_TRIGGER_RETRY_INTERVAL_MS / 1000, attempt, WORKFLOW_TRIGGER_MAX_RETRY, e.getMessage());
-                try {
-                    Thread.sleep(WORKFLOW_TRIGGER_RETRY_INTERVAL_MS);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException("워크플로우 트리거 대기 중 인터럽트 발생", ie);
-                }
+                sleep(WORKFLOW_TRIGGER_RETRY_INTERVAL_MS);
             }
         }
     }
+
+    private void sleep(long delayMs) {
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("워크플로우 트리거 대기 중 인터럽트 발생", exception);
+        }
+    }
+
+    private DeployResult toResult(DeploymentHistory history) {
+        return new DeployResult(
+                history.getId(),
+                history.getProjectId(),
+                history.getDeployTargetType().name(),
+                history.getVersionLabel(),
+                history.getStatus().name(),
+                history.getDeployedUrl(),
+                history.getTriggeredAt()
+        );
+    }
+
+    private record ReleaseSelection(
+            String versionLabel,
+            ReleaseMetadata metadata
+    ) {}
 }

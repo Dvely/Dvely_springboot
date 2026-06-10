@@ -107,13 +107,12 @@ public class DeployAgentService {
 
         // AgentPlanExecutor는 필요한 승인이 모두 끝난 뒤에만 이 서비스를 호출한다.
         DeployResult result = deploymentFacade.deploy(userId, project.getId(),
-                new DeployCommand(DeployTargetType.LATEST, null));
+                new DeployCommand(DeployTargetType.LATEST, null, taskId));
 
-        String pagesUrl = result.pagesUrl();
         String summary = sourceChanged
-                ? buildApprovedChangeSummary(project.getSourceRepository(), taskId, pagesUrl)
-                : buildSummary(project.getSourceRepository(), pagesUrl);
-        log.info("[DeployAgent] 배포 완료 | pagesUrl={}", pagesUrl);
+                ? buildApprovedChangeSummary(project.getSourceRepository(), taskId, result.deploymentId())
+                : buildSummary(project.getSourceRepository(), result.deploymentId());
+        log.info("[DeployAgent] 배포 요청 저장 | deploymentId={}", result.deploymentId());
         return new CodeResult(null, summary);
     }
 
@@ -268,22 +267,22 @@ public class DeployAgentService {
         return "qeploy-project-" + userId;
     }
 
-    private String buildSummary(String repoFullName, String pagesUrl) {
+    private String buildSummary(String repoFullName, Long deploymentId) {
         return String.format("""
-                GitHub Pages 배포 완료
+                GitHub Pages 배포 요청을 접수했습니다.
                 - 저장소: https://github.com/%s
-                - 배포 URL: %s
-                - 빌드가 완료되면 수 분 내 접근 가능합니다.
-                """, repoFullName, pagesUrl);
+                - 배포 ID: %d
+                - worker가 버전 확정과 workflow 실행을 비동기로 진행합니다.
+                """, repoFullName, deploymentId);
     }
 
-    private String buildApprovedChangeSummary(String repoFullName, String taskId, String pagesUrl) {
+    private String buildApprovedChangeSummary(String repoFullName, String taskId, Long deploymentId) {
         return String.format("""
-                승인된 변경 사항을 배포했습니다.
+                승인된 변경 사항의 배포 요청을 접수했습니다.
                 - 저장소: https://github.com/%s
                 - 요청 ID: %s
-                - 배포 URL: %s
-                - preview 브랜치 변경을 main에 반영하고 배포 workflow를 시작했습니다.
-                """, repoFullName, taskId, pagesUrl);
+                - 배포 ID: %d
+                - preview 브랜치 반영과 배포 workflow는 worker가 비동기로 진행합니다.
+                """, repoFullName, taskId, deploymentId);
     }
 }

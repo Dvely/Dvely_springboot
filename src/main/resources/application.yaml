@@ -58,6 +58,10 @@ qeploy:
     worker:
       poll-interval-ms: ${QEPLOY_AGENT_WORKER_POLL_INTERVAL_MS:1000}
       heartbeat-interval-ms: ${QEPLOY_AGENT_WORKER_HEARTBEAT_INTERVAL_MS:30000}
+  deployment:
+    worker:
+      poll-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_POLL_INTERVAL_MS:1000}
+      heartbeat-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_HEARTBEAT_INTERVAL_MS:30000}
 
 # Cloudflare DNS - managed subdomain automation
 cloudflare:

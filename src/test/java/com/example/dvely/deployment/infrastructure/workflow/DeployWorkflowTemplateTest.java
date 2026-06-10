@@ -51,7 +51,12 @@ class DeployWorkflowTemplateTest {
         String workflow = DeployWorkflowTemplate.generate("vue", null, PackageManager.NPM, "20");
 
         assertThat(workflow).contains("  workflow_dispatch:\n    inputs:");
+        assertThat(workflow).contains("run-name: Qeploy deployment ${{ inputs.deployment_id }}");
+        assertThat(workflow).contains("      deployment_id:");
         assertThat(workflow).contains("      checkout_ref:");
         assertThat(workflow).contains("          ref: ${{ inputs.checkout_ref || github.ref_name }}");
+        assertThat(DeployWorkflowTemplate.correlationIdFromRunTitle(
+                DeployWorkflowTemplate.runTitle("deployment-123")
+        )).isEqualTo("deployment-123");
     }
 }

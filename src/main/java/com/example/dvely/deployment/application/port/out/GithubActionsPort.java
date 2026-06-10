@@ -13,18 +13,38 @@ public interface GithubActionsPort {
         triggerWorkflow(userToken, repoFullName, workflowFileName, ref, null);
     }
 
+    default void triggerWorkflow(String userToken, String repoFullName, String workflowFileName,
+                                 String dispatchRef, String checkoutRef) {
+        triggerWorkflow(userToken, repoFullName, workflowFileName, dispatchRef, checkoutRef, null);
+    }
+
     void triggerWorkflow(String userToken, String repoFullName, String workflowFileName,
-                         String dispatchRef, String checkoutRef);
+                         String dispatchRef, String checkoutRef, String correlationId);
 
     WorkflowRunStatus getLatestRunStatus(String userToken, String repoFullName,
                                          String workflowFileName, LocalDateTime afterTime);
 
-    /**
-     * dispatch 직후 run_id가 생성될 때까지 폴링한다.
-     * run_id를 얻으면 즉시 반환하고, 최대 시도 내에 얻지 못하면 null을 반환한다.
-     */
-    Long pollRunId(String userToken, String repoFullName, String workflowFileName,
-                   LocalDateTime afterTime, int maxRetries, long retryIntervalMs);
+    WorkflowRunMatch findWorkflowRun(
+            String userToken,
+            String repoFullName,
+            String workflowFileName,
+            String correlationId,
+            String expectedHeadSha,
+            LocalDateTime afterTime
+    );
+
+    WorkflowRunMatch pollWorkflowRun(
+            String userToken,
+            String repoFullName,
+            String workflowFileName,
+            String correlationId,
+            String expectedHeadSha,
+            LocalDateTime afterTime,
+            int maxRetries,
+            long retryIntervalMs
+    );
+
+    WorkflowRunStatus getWorkflowRunStatus(String userToken, String repoFullName, Long runId);
 
     DeploymentLogs getJobLogs(String userToken, String repoFullName, Long runId);
 
@@ -32,6 +52,13 @@ public interface GithubActionsPort {
             Long runId,
             String status,       // queued | in_progress | completed
             String conclusion    // success | failure | cancelled | null(미완료)
+    ) {}
+
+    record WorkflowRunMatch(
+            Long runId,
+            String headSha,
+            String status,
+            String conclusion
     ) {}
 
     record DeploymentLogs(

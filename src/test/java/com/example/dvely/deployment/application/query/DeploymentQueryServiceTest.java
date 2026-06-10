@@ -11,6 +11,7 @@ import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.value.GithubId;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort;
+import com.example.dvely.deployment.application.port.out.GithubActionsPort.WorkflowRunMatch;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort.WorkflowRunStatus;
 import com.example.dvely.deployment.application.result.DeploymentStatusResult;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
@@ -26,6 +27,7 @@ import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import java.time.LocalDateTime;
 import java.util.Optional;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -101,6 +103,66 @@ class DeploymentQueryServiceTest {
                 DeployWorkflowTemplate.legacyFileName(),
                 triggeredAt
         );
+    }
+
+    @Test
+    void getDeploymentStatus_usesCorrelationForNewRunWithoutAssignedRunId() {
+        DeploymentHistory history = deploymentHistoryWithMetadata(
+                DeployStatus.IN_PROGRESS,
+                null,
+                "correlation-101",
+                "workflow-sha"
+        );
+        Project project = boundProject();
+        User user = activeUser();
+        when(deploymentHistoryRepository.findById(101L)).thenReturn(Optional.of(history));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+        when(githubActionsPort.findWorkflowRun(
+                "user-token",
+                "octo/repo",
+                DeployWorkflowTemplate.fileName(),
+                "correlation-101",
+                "workflow-sha",
+                history.getTriggeredAt()
+        )).thenReturn(new WorkflowRunMatch(501L, "workflow-sha", "in_progress", null));
+
+        DeploymentStatusResult result = queryService.getDeploymentStatus(1L, 101L);
+
+        assertThat(result.buildStatus()).isEqualTo("in_progress");
+        verify(githubActionsPort).findWorkflowRun(
+                "user-token",
+                "octo/repo",
+                DeployWorkflowTemplate.fileName(),
+                "correlation-101",
+                "workflow-sha",
+                history.getTriggeredAt()
+        );
+    }
+
+    @Test
+    void getVersions_returnsStoredReleaseMetadata() {
+        DeploymentHistory history = deploymentHistoryWithMetadata(
+                DeployStatus.LIVE,
+                501L,
+                "correlation-101",
+                "workflow-sha"
+        );
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(boundProject()));
+        when(deploymentHistoryRepository.findByProjectIdOrderByTriggeredAtDesc(11L))
+                .thenReturn(List.of(history));
+
+        var versions = queryService.getVersions(1L, 11L);
+        var detail = queryService.getVersionDetail(1L, 101L);
+
+        assertThat(versions).singleElement().satisfies(version -> {
+            assertThat(version.commitSha()).isEqualTo("release-sha");
+            assertThat(version.title()).isEqualTo("Release title");
+        });
+        assertThat(detail.mergedBy()).isEqualTo("octo");
+        assertThat(detail.prNumber()).isEqualTo(17);
     }
 
     @Test
@@ -180,6 +242,43 @@ class DeploymentQueryServiceTest {
                 now,
                 now
         );
+    }
+
+    private DeploymentHistory deploymentHistoryWithMetadata(DeployStatus status,
+                                                              Long workflowRunId,
+                                                              String correlationId,
+                                                              String workflowHeadSha) {
+        LocalDateTime now = LocalDateTime.now();
+        DeploymentHistory history = new DeploymentHistory(
+                101L,
+                1L,
+                11L,
+                DeployTargetType.LATEST,
+                "v7",
+                "https://octo.github.io/repo/",
+                status,
+                workflowRunId,
+                correlationId,
+                "release-sha",
+                workflowHeadSha,
+                "Release title",
+                "Release description",
+                "octo",
+                "https://avatars.example/octo",
+                17,
+                now.minusMinutes(5),
+                "task-101",
+                null,
+                1,
+                3,
+                null,
+                null,
+                null,
+                now,
+                now
+        );
+        when(deploymentHistoryRepository.findById(101L)).thenReturn(Optional.of(history));
+        return history;
     }
 
     private Project boundProject() {

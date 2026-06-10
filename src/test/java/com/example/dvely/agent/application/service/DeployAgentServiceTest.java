@@ -79,14 +79,14 @@ class DeployAgentServiceTest {
         when(deploymentFacade.deploy(
                 eq(1L),
                 eq(11L),
-                eq(new DeployCommand(DeployTargetType.LATEST, null))
+                eq(new DeployCommand(DeployTargetType.LATEST, null, "task123"))
         )).thenReturn(new DeployResult(
                 51L,
                 11L,
                 "LATEST",
-                "v1",
-                "IN_PROGRESS",
-                "https://octo.github.io/repo/",
+                null,
+                "PENDING",
+                null,
                 LocalDateTime.now()
         ));
 
@@ -97,7 +97,7 @@ class DeployAgentServiceTest {
                 11L
         );
 
-        assertThat(result.summary()).contains("승인된 변경 사항", "https://octo.github.io/repo/");
+        assertThat(result.summary()).contains("승인된 변경 사항의 배포 요청", "배포 ID: 51");
         verify(dockerService).exec("container-1", "cd /workspace/app && git checkout -B preview");
         verify(dockerService).exec(
                 "container-1",
@@ -110,7 +110,7 @@ class DeployAgentServiceTest {
         verify(deploymentFacade).deploy(
                 1L,
                 11L,
-                new DeployCommand(DeployTargetType.LATEST, null)
+                new DeployCommand(DeployTargetType.LATEST, null, "task123")
         );
     }
 

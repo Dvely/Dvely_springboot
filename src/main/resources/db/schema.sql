@@ -99,6 +99,46 @@ CREATE TABLE projects (
         REFERENCES users (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE deployment_histories (
+    history_id BIGINT NOT NULL AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL,
+    deploy_target_type VARCHAR(20) NOT NULL,
+    version_label VARCHAR(100) NULL,
+    deployed_url VARCHAR(512) NULL,
+    status VARCHAR(30) NOT NULL,
+    workflow_run_id BIGINT NULL,
+    correlation_id VARCHAR(36) NOT NULL,
+    commit_sha VARCHAR(40) NULL,
+    workflow_head_sha VARCHAR(40) NULL,
+    title VARCHAR(500) NULL,
+    description TEXT NULL,
+    merged_by VARCHAR(100) NULL,
+    merged_by_avatar_url VARCHAR(1000) NULL,
+    pr_number INT NULL,
+    merged_at DATETIME NULL,
+    agent_task_id VARCHAR(64) NULL,
+    error_message TEXT NULL,
+    attempt INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 3,
+    next_run_at DATETIME NULL,
+    lease_owner VARCHAR(100) NULL,
+    lease_until DATETIME NULL,
+    triggered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (history_id),
+    UNIQUE KEY uk_deployment_histories_correlation_id (correlation_id),
+    UNIQUE KEY uk_deployment_histories_workflow_run_id (workflow_run_id),
+    KEY idx_deployment_histories_project_id (project_id),
+    KEY idx_deployment_histories_project_status (project_id, status),
+    KEY idx_deployment_histories_queue (status, next_run_at),
+    KEY idx_deployment_histories_lease (status, lease_until),
+    KEY idx_deployment_histories_commit_sha (project_id, commit_sha),
+    CONSTRAINT fk_deployment_histories_user
+        FOREIGN KEY (user_id)
+        REFERENCES users (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE project_approval_policies (
     project_id BIGINT NOT NULL,
     change_approval_required TINYINT(1) NOT NULL DEFAULT 1,
