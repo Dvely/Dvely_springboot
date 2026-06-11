@@ -5,6 +5,7 @@ import com.example.dvely.cloudconnection.application.command.dto.CreateCloudConn
 import com.example.dvely.cloudconnection.application.query.CloudConnectionQueryService;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionHealthResult;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionResult;
+import com.example.dvely.cloudconnection.application.result.CloudConnectionVerificationJobResult;
 import com.example.dvely.cloudconnection.application.result.CreateCloudConnectionResult;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -30,7 +31,15 @@ public class CloudConnectionFacade {
     }
 
     public CloudConnectionHealthResult checkHealth(Long ownerUserId, Long cloudConnectionId) {
-        return cloudConnectionCommandService.checkHealth(ownerUserId, cloudConnectionId);
+        return cloudConnectionQueryService.getHealth(ownerUserId, cloudConnectionId);
+    }
+
+    public CloudConnectionVerificationJobResult requestVerification(Long ownerUserId, Long cloudConnectionId) {
+        return cloudConnectionCommandService.requestVerification(ownerUserId, cloudConnectionId);
+    }
+
+    public CloudConnectionVerificationJobResult getVerificationJob(Long ownerUserId, String jobId) {
+        return cloudConnectionQueryService.getVerificationJob(ownerUserId, jobId);
     }
 
     public void delete(Long ownerUserId, Long cloudConnectionId) {

@@ -1,6 +1,8 @@
 package com.example.dvely.cloudconnection.domain.value;
 
 public enum CloudConnectionStatus {
+    VALIDATED,
+    VERIFYING,
     CHECKING,
     CONNECTED,
     PERMISSION_MISSING,

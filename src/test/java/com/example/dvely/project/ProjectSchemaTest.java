@@ -39,6 +39,11 @@ class ProjectSchemaTest {
         assertEquals(1, columnCount("deployment_histories", "correlation_id"));
         assertEquals(1, columnCount("deployment_histories", "commit_sha"));
         assertEquals(1, columnCount("deployment_histories", "lease_until"));
+        assertEquals(1, tableCount("cloud_connection_verification_jobs"));
+        assertEquals(1, columnCount("cloud_connection_verification_jobs", "connection_status"));
+        assertEquals(1, columnCount("cloud_connection_verification_jobs", "lease_until"));
+        assertEquals(1, tableCount("project_cloud_connection_settings"));
+        assertEquals(1, columnCount("project_cloud_connection_settings", "cloud_connection_id"));
 
         String v13Applied = jdbcTemplate.queryForObject(
                 """
@@ -94,6 +99,17 @@ class ProjectSchemaTest {
         );
 
         assertTrue("1".equals(v17Applied) || "true".equalsIgnoreCase(v17Applied));
+
+        String v18Applied = jdbcTemplate.queryForObject(
+                """
+                        select coalesce(max(success), 0)
+                        from flyway_schema_history
+                        where version = '18'
+                        """,
+                String.class
+        );
+
+        assertTrue("1".equals(v18Applied) || "true".equalsIgnoreCase(v18Applied));
     }
 
     private Integer tableCount(String tableName) {

@@ -7,11 +7,14 @@ import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
 import com.example.dvely.project.application.facade.ProjectFacade;
 import com.example.dvely.project.application.result.ProjectChatSettingsResult;
 import com.example.dvely.project.application.service.ProjectChatSettingsService;
+import com.example.dvely.project.application.result.ProjectInfrastructureSettingsResult;
+import com.example.dvely.project.application.service.ProjectInfrastructureSettingsService;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
 import com.example.dvely.project.presentation.dto.request.ConnectProjectRepositoryRequest;
 import com.example.dvely.project.presentation.dto.request.CreateProjectRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectChatSettingsRequest;
+import com.example.dvely.project.presentation.dto.request.UpdateProjectInfrastructureSettingsRequest;
 import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectActivityLogResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCommitResponse;
@@ -20,6 +23,7 @@ import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse
 import com.example.dvely.project.presentation.dto.response.ProjectOverviewResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectChatSettingsResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectInfrastructureSettingsResponse;
 import com.example.dvely.project.presentation.dto.response.RepositoryHealthResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectSummaryResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -35,6 +39,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -50,6 +55,7 @@ public class ProjectController {
     private final ProjectFacade projectFacade;
     private final ProjectMapper projectMapper;
     private final ProjectChatSettingsService projectChatSettingsService;
+    private final ProjectInfrastructureSettingsService projectInfrastructureSettingsService;
 
     @Operation(
             summary = "프로젝트 생성",
@@ -232,6 +238,42 @@ public class ProjectController {
         ));
     }
 
+    @Operation(summary = "프로젝트 Infrastructure 설정 조회")
+    @GetMapping("/{projectId}/settings/infrastructure")
+    public ProjectInfrastructureSettingsResponse getInfrastructureSettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long projectId
+    ) {
+        return toInfrastructureSettingsResponse(projectInfrastructureSettingsService.get(ownerUserId, projectId));
+    }
+
+    @Operation(
+            summary = "프로젝트 클라우드 연결 선택",
+            description = "실제 권한 확인이 완료된 CONNECTED 연결만 선택할 수 있습니다."
+    )
+    @PutMapping("/{projectId}/settings/infrastructure")
+    public ProjectInfrastructureSettingsResponse updateInfrastructureSettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long projectId,
+            @Valid @RequestBody UpdateProjectInfrastructureSettingsRequest request
+    ) {
+        return toInfrastructureSettingsResponse(projectInfrastructureSettingsService.select(
+                ownerUserId,
+                projectId,
+                request.cloudConnectionId()
+        ));
+    }
+
+    @Operation(summary = "프로젝트 클라우드 연결 선택 해제")
+    @DeleteMapping("/{projectId}/settings/infrastructure")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void clearInfrastructureSettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long projectId
+    ) {
+        projectInfrastructureSettingsService.clear(ownerUserId, projectId);
+    }
+
     private ProjectChatSettingsResponse toChatSettingsResponse(ProjectChatSettingsResult result) {
         return new ProjectChatSettingsResponse(
                 result.projectId(),
@@ -239,6 +281,20 @@ public class ProjectController {
                 result.deploymentApprovalRequired(),
                 result.domainApprovalRequired(),
                 result.infraApprovalRequired()
+        );
+    }
+
+    private ProjectInfrastructureSettingsResponse toInfrastructureSettingsResponse(
+            ProjectInfrastructureSettingsResult result
+    ) {
+        return new ProjectInfrastructureSettingsResponse(
+                result.projectId(),
+                result.cloudConnectionId(),
+                result.provider(),
+                result.displayName(),
+                result.region(),
+                result.status(),
+                result.updatedAt()
         );
     }
 }

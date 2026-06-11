@@ -4,10 +4,12 @@ import com.example.dvely.cloudconnection.application.command.dto.CreateCloudConn
 import com.example.dvely.cloudconnection.application.facade.CloudConnectionFacade;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionHealthResult;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionResult;
+import com.example.dvely.cloudconnection.application.result.CloudConnectionVerificationJobResult;
 import com.example.dvely.cloudconnection.application.result.CreateCloudConnectionResult;
 import com.example.dvely.cloudconnection.presentation.dto.request.CreateCloudConnectionRequest;
 import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnectionHealthResponse;
 import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnectionResponse;
+import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnectionVerificationJobResponse;
 import com.example.dvely.cloudconnection.presentation.dto.response.CreateCloudConnectionResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -69,11 +71,30 @@ public class CloudConnectionController {
         return toResponse(cloudConnectionFacade.getCloudConnection(ownerUserId, cloudConnectionId));
     }
 
-    @Operation(summary = "클라우드 연결 health 확인", description = "AWS/GCP 연결 정보가 배포에 사용할 수 있는 형태인지 확인합니다.")
+    @Operation(summary = "클라우드 연결 health 조회", description = "저장된 형식 검증/실제 권한 확인 상태를 조회합니다.")
     @GetMapping("/api/v1/cloud-connections/{cloudConnectionId}/health")
     public CloudConnectionHealthResponse checkHealth(@AuthenticationPrincipal Long ownerUserId,
                                                      @PathVariable Long cloudConnectionId) {
         return toHealthResponse(cloudConnectionFacade.checkHealth(ownerUserId, cloudConnectionId));
+    }
+
+    @Operation(summary = "클라우드 연결 재검증 요청", description = "실제 AWS/GCP 권한 확인 Job을 생성합니다.")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    @PostMapping("/api/v1/cloud-connections/{cloudConnectionId}/verification-jobs")
+    public CloudConnectionVerificationJobResponse requestVerification(
+            @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long cloudConnectionId
+    ) {
+        return toJobResponse(cloudConnectionFacade.requestVerification(ownerUserId, cloudConnectionId));
+    }
+
+    @Operation(summary = "클라우드 연결 검증 Job 조회")
+    @GetMapping("/api/v1/cloud-connection-verification-jobs/{jobId}")
+    public CloudConnectionVerificationJobResponse getVerificationJob(
+            @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable String jobId
+    ) {
+        return toJobResponse(cloudConnectionFacade.getVerificationJob(ownerUserId, jobId));
     }
 
     @Operation(summary = "클라우드 연결 해제", description = "Qeploy에 저장된 외부 클라우드 연결 정보를 삭제합니다.")
@@ -133,6 +154,20 @@ public class CloudConnectionController {
                 result.status().name(),
                 result.message(),
                 result.checkedAt()
+        );
+    }
+
+    private CloudConnectionVerificationJobResponse toJobResponse(CloudConnectionVerificationJobResult result) {
+        return new CloudConnectionVerificationJobResponse(
+                result.jobId(),
+                result.cloudConnectionId(),
+                result.status().name(),
+                result.connectionStatus().name(),
+                result.message(),
+                result.attempt(),
+                result.createdAt(),
+                result.startedAt(),
+                result.completedAt()
         );
     }
 }

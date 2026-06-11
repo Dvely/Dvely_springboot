@@ -45,4 +45,15 @@ public class AsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    @Bean("cloudConnectionExecutor")
+    public Executor cloudConnectionExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(20);
+        executor.setThreadNamePrefix("cloud-connection-");
+        executor.initialize();
+        return executor;
+    }
 }
