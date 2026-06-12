@@ -44,6 +44,7 @@ class ProjectSchemaTest {
         assertEquals(1, columnCount("cloud_connection_verification_jobs", "lease_until"));
         assertEquals(1, tableCount("project_cloud_connection_settings"));
         assertEquals(1, columnCount("project_cloud_connection_settings", "cloud_connection_id"));
+        assertEquals(1, columnCount("chat_sessions", "title"));
 
         String v13Applied = jdbcTemplate.queryForObject(
                 """
@@ -110,6 +111,22 @@ class ProjectSchemaTest {
         );
 
         assertTrue("1".equals(v18Applied) || "true".equalsIgnoreCase(v18Applied));
+
+        String v19Applied = jdbcTemplate.queryForObject(
+                """
+                        select coalesce(max(success), 0)
+                        from flyway_schema_history
+                        where version = '19'
+                        """,
+                String.class
+        );
+
+        assertTrue("1".equals(v19Applied) || "true".equalsIgnoreCase(v19Applied));
+        assertEquals("CASCADE", foreignKeyDeleteRule("fk_chat_messages_session"));
+        assertEquals("SET NULL", foreignKeyDeleteRule("fk_approvals_chat_session"));
+        assertEquals("SET NULL", foreignKeyDeleteRule("fk_agent_runs_chat_session"));
+        assertEquals("SET NULL", foreignKeyDeleteRule("fk_preview_sessions_chat_session"));
+        assertEquals("SET NULL", foreignKeyDeleteRule("fk_project_changes_chat_session"));
     }
 
     private Integer tableCount(String tableName) {
@@ -137,6 +154,19 @@ class ProjectSchemaTest {
                 Integer.class,
                 tableName,
                 columnName
+        );
+    }
+
+    private String foreignKeyDeleteRule(String constraintName) {
+        return jdbcTemplate.queryForObject(
+                """
+                        select delete_rule
+                        from information_schema.referential_constraints
+                        where constraint_schema = database()
+                          and constraint_name = ?
+                        """,
+                String.class,
+                constraintName
         );
     }
 }

@@ -31,6 +31,9 @@ public class ConversationEntity {
     @Column(name = "project_id", nullable = false)
     private Long projectId;
 
+    @Column(name = "title", nullable = false, length = 120)
+    private String title;
+
     @Column(name = "is_deleted", nullable = false)
     private boolean deleted;
 
@@ -47,10 +50,12 @@ public class ConversationEntity {
 
     private ConversationEntity(Long userId,
                                Long projectId,
+                               String title,
                                boolean deleted,
                                LocalDateTime deletedAt) {
         this.userId = userId;
         this.projectId = projectId;
+        this.title = title;
         this.deleted = deleted;
         this.deletedAt = deletedAt;
     }
@@ -59,6 +64,7 @@ public class ConversationEntity {
         return new ConversationEntity(
                 conversation.getUserId(),
                 conversation.getProjectId(),
+                conversation.getTitle(),
                 conversation.isDeleted(),
                 conversation.getDeletedAt()
         );
@@ -67,6 +73,7 @@ public class ConversationEntity {
     public void updateFrom(Conversation conversation) {
         this.userId = conversation.getUserId();
         this.projectId = conversation.getProjectId();
+        this.title = conversation.getTitle();
         this.deleted = conversation.isDeleted();
         this.deletedAt = conversation.getDeletedAt();
     }
@@ -76,6 +83,7 @@ public class ConversationEntity {
                 id,
                 userId,
                 projectId,
+                title,
                 deleted,
                 deletedAt,
                 createdAt,

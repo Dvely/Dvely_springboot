@@ -65,6 +65,8 @@ qeploy:
   cloud-connection:
     worker:
       poll-interval-ms: ${QEPLOY_CLOUD_CONNECTION_WORKER_POLL_INTERVAL_MS:1000}
+  chat:
+    trash-cleanup-interval-ms: ${QEPLOY_CHAT_TRASH_CLEANUP_INTERVAL_MS:3600000}
 
 # Cloudflare DNS - managed subdomain automation
 cloudflare:

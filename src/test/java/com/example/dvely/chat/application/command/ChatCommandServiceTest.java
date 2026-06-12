@@ -1,7 +1,9 @@
 package com.example.dvely.chat.application.command;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -118,7 +120,93 @@ class ChatCommandServiceTest {
         MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘");
 
         assertThat(result.messageId()).isEqualTo(31L);
+        assertThat(conversation.getTitle()).isEqualTo("FAQ를 추가해줘");
+        verify(conversationRepository).save(conversation);
         verify(agentOrchestrator).submit(plan, 2L, 21L);
+    }
+
+    @Test
+    void restoreConversationRejectsConversationAfterSevenDays() {
+        Conversation conversation = new Conversation(
+                11L,
+                2L,
+                7L,
+                true,
+                LocalDateTime.now().minusDays(7).minusMinutes(1),
+                LocalDateTime.now().minusDays(10),
+                LocalDateTime.now().minusDays(7)
+        );
+        when(conversationRepository.findByIdAndUserId(11L, 2L)).thenReturn(Optional.of(conversation));
+
+        assertThatThrownBy(() -> chatCommandService.restoreConversation(2L, 11L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("7 days");
+        verify(conversationRepository, never()).save(any());
+    }
+
+    @Test
+    void permanentlyDeleteConversationDeletesOnlyOwnedTrashConversation() {
+        Conversation conversation = new Conversation(
+                11L,
+                2L,
+                7L,
+                true,
+                LocalDateTime.now().minusDays(1),
+                LocalDateTime.now().minusDays(3),
+                LocalDateTime.now().minusDays(1)
+        );
+        when(conversationRepository.findByIdAndUserId(11L, 2L)).thenReturn(Optional.of(conversation));
+
+        chatCommandService.permanentlyDeleteConversation(2L, 11L);
+
+        verify(conversationRepository).deleteById(11L);
+    }
+
+    @Test
+    void permanentlyDeleteConversationRejectsActiveConversation() {
+        Conversation conversation = new Conversation(
+                11L,
+                2L,
+                7L,
+                false,
+                null,
+                LocalDateTime.now().minusDays(3),
+                LocalDateTime.now()
+        );
+        when(conversationRepository.findByIdAndUserId(11L, 2L)).thenReturn(Optional.of(conversation));
+
+        assertThatThrownBy(() -> chatCommandService.permanentlyDeleteConversation(2L, 11L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("휴지통");
+        verify(conversationRepository, never()).deleteById(any());
+    }
+
+    @Test
+    void purgeExpiredConversationsDeletesRepositoryMatches() {
+        Conversation first = new Conversation(
+                11L,
+                2L,
+                7L,
+                true,
+                LocalDateTime.now().minusDays(8),
+                LocalDateTime.now().minusDays(10),
+                LocalDateTime.now().minusDays(8)
+        );
+        Conversation second = new Conversation(
+                12L,
+                2L,
+                7L,
+                true,
+                LocalDateTime.now().minusDays(9),
+                LocalDateTime.now().minusDays(10),
+                LocalDateTime.now().minusDays(9)
+        );
+        when(conversationRepository.findAllByDeletedTrueAndDeletedAtLessThanEqual(any()))
+                .thenReturn(List.of(first, second));
+
+        assertThat(chatCommandService.purgeExpiredConversations()).isEqualTo(2);
+        verify(conversationRepository).deleteById(11L);
+        verify(conversationRepository).deleteById(12L);
     }
 
     @Test

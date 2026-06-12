@@ -3,6 +3,7 @@ package com.example.dvely.chat.infrastructure.persistence.repository;
 import com.example.dvely.chat.domain.model.Conversation;
 import com.example.dvely.chat.domain.repository.ConversationRepository;
 import com.example.dvely.chat.infrastructure.persistence.entity.ConversationEntity;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
@@ -31,6 +32,13 @@ public class ConversationRepositoryAdapter implements ConversationRepository {
     @Override
     public List<Conversation> findAllByUserIdAndDeletedTrueOrderByUpdatedAtDesc(Long userId) {
         return springDataConversationRepository.findByUserIdAndDeletedTrueOrderByUpdatedAtDesc(userId).stream()
+                .map(ConversationEntity::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<Conversation> findAllByDeletedTrueAndDeletedAtLessThanEqual(LocalDateTime cutoff) {
+        return springDataConversationRepository.findByDeletedTrueAndDeletedAtLessThanEqual(cutoff).stream()
                 .map(ConversationEntity::toDomain)
                 .toList();
     }

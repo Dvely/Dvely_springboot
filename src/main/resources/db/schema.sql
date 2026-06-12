@@ -255,6 +255,7 @@ CREATE TABLE chat_sessions (
     chat_session_id BIGINT NOT NULL AUTO_INCREMENT COMMENT '사용자의 프로젝트에 대한 채팅 세션 id',
     user_id BIGINT NOT NULL,
     project_id BIGINT NOT NULL,
+    title VARCHAR(120) NOT NULL DEFAULT '새 대화',
     is_deleted TINYINT(1) NOT NULL DEFAULT 0 COMMENT '삭제 여부 (0: 사용, 1: 삭제)',
     deleted_at DATETIME NULL COMMENT '채팅 휴지통 처리 시점',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '채팅 세션 생성 시간',
@@ -262,6 +263,7 @@ CREATE TABLE chat_sessions (
     PRIMARY KEY (chat_session_id),
     KEY idx_chat_sessions_user_id (user_id),
     KEY idx_chat_sessions_project_id (project_id),
+    KEY idx_chat_sessions_trash_expiry (is_deleted, deleted_at),
     CONSTRAINT fk_chat_sessions_user
         FOREIGN KEY (user_id)
         REFERENCES users (user_id),
@@ -282,6 +284,7 @@ CREATE TABLE chat_messages (
     CONSTRAINT fk_chat_messages_session
         FOREIGN KEY (chat_session_id)
         REFERENCES chat_sessions (chat_session_id)
+        ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE approvals (
@@ -308,6 +311,7 @@ CREATE TABLE approvals (
     CONSTRAINT fk_approvals_chat_session
         FOREIGN KEY (chat_session_id)
         REFERENCES chat_sessions (chat_session_id)
+        ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE agent_runs (
@@ -345,6 +349,7 @@ CREATE TABLE agent_runs (
     CONSTRAINT fk_agent_runs_chat_session
         FOREIGN KEY (chat_session_id)
         REFERENCES chat_sessions (chat_session_id)
+        ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE agent_run_events (
@@ -389,7 +394,8 @@ CREATE TABLE preview_sessions (
         REFERENCES projects (project_id),
     CONSTRAINT fk_preview_sessions_chat_session
         FOREIGN KEY (chat_session_id)
-        REFERENCES chat_sessions (chat_session_id),
+        REFERENCES chat_sessions (chat_session_id)
+        ON DELETE SET NULL,
     CONSTRAINT fk_preview_sessions_task
         FOREIGN KEY (task_id)
         REFERENCES agent_runs (task_id)
@@ -418,7 +424,8 @@ CREATE TABLE project_changes (
         REFERENCES projects (project_id),
     CONSTRAINT fk_project_changes_chat_session
         FOREIGN KEY (chat_session_id)
-        REFERENCES chat_sessions (chat_session_id),
+        REFERENCES chat_sessions (chat_session_id)
+        ON DELETE SET NULL,
     CONSTRAINT fk_project_changes_task
         FOREIGN KEY (task_id)
         REFERENCES agent_runs (task_id),
