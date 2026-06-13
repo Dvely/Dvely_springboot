@@ -60,6 +60,7 @@ class ProjectInfrastructureSettingsServiceTest {
 
         assertThat(result.cloudConnectionId()).isEqualTo(10L);
         assertThat(result.status()).isEqualTo("CONNECTED");
+        assertThat(result.lastCheckedAt()).isNotNull();
     }
 
     @Test

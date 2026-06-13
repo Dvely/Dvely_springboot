@@ -37,6 +37,7 @@ public class ProjectInfrastructureSettingsService {
                         null,
                         null,
                         "NOT_CONFIGURED",
+                        null,
                         null
                 ));
     }
@@ -101,6 +102,7 @@ public class ProjectInfrastructureSettingsService {
                 cloudConnection.getDisplayName(),
                 cloudConnection.getRegion(),
                 cloudConnection.getStatus().name(),
+                cloudConnection.getLastCheckedAt(),
                 setting.getUpdatedAt()
         );
     }

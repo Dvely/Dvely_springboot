@@ -9,16 +9,20 @@ import com.example.dvely.project.application.result.ProjectRepositoryResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
 import com.example.dvely.project.application.result.RepositoryHealthResult;
 import com.example.dvely.project.presentation.dto.response.ProjectActivityLogResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectCloudSummaryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCommitResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectDomainSummaryResponse;
 import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectOperationActionResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectOverviewResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.RepositoryHealthResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectSummaryResponse;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -79,11 +83,35 @@ public class ProjectMapper {
                 result.currentUrl(),
                 result.deployStatus(),
                 result.currentVersion(),
-                result.recentChanges(),
+                result.recentChanges().stream().map(this::toActivityLogResponse).toList(),
                 result.latestCommit() == null ? null : toCommitResponse(result.latestCommit()),
-                result.trafficSummary(),
                 toRepositoryHealthResponse(result.repositoryHealth()),
-                result.domainSummary()
+                result.domainSummary() == null
+                        ? null
+                        : new ProjectDomainSummaryResponse(
+                                result.domainSummary().domainId(),
+                                result.domainSummary().hostname(),
+                                result.domainSummary().url(),
+                                result.domainSummary().type(),
+                                result.domainSummary().status(),
+                                result.domainSummary().lastCheckedAt()
+                        ),
+                new ProjectCloudSummaryResponse(
+                        result.cloudSummary().configured(),
+                        result.cloudSummary().cloudConnectionId(),
+                        result.cloudSummary().provider(),
+                        result.cloudSummary().displayName(),
+                        result.cloudSummary().region(),
+                        result.cloudSummary().status(),
+                        result.cloudSummary().lastCheckedAt()
+                ),
+                result.operationActions().stream()
+                        .map(action -> new ProjectOperationActionResponse(
+                                action.type(),
+                                action.available(),
+                                action.reason()
+                        ))
+                        .toList()
         );
     }
 
@@ -92,7 +120,13 @@ public class ProjectMapper {
     }
 
     public ProjectCommitResponse toCommitResponse(CommitResult result) {
-        return new ProjectCommitResponse(result.sha(), result.message(), result.author(), result.committedAt());
+        return new ProjectCommitResponse(
+                result.sha(),
+                result.message(),
+                result.author(),
+                result.committedAt(),
+                toRelativeText(result.committedAt())
+        );
     }
 
     public RepositoryHealthResponse toRepositoryHealthResponse(RepositoryHealthResult result) {
@@ -105,6 +139,20 @@ public class ProjectMapper {
         }
 
         Duration duration = Duration.between(updatedAt, LocalDateTime.now());
+        return toRelativeText(duration);
+    }
+
+    private String toRelativeText(OffsetDateTime occurredAt) {
+        if (occurredAt == null) {
+            return null;
+        }
+        return toRelativeText(Duration.between(occurredAt, OffsetDateTime.now()));
+    }
+
+    private String toRelativeText(Duration duration) {
+        if (duration.isNegative()) {
+            return "방금 전";
+        }
         long minutes = duration.toMinutes();
         if (minutes < 1) {
             return "방금 전";

@@ -161,7 +161,7 @@ public class ProjectController {
 
     @Operation(
             summary = "프로젝트 개요 조회",
-            description = "프로젝트 개요 화면에 필요한 현재 URL, 배포 상태, 최신 버전, 최근 변경, 최신 커밋, 저장소 상태 요약을 조회합니다."
+            description = "현재 도메인 URL, 배포 상태와 버전, 최근 운영 이벤트 3개, 최신 커밋, 저장소·클라우드 상태와 운영 조치를 조회합니다."
     )
     @GetMapping("/{projectId}/overview")
     public ProjectOverviewResponse getOverview(@Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
@@ -172,7 +172,7 @@ public class ProjectController {
 
     @Operation(
             summary = "프로젝트 활동 로그 조회",
-            description = "프로젝트 생성, 저장소 연결, 상태 변경 등 프로젝트 주요 활동 로그를 최신순으로 조회합니다."
+            description = "Deployment, Change, Approval, Domain의 실제 저장 이력을 프로젝트 생성 이벤트와 함께 최신순으로 조회합니다."
     )
     @GetMapping("/{projectId}/activity-logs")
     public List<ProjectActivityLogResponse> getActivityLogs(
@@ -294,6 +294,7 @@ public class ProjectController {
                 result.displayName(),
                 result.region(),
                 result.status(),
+                result.lastCheckedAt(),
                 result.updatedAt()
         );
     }
