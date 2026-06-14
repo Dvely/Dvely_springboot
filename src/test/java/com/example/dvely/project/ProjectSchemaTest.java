@@ -45,6 +45,9 @@ class ProjectSchemaTest {
         assertEquals(1, tableCount("project_cloud_connection_settings"));
         assertEquals(1, columnCount("project_cloud_connection_settings", "cloud_connection_id"));
         assertEquals(1, columnCount("chat_sessions", "title"));
+        assertEquals(1, columnCount("domains", "hosting_target"));
+        assertEquals(1, columnCount("domains", "certificate_status"));
+        assertEquals(1, columnCount("domains", "certificate_expires_at"));
 
         String v13Applied = jdbcTemplate.queryForObject(
                 """
@@ -122,6 +125,17 @@ class ProjectSchemaTest {
         );
 
         assertTrue("1".equals(v19Applied) || "true".equalsIgnoreCase(v19Applied));
+
+        String v20Applied = jdbcTemplate.queryForObject(
+                """
+                        select coalesce(max(success), 0)
+                        from flyway_schema_history
+                        where version = '20'
+                        """,
+                String.class
+        );
+
+        assertTrue("1".equals(v20Applied) || "true".equalsIgnoreCase(v20Applied));
         assertEquals("CASCADE", foreignKeyDeleteRule("fk_chat_messages_session"));
         assertEquals("SET NULL", foreignKeyDeleteRule("fk_approvals_chat_session"));
         assertEquals("SET NULL", foreignKeyDeleteRule("fk_agent_runs_chat_session"));

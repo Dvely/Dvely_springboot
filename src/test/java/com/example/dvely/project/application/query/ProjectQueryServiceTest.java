@@ -11,6 +11,8 @@ import com.example.dvely.deployment.application.query.DeploymentQueryService;
 import com.example.dvely.deployment.application.result.DeploymentHistoryResult;
 import com.example.dvely.domainbinding.application.query.DomainBindingQueryService;
 import com.example.dvely.domainbinding.application.result.DomainBindingResult;
+import com.example.dvely.domainbinding.domain.value.CertificateStatus;
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.domain.value.DomainStatus;
 import com.example.dvely.domainbinding.domain.value.DomainType;
 import com.example.dvely.domainbinding.domain.value.VerificationMethod;
@@ -140,6 +142,9 @@ class ProjectQueryServiceTest {
         assertThat(overview.deployStatus()).isEqualTo("FAILED");
         assertThat(overview.currentVersion()).isEqualTo("v6");
         assertThat(overview.domainSummary().hostname()).isEqualTo("www.example.com");
+        assertThat(overview.domainSummary().hostingTarget()).isEqualTo("GITHUB_PAGES");
+        assertThat(overview.domainSummary().certificateStatus()).isEqualTo("ACTIVE");
+        assertThat(overview.domainSummary().httpsEnforced()).isTrue();
         assertThat(overview.cloudSummary().status()).isEqualTo("CONNECTED");
         assertThat(overview.recentChanges())
                 .extracting(event -> event.type())
@@ -222,10 +227,14 @@ class ProjectQueryServiceTest {
                 id,
                 11L,
                 type,
+                DomainHostingTarget.GITHUB_PAGES,
                 hostname,
                 DomainStatus.CONNECTED,
                 VerificationMethod.CNAME,
                 "octo.github.io",
+                true,
+                CertificateStatus.ACTIVE,
+                java.time.LocalDate.now().plusMonths(2),
                 timestamp,
                 timestamp.minusMinutes(1),
                 timestamp

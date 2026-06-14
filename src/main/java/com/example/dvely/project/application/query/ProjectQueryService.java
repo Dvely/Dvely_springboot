@@ -277,7 +277,11 @@ public class ProjectQueryService {
                 domain.hostname(),
                 domain.status() == DomainStatus.CONNECTED ? toHttpsUrl(domain.hostname()) : null,
                 domain.type().name(),
+                domain.hostingTarget().name(),
                 domain.status().name(),
+                domain.httpsEnforced(),
+                domain.certificateStatus().name(),
+                domain.certificateExpiresAt(),
                 domain.lastCheckedAt()
         );
     }

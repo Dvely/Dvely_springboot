@@ -13,7 +13,6 @@ import com.example.dvely.domainbinding.infrastructure.config.CloudflarePropertie
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -31,26 +30,11 @@ public class DomainBindingQueryService {
     public DomainSearchResult search(String keyword) {
         String label = normalizeLabel(keyword);
         String managedHostname = label + "." + cloudflareProperties.managedDomainOrDefault();
-        List<DomainSearchCandidateResult> results = new ArrayList<>();
-        results.add(new DomainSearchCandidateResult(
+        List<DomainSearchCandidateResult> results = List.of(new DomainSearchCandidateResult(
                 DomainType.MANAGED_SUBDOMAIN,
                 managedHostname,
                 !domainBindingRepository.existsByHostnameIgnoreCase(managedHostname),
                 BigDecimal.ZERO,
-                "KRW"
-        ));
-        results.add(new DomainSearchCandidateResult(
-                DomainType.PURCHASABLE_DOMAIN,
-                label + ".app",
-                false,
-                null,
-                "KRW"
-        ));
-        results.add(new DomainSearchCandidateResult(
-                DomainType.PURCHASABLE_DOMAIN,
-                label + ".dev",
-                false,
-                null,
                 "KRW"
         ));
         return new DomainSearchResult(label, results);
@@ -101,10 +85,14 @@ public class DomainBindingQueryService {
                 domain.getId(),
                 domain.getProjectId(),
                 domain.getType(),
+                domain.getHostingTarget(),
                 domain.getHostname(),
                 domain.getStatus(),
                 domain.getVerificationMethod(),
                 domain.getDnsTarget(),
+                domain.isHttpsEnforced(),
+                domain.getCertificateStatus(),
+                domain.getCertificateExpiresAt(),
                 domain.getLastCheckedAt(),
                 domain.getCreatedAt(),
                 domain.getUpdatedAt()

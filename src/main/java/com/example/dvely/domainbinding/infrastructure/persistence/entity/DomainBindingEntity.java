@@ -1,6 +1,8 @@
 package com.example.dvely.domainbinding.infrastructure.persistence.entity;
 
 import com.example.dvely.domainbinding.domain.model.DomainBinding;
+import com.example.dvely.domainbinding.domain.value.CertificateStatus;
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.domain.value.DomainStatus;
 import com.example.dvely.domainbinding.domain.value.DomainType;
 import com.example.dvely.domainbinding.domain.value.VerificationMethod;
@@ -10,6 +12,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -37,6 +40,9 @@ public class DomainBindingEntity {
     @Column(name = "domain_type", nullable = false)
     private String type;
 
+    @Column(name = "hosting_target", nullable = false)
+    private String hostingTarget;
+
     @Column(name = "status", nullable = false)
     private String status;
 
@@ -51,6 +57,12 @@ public class DomainBindingEntity {
 
     @Column(name = "https_enforced", nullable = false)
     private boolean httpsEnforced;
+
+    @Column(name = "certificate_status", nullable = false)
+    private String certificateStatus;
+
+    @Column(name = "certificate_expires_at")
+    private LocalDate certificateExpiresAt;
 
     @Column(name = "dns_verified", nullable = false)
     private boolean dnsVerified;
@@ -69,20 +81,27 @@ public class DomainBindingEntity {
     private DomainBindingEntity(Long projectId,
                                 String hostname,
                                 String type,
+                                String hostingTarget,
                                 String status,
                                 String verificationMethod,
                                 String dnsTarget,
                                 String cloudflareRecordId,
+                                boolean httpsEnforced,
+                                String certificateStatus,
+                                LocalDate certificateExpiresAt,
                                 boolean dnsVerified,
                                 LocalDateTime lastCheckedAt) {
         this.projectId = projectId;
         this.hostname = hostname;
         this.type = type;
+        this.hostingTarget = hostingTarget;
         this.status = status;
         this.verificationMethod = verificationMethod;
         this.dnsTarget = dnsTarget;
         this.cloudflareRecordId = cloudflareRecordId;
-        this.httpsEnforced = true;
+        this.httpsEnforced = httpsEnforced;
+        this.certificateStatus = certificateStatus;
+        this.certificateExpiresAt = certificateExpiresAt;
         this.dnsVerified = dnsVerified;
         this.lastCheckedAt = lastCheckedAt;
     }
@@ -92,10 +111,14 @@ public class DomainBindingEntity {
                 domain.getProjectId(),
                 domain.getHostname(),
                 domain.getType().name(),
+                domain.getHostingTarget().name(),
                 domain.getStatus().name(),
                 domain.getVerificationMethod() == null ? null : domain.getVerificationMethod().name(),
                 domain.getDnsTarget(),
                 domain.getCloudflareRecordId(),
+                domain.isHttpsEnforced(),
+                domain.getCertificateStatus().name(),
+                domain.getCertificateExpiresAt(),
                 domain.getStatus() == DomainStatus.CONNECTED,
                 domain.getLastCheckedAt()
         );
@@ -105,12 +128,16 @@ public class DomainBindingEntity {
         this.projectId = domain.getProjectId();
         this.hostname = domain.getHostname();
         this.type = domain.getType().name();
+        this.hostingTarget = domain.getHostingTarget().name();
         this.status = domain.getStatus().name();
         this.verificationMethod = domain.getVerificationMethod() == null
                 ? null
                 : domain.getVerificationMethod().name();
         this.dnsTarget = domain.getDnsTarget();
         this.cloudflareRecordId = domain.getCloudflareRecordId();
+        this.httpsEnforced = domain.isHttpsEnforced();
+        this.certificateStatus = domain.getCertificateStatus().name();
+        this.certificateExpiresAt = domain.getCertificateExpiresAt();
         this.dnsVerified = domain.getStatus() == DomainStatus.CONNECTED;
         this.lastCheckedAt = domain.getLastCheckedAt();
     }
@@ -120,11 +147,15 @@ public class DomainBindingEntity {
                 id,
                 projectId,
                 DomainType.valueOf(type),
+                DomainHostingTarget.valueOf(hostingTarget),
                 hostname,
                 DomainStatus.valueOf(status),
                 verificationMethod == null ? null : VerificationMethod.valueOf(verificationMethod),
                 dnsTarget,
                 cloudflareRecordId,
+                httpsEnforced,
+                CertificateStatus.valueOf(certificateStatus),
+                certificateExpiresAt,
                 lastCheckedAt,
                 createdAt,
                 updatedAt

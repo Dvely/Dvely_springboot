@@ -93,7 +93,11 @@ public class ProjectMapper {
                                 result.domainSummary().hostname(),
                                 result.domainSummary().url(),
                                 result.domainSummary().type(),
+                                result.domainSummary().hostingTarget(),
                                 result.domainSummary().status(),
+                                result.domainSummary().httpsEnforced(),
+                                result.domainSummary().certificateStatus(),
+                                result.domainSummary().certificateExpiresAt(),
                                 result.domainSummary().lastCheckedAt()
                         ),
                 new ProjectCloudSummaryResponse(
