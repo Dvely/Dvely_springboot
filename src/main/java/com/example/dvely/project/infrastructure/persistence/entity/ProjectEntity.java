@@ -72,6 +72,27 @@ public class ProjectEntity {
     @Column(name = "repository_health", nullable = false)
     private String repositoryHealthStatus;
 
+    @Column(name = "repository_head_sha", length = 40)
+    private String repositoryHeadSha;
+
+    @Column(name = "repository_head_message", length = 1000)
+    private String repositoryHeadMessage;
+
+    @Column(name = "repository_head_author", length = 255)
+    private String repositoryHeadAuthor;
+
+    @Column(name = "repository_head_committed_at")
+    private LocalDateTime repositoryHeadCommittedAt;
+
+    @Column(name = "repository_head_synced_at")
+    private LocalDateTime repositoryHeadSyncedAt;
+
+    @Column(name = "repository_version", length = 100)
+    private String repositoryVersion;
+
+    @Column(name = "repository_version_synced_at")
+    private LocalDateTime repositoryVersionSyncedAt;
+
     @Column(name = "is_deleted", nullable = false)
     private boolean deleted;
 
@@ -116,7 +137,7 @@ public class ProjectEntity {
     }
 
     public static ProjectEntity from(Project project) {
-        return new ProjectEntity(
+        ProjectEntity entity = new ProjectEntity(
                 project.getOwnerUserId(),
                 project.getName(),
                 project.getStatus().name(),
@@ -133,6 +154,14 @@ public class ProjectEntity {
                 project.getRepositoryHealthStatus().name(),
                 project.isDeleted()
         );
+        entity.repositoryHeadSha = project.getRepositoryHeadSha();
+        entity.repositoryHeadMessage = project.getRepositoryHeadMessage();
+        entity.repositoryHeadAuthor = project.getRepositoryHeadAuthor();
+        entity.repositoryHeadCommittedAt = project.getRepositoryHeadCommittedAt();
+        entity.repositoryHeadSyncedAt = project.getRepositoryHeadSyncedAt();
+        entity.repositoryVersion = project.getRepositoryVersion();
+        entity.repositoryVersionSyncedAt = project.getRepositoryVersionSyncedAt();
+        return entity;
     }
 
     public void updateFrom(Project project) {
@@ -150,6 +179,13 @@ public class ProjectEntity {
         this.repositoryVisibility = project.getRepositoryVisibility().name();
         this.repositoryBindingStatus = project.getRepositoryBindingStatus().name();
         this.repositoryHealthStatus = project.getRepositoryHealthStatus().name();
+        this.repositoryHeadSha = project.getRepositoryHeadSha();
+        this.repositoryHeadMessage = project.getRepositoryHeadMessage();
+        this.repositoryHeadAuthor = project.getRepositoryHeadAuthor();
+        this.repositoryHeadCommittedAt = project.getRepositoryHeadCommittedAt();
+        this.repositoryHeadSyncedAt = project.getRepositoryHeadSyncedAt();
+        this.repositoryVersion = project.getRepositoryVersion();
+        this.repositoryVersionSyncedAt = project.getRepositoryVersionSyncedAt();
         this.deleted = project.isDeleted();
     }
 
@@ -170,6 +206,13 @@ public class ProjectEntity {
                 RepositoryVisibility.valueOf(repositoryVisibility),
                 RepositoryBindingStatus.valueOf(repositoryBindingStatus),
                 RepositoryHealthStatus.valueOf(repositoryHealthStatus),
+                repositoryHeadSha,
+                repositoryHeadMessage,
+                repositoryHeadAuthor,
+                repositoryHeadCommittedAt,
+                repositoryHeadSyncedAt,
+                repositoryVersion,
+                repositoryVersionSyncedAt,
                 deleted,
                 createdAt,
                 updatedAt

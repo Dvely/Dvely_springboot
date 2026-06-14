@@ -122,6 +122,7 @@ public class ProjectQueryService {
                 currentUrl,
                 deployStatus,
                 currentVersion,
+                project.getRepositoryVersion(),
                 activityLogs.stream().limit(OVERVIEW_ACTIVITY_LIMIT).toList(),
                 latestCommit,
                 repositoryHealth,
@@ -148,9 +149,34 @@ public class ProjectQueryService {
             return List.of();
         }
 
-        return githubRepositoryPort.getRecentCommits(ownerUserId, project.getSourceRepository(), DEFAULT_COMMIT_LIMIT).stream()
-                .map(commit -> new CommitResult(commit.sha(), commit.message(), commit.author(), commit.committedAt()))
-                .toList();
+        List<CommitResult> commits;
+        try {
+            commits = githubRepositoryPort
+                    .getRecentCommits(ownerUserId, project.getSourceRepository(), DEFAULT_COMMIT_LIMIT)
+                    .stream()
+                    .map(commit -> new CommitResult(
+                            commit.sha(),
+                            commit.message(),
+                            commit.author(),
+                            commit.committedAt()
+                    ))
+                    .toList();
+        } catch (RuntimeException exception) {
+            CommitResult snapshot = toRepositoryHeadSnapshot(project);
+            if (snapshot == null) {
+                throw exception;
+            }
+            return List.of(snapshot);
+        }
+
+        CommitResult snapshot = toRepositoryHeadSnapshot(project);
+        if (snapshot == null || commits.stream().anyMatch(commit -> commit.sha().equals(snapshot.sha()))) {
+            return commits;
+        }
+        List<CommitResult> synchronizedCommits = new ArrayList<>();
+        synchronizedCommits.add(snapshot);
+        synchronizedCommits.addAll(commits);
+        return synchronizedCommits.stream().limit(DEFAULT_COMMIT_LIMIT).toList();
     }
 
     public RepositoryHealthResult getRepositoryHealth(Long ownerUserId, Long projectId) {
@@ -158,9 +184,35 @@ public class ProjectQueryService {
         if (!project.hasSourceRepository()) {
             return new RepositoryHealthResult(RepositoryHealthStatus.REPOSITORY_NOT_FOUND.name());
         }
+        if (project.getRepositoryHealthStatus() == RepositoryHealthStatus.ACCESS_DENIED) {
+            return new RepositoryHealthResult(project.getRepositoryHealthStatus().name());
+        }
 
-        RepositoryHealthStatus health = githubRepositoryPort.checkRepositoryHealth(ownerUserId, project.getSourceRepository());
-        return new RepositoryHealthResult(health.name());
+        try {
+            RepositoryHealthStatus health =
+                    githubRepositoryPort.checkRepositoryHealth(ownerUserId, project.getSourceRepository());
+            return new RepositoryHealthResult(health.name());
+        } catch (RuntimeException exception) {
+            return new RepositoryHealthResult(project.getRepositoryHealthStatus().name());
+        }
+    }
+
+    private CommitResult toRepositoryHeadSnapshot(Project project) {
+        if (project.getRepositoryHeadSha() == null || project.getRepositoryHeadSha().isBlank()) {
+            return null;
+        }
+        LocalDateTime committedAtValue = project.getRepositoryHeadCommittedAt() == null
+                ? project.getRepositoryHeadSyncedAt()
+                : project.getRepositoryHeadCommittedAt();
+        OffsetDateTime committedAt = committedAtValue == null
+                ? OffsetDateTime.now()
+                : toOffsetDateTime(committedAtValue);
+        return new CommitResult(
+                project.getRepositoryHeadSha(),
+                project.getRepositoryHeadMessage(),
+                project.getRepositoryHeadAuthor(),
+                committedAt
+        );
     }
 
     private Project findProject(Long ownerUserId, Long projectId) {

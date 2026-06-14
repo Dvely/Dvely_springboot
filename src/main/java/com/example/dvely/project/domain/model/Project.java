@@ -25,6 +25,13 @@ public class Project {
     private RepositoryVisibility repositoryVisibility;
     private RepositoryBindingStatus repositoryBindingStatus;
     private RepositoryHealthStatus repositoryHealthStatus;
+    private String repositoryHeadSha;
+    private String repositoryHeadMessage;
+    private String repositoryHeadAuthor;
+    private LocalDateTime repositoryHeadCommittedAt;
+    private LocalDateTime repositoryHeadSyncedAt;
+    private String repositoryVersion;
+    private LocalDateTime repositoryVersionSyncedAt;
     private boolean deleted;
     private final LocalDateTime createdAt;
     private final LocalDateTime updatedAt;
@@ -75,6 +82,60 @@ public class Project {
                    boolean deleted,
                    LocalDateTime createdAt,
                    LocalDateTime updatedAt) {
+        this(
+                id,
+                ownerUserId,
+                name,
+                status,
+                startMode,
+                templateType,
+                draftMode,
+                deployStatus,
+                currentUrl,
+                currentVersion,
+                sourceRepository,
+                deploymentRepository,
+                repositoryVisibility,
+                repositoryBindingStatus,
+                repositoryHealthStatus,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                deleted,
+                createdAt,
+                updatedAt
+        );
+    }
+
+    public Project(Long id,
+                   Long ownerUserId,
+                   String name,
+                   ProjectStatus status,
+                   String startMode,
+                   String templateType,
+                   String draftMode,
+                   DeployStatus deployStatus,
+                   String currentUrl,
+                   String currentVersion,
+                   String sourceRepository,
+                   String deploymentRepository,
+                   RepositoryVisibility repositoryVisibility,
+                   RepositoryBindingStatus repositoryBindingStatus,
+                   RepositoryHealthStatus repositoryHealthStatus,
+                   String repositoryHeadSha,
+                   String repositoryHeadMessage,
+                   String repositoryHeadAuthor,
+                   LocalDateTime repositoryHeadCommittedAt,
+                   LocalDateTime repositoryHeadSyncedAt,
+                   String repositoryVersion,
+                   LocalDateTime repositoryVersionSyncedAt,
+                   boolean deleted,
+                   LocalDateTime createdAt,
+                   LocalDateTime updatedAt) {
         this.id = id;
         this.ownerUserId = Objects.requireNonNull(ownerUserId, "ownerUserId must not be null");
         this.name = Objects.requireNonNull(name, "name must not be null");
@@ -90,6 +151,13 @@ public class Project {
         this.repositoryVisibility = Objects.requireNonNull(repositoryVisibility, "repositoryVisibility must not be null");
         this.repositoryBindingStatus = Objects.requireNonNull(repositoryBindingStatus, "repositoryBindingStatus must not be null");
         this.repositoryHealthStatus = Objects.requireNonNull(repositoryHealthStatus, "repositoryHealthStatus must not be null");
+        this.repositoryHeadSha = repositoryHeadSha;
+        this.repositoryHeadMessage = repositoryHeadMessage;
+        this.repositoryHeadAuthor = repositoryHeadAuthor;
+        this.repositoryHeadCommittedAt = repositoryHeadCommittedAt;
+        this.repositoryHeadSyncedAt = repositoryHeadSyncedAt;
+        this.repositoryVersion = repositoryVersion;
+        this.repositoryVersionSyncedAt = repositoryVersionSyncedAt;
         this.deleted = deleted;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
@@ -155,6 +223,34 @@ public class Project {
         return repositoryHealthStatus;
     }
 
+    public String getRepositoryHeadSha() {
+        return repositoryHeadSha;
+    }
+
+    public String getRepositoryHeadMessage() {
+        return repositoryHeadMessage;
+    }
+
+    public String getRepositoryHeadAuthor() {
+        return repositoryHeadAuthor;
+    }
+
+    public LocalDateTime getRepositoryHeadCommittedAt() {
+        return repositoryHeadCommittedAt;
+    }
+
+    public LocalDateTime getRepositoryHeadSyncedAt() {
+        return repositoryHeadSyncedAt;
+    }
+
+    public String getRepositoryVersion() {
+        return repositoryVersion;
+    }
+
+    public LocalDateTime getRepositoryVersionSyncedAt() {
+        return repositoryVersionSyncedAt;
+    }
+
     public boolean isDeleted() {
         return deleted;
     }
@@ -186,6 +282,38 @@ public class Project {
         this.repositoryHealthStatus = Objects.requireNonNull(healthStatus, "healthStatus must not be null");
     }
 
+    public void synchronizeRepositoryHead(String sha,
+                                          String message,
+                                          String author,
+                                          LocalDateTime committedAt,
+                                          LocalDateTime receivedAt) {
+        Objects.requireNonNull(receivedAt, "receivedAt must not be null");
+        if (repositoryHeadSyncedAt != null && repositoryHeadSyncedAt.isAfter(receivedAt)) {
+            return;
+        }
+        this.repositoryHeadSha = requireText(sha, "sha");
+        this.repositoryHeadMessage = message;
+        this.repositoryHeadAuthor = author;
+        this.repositoryHeadCommittedAt = committedAt;
+        this.repositoryHeadSyncedAt = receivedAt;
+        this.repositoryHealthStatus = RepositoryHealthStatus.HEALTHY;
+    }
+
+    public void synchronizeRepositoryVersion(String version, LocalDateTime receivedAt) {
+        Objects.requireNonNull(receivedAt, "receivedAt must not be null");
+        if (repositoryVersionSyncedAt != null && repositoryVersionSyncedAt.isAfter(receivedAt)) {
+            return;
+        }
+        String normalizedVersion = requireText(version, "version");
+        if (repositoryVersion != null
+                && sequentialVersion(repositoryVersion) > sequentialVersion(normalizedVersion)) {
+            return;
+        }
+        this.repositoryVersion = normalizedVersion;
+        this.repositoryVersionSyncedAt = receivedAt;
+        this.repositoryHealthStatus = RepositoryHealthStatus.HEALTHY;
+    }
+
     public void updateDeployment(DeployStatus deployStatus, String currentUrl, String currentVersion) {
         this.deployStatus = Objects.requireNonNull(deployStatus, "deployStatus must not be null");
         this.currentUrl = currentUrl;
@@ -206,5 +334,16 @@ public class Project {
             throw new IllegalArgumentException(field + " must not be blank");
         }
         return value.trim();
+    }
+
+    private static int sequentialVersion(String version) {
+        if (version == null || !version.matches("v\\d+")) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(version.substring(1));
+        } catch (NumberFormatException exception) {
+            return Integer.MAX_VALUE;
+        }
     }
 }

@@ -74,4 +74,9 @@ public class User {
         this.githubUserRefreshToken = null;
         this.userAccessTokenExpiresAt = null;
     }
+
+    public void disconnectGithubApp() {
+        this.githubInstallationId = null;
+        clearGithubAppToken();
+    }
 }

@@ -14,6 +14,9 @@ public record ProjectOverviewResponse(
         @Schema(description = "현재 배포 버전")
         String currentVersion,
 
+        @Schema(description = "GitHub webhook으로 동기화된 최신 vN 저장소 태그")
+        String repositoryVersion,
+
         @Schema(description = "Deployment, Change, Approval, Domain의 최근 이벤트 3개")
         List<ProjectActivityLogResponse> recentChanges,
 

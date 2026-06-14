@@ -1,175 +1,173 @@
 package com.example.dvely.webhook.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.auth.infrastructure.config.GithubProperties;
-import com.example.dvely.change.application.service.ChangeService;
-import com.example.dvely.deployment.domain.model.DeploymentHistory;
-import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
-import com.example.dvely.deployment.domain.value.DeployTargetType;
-import com.example.dvely.project.domain.model.Project;
-import com.example.dvely.project.domain.repository.ProjectRepository;
-import com.example.dvely.project.domain.value.DeployStatus;
-import com.example.dvely.project.domain.value.ProjectStatus;
-import com.example.dvely.project.domain.value.RepositoryBindingStatus;
-import com.example.dvely.project.domain.value.RepositoryHealthStatus;
-import com.example.dvely.project.domain.value.RepositoryVisibility;
+import com.example.dvely.webhook.domain.model.WebhookDelivery;
+import com.example.dvely.webhook.domain.repository.WebhookDeliveryRepository;
+import com.example.dvely.webhook.domain.value.WebhookDeliveryStatus;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class WebhookServiceTest {
 
     @Test
-    void workflowRun_completesOnlyExactRunAndHeadSha() {
-        ProjectRepository projectRepository = mock(ProjectRepository.class);
-        DeploymentHistoryRepository historyRepository = mock(DeploymentHistoryRepository.class);
-        ChangeService changeService = mock(ChangeService.class);
-        WebhookService service = new WebhookService(
-                mock(GithubProperties.class),
-                projectRepository,
-                historyRepository,
-                changeService
+    void verifiesGithubSha256SignatureUsingConstantTimeComparison() {
+        WebhookService service = service(
+                mock(WebhookDeliveryRepository.class),
+                mock(WebhookEventHandler.class),
+                "It's a Secret to Everybody"
         );
-        DeploymentHistory history = history("workflow-sha");
-        Project project = project();
-        when(historyRepository.findByWorkflowRunId(901L)).thenReturn(Optional.of(history));
-        when(historyRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
-        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
 
-        service.handleEvent("workflow_run", payload("workflow-sha"));
+        service.verifySignature(
+                "Hello, World!".getBytes(StandardCharsets.UTF_8),
+                "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
+        );
 
-        assertThat(history.getStatus()).isEqualTo(DeployStatus.LIVE);
-        assertThat(project.getDeployStatus()).isEqualTo(DeployStatus.LIVE);
-        verify(historyRepository).save(history);
-        verify(projectRepository).save(project);
-        verify(changeService).markDeployed("task-51");
+        assertThatThrownBy(() -> service.verifySignature(
+                "Hello, World!".getBytes(StandardCharsets.UTF_8),
+                "sha256=invalid"
+        )).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void workflowRun_ignoresMismatchedHeadSha() {
-        ProjectRepository projectRepository = mock(ProjectRepository.class);
-        DeploymentHistoryRepository historyRepository = mock(DeploymentHistoryRepository.class);
-        ChangeService changeService = mock(ChangeService.class);
-        WebhookService service = new WebhookService(
-                mock(GithubProperties.class),
-                projectRepository,
-                historyRepository,
-                changeService
-        );
-        DeploymentHistory history = history("expected-sha");
-        when(historyRepository.findByWorkflowRunId(901L)).thenReturn(Optional.of(history));
-        when(projectRepository.findById(11L)).thenReturn(Optional.of(project()));
+    void receiveUsesDeliveryIdForIdempotentEnqueue() {
+        WebhookDeliveryRepository repository = mock(WebhookDeliveryRepository.class);
+        WebhookService service = service(repository, mock(WebhookEventHandler.class), "secret");
+        byte[] payload = "{}".getBytes(StandardCharsets.UTF_8);
+        when(repository.enqueue(org.mockito.ArgumentMatchers.any(WebhookDelivery.class)))
+                .thenReturn(true, false);
 
-        service.handleEvent("workflow_run", payload("different-sha"));
+        assertThat(service.receive("delivery-1", "push", payload)).isTrue();
+        assertThat(service.receive("delivery-1", "push", payload)).isFalse();
 
-        assertThat(history.getStatus()).isEqualTo(DeployStatus.IN_PROGRESS);
-        verify(historyRepository, never()).save(history);
-        verify(changeService, never()).markDeployed("task-51");
+        ArgumentCaptor<WebhookDelivery> captor = ArgumentCaptor.forClass(WebhookDelivery.class);
+        verify(repository, org.mockito.Mockito.times(2)).enqueue(captor.capture());
+        assertThat(captor.getAllValues())
+                .extracting(WebhookDelivery::getId)
+                .containsOnly("delivery-1");
     }
 
     @Test
-    void workflowRun_doesNotOverwriteProjectWithOlderDeploymentCompletion() {
-        ProjectRepository projectRepository = mock(ProjectRepository.class);
-        DeploymentHistoryRepository historyRepository = mock(DeploymentHistoryRepository.class);
-        ChangeService changeService = mock(ChangeService.class);
-        WebhookService service = new WebhookService(
-                mock(GithubProperties.class),
-                projectRepository,
-                historyRepository,
-                changeService
-        );
-        DeploymentHistory history = history("workflow-sha");
-        DeploymentHistory latestHistory = mock(DeploymentHistory.class);
-        when(latestHistory.getId()).thenReturn(52L);
-        Project project = project();
-        when(historyRepository.findByWorkflowRunId(901L)).thenReturn(Optional.of(history));
-        when(historyRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(latestHistory));
-        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
+    void processDeliveryCompletesHandledEvent() {
+        WebhookDeliveryRepository repository = mock(WebhookDeliveryRepository.class);
+        WebhookEventHandler handler = mock(WebhookEventHandler.class);
+        WebhookService service = service(repository, handler, "secret");
+        WebhookDelivery delivery = processingDelivery(1, 5);
+        when(repository.findById("delivery-1")).thenReturn(Optional.of(delivery));
+        when(handler.handle("push", delivery.getPayload(), delivery.getReceivedAt())).thenReturn(true);
 
-        service.handleEvent("workflow_run", payload("workflow-sha"));
+        service.processDelivery("delivery-1");
 
-        assertThat(history.getStatus()).isEqualTo(DeployStatus.LIVE);
-        assertThat(project.getDeployStatus()).isEqualTo(DeployStatus.IN_PROGRESS);
-        verify(historyRepository).save(history);
-        verify(projectRepository, never()).save(project);
-        verify(changeService).markDeployed("task-51");
+        assertThat(delivery.getStatus()).isEqualTo(WebhookDeliveryStatus.COMPLETED);
+        verify(repository).save(delivery);
     }
 
-    private byte[] payload(String headSha) {
-        return ("""
-                {
-                  "repository": {"full_name": "octo/repo"},
-                  "workflow_run": {
-                    "id": 901,
-                    "name": "Qeploy Deploy to GitHub Pages",
-                    "display_title": "Qeploy deployment correlation-51",
-                    "status": "completed",
-                    "conclusion": "success",
-                    "head_sha": "%s"
-                  }
-                }
-                """.formatted(headSha)).getBytes(StandardCharsets.UTF_8);
+    @Test
+    void processDeliveryRecordsRetryAfterFailure() {
+        WebhookDeliveryRepository repository = mock(WebhookDeliveryRepository.class);
+        WebhookEventHandler handler = mock(WebhookEventHandler.class);
+        WebhookService service = service(repository, handler, "secret");
+        WebhookDelivery delivery = processingDelivery(2, 5);
+        when(repository.findById("delivery-1")).thenReturn(Optional.of(delivery));
+        when(handler.handle("push", delivery.getPayload(), delivery.getReceivedAt()))
+                .thenThrow(new IllegalStateException("temporary failure"));
+
+        service.processDelivery("delivery-1");
+
+        assertThat(delivery.getStatus()).isEqualTo(WebhookDeliveryStatus.RETRY_WAIT);
+        assertThat(delivery.getErrorMessage()).isEqualTo("temporary failure");
+        assertThat(delivery.getNextAttemptAt()).isNotNull();
+        verify(repository).save(delivery);
     }
 
-    private DeploymentHistory history(String workflowHeadSha) {
-        LocalDateTime now = LocalDateTime.now();
-        return new DeploymentHistory(
-                51L,
-                1L,
-                11L,
-                DeployTargetType.LATEST,
-                "v7",
-                "https://octo.github.io/repo/",
-                DeployStatus.IN_PROGRESS,
-                901L,
-                "correlation-51",
-                "release-sha",
-                workflowHeadSha,
-                "Release title",
-                "Release description",
-                "octo",
-                "https://avatars.example/octo",
-                17,
-                now.minusMinutes(5),
-                "task-51",
-                null,
+    @Test
+    void processDeliveryMarksFailedWhenRetryBudgetIsExhausted() {
+        WebhookDeliveryRepository repository = mock(WebhookDeliveryRepository.class);
+        WebhookEventHandler handler = mock(WebhookEventHandler.class);
+        WebhookService service = service(repository, handler, "secret");
+        WebhookDelivery delivery = processingDelivery(5, 5);
+        when(repository.findById("delivery-1")).thenReturn(Optional.of(delivery));
+        when(handler.handle("push", delivery.getPayload(), delivery.getReceivedAt()))
+                .thenThrow(new IllegalStateException("permanent failure"));
+
+        service.processDelivery("delivery-1");
+
+        assertThat(delivery.getStatus()).isEqualTo(WebhookDeliveryStatus.FAILED);
+        assertThat(delivery.getProcessedAt()).isNotNull();
+        assertThat(delivery.getErrorMessage()).isEqualTo("permanent failure");
+        verify(repository).save(delivery);
+    }
+
+    @Test
+    void processDeliveryMarksUnsupportedEventIgnored() {
+        WebhookDeliveryRepository repository = mock(WebhookDeliveryRepository.class);
+        WebhookEventHandler handler = mock(WebhookEventHandler.class);
+        WebhookService service = service(repository, handler, "secret");
+        WebhookDelivery delivery = new WebhookDelivery(
+                "delivery-1",
+                "issues",
+                "{}".getBytes(StandardCharsets.UTF_8),
+                WebhookDeliveryStatus.PROCESSING,
                 1,
-                3,
+                5,
                 null,
+                "worker-1",
+                LocalDateTime.now().plusMinutes(1),
                 null,
+                LocalDateTime.now(),
                 null,
-                now,
+                LocalDateTime.now()
+        );
+        when(repository.findById("delivery-1")).thenReturn(Optional.of(delivery));
+        when(handler.handle("issues", delivery.getPayload(), delivery.getReceivedAt())).thenReturn(false);
+
+        service.processDelivery("delivery-1");
+
+        assertThat(delivery.getStatus()).isEqualTo(WebhookDeliveryStatus.IGNORED);
+        verify(repository).save(delivery);
+    }
+
+    private WebhookDelivery processingDelivery(int attempt, int maxAttempts) {
+        LocalDateTime now = LocalDateTime.now();
+        return new WebhookDelivery(
+                "delivery-1",
+                "push",
+                "{}".getBytes(StandardCharsets.UTF_8),
+                WebhookDeliveryStatus.PROCESSING,
+                attempt,
+                maxAttempts,
+                null,
+                "worker-1",
+                now.plusMinutes(1),
+                null,
+                now.minusSeconds(1),
+                null,
                 now
         );
     }
 
-    private Project project() {
-        LocalDateTime now = LocalDateTime.now();
-        return new Project(
-                11L,
-                1L,
-                "my-project",
-                ProjectStatus.ACTIVE,
-                "vue",
-                null,
-                "fast",
-                DeployStatus.IN_PROGRESS,
-                "https://octo.github.io/repo/",
-                "v7",
-                "octo/repo",
-                "octo/repo",
-                RepositoryVisibility.PUBLIC,
-                RepositoryBindingStatus.BOUND,
-                RepositoryHealthStatus.HEALTHY,
-                false,
-                now,
-                now
+    private WebhookService service(WebhookDeliveryRepository repository,
+                                   WebhookEventHandler handler,
+                                   String webhookSecret) {
+        GithubProperties properties = new GithubProperties(
+                new GithubProperties.OAuthProperties(null, null, null, null),
+                new GithubProperties.AppProperties(
+                        "app-id",
+                        "private-key",
+                        "redirect",
+                        webhookSecret,
+                        "client-id",
+                        "client-secret"
+                )
         );
+        return new WebhookService(properties, repository, handler);
     }
 }

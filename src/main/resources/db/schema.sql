@@ -118,6 +118,13 @@ CREATE TABLE projects (
     repository_visibility VARCHAR(20) NOT NULL DEFAULT 'PRIVATE',
     binding_status VARCHAR(30) NOT NULL DEFAULT 'NOT_BOUND',
     repository_health VARCHAR(30) NOT NULL DEFAULT 'UNKNOWN_ERROR',
+    repository_head_sha VARCHAR(40) NULL,
+    repository_head_message VARCHAR(1000) NULL,
+    repository_head_author VARCHAR(255) NULL,
+    repository_head_committed_at DATETIME NULL,
+    repository_head_synced_at DATETIME NULL,
+    repository_version VARCHAR(100) NULL,
+    repository_version_synced_at DATETIME NULL,
     is_deleted TINYINT(1) NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '프로젝트 생성 일시',
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '프로젝트 수정 일시',
@@ -127,6 +134,27 @@ CREATE TABLE projects (
         FOREIGN KEY (user_id)
         REFERENCES users (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE webhook_deliveries (
+    delivery_id VARCHAR(64) NOT NULL,
+    event_type VARCHAR(80) NOT NULL,
+    payload LONGBLOB NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+    attempt INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 5,
+    next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_owner VARCHAR(120) NULL,
+    lease_until DATETIME NULL,
+    error_message TEXT NULL,
+    received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at DATETIME NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (delivery_id),
+    KEY idx_webhook_deliveries_queue (status, next_attempt_at),
+    KEY idx_webhook_deliveries_lease (status, lease_until),
+    KEY idx_webhook_deliveries_event (event_type, received_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    COMMENT='GitHub webhook delivery idempotency and retry queue';
 
 CREATE TABLE project_cloud_connection_settings (
     project_id BIGINT NOT NULL,

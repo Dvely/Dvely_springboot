@@ -48,6 +48,13 @@ class ProjectSchemaTest {
         assertEquals(1, columnCount("domains", "hosting_target"));
         assertEquals(1, columnCount("domains", "certificate_status"));
         assertEquals(1, columnCount("domains", "certificate_expires_at"));
+        assertEquals(1, columnCount("projects", "repository_head_sha"));
+        assertEquals(1, columnCount("projects", "repository_head_synced_at"));
+        assertEquals(1, columnCount("projects", "repository_version"));
+        assertEquals(1, tableCount("webhook_deliveries"));
+        assertEquals(1, columnCount("webhook_deliveries", "delivery_id"));
+        assertEquals(1, columnCount("webhook_deliveries", "next_attempt_at"));
+        assertEquals(1, columnCount("webhook_deliveries", "lease_until"));
 
         String v13Applied = jdbcTemplate.queryForObject(
                 """
@@ -136,6 +143,17 @@ class ProjectSchemaTest {
         );
 
         assertTrue("1".equals(v20Applied) || "true".equalsIgnoreCase(v20Applied));
+
+        String v21Applied = jdbcTemplate.queryForObject(
+                """
+                        select coalesce(max(success), 0)
+                        from flyway_schema_history
+                        where version = '21'
+                        """,
+                String.class
+        );
+
+        assertTrue("1".equals(v21Applied) || "true".equalsIgnoreCase(v21Applied));
         assertEquals("CASCADE", foreignKeyDeleteRule("fk_chat_messages_session"));
         assertEquals("SET NULL", foreignKeyDeleteRule("fk_approvals_chat_session"));
         assertEquals("SET NULL", foreignKeyDeleteRule("fk_agent_runs_chat_session"));

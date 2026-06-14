@@ -62,6 +62,7 @@ class ProjectQueryServiceTest {
 
     private ProjectQueryService service;
     private LocalDateTime now;
+    private Project project;
 
     @BeforeEach
     void setUp() {
@@ -75,12 +76,14 @@ class ProjectQueryServiceTest {
                 infrastructureSettingsService
         );
         now = LocalDateTime.now();
+        project = project();
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
-                .thenReturn(Optional.of(project()));
+                .thenReturn(Optional.of(project));
     }
 
     @Test
     void overviewUsesActualEventsAndPrioritizesConnectedCustomDomain() {
+        project.synchronizeRepositoryVersion("v8", now.minusMinutes(1));
         when(githubRepositoryPort.getRecentCommits(1L, "octo/repo", 20))
                 .thenReturn(List.of(new GithubRepositoryPort.GithubCommit(
                         "abc123",
@@ -141,6 +144,7 @@ class ProjectQueryServiceTest {
         assertThat(overview.currentUrl()).isEqualTo("https://www.example.com");
         assertThat(overview.deployStatus()).isEqualTo("FAILED");
         assertThat(overview.currentVersion()).isEqualTo("v6");
+        assertThat(overview.repositoryVersion()).isEqualTo("v8");
         assertThat(overview.domainSummary().hostname()).isEqualTo("www.example.com");
         assertThat(overview.domainSummary().hostingTarget()).isEqualTo("GITHUB_PAGES");
         assertThat(overview.domainSummary().certificateStatus()).isEqualTo("ACTIVE");
@@ -156,6 +160,27 @@ class ProjectQueryServiceTest {
                     assertThat(action.available()).isTrue();
                     assertThat(action.reason()).contains("재시도");
                 });
+    }
+
+    @Test
+    void commitsFallBackToWebhookSnapshotWhenGithubIsUnavailable() {
+        project.synchronizeRepositoryHead(
+                "webhook-sha",
+                "fix: synchronized",
+                "octo",
+                now.minusMinutes(2),
+                now.minusMinutes(1)
+        );
+        when(githubRepositoryPort.getRecentCommits(1L, "octo/repo", 20))
+                .thenThrow(new IllegalStateException("GitHub unavailable"));
+
+        var commits = service.getCommits(1L, 11L);
+
+        assertThat(commits).singleElement().satisfies(commit -> {
+            assertThat(commit.sha()).isEqualTo("webhook-sha");
+            assertThat(commit.message()).isEqualTo("fix: synchronized");
+            assertThat(commit.author()).isEqualTo("octo");
+        });
     }
 
     @Test

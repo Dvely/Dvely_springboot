@@ -15,6 +15,8 @@ class ProjectSchemaMappingTest {
     void projectEntitiesUseProjectTableAndIdColumns() throws NoSuchFieldException {
         assertThat(ProjectEntity.class.getAnnotation(Table.class).name()).isEqualTo("projects");
         assertColumnName(ProjectEntity.class, "id", "project_id");
+        assertColumnName(ProjectEntity.class, "repositoryHeadSha", "repository_head_sha");
+        assertColumnName(ProjectEntity.class, "repositoryVersion", "repository_version");
         assertColumnName(ConversationEntity.class, "projectId", "project_id");
         assertColumnName(DomainBindingEntity.class, "projectId", "project_id");
     }
