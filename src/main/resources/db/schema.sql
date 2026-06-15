@@ -60,7 +60,7 @@ CREATE TABLE cloud_connections (
     service_account_key_json MEDIUMTEXT NULL COMMENT 'AES encrypted GCP service account key JSON',
     gcp_project_id VARCHAR(255) NULL COMMENT 'GCP project ID',
     service_account_email VARCHAR(255) NULL COMMENT 'GCP service account email',
-    status VARCHAR(40) NOT NULL DEFAULT 'CHECKING' COMMENT '클라우드 연결 health 상태',
+    status VARCHAR(40) NOT NULL DEFAULT 'VALIDATED' COMMENT 'VALIDATED | VERIFYING | CONNECTED | provider error status',
     last_checked_at DATETIME NULL COMMENT '마지막 health 확인 시각',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '클라우드 연결 등록 시각',
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '클라우드 연결 수정 시각',
@@ -73,14 +73,38 @@ CREATE TABLE cloud_connections (
         REFERENCES users (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='외부 클라우드 BYOC 연결';
 
-CREATE TABLE repositories (
-    repository_id BIGINT NOT NULL AUTO_INCREMENT,
+CREATE TABLE cloud_connection_verification_jobs (
+    job_id VARCHAR(36) NOT NULL,
+    cloud_connection_id BIGINT NOT NULL,
     user_id BIGINT NOT NULL,
-    repo_id VARCHAR(255) NULL COMMENT 'GitHub 레포지토리 고유 ID',
-    repo_name VARCHAR(255) NULL COMMENT '레포지토리 이름',
-    is_private TINYINT(1) NULL COMMENT '레포지토리 공개 여부 (0: public, 1: private)',
-    default_branch VARCHAR(100) NULL DEFAULT NULL COMMENT '기본 브랜치 (예: main)',
-    repo_url VARCHAR(512) NULL COMMENT 'GitHub 레포지토리 URL',
+    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+    connection_status VARCHAR(40) NOT NULL DEFAULT 'VALIDATED',
+    message TEXT NOT NULL,
+    attempt INT NOT NULL DEFAULT 0,
+    lease_owner VARCHAR(120) NULL,
+    lease_until DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at DATETIME NULL,
+    completed_at DATETIME NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (job_id),
+    KEY idx_cloud_verification_jobs_connection (cloud_connection_id, created_at),
+    KEY idx_cloud_verification_jobs_queue (status, created_at),
+    KEY idx_cloud_verification_jobs_lease (status, lease_until),
+    KEY idx_cloud_verification_jobs_user (user_id),
+    CONSTRAINT fk_cloud_verification_jobs_connection
+        FOREIGN KEY (cloud_connection_id)
+        REFERENCES cloud_connections (cloud_connection_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_cloud_verification_jobs_user
+        FOREIGN KEY (user_id)
+        REFERENCES users (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    COMMENT='AWS/GCP 실제 권한 확인 Job';
+
+CREATE TABLE projects (
+    project_id BIGINT NOT NULL AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
     project_name VARCHAR(255) NOT NULL DEFAULT 'untitled-project',
     project_status VARCHAR(50) NOT NULL DEFAULT 'DRAFT',
     start_mode VARCHAR(50) NOT NULL DEFAULT 'blank',
@@ -94,31 +118,128 @@ CREATE TABLE repositories (
     repository_visibility VARCHAR(20) NOT NULL DEFAULT 'PRIVATE',
     binding_status VARCHAR(30) NOT NULL DEFAULT 'NOT_BOUND',
     repository_health VARCHAR(30) NOT NULL DEFAULT 'UNKNOWN_ERROR',
+    repository_head_sha VARCHAR(40) NULL,
+    repository_head_message VARCHAR(1000) NULL,
+    repository_head_author VARCHAR(255) NULL,
+    repository_head_committed_at DATETIME NULL,
+    repository_head_synced_at DATETIME NULL,
+    repository_version VARCHAR(100) NULL,
+    repository_version_synced_at DATETIME NULL,
     is_deleted TINYINT(1) NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'repo 사용 등록 일시',
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'repo 수정 일시',
-    PRIMARY KEY (repository_id),
-    UNIQUE KEY uk_repositories_repo_id (repo_id),
-    KEY idx_repositories_user_id (user_id),
-    CONSTRAINT fk_repositories_user
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '프로젝트 생성 일시',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '프로젝트 수정 일시',
+    PRIMARY KEY (project_id),
+    KEY idx_projects_user_id (user_id),
+    CONSTRAINT fk_projects_user
         FOREIGN KEY (user_id)
         REFERENCES users (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE webhook_deliveries (
+    delivery_id VARCHAR(64) NOT NULL,
+    event_type VARCHAR(80) NOT NULL,
+    payload LONGBLOB NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+    attempt INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 5,
+    next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_owner VARCHAR(120) NULL,
+    lease_until DATETIME NULL,
+    error_message TEXT NULL,
+    received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at DATETIME NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (delivery_id),
+    KEY idx_webhook_deliveries_queue (status, next_attempt_at),
+    KEY idx_webhook_deliveries_lease (status, lease_until),
+    KEY idx_webhook_deliveries_event (event_type, received_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    COMMENT='GitHub webhook delivery idempotency and retry queue';
+
+CREATE TABLE project_cloud_connection_settings (
+    project_id BIGINT NOT NULL,
+    cloud_connection_id BIGINT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (project_id),
+    KEY idx_project_cloud_settings_connection (cloud_connection_id),
+    CONSTRAINT fk_project_cloud_settings_project
+        FOREIGN KEY (project_id)
+        REFERENCES projects (project_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_project_cloud_settings_connection
+        FOREIGN KEY (cloud_connection_id)
+        REFERENCES cloud_connections (cloud_connection_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    COMMENT='프로젝트별 선택된 BYOC 클라우드 연결';
+
+CREATE TABLE deployment_histories (
+    history_id BIGINT NOT NULL AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL,
+    deploy_target_type VARCHAR(20) NOT NULL,
+    version_label VARCHAR(100) NULL,
+    deployed_url VARCHAR(512) NULL,
+    status VARCHAR(30) NOT NULL,
+    workflow_run_id BIGINT NULL,
+    correlation_id VARCHAR(36) NOT NULL,
+    commit_sha VARCHAR(40) NULL,
+    workflow_head_sha VARCHAR(40) NULL,
+    title VARCHAR(500) NULL,
+    description TEXT NULL,
+    merged_by VARCHAR(100) NULL,
+    merged_by_avatar_url VARCHAR(1000) NULL,
+    pr_number INT NULL,
+    merged_at DATETIME NULL,
+    agent_task_id VARCHAR(64) NULL,
+    error_message TEXT NULL,
+    attempt INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 3,
+    next_run_at DATETIME NULL,
+    lease_owner VARCHAR(100) NULL,
+    lease_until DATETIME NULL,
+    triggered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (history_id),
+    UNIQUE KEY uk_deployment_histories_correlation_id (correlation_id),
+    UNIQUE KEY uk_deployment_histories_workflow_run_id (workflow_run_id),
+    KEY idx_deployment_histories_project_id (project_id),
+    KEY idx_deployment_histories_project_status (project_id, status),
+    KEY idx_deployment_histories_queue (status, next_run_at),
+    KEY idx_deployment_histories_lease (status, lease_until),
+    KEY idx_deployment_histories_commit_sha (project_id, commit_sha),
+    CONSTRAINT fk_deployment_histories_user
+        FOREIGN KEY (user_id)
+        REFERENCES users (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE project_approval_policies (
+    project_id BIGINT NOT NULL,
+    change_approval_required TINYINT(1) NOT NULL DEFAULT 1,
+    deployment_approval_required TINYINT(1) NOT NULL DEFAULT 1,
+    domain_approval_required TINYINT(1) NOT NULL DEFAULT 1,
+    infra_approval_required TINYINT(1) NOT NULL DEFAULT 1,
+    PRIMARY KEY (project_id),
+    CONSTRAINT fk_project_approval_policies_project
+        FOREIGN KEY (project_id)
+        REFERENCES projects (project_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE pipelines (
     pipeline_id BIGINT NOT NULL AUTO_INCREMENT,
-    repository_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (pipeline_id),
-    KEY idx_pipelines_repository_id (repository_id),
-    CONSTRAINT fk_pipelines_repository
-        FOREIGN KEY (repository_id)
-        REFERENCES repositories (repository_id)
+    KEY idx_pipelines_project_id (project_id),
+    CONSTRAINT fk_pipelines_project
+        FOREIGN KEY (project_id)
+        REFERENCES projects (project_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE deployments (
     deployment_id BIGINT NOT NULL AUTO_INCREMENT,
-    repository_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL,
     pipeline_id BIGINT NOT NULL,
     deploy_url VARCHAR(512) NOT NULL COMMENT '배포된 서비스 URL',
     status VARCHAR(50) NOT NULL COMMENT '배포 상태 (pending, success, failed)',
@@ -126,11 +247,11 @@ CREATE TABLE deployments (
     deployed_at DATETIME NOT NULL COMMENT '배포 시작 시간',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (deployment_id),
-    KEY idx_deployments_repository_id (repository_id),
+    KEY idx_deployments_project_id (project_id),
     KEY idx_deployments_pipeline_id (pipeline_id),
-    CONSTRAINT fk_deployments_repository
-        FOREIGN KEY (repository_id)
-        REFERENCES repositories (repository_id),
+    CONSTRAINT fk_deployments_project
+        FOREIGN KEY (project_id)
+        REFERENCES projects (project_id),
     CONSTRAINT fk_deployments_pipeline
         FOREIGN KEY (pipeline_id)
         REFERENCES pipelines (pipeline_id)
@@ -138,43 +259,48 @@ CREATE TABLE deployments (
 
 CREATE TABLE domains (
     domain_id BIGINT NOT NULL AUTO_INCREMENT,
-    repository_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL,
     domain_name VARCHAR(255) NOT NULL COMMENT '도메인 주소',
     domain_type VARCHAR(30) NOT NULL DEFAULT 'CUSTOM_DOMAIN',
+    hosting_target VARCHAR(30) NOT NULL DEFAULT 'GITHUB_PAGES',
     status VARCHAR(30) NOT NULL DEFAULT 'VERIFYING',
     verification_method VARCHAR(10) NULL,
     dns_target VARCHAR(512) NULL,
     cloudflare_record_id VARCHAR(100) NULL,
     last_checked_at DATETIME NULL,
-    https_enforced TINYINT(1) NOT NULL DEFAULT 1 COMMENT 'HTTPS 강제 여부 (0: off, 1: on)',
+    https_enforced TINYINT(1) NOT NULL DEFAULT 0 COMMENT '실제 HTTPS 강제 적용 여부',
+    certificate_status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+    certificate_expires_at DATE NULL,
     dns_verified TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'DNS 인증 여부 (0: 미인증, 1: 인증완료)',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '도메인 등록 시간',
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '도메인 수정 시간',
     PRIMARY KEY (domain_id),
     UNIQUE KEY uk_domains_domain_name (domain_name),
-    KEY idx_domains_repository_id (repository_id),
-    CONSTRAINT fk_domains_repository
-        FOREIGN KEY (repository_id)
-        REFERENCES repositories (repository_id)
+    KEY idx_domains_project_id (project_id),
+    CONSTRAINT fk_domains_project
+        FOREIGN KEY (project_id)
+        REFERENCES projects (project_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE chat_sessions (
-    chat_session_id BIGINT NOT NULL AUTO_INCREMENT COMMENT '사용자의 레포에 대한 채팅 세션 id',
+    chat_session_id BIGINT NOT NULL AUTO_INCREMENT COMMENT '사용자의 프로젝트에 대한 채팅 세션 id',
     user_id BIGINT NOT NULL,
-    repository_id BIGINT NOT NULL,
+    project_id BIGINT NOT NULL,
+    title VARCHAR(120) NOT NULL DEFAULT '새 대화',
     is_deleted TINYINT(1) NOT NULL DEFAULT 0 COMMENT '삭제 여부 (0: 사용, 1: 삭제)',
     deleted_at DATETIME NULL COMMENT '채팅 휴지통 처리 시점',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '채팅 세션 생성 시간',
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '채팅 세션 수정 시간',
     PRIMARY KEY (chat_session_id),
     KEY idx_chat_sessions_user_id (user_id),
-    KEY idx_chat_sessions_repository_id (repository_id),
+    KEY idx_chat_sessions_project_id (project_id),
+    KEY idx_chat_sessions_trash_expiry (is_deleted, deleted_at),
     CONSTRAINT fk_chat_sessions_user
         FOREIGN KEY (user_id)
         REFERENCES users (user_id),
-    CONSTRAINT fk_chat_sessions_repository
-        FOREIGN KEY (repository_id)
-        REFERENCES repositories (repository_id)
+    CONSTRAINT fk_chat_sessions_project
+        FOREIGN KEY (project_id)
+        REFERENCES projects (project_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE chat_messages (
@@ -189,4 +315,152 @@ CREATE TABLE chat_messages (
     CONSTRAINT fk_chat_messages_session
         FOREIGN KEY (chat_session_id)
         REFERENCES chat_sessions (chat_session_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE approvals (
+    approval_id BIGINT NOT NULL AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    project_id BIGINT NULL,
+    chat_session_id BIGINT NULL,
+    task_id VARCHAR(64) NOT NULL,
+    approval_type VARCHAR(30) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    summary VARCHAR(500) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    decided_at DATETIME NULL,
+    PRIMARY KEY (approval_id),
+    KEY idx_approvals_user_id (user_id),
+    KEY idx_approvals_project_id (project_id),
+    KEY idx_approvals_task_id (task_id),
+    CONSTRAINT fk_approvals_user
+        FOREIGN KEY (user_id)
+        REFERENCES users (user_id),
+    CONSTRAINT fk_approvals_project
+        FOREIGN KEY (project_id)
+        REFERENCES projects (project_id),
+    CONSTRAINT fk_approvals_chat_session
+        FOREIGN KEY (chat_session_id)
+        REFERENCES chat_sessions (chat_session_id)
+        ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE agent_runs (
+    task_id VARCHAR(64) NOT NULL,
+    user_id BIGINT NOT NULL,
+    project_id BIGINT NULL,
+    chat_session_id BIGINT NULL,
+    status VARCHAR(30) NOT NULL,
+    plan_json LONGTEXT NULL,
+    current_step INT NOT NULL DEFAULT 0,
+    attempt INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 3,
+    preview_url VARCHAR(1000) NULL,
+    summary TEXT NULL,
+    error TEXT NULL,
+    question TEXT NULL,
+    input_value TEXT NULL,
+    failure_log TEXT NULL,
+    suggested_fix TEXT NULL,
+    next_run_at DATETIME NULL,
+    lease_owner VARCHAR(100) NULL,
+    lease_until DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (task_id),
+    KEY idx_agent_runs_user_created (user_id, created_at),
+    KEY idx_agent_runs_queue (status, next_run_at),
+    KEY idx_agent_runs_lease (status, lease_until),
+    CONSTRAINT fk_agent_runs_user
+        FOREIGN KEY (user_id)
+        REFERENCES users (user_id),
+    CONSTRAINT fk_agent_runs_project
+        FOREIGN KEY (project_id)
+        REFERENCES projects (project_id),
+    CONSTRAINT fk_agent_runs_chat_session
+        FOREIGN KEY (chat_session_id)
+        REFERENCES chat_sessions (chat_session_id)
+        ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE agent_run_events (
+    event_id BIGINT NOT NULL AUTO_INCREMENT,
+    task_id VARCHAR(64) NOT NULL,
+    event_type VARCHAR(40) NOT NULL,
+    status VARCHAR(30) NOT NULL,
+    message TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (event_id),
+    KEY idx_agent_run_events_task_id (task_id, event_id),
+    CONSTRAINT fk_agent_run_events_task
+        FOREIGN KEY (task_id)
+        REFERENCES agent_runs (task_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE preview_sessions (
+    preview_session_id VARCHAR(36) NOT NULL,
+    access_token VARCHAR(64) NOT NULL,
+    user_id BIGINT NOT NULL,
+    project_id BIGINT NULL,
+    chat_session_id BIGINT NULL,
+    task_id VARCHAR(64) NOT NULL,
+    container_id VARCHAR(128) NOT NULL,
+    host_port INT NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    public_url VARCHAR(1000) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    last_accessed_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (preview_session_id),
+    UNIQUE KEY uk_preview_sessions_access_token (access_token),
+    KEY idx_preview_sessions_task_id (task_id),
+    KEY idx_preview_sessions_owner_status (user_id, status),
+    KEY idx_preview_sessions_expiry (status, expires_at),
+    CONSTRAINT fk_preview_sessions_user
+        FOREIGN KEY (user_id)
+        REFERENCES users (user_id),
+    CONSTRAINT fk_preview_sessions_project
+        FOREIGN KEY (project_id)
+        REFERENCES projects (project_id),
+    CONSTRAINT fk_preview_sessions_chat_session
+        FOREIGN KEY (chat_session_id)
+        REFERENCES chat_sessions (chat_session_id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_preview_sessions_task
+        FOREIGN KEY (task_id)
+        REFERENCES agent_runs (task_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE project_changes (
+    change_id BIGINT NOT NULL AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    project_id BIGINT NULL,
+    chat_session_id BIGINT NULL,
+    task_id VARCHAR(64) NOT NULL,
+    preview_session_id VARCHAR(36) NOT NULL,
+    status VARCHAR(30) NOT NULL,
+    summary TEXT NULL,
+    diff_text MEDIUMTEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (change_id),
+    UNIQUE KEY uk_project_changes_task_id (task_id),
+    KEY idx_project_changes_project_created (project_id, created_at),
+    CONSTRAINT fk_project_changes_user
+        FOREIGN KEY (user_id)
+        REFERENCES users (user_id),
+    CONSTRAINT fk_project_changes_project
+        FOREIGN KEY (project_id)
+        REFERENCES projects (project_id),
+    CONSTRAINT fk_project_changes_chat_session
+        FOREIGN KEY (chat_session_id)
+        REFERENCES chat_sessions (chat_session_id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_project_changes_task
+        FOREIGN KEY (task_id)
+        REFERENCES agent_runs (task_id),
+    CONSTRAINT fk_project_changes_preview_session
+        FOREIGN KEY (preview_session_id)
+        REFERENCES preview_sessions (preview_session_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

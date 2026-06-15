@@ -57,7 +57,7 @@ public class CloudConnection {
                 serviceAccountKeyJson,
                 gcpProjectId,
                 serviceAccountEmail,
-                CloudConnectionStatus.CHECKING,
+                CloudConnectionStatus.VALIDATED,
                 null,
                 null,
                 null
@@ -107,6 +107,14 @@ public class CloudConnection {
     public void markHealth(CloudConnectionStatus status, LocalDateTime checkedAt) {
         this.status = Objects.requireNonNull(status, "status must not be null");
         this.lastCheckedAt = Objects.requireNonNull(checkedAt, "checkedAt must not be null");
+    }
+
+    public void markValidated() {
+        this.status = CloudConnectionStatus.VALIDATED;
+    }
+
+    public void markVerifying() {
+        this.status = CloudConnectionStatus.VERIFYING;
     }
 
     public Long getId() {

@@ -86,7 +86,7 @@ public class ChatController {
 
     @Operation(
             summary = "휴지통 대화 목록 조회",
-            description = "현재 유저의 휴지통 대화 중 삭제 후 30일이 지나지 않은 대화만 조회합니다. " +
+            description = "현재 유저의 휴지통 대화 중 삭제 후 7일이 지나지 않은 대화만 조회합니다. " +
                           "원래 프로젝트가 삭제된 경우 동일 저장소를 연결한 활성 프로젝트 ID로 보정될 수 있습니다."
     )
     @GetMapping("/api/v1/trash/conversations")
@@ -100,7 +100,7 @@ public class ChatController {
 
     @Operation(
             summary = "휴지통 대화 복구",
-            description = "휴지통의 대화를 복구합니다. 삭제 후 30일이 지난 대화는 복구할 수 없습니다. " +
+            description = "휴지통의 대화를 복구합니다. 삭제 후 7일이 지난 대화는 복구할 수 없습니다. " +
                           "원래 프로젝트가 삭제된 경우 동일 저장소를 연결한 활성 프로젝트로 복구를 시도합니다."
     )
     @PostMapping("/api/v1/trash/conversations/{conversationId}/restore")
@@ -109,6 +109,19 @@ public class ChatController {
             @Parameter(description = "복구할 대화 ID") @PathVariable Long conversationId
     ) {
         return chatMapper.toConversationResponse(chatFacade.restoreConversation(userId, conversationId));
+    }
+
+    @Operation(
+            summary = "휴지통 대화 영구 삭제",
+            description = "휴지통의 대화와 메시지를 즉시 영구 삭제합니다. Agent/Approval/Change 이력은 대화 참조만 해제하고 보존합니다."
+    )
+    @DeleteMapping("/api/v1/trash/conversations/{conversationId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void permanentlyDeleteConversation(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @Parameter(description = "영구 삭제할 휴지통 대화 ID") @PathVariable Long conversationId
+    ) {
+        chatFacade.permanentlyDeleteConversation(userId, conversationId);
     }
 
     @Operation(

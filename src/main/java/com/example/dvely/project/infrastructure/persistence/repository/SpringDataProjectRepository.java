@@ -19,4 +19,6 @@ public interface SpringDataProjectRepository extends JpaRepository<ProjectEntity
     );
 
     Optional<ProjectEntity> findFirstBySourceRepositoryIgnoreCase(String sourceRepository);
+
+    List<ProjectEntity> findBySourceRepositoryIgnoreCaseAndDeletedFalse(String sourceRepository);
 }

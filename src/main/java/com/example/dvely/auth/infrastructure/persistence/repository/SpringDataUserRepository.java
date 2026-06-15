@@ -7,4 +7,5 @@ import java.util.Optional;
 
 public interface SpringDataUserRepository extends JpaRepository<UserEntity, Long> {
     Optional<UserEntity> findByGithubId(String githubId);
+    Optional<UserEntity> findByGithubInstallationId(Long githubInstallationId);
 }

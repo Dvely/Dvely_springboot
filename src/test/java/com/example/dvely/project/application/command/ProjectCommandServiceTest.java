@@ -79,6 +79,40 @@ class ProjectCommandServiceTest {
     }
 
     @Test
+    void createProject_normalizesTemplateAndDefaultsDraftMode() {
+        when(projectRepository.save(any(Project.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        ProjectDetailResult result = projectCommandService.createProject(
+                1L,
+                new CreateProjectCommand("store", " TEMPLATE ", "E Commerce", null)
+        );
+
+        assertThat(result.startMode()).isEqualTo("template");
+        assertThat(result.templateType()).isEqualTo("e-commerce");
+        assertThat(result.draftMode()).isEqualTo("fast");
+    }
+
+    @Test
+    void createProject_rejectsTemplateWithoutTemplateType() {
+        assertThatThrownBy(() -> projectCommandService.createProject(
+                1L,
+                new CreateProjectCommand("store", "template", null, "quality")
+        ))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("templateType");
+    }
+
+    @Test
+    void createProject_rejectsUnknownDraftMode() {
+        assertThatThrownBy(() -> projectCommandService.createProject(
+                1L,
+                new CreateProjectCommand("store", "blank", null, "balanced")
+        ))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("draftMode");
+    }
+
+    @Test
     void connectRepository_bindsExistingRepositoryToEmptyProject() {
         Project project = emptyProject();
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));

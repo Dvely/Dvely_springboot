@@ -11,7 +11,7 @@ public record DeploymentStatusResponse(
         @Schema(description = "버전 라벨") String versionLabel,
         @Schema(description = "배포 URL") String deployedUrl,
 
-        @Schema(description = "배포 상태 (IN_PROGRESS | LIVE | FAILED)") String status,
+        @Schema(description = "배포 상태 (PENDING | IN_PROGRESS | LIVE | FAILED)") String status,
 
         @Schema(description = "GitHub Actions 빌드 상태. IN_PROGRESS일 때만 유효. " +
                               "queued(대기) | in_progress(빌드 중) | completed(빌드 완료)")

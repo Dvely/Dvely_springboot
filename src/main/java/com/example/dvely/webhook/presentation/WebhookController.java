@@ -1,5 +1,6 @@
 package com.example.dvely.webhook.presentation;
 
+import com.example.dvely.common.response.RawApiResponse;
 import com.example.dvely.webhook.application.WebhookService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -10,6 +11,7 @@ import org.springframework.web.bind.annotation.*;
 
 @Tag(name = "Webhook", description = "GitHub App webhook 수신 API. GitHub이 직접 호출하며 프론트엔드나 클라이언트에서 호출하지 않습니다.")
 @RestController
+@RawApiResponse
 @RequestMapping("/api/v1/webhook")
 @RequiredArgsConstructor
 public class WebhookController {
@@ -26,11 +28,12 @@ public class WebhookController {
     @PostMapping("/github")
     public ResponseEntity<Void> receiveGithubWebhook(
             @Parameter(description = "이벤트 종류 (push, pull_request, installation 등)") @RequestHeader("X-GitHub-Event") String eventType,
+            @Parameter(description = "GitHub webhook delivery 고유 GUID") @RequestHeader("X-GitHub-Delivery") String deliveryId,
             @Parameter(description = "sha256={HMAC} 형식의 서명값. webhook secret으로 페이로드 무결성 검증에 사용") @RequestHeader("X-Hub-Signature-256") String signature,
             @RequestBody byte[] payload
     ) {
         webhookService.verifySignature(payload, signature);
-        webhookService.handleEvent(eventType, payload);
-        return ResponseEntity.ok().build();
+        webhookService.receive(deliveryId, eventType, payload);
+        return ResponseEntity.accepted().build();
     }
 }

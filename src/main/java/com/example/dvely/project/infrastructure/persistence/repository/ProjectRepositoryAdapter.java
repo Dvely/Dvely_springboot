@@ -55,6 +55,14 @@ public class ProjectRepositoryAdapter implements ProjectRepository {
     }
 
     @Override
+    public List<Project> findAllBySourceRepository(String sourceRepository) {
+        return springDataProjectRepository.findBySourceRepositoryIgnoreCaseAndDeletedFalse(sourceRepository)
+                .stream()
+                .map(ProjectEntity::toDomain)
+                .toList();
+    }
+
+    @Override
     public Project save(Project project) {
         ProjectEntity entity;
         if (project.getId() == null) {

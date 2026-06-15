@@ -11,10 +11,13 @@ public record ProjectCommitResponse(
         @Schema(description = "커밋 메시지", example = "Add landing page")
         String message,
 
-        @Schema(description = "커밋 작성자", example = "dvely")
+        @Schema(description = "커밋 작성자", example = "qeploy")
         String author,
 
         @Schema(description = "커밋 시각")
-        OffsetDateTime committedAt
+        OffsetDateTime committedAt,
+
+        @Schema(description = "현재 시각 기준 상대 커밋 시간", example = "2시간 전")
+        String relativeTime
 ) {
 }

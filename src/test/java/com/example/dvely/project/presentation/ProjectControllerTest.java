@@ -10,9 +10,12 @@ import com.example.dvely.project.application.command.dto.ConnectProjectRepositor
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
 import com.example.dvely.project.application.facade.ProjectFacade;
 import com.example.dvely.project.application.result.GithubRepositoryResult;
+import com.example.dvely.project.application.result.ProjectCreationResult;
 import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectRepositoryResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
+import com.example.dvely.agent.application.dto.AgentSubmission;
+import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
 import com.example.dvely.project.presentation.dto.request.ConnectProjectRepositoryRequest;
 import com.example.dvely.project.presentation.dto.request.CreateProjectRequest;
@@ -68,7 +71,7 @@ class ProjectControllerTest {
                 "fast"
         );
 
-        ProjectDetailResult result = new ProjectDetailResult(
+        ProjectDetailResult project = new ProjectDetailResult(
                 11L,
                 "my-landing",
                 "DRAFT",
@@ -78,7 +81,18 @@ class ProjectControllerTest {
                 LocalDateTime.now(),
                 LocalDateTime.now()
         );
-        ProjectCreateResponse response = new ProjectCreateResponse(11L, "my-landing", "DRAFT");
+        ProjectCreationResult result = new ProjectCreationResult(
+                project,
+                new AgentSubmission("task-1", TaskStatus.WAITING_APPROVAL, List.of(21L))
+        );
+        ProjectCreateResponse response = new ProjectCreateResponse(
+                11L,
+                "my-landing",
+                "DRAFT",
+                "task-1",
+                "WAITING_APPROVAL",
+                List.of(21L)
+        );
 
         when(projectFacade.createProject(eq(1L), any(CreateProjectCommand.class))).thenReturn(result);
         when(projectMapper.toCreateResponse(result)).thenReturn(response);
@@ -96,6 +110,8 @@ class ProjectControllerTest {
         assertThat(actual.projectId()).isEqualTo(11L);
         assertThat(actual.name()).isEqualTo("my-landing");
         assertThat(actual.status()).isEqualTo("DRAFT");
+        assertThat(actual.taskId()).isEqualTo("task-1");
+        assertThat(actual.approvalIds()).containsExactly(21L);
     }
 
     @Test

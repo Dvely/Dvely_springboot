@@ -1,5 +1,5 @@
 package com.example.dvely.agent.application.dto;
 
 public enum TaskStatus {
-    PENDING, RUNNING, WAITING_INPUT, DONE, FAILED
+    PENDING, WAITING_APPROVAL, QUEUED, RETRY_WAIT, RUNNING, WAITING_INPUT, DONE, FAILED, CANCELLED
 }

@@ -21,11 +21,14 @@ cloudflare:
   ttl: 1
   proxied: true
 
-dvely:
+qeploy:
+  cors:
+    allowed-origins: ${QEPLOY_CORS_ALLOWED_ORIGINS:}
+    allowed-origin-patterns: ${QEPLOY_CORS_ALLOWED_ORIGIN_PATTERNS:}
   ai:
     anthropic:
-      api-key: ${ANTHROPIC_API_KEY}
-      model: claude-opus-4-5-20251101
+      api-key: ${QEPLOY_AI_ANTHROPIC_API_KEY:${ANTHROPIC_API_KEY:}}
+      model: ${QEPLOY_AI_ANTHROPIC_MODEL:claude-opus-4-5-20251101}
     openai:
-      api-key: ${OPENAI_API_KEY}
-      model: gpt-4o
+      api-key: ${QEPLOY_AI_OPENAI_API_KEY:${OPENAI_API_KEY:}}
+      model: ${QEPLOY_AI_OPENAI_MODEL:gpt-4o}

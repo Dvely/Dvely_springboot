@@ -3,18 +3,20 @@ package com.example.dvely.agent.application.orchestrator;
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.dto.AgentTask;
-import com.example.dvely.agent.application.dto.TaskStatus;
+import com.example.dvely.agent.application.exception.AgentInputRequiredException;
+import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
+import com.example.dvely.agent.application.service.BuildFailureRecoveryService;
 import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
+import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.change.application.service.ChangeService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
-
-import java.time.Instant;
 
 @Slf4j
 @Component
@@ -25,49 +27,126 @@ public class AgentPlanExecutor {
     private final DeployAgentService     deployAgentService;
     private final DomainBindAgentService domainBindAgentService;
     private final TaskStore              taskStore;
+    private final AgentMessageService    agentMessageService;
+    private final BuildFailureRecoveryService buildFailureRecoveryService;
+    private final ChangeService changeService;
 
     @Async("agentExecutor")
     public void execute(AgentPlan plan, String taskId, Long userId) {
         log.info("=== AgentPlan 실행 시작: taskId={} | 총 {}단계 | reasoning={} ===",
                 taskId, plan.steps().size(), plan.reasoning());
 
-        taskStore.save(new AgentTask(taskId, TaskStatus.RUNNING, null, null, null, null, Instant.now()));
-
         try {
-            String previewUrl = null;
-            String summary    = null;
-            for (int i = 0; i < plan.steps().size(); i++) {
-                AgentStep step = plan.steps().get(i);
+            AgentTask initialTask = taskStore.get(taskId);
+            String previewUrl = initialTask == null ? null : initialTask.previewUrl();
+            String summary = initialTask == null ? null : initialTask.summary();
+            for (int i = taskStore.getCurrentStep(taskId); i < plan.steps().size(); i++) {
+                if (taskStore.isCancelled(taskId)) {
+                    log.info("=== AgentPlan 취소됨: taskId={} ===", taskId);
+                    return;
+                }
+                AgentStep step = withSuggestedFix(plan.steps().get(i), taskId, userId);
                 log.info("--- Step [{}/{}] agentType={} ---", i + 1, plan.steps().size(), step.agentType());
                 CodeResult result = dispatch(step, plan.aiProvider(), userId, taskId, plan.projectId());
+                if (taskStore.isCancelled(taskId)) {
+                    log.info("=== AgentPlan step 완료 후 취소 확인: taskId={} ===", taskId);
+                    return;
+                }
                 if (result != null) {
                     if (result.previewUrl() != null) previewUrl = result.previewUrl();
                     if (result.summary() != null)    summary    = result.summary();
+                    taskStore.updateProgress(taskId, previewUrl, summary);
+                    if (step.agentType() == com.example.dvely.agent.domain.value.AgentType.CODE) {
+                        changeService.record(taskId, summary);
+                    }
                 }
+                taskStore.markStepCompleted(taskId, i + 1);
+            }
+            if (taskStore.isCancelled(taskId)) {
+                return;
             }
             taskStore.markDone(taskId, previewUrl, summary);
+            taskStore.removePlan(taskId);
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    summary == null || summary.isBlank() ? "작업을 완료했습니다." : summary
+            );
             log.info("=== AgentPlan 실행 완료: taskId={} | previewUrl={} ===", taskId, previewUrl);
 
+        } catch (AgentInputRequiredException exception) {
+            taskStore.markWaitingInput(taskId, exception.getMessage());
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    exception.getMessage()
+            );
+            log.info("=== AgentPlan 사용자 입력 대기: taskId={} ===", taskId);
+        } catch (CodeAgentExecutionException exception) {
+            if (taskStore.isCancelled(taskId)) {
+                return;
+            }
+            buildFailureRecoveryService.handle(taskId, exception);
+            log.warn("=== AgentPlan build 실패 및 복구 대기: taskId={} ===", taskId);
         } catch (Exception e) {
+            if (taskStore.isCancelled(taskId)) {
+                log.info("=== AgentPlan 취소됨: taskId={} ===", taskId);
+                return;
+            }
             taskStore.markFailed(taskId, e.getMessage());
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    "작업 중 오류가 발생했습니다: " + safeMessage(e)
+            );
             log.error("=== AgentPlan 실행 실패: taskId={} ===", taskId, e);
         }
     }
 
+    private AgentStep withSuggestedFix(AgentStep step, String taskId, Long userId) {
+        if (step.agentType() != com.example.dvely.agent.domain.value.AgentType.CODE) {
+            return step;
+        }
+        var failure = taskStore.getFailure(taskId, userId);
+        if (failure == null
+                || failure.attempt() == 0
+                || failure.suggestedFix() == null
+                || failure.suggestedFix().isBlank()) {
+            return step;
+        }
+        java.util.Map<String, String> parameters = new java.util.HashMap<>(step.parameters());
+        String instruction = parameters.getOrDefault("instruction", "");
+        parameters.put(
+                "instruction",
+                instruction + "\n\n[재build 수정안]\n" + failure.suggestedFix()
+        );
+        return new AgentStep(step.agentType(), java.util.Map.copyOf(parameters));
+    }
+
+    private String safeMessage(Exception exception) {
+        return exception.getMessage() == null || exception.getMessage().isBlank()
+                ? "알 수 없는 오류"
+                : exception.getMessage();
+    }
+
     private CodeResult dispatch(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, Long userId, String taskId, Long projectId) {
         return switch (step.agentType()) {
-            case CODE        -> handleCode(step, aiProvider, userId, projectId);
+            case CODE        -> handleCode(step, aiProvider, userId, projectId, taskId);
             case DEPLOY      -> handleDeploy(step, userId, taskId, projectId);
             case DOMAIN_BIND -> handleDomainBind(step, userId, taskId, projectId);
             case CHAT        -> handleChat(step);
         };
     }
 
-    private CodeResult handleCode(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, Long userId, Long projectId) {
+    private CodeResult handleCode(AgentStep step,
+                                  com.example.dvely.agent.domain.value.AiProvider aiProvider,
+                                  Long userId,
+                                  Long projectId,
+                                  String taskId) {
         log.info("[CODE 에이전트] 코드 작업 시작 | userId={} provider={} projectId={}", userId, aiProvider, projectId);
         log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
         log.info("  targetFile  : {}", step.parameters().getOrDefault("targetFile", ""));
-        return codeAgentService.execute(step, aiProvider, userId, projectId);
+        return codeAgentService.execute(step, aiProvider, userId, projectId, taskId);
     }
 
     private CodeResult handleDeploy(AgentStep step, Long userId, String taskId, Long projectId) {

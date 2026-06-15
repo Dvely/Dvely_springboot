@@ -13,8 +13,12 @@ public class ChatMapper {
         return new ConversationResponse(
                 result.conversationId(),
                 result.projectId(),
+                result.title(),
+                result.projectName(),
                 result.deleted(),
                 result.deletedAt(),
+                result.retentionExpiresAt(),
+                result.remainingRetentionDays(),
                 result.createdAt(),
                 result.updatedAt()
         );

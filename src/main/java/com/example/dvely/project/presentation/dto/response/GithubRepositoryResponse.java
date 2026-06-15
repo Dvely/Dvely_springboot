@@ -5,13 +5,13 @@ import java.time.OffsetDateTime;
 
 @Schema(description = "GitHub 저장소 정보")
 public record GithubRepositoryResponse(
-        @Schema(description = "owner/repo 형식의 저장소 전체 이름", example = "dvely/my-landing-repo")
+        @Schema(description = "owner/repo 형식의 저장소 전체 이름", example = "qeploy/my-landing-repo")
         String fullName,
 
         @Schema(description = "저장소 이름", example = "my-landing-repo")
         String name,
 
-        @Schema(description = "저장소 소유자 GitHub 로그인명", example = "dvely")
+        @Schema(description = "저장소 소유자 GitHub 로그인명", example = "qeploy")
         String owner,
 
         @Schema(description = "GitHub 저장소 설명")
