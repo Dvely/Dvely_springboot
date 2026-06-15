@@ -59,11 +59,11 @@ public class ProjectController {
 
     @Operation(
             summary = "프로젝트 생성",
-            description = "프로젝트 기본 메타데이터를 DRAFT 상태로 생성합니다. " +
-                          "GitHub 저장소 생성 또는 기존 저장소 연결은 프로젝트 생성 후 " +
-                          "/api/v1/projects/{projectId}/repository 엔드포인트에서 별도로 처리합니다."
+            description = "프로젝트를 DRAFT 상태로 저장하고 startMode/templateType/draftMode에 맞는 " +
+                          "초기 코드 생성 Agent task를 제출합니다. GitHub 저장소 연결은 생성 후 별도로 처리합니다."
     )
     @PostMapping
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public ProjectCreateResponse createProject(@Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
                                                @Valid @RequestBody CreateProjectRequest request) {
         var result = projectFacade.createProject(ownerUserId, new CreateProjectCommand(

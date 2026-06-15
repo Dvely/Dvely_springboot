@@ -1,6 +1,7 @@
 package com.example.dvely.agent.presentation;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -13,6 +14,7 @@ import com.example.dvely.agent.application.service.DecisionAgentService;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.agent.presentation.dto.TaskInputRequest;
+import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
@@ -57,20 +59,20 @@ class AgentControllerTest {
 
     @Test
     void foreignUserCannotReadTaskStatus() {
-        assertThat(controller.getTaskStatus(2L, "task-1").getStatusCode())
-                .isEqualTo(HttpStatus.NOT_FOUND);
+        assertThatThrownBy(() -> controller.getTaskStatus(2L, "task-1"))
+                .isInstanceOf(NotFoundException.class);
     }
 
     @Test
     void foreignUserCannotSubmitTaskInput() {
-        assertThat(controller.submitInput(2L, "task-1", new TaskInputRequest("secret")).getStatusCode())
-                .isEqualTo(HttpStatus.NOT_FOUND);
+        assertThatThrownBy(() -> controller.submitInput(2L, "task-1", new TaskInputRequest("secret")))
+                .isInstanceOf(NotFoundException.class);
     }
 
     @Test
     void foreignUserCannotCancelTask() {
-        assertThat(controller.cancelTask(2L, "task-1").getStatusCode())
-                .isEqualTo(HttpStatus.NOT_FOUND);
+        assertThatThrownBy(() -> controller.cancelTask(2L, "task-1"))
+                .isInstanceOf(NotFoundException.class);
     }
 
     @Test
@@ -87,7 +89,31 @@ class AgentControllerTest {
         when(inputWaitStore.supply("task-1", 1L, "my-domain")).thenReturn(true);
 
         assertThat(controller.submitInput(1L, "task-1", new TaskInputRequest("my-domain")).getStatusCode())
-                .isEqualTo(HttpStatus.OK);
+                .isEqualTo(HttpStatus.NO_CONTENT);
         verify(inputWaitStore).supply("task-1", 1L, "my-domain");
+    }
+
+    @Test
+    void ownerCannotSubmitInputWhenTaskIsNotWaiting() {
+        when(taskStore.getOwned("task-1", 1L)).thenReturn(new AgentTask(
+                "task-1",
+                1L,
+                11L,
+                21L,
+                TaskStatus.RUNNING,
+                null,
+                null,
+                null,
+                null,
+                Instant.now()
+        ));
+
+        assertThatThrownBy(() -> controller.submitInput(
+                1L,
+                "task-1",
+                new TaskInputRequest("secret")
+        ))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("입력을 기다리는");
     }
 }

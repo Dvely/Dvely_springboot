@@ -3,9 +3,13 @@ package com.example.dvely.config;
 import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
 import com.example.dvely.auth.application.port.out.TokenPort;
 import com.example.dvely.auth.infrastructure.config.security.JwtAuthenticationFilter;
+import com.example.dvely.common.response.ApiResponse;
+import com.example.dvely.common.response.ErrorCode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -23,9 +27,15 @@ import java.util.List;
 public class SecurityConfig {
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http, TokenPort tokenPort, TokenBlacklistPort tokenBlacklistPort) throws Exception {
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            TokenPort tokenPort,
+            TokenBlacklistPort tokenBlacklistPort,
+            CorsConfigurationSource corsConfigurationSource,
+            ObjectMapper objectMapper
+    ) throws Exception {
         return http
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .cors(cors -> cors.configurationSource(corsConfigurationSource))
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -50,10 +60,16 @@ public class SecurityConfig {
                         .anyRequest().authenticated()
                 )
                 .exceptionHandling(e -> e
-                        .authenticationEntryPoint((request, response, ex) ->
-                                response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Unauthorized"))
-                        .accessDeniedHandler((request, response, ex) ->
-                                response.sendError(HttpServletResponse.SC_FORBIDDEN, "Forbidden"))
+                        .authenticationEntryPoint((request, response, ex) -> writeError(
+                                response,
+                                objectMapper,
+                                ErrorCode.UNAUTHORIZED
+                        ))
+                        .accessDeniedHandler((request, response, ex) -> writeError(
+                                response,
+                                objectMapper,
+                                ErrorCode.FORBIDDEN
+                        ))
                 )
                 .addFilterBefore(
                         new JwtAuthenticationFilter(tokenPort, tokenBlacklistPort),
@@ -63,9 +79,10 @@ public class SecurityConfig {
     }
 
     @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
+    public CorsConfigurationSource corsConfigurationSource(CorsProperties corsProperties) {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of("http://localhost:5173"));
+        config.setAllowedOrigins(corsProperties.allowedOrigins());
+        config.setAllowedOriginPatterns(corsProperties.allowedOriginPatterns());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);
@@ -74,5 +91,14 @@ public class SecurityConfig {
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
         return source;
+    }
+
+    private void writeError(HttpServletResponse response,
+                            ObjectMapper objectMapper,
+                            ErrorCode errorCode) throws java.io.IOException {
+        response.setStatus(errorCode.getStatus());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setCharacterEncoding(java.nio.charset.StandardCharsets.UTF_8.name());
+        objectMapper.writeValue(response.getWriter(), ApiResponse.error(errorCode));
     }
 }

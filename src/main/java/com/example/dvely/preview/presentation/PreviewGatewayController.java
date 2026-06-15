@@ -1,5 +1,6 @@
 package com.example.dvely.preview.presentation;
 
+import com.example.dvely.common.response.RawApiResponse;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewGatewayService;
 import com.example.dvely.preview.application.service.PreviewSessionService;
@@ -11,6 +12,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
+@RawApiResponse
 @RequiredArgsConstructor
 public class PreviewGatewayController {
 

@@ -37,7 +37,7 @@ public class ProjectCommandService {
                 command.name(),
                 command.startMode(),
                 command.templateType(),
-                normalizeDraftMode(command.draftMode()),
+                command.draftMode(),
                 RepositoryVisibility.PRIVATE
         );
         Project savedProject = projectRepository.save(project);
@@ -116,13 +116,6 @@ public class ProjectCommandService {
         chatCommandService.deleteConversationsForProject(ownerUserId, project.getId());
         projectDomainService.delete(project);
         projectRepository.save(project);
-    }
-
-    private String normalizeDraftMode(String draftMode) {
-        if (draftMode == null || draftMode.isBlank()) {
-            return "fast";
-        }
-        return draftMode.trim();
     }
 
     private String normalizeRepositoryMode(String repositoryMode) {

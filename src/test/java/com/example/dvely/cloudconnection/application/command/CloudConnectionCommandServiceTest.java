@@ -3,6 +3,8 @@ package com.example.dvely.cloudconnection.application.command;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -14,6 +16,7 @@ import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionVerificationJobRepository;
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
+import com.example.dvely.common.exception.NotFoundException;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -102,6 +105,19 @@ class CloudConnectionCommandServiceTest {
         )))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("token_uri");
+    }
+
+    @Test
+    void foreignOwnerCannotDeleteCloudConnection() {
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(10L, 2L))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.delete(2L, 10L))
+                .isInstanceOf(NotFoundException.class)
+                .hasMessageContaining("cloudConnectionId=10");
+
+        verify(cloudConnectionRepository, never()).deleteById(any());
+        verify(verificationJobRepository, never()).save(any());
     }
 
     private CloudConnection withId(CloudConnection connection) {

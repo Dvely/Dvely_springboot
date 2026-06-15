@@ -14,6 +14,8 @@ import com.example.dvely.agent.presentation.dto.DecisionResponse;
 import com.example.dvely.agent.presentation.dto.AgentTaskEventResponse;
 import com.example.dvely.agent.presentation.dto.TaskStatusResponse;
 import com.example.dvely.agent.presentation.dto.TaskInputRequest;
+import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.common.response.RawApiResponse;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -98,7 +100,9 @@ public class AgentController {
             @Parameter(description = "에이전트 태스크 ID", example = "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
             @PathVariable String taskId) {
         AgentTask task = taskStore.getOwned(taskId, userId);
-        if (task == null) return ResponseEntity.notFound().build();
+        if (task == null) {
+            throw taskNotFound(taskId);
+        }
         AgentTaskFailure failure = taskStore.getFailure(taskId, userId);
         return ResponseEntity.ok(new TaskStatusResponse(
                 task.taskId(),
@@ -126,7 +130,7 @@ public class AgentController {
             @RequestParam(defaultValue = "0") Long afterEventId
     ) {
         if (taskStore.getOwned(taskId, userId) == null) {
-            return ResponseEntity.notFound().build();
+            throw taskNotFound(taskId);
         }
         return ResponseEntity.ok(taskStore.getEvents(taskId, userId, afterEventId).stream()
                 .map(event -> new AgentTaskEventResponse(
@@ -142,6 +146,7 @@ public class AgentController {
 
     @Operation(summary = "태스크 이벤트 스트림", description = "DB에 저장된 Agent 이벤트를 SSE로 전달합니다.")
     @GetMapping(value = "/tasks/{taskId}/events/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @RawApiResponse
     public ResponseEntity<SseEmitter> streamTaskEvents(
             @AuthenticationPrincipal Long userId,
             @PathVariable String taskId,
@@ -171,12 +176,17 @@ public class AgentController {
             @Valid @RequestBody TaskInputRequest request) {
 
         AgentTask task = taskStore.getOwned(taskId, userId);
-        if (task == null) return ResponseEntity.notFound().build();
+        if (task == null) {
+            throw taskNotFound(taskId);
+        }
         if (task.status() != com.example.dvely.agent.application.dto.TaskStatus.WAITING_INPUT) {
-            return ResponseEntity.badRequest().build();
+            throw new IllegalStateException("사용자 입력을 기다리는 Agent task가 아닙니다. taskId=" + taskId);
         }
         boolean accepted = inputWaitStore.supply(taskId, userId, request.value());
-        return accepted ? ResponseEntity.ok().build() : ResponseEntity.notFound().build();
+        if (!accepted) {
+            throw taskNotFound(taskId);
+        }
+        return ResponseEntity.noContent().build();
     }
 
     @Operation(summary = "에이전트 태스크 취소", description = "현재 사용자가 소유한 대기 또는 실행 중 태스크를 취소합니다.")
@@ -190,7 +200,7 @@ public class AgentController {
             @Parameter(description = "에이전트 태스크 ID")
             @PathVariable String taskId) {
         if (!agentOrchestrator.cancel(taskId, userId)) {
-            return ResponseEntity.notFound().build();
+            throw taskNotFound(taskId);
         }
         return ResponseEntity.noContent().build();
     }
@@ -201,9 +211,10 @@ public class AgentController {
             @AuthenticationPrincipal Long userId,
             @PathVariable String taskId
     ) {
-        return agentOrchestrator.retry(taskId, userId)
-                ? ResponseEntity.accepted().build()
-                : ResponseEntity.badRequest().build();
+        if (!agentOrchestrator.retry(taskId, userId)) {
+            throw new IllegalStateException("재시도할 수 없는 Agent task입니다. taskId=" + taskId);
+        }
+        return ResponseEntity.accepted().build();
     }
 
     @Operation(
@@ -219,8 +230,13 @@ public class AgentController {
     @DeleteMapping("/session")
     public ResponseEntity<Void> closeSession(@AuthenticationPrincipal Long userId) {
         int closed = previewSessionService.closeAllOwned(userId);
-        return closed > 0
-                ? ResponseEntity.noContent().build()
-                : ResponseEntity.notFound().build();
+        if (closed == 0) {
+            throw new NotFoundException("종료할 PreviewSession을 찾을 수 없습니다.");
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    private NotFoundException taskNotFound(String taskId) {
+        return new NotFoundException("Agent task를 찾을 수 없습니다. taskId=" + taskId);
     }
 }

@@ -50,6 +50,9 @@ frontend:
   redirect-url: ${FRONTEND_REDIRECT_URL:http://localhost:5173}
 
 qeploy:
+  cors:
+    allowed-origins: ${QEPLOY_CORS_ALLOWED_ORIGINS:}
+    allowed-origin-patterns: ${QEPLOY_CORS_ALLOWED_ORIGIN_PATTERNS:}
   preview:
     gateway-base-url: ${QEPLOY_PREVIEW_GATEWAY_BASE_URL:http://localhost:8080}
     ttl: ${QEPLOY_PREVIEW_TTL:30m}

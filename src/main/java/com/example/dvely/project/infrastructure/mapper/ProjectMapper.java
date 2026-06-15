@@ -4,6 +4,7 @@ import com.example.dvely.project.application.result.ActivityLogResult;
 import com.example.dvely.project.application.result.CommitResult;
 import com.example.dvely.project.application.result.GithubRepositoryResult;
 import com.example.dvely.project.application.result.ProjectDetailResult;
+import com.example.dvely.project.application.result.ProjectCreationResult;
 import com.example.dvely.project.application.result.ProjectOverviewResult;
 import com.example.dvely.project.application.result.ProjectRepositoryResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
@@ -28,8 +29,15 @@ import org.springframework.stereotype.Component;
 @Component
 public class ProjectMapper {
 
-    public ProjectCreateResponse toCreateResponse(ProjectDetailResult result) {
-        return new ProjectCreateResponse(result.projectId(), result.name(), result.status());
+    public ProjectCreateResponse toCreateResponse(ProjectCreationResult result) {
+        return new ProjectCreateResponse(
+                result.project().projectId(),
+                result.project().name(),
+                result.project().status(),
+                result.generation().taskId(),
+                result.generation().status().name(),
+                result.generation().approvalIds()
+        );
     }
 
     public GithubRepositoryResponse toGithubRepositoryResponse(GithubRepositoryResult result) {

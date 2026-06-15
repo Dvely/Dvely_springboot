@@ -1,5 +1,6 @@
 package com.example.dvely.preview.presentation;
 
+import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import io.swagger.v3.oas.annotations.Operation;
 import lombok.RequiredArgsConstructor;
@@ -23,8 +24,9 @@ public class PreviewSessionController {
             @AuthenticationPrincipal Long ownerUserId,
             @PathVariable String sessionId
     ) {
-        return previewSessionService.closeOwned(sessionId, ownerUserId)
-                ? ResponseEntity.noContent().build()
-                : ResponseEntity.notFound().build();
+        if (!previewSessionService.closeOwned(sessionId, ownerUserId)) {
+            throw new NotFoundException("PreviewSession을 찾을 수 없습니다. sessionId=" + sessionId);
+        }
+        return ResponseEntity.noContent().build();
     }
 }

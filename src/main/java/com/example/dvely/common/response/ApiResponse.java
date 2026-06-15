@@ -22,7 +22,11 @@ public class ApiResponse<T> {
     }
 
     public static <T> ApiResponse<T> success(T data) {
-        return new ApiResponse<>(200, "SUCCESS", "요청이 성공적으로 처리되었습니다", data);
+        return success(200, data);
+    }
+
+    public static <T> ApiResponse<T> success(int status, T data) {
+        return new ApiResponse<>(status, "SUCCESS", successMessage(status), data);
     }
 
     public static <T> ApiResponse<T> success(String message, T data) {
@@ -39,5 +43,13 @@ public class ApiResponse<T> {
 
     public static <T> ApiResponse<T> error(ErrorCode errorCode, String message) {
         return new ApiResponse<>(errorCode.getStatus(), errorCode.getCode(), message, null);
+    }
+
+    private static String successMessage(int status) {
+        return switch (status) {
+            case 201 -> "리소스가 생성되었습니다";
+            case 202 -> "요청이 접수되었습니다";
+            default -> "요청이 성공적으로 처리되었습니다";
+        };
     }
 }

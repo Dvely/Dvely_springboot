@@ -1,5 +1,6 @@
 package com.example.dvely.webhook.presentation;
 
+import com.example.dvely.common.response.RawApiResponse;
 import com.example.dvely.webhook.application.WebhookService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -10,6 +11,7 @@ import org.springframework.web.bind.annotation.*;
 
 @Tag(name = "Webhook", description = "GitHub App webhook 수신 API. GitHub이 직접 호출하며 프론트엔드나 클라이언트에서 호출하지 않습니다.")
 @RestController
+@RawApiResponse
 @RequestMapping("/api/v1/webhook")
 @RequiredArgsConstructor
 public class WebhookController {
