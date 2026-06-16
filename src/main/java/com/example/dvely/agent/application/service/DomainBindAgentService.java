@@ -1,33 +1,28 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
-import com.example.dvely.agent.application.dto.TaskStatus;
+import com.example.dvely.agent.application.exception.AgentInputRequiredException;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
-import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.domainbinding.application.command.dto.BindDomainCommand;
 import com.example.dvely.domainbinding.application.facade.DomainBindingFacade;
 import com.example.dvely.domainbinding.application.result.DomainBindingResult;
 import com.example.dvely.domainbinding.application.result.VerificationGuideResult;
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.domain.value.DomainType;
+import com.example.dvely.domainbinding.domain.value.VerificationMethod;
+import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class DomainBindAgentService {
 
-    private static final long INPUT_TIMEOUT = 5L; // 분
-
     private final DomainBindingFacade domainBindingFacade;
-    private final TaskStore           taskStore;
     private final InputWaitStore      inputWaitStore;
 
     public CodeResult execute(AgentStep step, Long userId, String taskId, Long projectId) {
@@ -37,12 +32,16 @@ public class DomainBindAgentService {
             throw new IllegalStateException("도메인 연결은 배포된 프로젝트에만 가능합니다. projectId가 필요합니다.");
         }
 
+        if ("DELETE".equalsIgnoreCase(step.parameters().getOrDefault("operation", ""))) {
+            return deleteDomain(step, userId);
+        }
+
         String domain = step.parameters().getOrDefault("domain", "").trim();
         if (domain.isEmpty()) {
             domain = askUserForDomain(userId, taskId);
         }
 
-        BindDomainCommand command = buildCommand(domain);
+        BindDomainCommand command = buildCommand(step, domain);
         log.info("[DomainBindAgent] 도메인 연결 요청 | domain={} type={}", domain, command.type());
 
         DomainBindingResult result = domainBindingFacade.bindDomain(userId, projectId, command);
@@ -52,16 +51,55 @@ public class DomainBindAgentService {
         return new CodeResult(null, summary);
     }
 
+    private CodeResult deleteDomain(AgentStep step, Long userId) {
+        String domainIdValue = step.parameters().getOrDefault("domainId", "").trim();
+        if (domainIdValue.isEmpty()) {
+            throw new IllegalArgumentException("삭제할 domainId가 필요합니다.");
+        }
+        Long domainId;
+        try {
+            domainId = Long.valueOf(domainIdValue);
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException("올바르지 않은 domainId입니다: " + domainIdValue, exception);
+        }
+        domainBindingFacade.deleteDomain(userId, domainId);
+        String hostname = step.parameters().getOrDefault("domain", "").trim();
+        return new CodeResult(
+                null,
+                hostname.isEmpty()
+                        ? "도메인 연결을 해제했습니다."
+                        : "도메인 연결을 해제했습니다: " + hostname
+        );
+    }
+
     // ── 도메인 타입 판별 및 커맨드 생성 ────────────────────────────────────────
 
-    private BindDomainCommand buildCommand(String domain) {
-        if (domain.contains(".")) {
-            // 점이 있으면 커스텀 도메인 (예: www.mysite.com)
-            return new BindDomainCommand(DomainType.CUSTOM_DOMAIN, null, domain, null);
-        } else {
-            // 점이 없으면 관리형 서브도메인 라벨 (예: my-app → my-app.dvely.app)
-            return new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, domain, null, null);
+    private BindDomainCommand buildCommand(AgentStep step, String domain) {
+        DomainType type = parseEnum(
+                step.parameters().get("domainType"),
+                DomainType.class,
+                domain.contains(".") ? DomainType.CUSTOM_DOMAIN : DomainType.MANAGED_SUBDOMAIN
+        );
+        VerificationMethod method = parseEnum(
+                step.parameters().get("verificationMethod"),
+                VerificationMethod.class,
+                null
+        );
+        DomainHostingTarget hostingTarget = parseEnum(
+                step.parameters().get("hostingTarget"),
+                DomainHostingTarget.class,
+                DomainHostingTarget.GITHUB_PAGES
+        );
+        return type == DomainType.MANAGED_SUBDOMAIN
+                ? new BindDomainCommand(type, domain, null, method, hostingTarget)
+                : new BindDomainCommand(type, null, domain, method, hostingTarget);
+    }
+
+    private <T extends Enum<T>> T parseEnum(String value, Class<T> type, T defaultValue) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
         }
+        return Enum.valueOf(type, value.trim().toUpperCase(Locale.ROOT));
     }
 
     // ── 사용자 입력 대기 ────────────────────────────────────────────────────────
@@ -71,27 +109,10 @@ public class DomainBindAgentService {
                 + "- 관리형 서브도메인: 라벨만 입력 (예: my-app → my-app.qeploy.com)\n"
                 + "- 커스텀 도메인: 전체 주소 입력 (예: www.mysite.com)";
 
-        taskStore.markWaitingInput(taskId, question);
-        log.info("[DomainBindAgent] 사용자 입력 대기 중 | taskId={}", taskId);
-
-        CompletableFuture<String> future = inputWaitStore.register(taskId);
-        try {
-            String answer = future.get(INPUT_TIMEOUT, TimeUnit.MINUTES);
-            String domain = answer.trim();
-            if (domain.isEmpty()) throw new IllegalArgumentException("도메인 값이 비어 있습니다.");
-            return domain;
-        } catch (TimeoutException e) {
-            inputWaitStore.cancel(taskId);
-            throw new IllegalStateException("도메인 입력 대기 시간이 초과되었습니다.");
-        } catch (ExecutionException e) {
-            throw new IllegalStateException("도메인 입력 처리 중 오류: " + e.getCause().getMessage(), e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("도메인 입력 대기 중 인터럽트 발생");
-        } finally {
-            taskStore.save(taskStore.get(taskId)
-                    .withStatus(TaskStatus.RUNNING, null, null, null));
-        }
+        return inputWaitStore.consume(taskId)
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .orElseThrow(() -> new AgentInputRequiredException(question));
     }
 
     // ── 요약 생성 ──────────────────────────────────────────────────────────────
@@ -101,9 +122,10 @@ public class DomainBindAgentService {
             case MANAGED_SUBDOMAIN -> String.format("""
                     관리형 서브도메인 연결 완료
                     - 도메인: %s
+                    - 배포 대상: %s
                     - 상태: %s
-                    - DNS가 전파되면 수 분 내 접근 가능합니다.
-                    """, result.hostname(), result.status());
+                    - 인증서 상태: %s
+                    """, result.hostname(), result.hostingTarget(), result.status(), result.certificateStatus());
 
             case CUSTOM_DOMAIN -> {
                 VerificationGuideResult guide = fetchGuide(userId, result.domainId());
@@ -111,10 +133,12 @@ public class DomainBindAgentService {
                 yield String.format("""
                         커스텀 도메인 연결 요청 완료
                         - 도메인: %s
+                        - 배포 대상: %s
                         - 상태: DNS 검증 대기 중
+                        - 인증서 상태: %s
                         %s
                         DNS 설정 후 검증 요청을 보내주세요.
-                        """, result.hostname(), recordInfo);
+                        """, result.hostname(), result.hostingTarget(), result.certificateStatus(), recordInfo);
             }
 
             default -> String.format("도메인 연결 완료: %s (상태: %s)", result.hostname(), result.status());

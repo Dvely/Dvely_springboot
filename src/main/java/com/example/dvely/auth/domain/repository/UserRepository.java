@@ -8,5 +8,6 @@ import java.util.Optional;
 public interface UserRepository {
     Optional<User> findByGithubId(GithubId githubId);
     Optional<User> findById(Long id);
+    Optional<User> findByGithubInstallationId(Long githubInstallationId);
     User save(User user);
 }

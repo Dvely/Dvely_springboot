@@ -21,5 +21,7 @@ public interface ProjectRepository {
 
     Optional<Project> findBySourceRepository(String sourceRepository);
 
+    List<Project> findAllBySourceRepository(String sourceRepository);
+
     Project save(Project project);
 }

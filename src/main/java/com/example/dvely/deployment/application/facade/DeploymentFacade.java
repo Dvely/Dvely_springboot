@@ -25,12 +25,12 @@ public class DeploymentFacade {
         return deploymentCommandService.deploy(ownerUserId, projectId, command);
     }
 
-    public List<DeploymentHistoryResult> getDeploymentHistories(Long projectId) {
-        return deploymentQueryService.getDeploymentHistories(projectId);
+    public List<DeploymentHistoryResult> getDeploymentHistories(Long ownerUserId, Long projectId) {
+        return deploymentQueryService.getDeploymentHistories(ownerUserId, projectId);
     }
 
-    public DeploymentStatusResult getDeploymentStatus(Long historyId) {
-        return deploymentQueryService.getDeploymentStatus(historyId);
+    public DeploymentStatusResult getDeploymentStatus(Long ownerUserId, Long historyId) {
+        return deploymentQueryService.getDeploymentStatus(ownerUserId, historyId);
     }
 
     public List<VersionResult> getVersions(Long ownerUserId, Long projectId) {
@@ -45,7 +45,7 @@ public class DeploymentFacade {
         return deploymentQueryService.getDeploymentCandidates(ownerUserId, projectId);
     }
 
-    public DeploymentLogsResult getDeploymentLogs(Long historyId) {
-        return deploymentQueryService.getDeploymentLogs(historyId);
+    public DeploymentLogsResult getDeploymentLogs(Long ownerUserId, Long historyId) {
+        return deploymentQueryService.getDeploymentLogs(ownerUserId, historyId);
     }
 }

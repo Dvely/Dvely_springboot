@@ -1,13 +1,12 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
+import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
-import com.example.dvely.agent.infrastructure.docker.UserContainerInfo;
-import com.example.dvely.agent.infrastructure.docker.UserContainerRegistry;
 import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
 import com.example.dvely.agent.infrastructure.llm.OpenAiToolClient;
 import com.example.dvely.auth.application.command.AuthCommandService;
@@ -15,6 +14,8 @@ import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.preview.application.result.PreviewSessionInfo;
+import com.example.dvely.preview.application.service.PreviewSessionService;
 import java.util.Base64;
 import java.nio.charset.StandardCharsets;
 import lombok.RequiredArgsConstructor;
@@ -36,10 +37,11 @@ public class CodeAgentService {
     private final ClaudeToolClient       claudeToolClient;
     private final OpenAiToolClient       openAiToolClient;
     private final DockerContainerService dockerService;
-    private final UserContainerRegistry  containerRegistry;
+    private final PreviewSessionService  previewSessionService;
     private final UserRepository         userRepository;
     private final AuthCommandService     authCommandService;
     private final ProjectRepository      projectRepository;
+    private final BuildFailureAnalyzer   buildFailureAnalyzer;
 
     private static final String SYSTEM_PROMPT = """
             You are an expert full-stack developer working inside a Docker container (node:20-alpine).
@@ -114,26 +116,16 @@ public class CodeAgentService {
             )
     );
 
-    public CodeResult execute(AgentStep step, AiProvider provider, Long userId, Long projectId) {
+    public CodeResult execute(AgentStep step,
+                              AiProvider provider,
+                              Long userId,
+                              Long projectId,
+                              String taskId) {
         String instruction = step.parameters().getOrDefault("instruction", "");
         log.info("[CodeAgent] 실행 시작 | userId={} provider={} projectId={} instruction={}", userId, provider, projectId, instruction);
 
-        boolean           isNew      = containerRegistry.find(userId).isEmpty();
-        String            containerId;
-        int               hostPort;
-
-        if (isNew) {
-            containerId = dockerService.createAndStartContainer(userId);
-            hostPort    = dockerService.getMappedPort(containerId);
-            containerRegistry.register(userId, new UserContainerInfo(containerId, hostPort, java.time.Instant.now()));
-            log.info("[CodeAgent] 신규 컨테이너 생성 | userId={} containerId={}", userId, containerId);
-        } else {
-            UserContainerInfo info = containerRegistry.find(userId).get();
-            containerId = info.containerId();
-            hostPort    = info.previewPort();
-            containerRegistry.touch(userId);
-            log.info("[CodeAgent] 기존 컨테이너 재사용 | userId={} containerId={}", userId, containerId);
-        }
+        PreviewSessionInfo previewSession = previewSessionService.acquire(taskId);
+        String containerId = previewSession.containerId();
 
         // 기존 프로젝트인 경우 GitHub 저장소를 컨테이너에 clone/pull
         if (projectId != null) {
@@ -147,12 +139,24 @@ public class CodeAgentService {
 
             startPreviewServer(containerId);
 
-            String previewUrl = "http://localhost:" + hostPort;
+            String previewUrl = previewSession.publicUrl();
             log.info("[CodeAgent] 완료 | previewUrl={}", previewUrl);
             return new CodeResult(previewUrl, summary);
         } catch (Exception e) {
             log.error("[CodeAgent] 실패 | userId={} containerId={}", userId, containerId, e);
-            throw new RuntimeException("코드 에이전트 실행 실패: " + e.getMessage(), e);
+            String buildLog = dockerService.exec(
+                    containerId,
+                    "tail -n 80 /tmp/qeploy-build.log 2>/dev/null || true"
+            );
+            BuildFailureAnalyzer.Analysis analysis = buildFailureAnalyzer.analyze(
+                    buildLog + "\n" + (e.getMessage() == null ? "" : e.getMessage())
+            );
+            throw new CodeAgentExecutionException(
+                    analysis.userMessage(),
+                    analysis.logExcerpt(),
+                    analysis.suggestedFix(),
+                    e
+            );
         }
     }
 
@@ -232,13 +236,31 @@ public class CodeAgentService {
     // ── Tool 실행 ─────────────────────────────────────────────────────────────
     private String executeTool(ToolCall tc, String containerId) {
         return switch (tc.name()) {
-            case "execute_command" -> dockerService.exec(containerId, (String) tc.input().get("command"));
+            case "execute_command" -> executeCommand(containerId, (String) tc.input().get("command"));
             case "write_file"      -> writeFile(containerId,
                                             (String) tc.input().get("path"),
                                             (String) tc.input().get("content"));
             case "read_file"       -> dockerService.exec(containerId, "cat " + tc.input().get("path"));
             default                -> "알 수 없는 tool: " + tc.name();
         };
+    }
+
+    private String executeCommand(String containerId, String command) {
+        if (isBuildCommand(command)) {
+            return dockerService.exec(
+                    containerId,
+                    "set -o pipefail; (" + command + ") 2>&1 | tee /tmp/qeploy-build.log"
+            );
+        }
+        return dockerService.exec(containerId, command);
+    }
+
+    private boolean isBuildCommand(String command) {
+        String normalized = command.toLowerCase();
+        return normalized.contains("npm run build")
+                || normalized.contains("pnpm build")
+                || normalized.contains("yarn build")
+                || normalized.contains("bun run build");
     }
 
     // ── 기존 프로젝트 준비 (clone or pull) ──────────────────────────────────────
@@ -272,8 +294,8 @@ public class CodeAgentService {
         dockerService.exec(containerId,
                 "node -e \"require('fs').writeFileSync('/tmp/.git-credentials', Buffer.from('" + credB64 + "', 'base64').toString('utf8'))\"");
         dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
-        dockerService.exec(containerId, "git config --global user.email 'agent@dvely.app'");
-        dockerService.exec(containerId, "git config --global user.name 'Dvely Agent'");
+        dockerService.exec(containerId, "git config --global user.email 'agent@qeploy.com'");
+        dockerService.exec(containerId, "git config --global user.name 'Qeploy Agent'");
 
         String appExists = dockerService.exec(containerId, "[ -d /workspace/app/.git ] && echo yes || echo no").trim();
 
@@ -287,8 +309,8 @@ public class CodeAgentService {
                 dockerService.exec(containerId, "git clone " + cloneUrl + " /workspace/app");
                 log.info("[CodeAgent] 다른 repo 감지, 재clone: {}", sourceRepo);
             } else {
-                dockerService.exec(containerId, "cd /workspace/app && git pull origin HEAD --rebase");
-                log.info("[CodeAgent] 기존 repo pull: {}", sourceRepo);
+                dockerService.exec(containerId, "cd /workspace/app && git fetch origin");
+                log.info("[CodeAgent] 기존 repo fetch: {}", sourceRepo);
             }
         } else {
             // 처음 clone
@@ -296,6 +318,13 @@ public class CodeAgentService {
             dockerService.exec(containerId, "git clone " + cloneUrl + " /workspace/app");
             log.info("[CodeAgent] 저장소 clone 완료: {}", sourceRepo);
         }
+
+        dockerService.exec(containerId,
+                "cd /workspace/app && git fetch origin preview 2>/dev/null || true");
+        dockerService.exec(containerId,
+                "cd /workspace/app && "
+                        + "(git show-ref --verify --quiet refs/remotes/origin/preview "
+                        + "&& git checkout -B preview origin/preview || git checkout -B preview)");
 
         // clone 후 의존성 설치
         String pkgJson = dockerService.exec(containerId, "[ -f /workspace/app/package.json ] && echo yes || echo no").trim();
@@ -348,8 +377,7 @@ public class CodeAgentService {
             log.info("[CodeAgent] index.html 기반 빌드 경로 감지: {}", dir);
             return dir;
         }
-        log.warn("[CodeAgent] 빌드 결과물 감지 실패, 기본값 사용: /workspace/app/dist");
-        return "/workspace/app/dist";
+        throw new IllegalStateException("빌드 결과 디렉터리를 찾지 못했습니다.");
     }
 
     private void logToolCallResult(ToolCall tc, String result) {

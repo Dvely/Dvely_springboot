@@ -9,6 +9,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -21,6 +22,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleMissingParam(MissingServletRequestParameterException e) {
         String message = "필수 파라미터가 누락되었습니다: " + e.getParameterName();
         log.warn("Missing parameter: {}", e.getParameterName());
+        return ResponseEntity.badRequest()
+                .body(ApiResponse.error(ErrorCode.BAD_REQUEST, message));
+    }
+
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMissingHeader(MissingRequestHeaderException e) {
+        String message = "필수 헤더가 누락되었습니다: " + e.getHeaderName();
+        log.warn("Missing header: {}", e.getHeaderName());
         return ResponseEntity.badRequest()
                 .body(ApiResponse.error(ErrorCode.BAD_REQUEST, message));
     }
@@ -82,15 +91,18 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleMethodNotAllowed(HttpRequestMethodNotSupportedException e) {
         log.warn("Method not allowed: {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED)
-                .body(ApiResponse.error(ErrorCode.BAD_REQUEST, "허용되지 않는 HTTP 메서드입니다: " + e.getMethod()));
+                .body(ApiResponse.error(
+                        ErrorCode.METHOD_NOT_ALLOWED,
+                        "허용되지 않는 HTTP 메서드입니다: " + e.getMethod()
+                ));
     }
 
     // 500 - 내부 오류
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<ApiResponse<Void>> handleIllegalState(IllegalStateException e) {
-        log.error("Internal error: {}", e.getMessage());
-        return ResponseEntity.internalServerError()
-                .body(ApiResponse.error(ErrorCode.INTERNAL_SERVER_ERROR, e.getMessage()));
+        log.warn("Conflict: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiResponse.error(ErrorCode.CONFLICT, e.getMessage()));
     }
 
     // 500 - 예상치 못한 오류

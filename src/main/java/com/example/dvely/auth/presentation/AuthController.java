@@ -6,6 +6,7 @@ import com.example.dvely.auth.infrastructure.config.FrontendProperties;
 import com.example.dvely.auth.presentation.dto.AuthTokenResponse;
 import com.example.dvely.auth.presentation.dto.GithubUrlResponse;
 import com.example.dvely.common.response.ApiResponse;
+import com.example.dvely.common.response.RawApiResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -96,6 +97,7 @@ public class AuthController {
                           "처리 완료 후 프론트엔드로 리다이렉트합니다. 직접 호출하는 API가 아니라 GitHub이 호출합니다."
     )
     @GetMapping("/github/app/callback")
+    @RawApiResponse
     public ResponseEntity<Void> githubAppCallback(
             @Parameter(description = "GitHub이 발급한 App Installation ID. 재인증 콜백에서는 없을 수 있음") @RequestParam(value = "installation_id", required = false) Long installationId,
             @Parameter(description = "install | update | delete") @RequestParam(value = "setup_action", defaultValue = "install") String setupAction,

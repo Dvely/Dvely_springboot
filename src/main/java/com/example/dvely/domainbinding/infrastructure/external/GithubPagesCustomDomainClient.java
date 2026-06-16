@@ -3,6 +3,8 @@ package com.example.dvely.domainbinding.infrastructure.external;
 import com.example.dvely.domainbinding.application.port.out.HostingCustomDomainPort;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.HashMap;
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
@@ -33,14 +35,48 @@ public class GithubPagesCustomDomainClient implements HostingCustomDomainPort {
     }
 
     @Override
-    public boolean isCustomDomainConfigured(String userToken, String repositoryFullName, String hostname) {
-        String current = getCurrentCustomDomain(userToken, repositoryFullName);
-        return hostname.equalsIgnoreCase(current == null ? "" : current);
+    public SiteStatus getSiteStatus(String userToken, String repositoryFullName) {
+        String[] parts = splitRepo(repositoryFullName);
+        try {
+            PagesResponse response = restClient(userToken)
+                    .get()
+                    .uri(API_BASE + "/repos/{owner}/{repo}/pages", parts[0], parts[1])
+                    .retrieve()
+                    .body(PagesResponse.class);
+            if (response == null) {
+                return new SiteStatus(null, false, null, null);
+            }
+            HttpsCertificate certificate = response.httpsCertificate();
+            return new SiteStatus(
+                    response.cname(),
+                    response.httpsEnforced(),
+                    certificate == null ? null : certificate.state(),
+                    certificate == null ? null : parseDate(certificate.expiresAt())
+            );
+        } catch (RestClientResponseException e) {
+            throw new IllegalStateException(githubError("GitHub Pages custom domain 조회 실패", e), e);
+        }
+    }
+
+    @Override
+    public void setHttpsEnforced(String userToken, String repositoryFullName, boolean httpsEnforced) {
+        String[] parts = splitRepo(repositoryFullName);
+        try {
+            restClient(userToken)
+                    .put()
+                    .uri(API_BASE + "/repos/{owner}/{repo}/pages", parts[0], parts[1])
+                    .body(Map.of("https_enforced", httpsEnforced))
+                    .retrieve()
+                    .toBodilessEntity();
+            log.info("GitHub Pages HTTPS 강제 설정 완료: repo={}, enabled={}", repositoryFullName, httpsEnforced);
+        } catch (RestClientResponseException e) {
+            throw new IllegalStateException(githubError("GitHub Pages HTTPS 강제 설정 실패", e), e);
+        }
     }
 
     @Override
     public void removeCustomDomainIfMatches(String userToken, String repositoryFullName, String hostname) {
-        if (!isCustomDomainConfigured(userToken, repositoryFullName, hostname)) {
+        if (!getSiteStatus(userToken, repositoryFullName).hasCustomDomain(hostname)) {
             return;
         }
 
@@ -61,17 +97,15 @@ public class GithubPagesCustomDomainClient implements HostingCustomDomainPort {
         }
     }
 
-    private String getCurrentCustomDomain(String userToken, String repositoryFullName) {
-        String[] parts = splitRepo(repositoryFullName);
+    private LocalDate parseDate(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
         try {
-            PagesResponse response = restClient(userToken)
-                    .get()
-                    .uri(API_BASE + "/repos/{owner}/{repo}/pages", parts[0], parts[1])
-                    .retrieve()
-                    .body(PagesResponse.class);
-            return response == null ? null : response.cname();
-        } catch (RestClientResponseException e) {
-            throw new IllegalStateException(githubError("GitHub Pages custom domain 조회 실패", e), e);
+            return LocalDate.parse(value);
+        } catch (DateTimeParseException exception) {
+            log.warn("GitHub Pages 인증서 만료일 파싱 실패: value={}", value);
+            return null;
         }
     }
 
@@ -97,7 +131,16 @@ public class GithubPagesCustomDomainClient implements HostingCustomDomainPort {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     private record PagesResponse(
-            @JsonProperty("cname") String cname
+            @JsonProperty("cname") String cname,
+            @JsonProperty("https_enforced") boolean httpsEnforced,
+            @JsonProperty("https_certificate") HttpsCertificate httpsCertificate
+    ) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record HttpsCertificate(
+            @JsonProperty("state") String state,
+            @JsonProperty("expires_at") String expiresAt
     ) {
     }
 }

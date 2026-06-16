@@ -19,5 +19,11 @@ public record DecisionResponse(
         AiProvider aiProvider,
 
         @Schema(description = "비동기 태스크 ID. 상태 조회 및 입력 제출에 사용", example = "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
-        String taskId
+        String taskId,
+
+        @Schema(description = "현재 task 상태", example = "WAITING_APPROVAL")
+        String status,
+
+        @Schema(description = "승인이 필요한 경우 생성된 approval ID 목록")
+        List<Long> approvalIds
 ) {}

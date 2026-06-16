@@ -3,7 +3,6 @@ package com.example.dvely.domainbinding.application.command;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -13,18 +12,17 @@ import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.value.GithubId;
-import com.example.dvely.deployment.application.port.out.GithubActionsPort;
-import com.example.dvely.deployment.application.port.out.GithubRepoPort;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
-import com.example.dvely.deployment.domain.value.PackageManager;
-import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.domainbinding.application.command.dto.BindDomainCommand;
 import com.example.dvely.domainbinding.application.port.out.CloudflareDnsPort;
 import com.example.dvely.domainbinding.application.port.out.DnsLookupPort;
-import com.example.dvely.domainbinding.application.port.out.HostingCustomDomainPort;
+import com.example.dvely.domainbinding.application.port.out.DomainHostingAdapter;
 import com.example.dvely.domainbinding.application.result.DomainBindingResult;
+import com.example.dvely.domainbinding.application.service.DomainHostingAdapterRegistry;
 import com.example.dvely.domainbinding.domain.model.DomainBinding;
 import com.example.dvely.domainbinding.domain.repository.DomainBindingRepository;
+import com.example.dvely.domainbinding.domain.value.CertificateStatus;
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.domain.value.DomainStatus;
 import com.example.dvely.domainbinding.domain.value.DomainType;
 import com.example.dvely.domainbinding.infrastructure.config.CloudflareProperties;
@@ -35,6 +33,7 @@ import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -68,13 +67,10 @@ class DomainBindingCommandServiceTest {
     private DnsLookupPort dnsLookupPort;
 
     @Mock
-    private HostingCustomDomainPort hostingCustomDomainPort;
+    private DomainHostingAdapterRegistry hostingAdapterRegistry;
 
     @Mock
-    private GithubActionsPort githubActionsPort;
-
-    @Mock
-    private GithubRepoPort githubRepoPort;
+    private DomainHostingAdapter hostingAdapter;
 
     private DomainBindingCommandService commandService;
 
@@ -89,6 +85,8 @@ class DomainBindingCommandServiceTest {
                 null,
                 null
         ));
+        when(hostingAdapterRegistry.resolve(DomainHostingTarget.GITHUB_PAGES))
+                .thenReturn(hostingAdapter);
     }
 
     @Test
@@ -99,11 +97,9 @@ class DomainBindingCommandServiceTest {
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
         when(userRepository.findById(1L)).thenReturn(Optional.of(user));
         when(domainBindingRepository.existsByHostnameIgnoreCase("my-project.qeploy.com")).thenReturn(false);
+        when(hostingAdapter.resolveDnsTarget(any())).thenReturn("octo.github.io");
         when(cloudflareDnsPort.createCnameRecord("my-project.qeploy.com", "octo.github.io"))
                 .thenReturn("cf-record-1");
-        when(githubRepoPort.detectPackageManager("user-token", "octo/repo")).thenReturn(PackageManager.NPM);
-        when(githubRepoPort.detectNodeVersion("user-token", "octo/repo")).thenReturn("20");
-        when(githubRepoPort.detectFrameworkType("user-token", "octo/repo")).thenReturn("vue");
         when(domainBindingRepository.save(any(DomainBinding.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -115,21 +111,10 @@ class DomainBindingCommandServiceTest {
 
         assertThat(result.dnsTarget()).isEqualTo("octo.github.io");
         assertThat(result.status()).isEqualTo(DomainStatus.VERIFYING);
+        assertThat(result.hostingTarget()).isEqualTo(DomainHostingTarget.GITHUB_PAGES);
+        assertThat(result.certificateStatus()).isEqualTo(CertificateStatus.PENDING);
         verify(cloudflareDnsPort).createCnameRecord("my-project.qeploy.com", "octo.github.io");
-        verify(hostingCustomDomainPort).setCustomDomain("user-token", "octo/repo", "my-project.qeploy.com");
-        verify(githubActionsPort).createOrUpdateWorkflow(
-                org.mockito.ArgumentMatchers.eq("user-token"),
-                org.mockito.ArgumentMatchers.eq("octo/repo"),
-                org.mockito.ArgumentMatchers.eq(DeployWorkflowTemplate.fileName()),
-                contains("https://api.github.com/repos/${GITHUB_REPOSITORY}/pages")
-        );
-        verify(githubActionsPort).triggerWorkflow(
-                "user-token",
-                "octo/repo",
-                DeployWorkflowTemplate.fileName(),
-                "main",
-                "v1.0.0"
-        );
+        verify(hostingAdapter).bind(any(), org.mockito.ArgumentMatchers.eq("my-project.qeploy.com"));
         verify(deploymentHistoryRepository, never()).findByProjectIdOrderByTriggeredAtDesc(11L);
     }
 
@@ -159,7 +144,54 @@ class DomainBindingCommandServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("DNS 대상이 자기 자신을 가리킬 수 없습니다");
 
-        verifyNoInteractions(cloudflareDnsPort, hostingCustomDomainPort, githubActionsPort, githubRepoPort);
+        verifyNoInteractions(cloudflareDnsPort);
+        verify(hostingAdapter, never()).bind(any(), any());
+    }
+
+    @Test
+    void checkVerificationStoresCertificateAndHttpsState() {
+        Project project = boundProject("https://octo.github.io/repo/");
+        User user = activeUser();
+        LocalDateTime now = LocalDateTime.now();
+        DomainBinding domain = new DomainBinding(
+                31L,
+                11L,
+                DomainType.MANAGED_SUBDOMAIN,
+                DomainHostingTarget.GITHUB_PAGES,
+                "my-project.qeploy.com",
+                DomainStatus.VERIFYING,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME,
+                "octo.github.io",
+                "record-1",
+                false,
+                CertificateStatus.PROVISIONING,
+                null,
+                now,
+                now,
+                now
+        );
+        LocalDate expiresAt = LocalDate.now().plusMonths(3);
+
+        when(domainBindingRepository.findById(31L)).thenReturn(Optional.of(domain));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+        when(hostingAdapter.verify(any(), org.mockito.ArgumentMatchers.eq("my-project.qeploy.com")))
+                .thenReturn(new DomainHostingAdapter.VerificationStatus(
+                        true,
+                        true,
+                        CertificateStatus.ACTIVE,
+                        expiresAt
+                ));
+        when(cloudflareDnsPort.recordExists("my-project.qeploy.com", "record-1")).thenReturn(true);
+        when(domainBindingRepository.save(domain)).thenReturn(domain);
+
+        DomainBindingResult result = commandService.checkVerification(1L, 31L);
+
+        assertThat(result.status()).isEqualTo(DomainStatus.CONNECTED);
+        assertThat(result.httpsEnforced()).isTrue();
+        assertThat(result.certificateStatus()).isEqualTo(CertificateStatus.ACTIVE);
+        assertThat(result.certificateExpiresAt()).isEqualTo(expiresAt);
     }
 
     private DomainBindingCommandService commandService(CloudflareProperties cloudflareProperties) {
@@ -171,9 +203,7 @@ class DomainBindingCommandServiceTest {
                 domainBindingRepository,
                 cloudflareDnsPort,
                 dnsLookupPort,
-                hostingCustomDomainPort,
-                githubActionsPort,
-                githubRepoPort,
+                hostingAdapterRegistry,
                 cloudflareProperties
         );
     }

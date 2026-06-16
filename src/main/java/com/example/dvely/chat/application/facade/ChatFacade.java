@@ -23,6 +23,10 @@ public class ChatFacade {
         chatCommandService.deleteConversation(userId, conversationId);
     }
 
+    public void permanentlyDeleteConversation(Long userId, Long conversationId) {
+        chatCommandService.permanentlyDeleteConversation(userId, conversationId);
+    }
+
     public ConversationResult restoreConversation(Long userId, Long conversationId) {
         return chatCommandService.restoreConversation(userId, conversationId);
     }

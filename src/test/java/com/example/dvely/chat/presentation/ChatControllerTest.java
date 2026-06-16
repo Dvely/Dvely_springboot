@@ -147,4 +147,11 @@ class ChatControllerTest {
                 assertThat(actual.messageId()).isEqualTo(101L);
                 verify(chatFacade).sendMessage(1L, 30L, "hi");
         }
+
+        @Test
+        void permanentlyDeleteConversation_delegatesUsingAuthenticatedUserId() {
+                chatController.permanentlyDeleteConversation(1L, 20L);
+
+                verify(chatFacade).permanentlyDeleteConversation(1L, 20L);
+        }
 }

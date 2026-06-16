@@ -1,25 +1,32 @@
 package com.example.dvely.agent.presentation;
 
+import com.example.dvely.agent.application.dto.AgentSubmission;
 import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.dto.AgentTaskFailure;
 import com.example.dvely.agent.application.facade.AgentFacade;
+import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.result.AgentSubmitResult;
-import com.example.dvely.agent.application.service.SessionDiffService;
-import com.example.dvely.agent.infrastructure.docker.UserContainerRegistry;
+import com.example.dvely.agent.application.service.AgentEventStreamService;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
-import com.example.dvely.agent.presentation.dto.CommitDiffResponse;
 import com.example.dvely.agent.presentation.dto.DecisionRequest;
 import com.example.dvely.agent.presentation.dto.DecisionResponse;
+import com.example.dvely.agent.presentation.dto.AgentTaskEventResponse;
 import com.example.dvely.agent.presentation.dto.TaskStatusResponse;
 import com.example.dvely.agent.presentation.dto.TaskInputRequest;
+import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.common.response.RawApiResponse;
+import com.example.dvely.preview.application.service.PreviewSessionService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.MediaType;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -27,7 +34,9 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @Tag(name = "Agent", description = "AI 에이전트 요청 처리 API. 자연어 요청을 분석하여 코드 생성·수정, GitHub Pages 배포, 도메인 연결을 비동기로 실행합니다.")
 @RestController
@@ -36,10 +45,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentController {
 
     private final AgentFacade           agentFacade;
+    private final AgentOrchestrator     agentOrchestrator;
     private final TaskStore             taskStore;
-    private final UserContainerRegistry containerRegistry;
     private final InputWaitStore        inputWaitStore;
-    private final SessionDiffService    sessionDiffService;
+    private final PreviewSessionService previewSessionService;
+    private final AgentEventStreamService agentEventStreamService;
 
     @Operation(
             summary = "에이전트 요청 제출",
@@ -57,8 +67,22 @@ public class AgentController {
             @AuthenticationPrincipal Long userId,
             @Valid @RequestBody DecisionRequest request) {
 
-        AgentSubmitResult result = agentFacade.submit(userId, request.projectId(), request.content(), request.aiProvider());
-        return new DecisionResponse(result.plan().steps(), result.plan().reasoning(), request.aiProvider(), result.taskId());
+        AgentSubmitResult result = agentFacade.submit(
+                userId,
+                request.projectId(),
+                request.conversationId(),
+                request.content(),
+                request.aiProvider()
+        );
+        AgentSubmission submission = result.submission();
+        return new DecisionResponse(
+                result.plan().steps(),
+                result.plan().reasoning(),
+                result.plan().aiProvider(),
+                submission.taskId(),
+                submission.status().name(),
+                submission.approvalIds()
+        );
     }
 
     @Operation(
@@ -73,13 +97,66 @@ public class AgentController {
     })
     @GetMapping("/tasks/{taskId}")
     public ResponseEntity<TaskStatusResponse> getTaskStatus(
+            @AuthenticationPrincipal Long userId,
             @Parameter(description = "에이전트 태스크 ID", example = "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
             @PathVariable String taskId) {
-        AgentTask task = taskStore.get(taskId);
-        if (task == null) return ResponseEntity.notFound().build();
+        AgentTask task = taskStore.getOwned(taskId, userId);
+        if (task == null) {
+            throw taskNotFound(taskId);
+        }
+        AgentTaskFailure failure = taskStore.getFailure(taskId, userId);
         return ResponseEntity.ok(new TaskStatusResponse(
-                task.taskId(), task.status(), task.previewUrl(), task.summary(), task.error(), task.question()
+                task.taskId(),
+                task.status(),
+                task.previewUrl(),
+                task.summary(),
+                task.error(),
+                task.question(),
+                failure == null ? null : failure.logExcerpt(),
+                failure == null ? null : failure.suggestedFix(),
+                failure == null ? 0 : failure.attempt(),
+                failure == null ? 0 : failure.maxAttempts(),
+                failure != null
+                        && task.status() == com.example.dvely.agent.application.dto.TaskStatus.FAILED
+                        && failure.retryable()
         ));
+    }
+
+    @Operation(summary = "태스크 이벤트 조회", description = "afterEventId 이후의 영속 Agent 이벤트를 시간순으로 반환합니다.")
+    @GetMapping("/tasks/{taskId}/events")
+    public ResponseEntity<List<AgentTaskEventResponse>> getTaskEvents(
+            @AuthenticationPrincipal Long userId,
+            @PathVariable String taskId,
+            @Parameter(description = "마지막으로 받은 event ID")
+            @RequestParam(defaultValue = "0") Long afterEventId
+    ) {
+        if (taskStore.getOwned(taskId, userId) == null) {
+            throw taskNotFound(taskId);
+        }
+        return ResponseEntity.ok(taskStore.getEvents(taskId, userId, afterEventId).stream()
+                .map(event -> new AgentTaskEventResponse(
+                        event.eventId(),
+                        event.taskId(),
+                        event.type(),
+                        event.status(),
+                        event.message(),
+                        event.createdAt()
+                ))
+                .toList());
+    }
+
+    @Operation(summary = "태스크 이벤트 스트림", description = "DB에 저장된 Agent 이벤트를 SSE로 전달합니다.")
+    @GetMapping(value = "/tasks/{taskId}/events/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @RawApiResponse
+    public ResponseEntity<SseEmitter> streamTaskEvents(
+            @AuthenticationPrincipal Long userId,
+            @PathVariable String taskId,
+            @RequestParam(defaultValue = "0") Long afterEventId
+    ) {
+        SseEmitter emitter = agentEventStreamService.open(userId, taskId, afterEventId);
+        return emitter == null
+                ? ResponseEntity.notFound().build()
+                : ResponseEntity.ok(emitter);
     }
 
     @Operation(
@@ -94,43 +171,56 @@ public class AgentController {
     })
     @PostMapping("/tasks/{taskId}/input")
     public ResponseEntity<Void> submitInput(
+            @AuthenticationPrincipal Long userId,
             @Parameter(description = "에이전트 태스크 ID", example = "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
             @PathVariable String taskId,
             @Valid @RequestBody TaskInputRequest request) {
 
-        AgentTask task = taskStore.get(taskId);
-        if (task == null) return ResponseEntity.notFound().build();
-        if (task.status() != com.example.dvely.agent.application.dto.TaskStatus.WAITING_INPUT) {
-            return ResponseEntity.badRequest().build();
+        AgentTask task = taskStore.getOwned(taskId, userId);
+        if (task == null) {
+            throw taskNotFound(taskId);
         }
-        boolean accepted = inputWaitStore.supply(taskId, request.value());
-        return accepted ? ResponseEntity.ok().build() : ResponseEntity.notFound().build();
+        if (task.status() != com.example.dvely.agent.application.dto.TaskStatus.WAITING_INPUT) {
+            throw new IllegalStateException("사용자 입력을 기다리는 Agent task가 아닙니다. taskId=" + taskId);
+        }
+        boolean accepted = inputWaitStore.supply(taskId, userId, request.value());
+        if (!accepted) {
+            throw taskNotFound(taskId);
+        }
+        return ResponseEntity.noContent().build();
     }
 
-    @Operation(
-            summary = "코드 변경 diff 조회",
-            description = "현재 사용자의 Docker 컨테이너(/workspace/app)에서 변경된 코드의 diff를 반환합니다. " +
-                          "clone된 프로젝트의 경우 HEAD 대비 변경사항을, 신규 생성 프로젝트의 경우 전체 파일을 added 상태로 반환합니다."
-    )
+    @Operation(summary = "에이전트 태스크 취소", description = "현재 사용자가 소유한 대기 또는 실행 중 태스크를 취소합니다.")
     @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "diff 반환"),
-            @ApiResponse(responseCode = "404", description = "실행 중인 컨테이너 없음 또는 존재하지 않는 sessionId"),
-            @ApiResponse(responseCode = "401", description = "인증 필요")
+            @ApiResponse(responseCode = "204", description = "태스크 취소 완료"),
+            @ApiResponse(responseCode = "404", description = "존재하지 않거나 소유하지 않은 taskId")
     })
-    @GetMapping("/session/{sessionId}/diff")
-    public ResponseEntity<CommitDiffResponse> getDiff(
+    @DeleteMapping("/tasks/{taskId}")
+    public ResponseEntity<Void> cancelTask(
             @AuthenticationPrincipal Long userId,
-            @Parameter(description = "에이전트 태스크 ID (taskId)", example = "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
-            @PathVariable String sessionId) {
-        AgentTask task = taskStore.get(sessionId);
-        if (task == null) return ResponseEntity.notFound().build();
-        CommitDiffResponse diff = sessionDiffService.getDiff(userId, sessionId);
-        return ResponseEntity.ok(diff);
+            @Parameter(description = "에이전트 태스크 ID")
+            @PathVariable String taskId) {
+        if (!agentOrchestrator.cancel(taskId, userId)) {
+            throw taskNotFound(taskId);
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    @Operation(summary = "실패한 태스크 재시도", description = "저장된 plan과 현재 step부터 task를 다시 queue에 넣습니다.")
+    @PostMapping("/tasks/{taskId}/retry")
+    public ResponseEntity<Void> retryTask(
+            @AuthenticationPrincipal Long userId,
+            @PathVariable String taskId
+    ) {
+        if (!agentOrchestrator.retry(taskId, userId)) {
+            throw new IllegalStateException("재시도할 수 없는 Agent task입니다. taskId=" + taskId);
+        }
+        return ResponseEntity.accepted().build();
     }
 
     @Operation(
             summary = "에이전트 세션 종료",
-            description = "현재 사용자의 Docker 컨테이너를 종료하고 레지스트리에서 제거합니다. " +
+            description = "현재 사용자의 PreviewSession을 만료시키고 연결된 Docker 컨테이너를 종료합니다. " +
                           "작업이 끝난 후 리소스를 반환할 때 호출하세요."
     )
     @ApiResponses({
@@ -140,10 +230,14 @@ public class AgentController {
     })
     @DeleteMapping("/session")
     public ResponseEntity<Void> closeSession(@AuthenticationPrincipal Long userId) {
-        boolean existed = containerRegistry.find(userId).isPresent();
-        containerRegistry.remove(userId);
-        return existed
-                ? ResponseEntity.noContent().build()
-                : ResponseEntity.notFound().build();
+        int closed = previewSessionService.closeAllOwned(userId);
+        if (closed == 0) {
+            throw new NotFoundException("종료할 PreviewSession을 찾을 수 없습니다.");
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    private NotFoundException taskNotFound(String taskId) {
+        return new NotFoundException("Agent task를 찾을 수 없습니다. taskId=" + taskId);
     }
 }

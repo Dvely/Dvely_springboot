@@ -5,10 +5,16 @@ import com.example.dvely.project.application.command.dto.ConnectProjectRepositor
 import com.example.dvely.project.application.command.dto.UpdateProjectCommand;
 import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
 import com.example.dvely.project.application.facade.ProjectFacade;
+import com.example.dvely.project.application.result.ProjectChatSettingsResult;
+import com.example.dvely.project.application.service.ProjectChatSettingsService;
+import com.example.dvely.project.application.result.ProjectInfrastructureSettingsResult;
+import com.example.dvely.project.application.service.ProjectInfrastructureSettingsService;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
 import com.example.dvely.project.presentation.dto.request.ConnectProjectRepositoryRequest;
 import com.example.dvely.project.presentation.dto.request.CreateProjectRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectRequest;
+import com.example.dvely.project.presentation.dto.request.UpdateProjectChatSettingsRequest;
+import com.example.dvely.project.presentation.dto.request.UpdateProjectInfrastructureSettingsRequest;
 import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectActivityLogResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCommitResponse;
@@ -16,6 +22,8 @@ import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse
 import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectOverviewResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectChatSettingsResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectInfrastructureSettingsResponse;
 import com.example.dvely.project.presentation.dto.response.RepositoryHealthResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectSummaryResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -31,6 +39,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -45,14 +54,16 @@ public class ProjectController {
 
     private final ProjectFacade projectFacade;
     private final ProjectMapper projectMapper;
+    private final ProjectChatSettingsService projectChatSettingsService;
+    private final ProjectInfrastructureSettingsService projectInfrastructureSettingsService;
 
     @Operation(
             summary = "프로젝트 생성",
-            description = "프로젝트 기본 메타데이터를 DRAFT 상태로 생성합니다. " +
-                          "GitHub 저장소 생성 또는 기존 저장소 연결은 프로젝트 생성 후 " +
-                          "/api/v1/projects/{projectId}/repository 엔드포인트에서 별도로 처리합니다."
+            description = "프로젝트를 DRAFT 상태로 저장하고 startMode/templateType/draftMode에 맞는 " +
+                          "초기 코드 생성 Agent task를 제출합니다. GitHub 저장소 연결은 생성 후 별도로 처리합니다."
     )
     @PostMapping
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public ProjectCreateResponse createProject(@Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
                                                @Valid @RequestBody CreateProjectRequest request) {
         var result = projectFacade.createProject(ownerUserId, new CreateProjectCommand(
@@ -150,7 +161,7 @@ public class ProjectController {
 
     @Operation(
             summary = "프로젝트 개요 조회",
-            description = "프로젝트 개요 화면에 필요한 현재 URL, 배포 상태, 최신 버전, 최근 변경, 최신 커밋, 저장소 상태 요약을 조회합니다."
+            description = "현재 도메인 URL, 배포 상태와 버전, 최근 운영 이벤트 3개, 최신 커밋, 저장소·클라우드 상태와 운영 조치를 조회합니다."
     )
     @GetMapping("/{projectId}/overview")
     public ProjectOverviewResponse getOverview(@Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
@@ -161,7 +172,7 @@ public class ProjectController {
 
     @Operation(
             summary = "프로젝트 활동 로그 조회",
-            description = "프로젝트 생성, 저장소 연결, 상태 변경 등 프로젝트 주요 활동 로그를 최신순으로 조회합니다."
+            description = "Deployment, Change, Approval, Domain의 실제 저장 이력을 프로젝트 생성 이벤트와 함께 최신순으로 조회합니다."
     )
     @GetMapping("/{projectId}/activity-logs")
     public List<ProjectActivityLogResponse> getActivityLogs(
@@ -199,5 +210,92 @@ public class ProjectController {
             @Parameter(description = "저장소 상태를 확인할 프로젝트 ID") @PathVariable Long projectId
     ) {
         return projectMapper.toRepositoryHealthResponse(projectFacade.getRepositoryHealth(ownerUserId, projectId));
+    }
+
+    @Operation(summary = "프로젝트 Chat 승인 정책 조회")
+    @GetMapping("/{projectId}/settings/chat")
+    public ProjectChatSettingsResponse getChatSettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long projectId
+    ) {
+        return toChatSettingsResponse(projectChatSettingsService.get(ownerUserId, projectId));
+    }
+
+    @Operation(summary = "프로젝트 Chat 승인 정책 수정")
+    @PatchMapping("/{projectId}/settings/chat")
+    public ProjectChatSettingsResponse updateChatSettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long projectId,
+            @Valid @RequestBody UpdateProjectChatSettingsRequest request
+    ) {
+        return toChatSettingsResponse(projectChatSettingsService.update(
+                ownerUserId,
+                projectId,
+                request.changeApprovalRequired(),
+                request.deploymentApprovalRequired(),
+                request.domainApprovalRequired(),
+                request.infraApprovalRequired()
+        ));
+    }
+
+    @Operation(summary = "프로젝트 Infrastructure 설정 조회")
+    @GetMapping("/{projectId}/settings/infrastructure")
+    public ProjectInfrastructureSettingsResponse getInfrastructureSettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long projectId
+    ) {
+        return toInfrastructureSettingsResponse(projectInfrastructureSettingsService.get(ownerUserId, projectId));
+    }
+
+    @Operation(
+            summary = "프로젝트 클라우드 연결 선택",
+            description = "실제 권한 확인이 완료된 CONNECTED 연결만 선택할 수 있습니다."
+    )
+    @PutMapping("/{projectId}/settings/infrastructure")
+    public ProjectInfrastructureSettingsResponse updateInfrastructureSettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long projectId,
+            @Valid @RequestBody UpdateProjectInfrastructureSettingsRequest request
+    ) {
+        return toInfrastructureSettingsResponse(projectInfrastructureSettingsService.select(
+                ownerUserId,
+                projectId,
+                request.cloudConnectionId()
+        ));
+    }
+
+    @Operation(summary = "프로젝트 클라우드 연결 선택 해제")
+    @DeleteMapping("/{projectId}/settings/infrastructure")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void clearInfrastructureSettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long projectId
+    ) {
+        projectInfrastructureSettingsService.clear(ownerUserId, projectId);
+    }
+
+    private ProjectChatSettingsResponse toChatSettingsResponse(ProjectChatSettingsResult result) {
+        return new ProjectChatSettingsResponse(
+                result.projectId(),
+                result.changeApprovalRequired(),
+                result.deploymentApprovalRequired(),
+                result.domainApprovalRequired(),
+                result.infraApprovalRequired()
+        );
+    }
+
+    private ProjectInfrastructureSettingsResponse toInfrastructureSettingsResponse(
+            ProjectInfrastructureSettingsResult result
+    ) {
+        return new ProjectInfrastructureSettingsResponse(
+                result.projectId(),
+                result.cloudConnectionId(),
+                result.provider(),
+                result.displayName(),
+                result.region(),
+                result.status(),
+                result.lastCheckedAt(),
+                result.updatedAt()
+        );
     }
 }

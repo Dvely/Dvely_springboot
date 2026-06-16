@@ -27,6 +27,9 @@ public class DeploymentHistoryEntity {
     @Column(name = "history_id")
     private Long id;
 
+    @Column(name = "user_id", nullable = false)
+    private Long ownerUserId;
+
     @Column(name = "project_id", nullable = false)
     private Long projectId;
 
@@ -36,7 +39,7 @@ public class DeploymentHistoryEntity {
     @Column(name = "version_label")
     private String versionLabel;
 
-    @Column(name = "deployed_url", nullable = false)
+    @Column(name = "deployed_url")
     private String deployedUrl;
 
     @Column(name = "status", nullable = false)
@@ -44,6 +47,54 @@ public class DeploymentHistoryEntity {
 
     @Column(name = "workflow_run_id")
     private Long workflowRunId;
+
+    @Column(name = "correlation_id", nullable = false, length = 36)
+    private String correlationId;
+
+    @Column(name = "commit_sha", length = 40)
+    private String commitSha;
+
+    @Column(name = "workflow_head_sha", length = 40)
+    private String workflowHeadSha;
+
+    @Column(name = "title", length = 500)
+    private String title;
+
+    @Column(name = "description", columnDefinition = "TEXT")
+    private String description;
+
+    @Column(name = "merged_by", length = 100)
+    private String mergedBy;
+
+    @Column(name = "merged_by_avatar_url", length = 1000)
+    private String mergedByAvatarUrl;
+
+    @Column(name = "pr_number")
+    private Integer prNumber;
+
+    @Column(name = "merged_at")
+    private LocalDateTime mergedAt;
+
+    @Column(name = "agent_task_id", length = 64)
+    private String taskId;
+
+    @Column(name = "error_message", columnDefinition = "TEXT")
+    private String errorMessage;
+
+    @Column(name = "attempt", nullable = false)
+    private int attempt;
+
+    @Column(name = "max_attempts", nullable = false)
+    private int maxAttempts;
+
+    @Column(name = "next_run_at")
+    private LocalDateTime nextRunAt;
+
+    @Column(name = "lease_owner", length = 100)
+    private String leaseOwner;
+
+    @Column(name = "lease_until")
+    private LocalDateTime leaseUntil;
 
     @CreationTimestamp
     @Column(name = "triggered_at", updatable = false)
@@ -53,42 +104,68 @@ public class DeploymentHistoryEntity {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    private DeploymentHistoryEntity(Long projectId,
-                                    String deployTargetType,
-                                    String versionLabel,
-                                    String deployedUrl,
-                                    String status) {
-        this.projectId = projectId;
-        this.deployTargetType = deployTargetType;
-        this.versionLabel = versionLabel;
-        this.deployedUrl = deployedUrl;
-        this.status = status;
-    }
-
     public static DeploymentHistoryEntity from(DeploymentHistory history) {
-        return new DeploymentHistoryEntity(
-                history.getProjectId(),
-                history.getDeployTargetType().name(),
-                history.getVersionLabel(),
-                history.getDeployedUrl(),
-                history.getStatus().name()
-        );
+        DeploymentHistoryEntity entity = new DeploymentHistoryEntity();
+        entity.updateAll(history);
+        return entity;
     }
 
     public void updateFrom(DeploymentHistory history) {
-        this.status = history.getStatus().name();
-        this.workflowRunId = history.getWorkflowRunId();
+        updateAll(history);
+    }
+
+    private void updateAll(DeploymentHistory history) {
+        ownerUserId = history.getOwnerUserId();
+        projectId = history.getProjectId();
+        deployTargetType = history.getDeployTargetType().name();
+        versionLabel = history.getVersionLabel();
+        deployedUrl = history.getDeployedUrl();
+        status = history.getStatus().name();
+        workflowRunId = history.getWorkflowRunId();
+        correlationId = history.getCorrelationId();
+        commitSha = history.getCommitSha();
+        workflowHeadSha = history.getWorkflowHeadSha();
+        title = history.getTitle();
+        description = history.getDescription();
+        mergedBy = history.getMergedBy();
+        mergedByAvatarUrl = history.getMergedByAvatarUrl();
+        prNumber = history.getPrNumber();
+        mergedAt = history.getMergedAt();
+        taskId = history.getTaskId();
+        errorMessage = history.getErrorMessage();
+        attempt = history.getAttempt();
+        maxAttempts = history.getMaxAttempts();
+        nextRunAt = history.getNextRunAt();
+        leaseOwner = history.getLeaseOwner();
+        leaseUntil = history.getLeaseUntil();
     }
 
     public DeploymentHistory toDomain() {
         return new DeploymentHistory(
                 id,
+                ownerUserId,
                 projectId,
                 DeployTargetType.valueOf(deployTargetType),
                 versionLabel,
                 deployedUrl,
                 DeployStatus.valueOf(status),
                 workflowRunId,
+                correlationId,
+                commitSha,
+                workflowHeadSha,
+                title,
+                description,
+                mergedBy,
+                mergedByAvatarUrl,
+                prNumber,
+                mergedAt,
+                taskId,
+                errorMessage,
+                attempt,
+                maxAttempts,
+                nextRunAt,
+                leaseOwner,
+                leaseUntil,
                 triggeredAt,
                 updatedAt
         );

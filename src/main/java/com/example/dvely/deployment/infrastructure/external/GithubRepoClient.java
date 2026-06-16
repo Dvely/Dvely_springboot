@@ -9,6 +9,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
@@ -120,18 +122,28 @@ public class GithubRepoClient implements GithubRepoPort {
 
     @Override
     public boolean isCommitTagged(String userToken, String repoFullName, String commitSha) {
+        return findSequentialTagForCommit(userToken, repoFullName, commitSha) != null;
+    }
+
+    @Override
+    public String findSequentialTagForCommit(String userToken, String repoFullName, String commitSha) {
         String[] parts = splitRepo(repoFullName);
         try {
-            List<TagRefResponse> tags = restClient(userToken)
+            List<TagResponse> tags = restClient(userToken)
                     .get()
-                    .uri(API_BASE + "/repos/{owner}/{repo}/git/refs/tags", parts[0], parts[1])
+                    .uri(API_BASE + "/repos/{owner}/{repo}/tags?per_page=100", parts[0], parts[1])
                     .retrieve()
-                    .body(new org.springframework.core.ParameterizedTypeReference<List<TagRefResponse>>() {});
+                    .body(new org.springframework.core.ParameterizedTypeReference<List<TagResponse>>() {});
 
-            if (tags == null) return false;
-            return tags.stream().anyMatch(t -> commitSha.equals(t.objectSha()));
+            if (tags == null) return null;
+            return tags.stream()
+                    .filter(tag -> commitSha.equals(tag.commitSha()))
+                    .filter(tag -> SEQUENTIAL_TAG.matcher(tag.name()).matches())
+                    .max(Comparator.comparingInt(tag -> sequentialNumber(tag.name())))
+                    .map(TagResponse::name)
+                    .orElse(null);
         } catch (RestClientResponseException e) {
-            if (e.getStatusCode().value() == 404) return false;
+            if (e.getStatusCode().value() == 404) return null;
             throw new IllegalStateException(githubError("태그 목록 조회 실패", e), e);
         }
     }
@@ -155,6 +167,65 @@ public class GithubRepoClient implements GithubRepoPort {
         } catch (RestClientResponseException e) {
             throw new IllegalStateException(githubError("태그 생성 실패: " + tagName, e), e);
         }
+    }
+
+    @Override
+    public String resolveCommitSha(String userToken, String repoFullName, String ref) {
+        String[] parts = splitRepo(repoFullName);
+        try {
+            CommitResponse response = restClient(userToken)
+                    .get()
+                    .uri(API_BASE + "/repos/{owner}/{repo}/commits/{ref}", parts[0], parts[1], ref)
+                    .retrieve()
+                    .body(CommitResponse.class);
+            if (response == null || response.sha() == null) {
+                throw new IllegalStateException("commit SHA 조회 응답이 비어 있습니다. ref=" + ref);
+            }
+            return response.sha();
+        } catch (RestClientResponseException e) {
+            throw new IllegalStateException(githubError("commit SHA 조회 실패: " + ref, e), e);
+        }
+    }
+
+    @Override
+    public ReleaseMetadata getReleaseMetadata(String userToken,
+                                              String repoFullName,
+                                              String commitSha,
+                                              Integer preferredPrNumber) {
+        String[] parts = splitRepo(repoFullName);
+        PullRequestDetail pullRequest = preferredPrNumber == null
+                ? findMergedPullRequest(userToken, parts[0], parts[1], commitSha)
+                : getPullRequest(userToken, parts[0], parts[1], preferredPrNumber);
+        if (pullRequest != null) {
+            return new ReleaseMetadata(
+                    commitSha,
+                    pullRequest.title(),
+                    Optional.ofNullable(pullRequest.body()).orElse(""),
+                    pullRequest.mergedByLogin(),
+                    pullRequest.mergedByAvatarUrl(),
+                    pullRequest.number(),
+                    parseDateTime(pullRequest.mergedAt())
+            );
+        }
+
+        CommitResponse commit = getCommit(userToken, parts[0], parts[1], commitSha);
+        String message = commit.commit() == null
+                ? ""
+                : Optional.ofNullable(commit.commit().message()).orElse("");
+        String[] messageParts = message.split("\\R", 2);
+        String title = messageParts.length == 0 || messageParts[0].isBlank()
+                ? "Commit " + commitSha.substring(0, Math.min(7, commitSha.length()))
+                : messageParts[0];
+        String description = messageParts.length > 1 ? messageParts[1].trim() : "";
+        return new ReleaseMetadata(
+                commitSha,
+                title,
+                description,
+                commit.authorName(),
+                commit.authorAvatarUrl(),
+                null,
+                parseDateTime(commit.commitDate())
+        );
     }
 
     @Override
@@ -306,6 +377,75 @@ public class GithubRepoClient implements GithubRepoPort {
         }
     }
 
+    private int sequentialNumber(String tagName) {
+        Matcher matcher = SEQUENTIAL_TAG.matcher(tagName);
+        return matcher.matches() ? Integer.parseInt(matcher.group(1)) : 0;
+    }
+
+    private PullRequestDetail findMergedPullRequest(String userToken,
+                                                    String owner,
+                                                    String repo,
+                                                    String commitSha) {
+        try {
+            List<PullRequestDetail> pullRequests = restClient(userToken)
+                    .get()
+                    .uri(API_BASE + "/repos/{owner}/{repo}/commits/{sha}/pulls", owner, repo, commitSha)
+                    .retrieve()
+                    .body(new org.springframework.core.ParameterizedTypeReference<List<PullRequestDetail>>() {});
+            if (pullRequests == null) {
+                return null;
+            }
+            return pullRequests.stream()
+                    .filter(pullRequest -> pullRequest.mergedAt() != null)
+                    .filter(pullRequest -> commitSha.equals(pullRequest.mergeCommitSha()))
+                    .findFirst()
+                    .orElseGet(() -> pullRequests.stream()
+                            .filter(pullRequest -> pullRequest.mergedAt() != null)
+                            .findFirst()
+                            .orElse(null));
+        } catch (RestClientResponseException e) {
+            log.warn("commit 연결 PR 조회 실패, commit 메타데이터로 대체: repo={}/{} sha={}",
+                    owner, repo, commitSha);
+            return null;
+        }
+    }
+
+    private PullRequestDetail getPullRequest(String userToken, String owner, String repo, int prNumber) {
+        try {
+            return restClient(userToken)
+                    .get()
+                    .uri(API_BASE + "/repos/{owner}/{repo}/pulls/{number}", owner, repo, prNumber)
+                    .retrieve()
+                    .body(PullRequestDetail.class);
+        } catch (RestClientResponseException e) {
+            log.warn("PR 상세 조회 실패, commit 메타데이터로 대체: repo={}/{} pr=#{}",
+                    owner, repo, prNumber);
+            return null;
+        }
+    }
+
+    private CommitResponse getCommit(String userToken, String owner, String repo, String commitSha) {
+        try {
+            CommitResponse response = restClient(userToken)
+                    .get()
+                    .uri(API_BASE + "/repos/{owner}/{repo}/commits/{sha}", owner, repo, commitSha)
+                    .retrieve()
+                    .body(CommitResponse.class);
+            if (response == null) {
+                throw new IllegalStateException("commit 상세 응답이 비어 있습니다.");
+            }
+            return response;
+        } catch (RestClientResponseException e) {
+            throw new IllegalStateException(githubError("commit 상세 조회 실패", e), e);
+        }
+    }
+
+    private LocalDateTime parseDateTime(String value) {
+        return value == null || value.isBlank()
+                ? null
+                : OffsetDateTime.parse(value).toLocalDateTime();
+    }
+
     private String[] splitRepo(String repoFullName) {
         String[] parts = repoFullName.split("/", 2);
         if (parts.length != 2) {
@@ -376,5 +516,67 @@ public class GithubRepoClient implements GithubRepoPort {
     @JsonIgnoreProperties(ignoreUnknown = true)
     private record RefObject(
             @JsonProperty("sha") String sha
+    ) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record TagResponse(
+            @JsonProperty("name") String name,
+            @JsonProperty("commit") CommitDto commit
+    ) {
+        String commitSha() { return commit == null ? null : commit.sha(); }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record PullRequestDetail(
+            @JsonProperty("number") int number,
+            @JsonProperty("title") String title,
+            @JsonProperty("body") String body,
+            @JsonProperty("merged_at") String mergedAt,
+            @JsonProperty("merge_commit_sha") String mergeCommitSha,
+            @JsonProperty("user") GithubUser user,
+            @JsonProperty("merged_by") GithubUser mergedBy
+    ) {
+        String mergedByLogin() {
+            return mergedBy != null ? mergedBy.login() : user == null ? null : user.login();
+        }
+        String mergedByAvatarUrl() {
+            return mergedBy != null ? mergedBy.avatarUrl() : user == null ? null : user.avatarUrl();
+        }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record GithubUser(
+            @JsonProperty("login") String login,
+            @JsonProperty("avatar_url") String avatarUrl
+    ) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record CommitResponse(
+            @JsonProperty("sha") String sha,
+            @JsonProperty("commit") CommitDetail commit,
+            @JsonProperty("author") GithubUser author
+    ) {
+        String authorName() {
+            if (author != null && author.login() != null) {
+                return author.login();
+            }
+            return commit == null || commit.author() == null ? null : commit.author().name();
+        }
+        String authorAvatarUrl() { return author == null ? null : author.avatarUrl(); }
+        String commitDate() {
+            return commit == null || commit.author() == null ? null : commit.author().date();
+        }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record CommitDetail(
+            @JsonProperty("message") String message,
+            @JsonProperty("author") GitAuthor author
+    ) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record GitAuthor(
+            @JsonProperty("name") String name,
+            @JsonProperty("date") String date
     ) {}
 }

@@ -13,7 +13,17 @@ public interface DeploymentHistoryRepository {
 
     List<DeploymentHistory> findByProjectIdOrderByTriggeredAtDesc(Long projectId);
 
-    Optional<DeploymentHistory> findLatestInProgressByProjectId(Long projectId);
+    Optional<DeploymentHistory> findLatestByProjectId(Long projectId);
 
     List<DeploymentHistory> findByProjectIdAndStatus(Long projectId, DeployStatus status);
+
+    Optional<DeploymentHistory> findByWorkflowRunId(Long workflowRunId);
+
+    Optional<DeploymentHistory> findByCorrelationId(String correlationId);
+
+    List<Long> claimPending(String workerId, int limit);
+
+    void recoverExpiredLeases();
+
+    void renewLeases(String workerId);
 }

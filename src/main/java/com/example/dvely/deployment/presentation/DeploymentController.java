@@ -41,10 +41,10 @@ public class DeploymentController {
 
     @Operation(
             summary = "GitHub Pages 배포 요청",
-            description = "프로젝트를 GitHub Pages로 배포합니다. " +
+            description = "영속 Deployment Job을 생성하고 즉시 PENDING 상태로 반환합니다. " +
+                          "worker가 프로젝트를 GitHub Pages로 배포합니다. " +
                           "deployTargetType이 LATEST이면 default branch의 최신 커밋 기준으로 배포하고, " +
-                          "VERSION이면 versionName에 지정한 git tag 기준으로 배포합니다. " +
-                          "요청 즉시 PENDING 상태로 응답하며, 실제 배포는 GitHub Pages API를 통해 비동기로 진행됩니다."
+                          "VERSION이면 versionName에 지정한 git tag 기준으로 배포합니다."
     )
     @ResponseStatus(HttpStatus.ACCEPTED)
     @PostMapping("/api/v1/projects/{projectId}/deployments")
@@ -69,7 +69,7 @@ public class DeploymentController {
             @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
             @Parameter(description = "조회할 배포 이력 ID") @PathVariable Long deploymentId
     ) {
-        DeploymentStatusResult result = deploymentFacade.getDeploymentStatus(deploymentId);
+        DeploymentStatusResult result = deploymentFacade.getDeploymentStatus(userId, deploymentId);
         return new DeploymentStatusResponse(
                 result.historyId(),
                 result.projectId(),
@@ -94,7 +94,7 @@ public class DeploymentController {
             @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
             @Parameter(description = "조회할 프로젝트 ID") @PathVariable Long projectId
     ) {
-        return deploymentFacade.getDeploymentHistories(projectId).stream()
+        return deploymentFacade.getDeploymentHistories(userId, projectId).stream()
                 .map(this::toHistoryResponse)
                 .toList();
     }
@@ -141,7 +141,7 @@ public class DeploymentController {
             @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
             @Parameter(description = "조회할 배포 이력 ID") @PathVariable Long deploymentId
     ) {
-        return toLogsResponse(deploymentFacade.getDeploymentLogs(deploymentId));
+        return toLogsResponse(deploymentFacade.getDeploymentLogs(userId, deploymentId));
     }
 
     @Operation(

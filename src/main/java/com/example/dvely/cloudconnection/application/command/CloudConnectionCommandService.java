@@ -2,18 +2,19 @@ package com.example.dvely.cloudconnection.application.command;
 
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.cloudconnection.application.command.dto.CreateCloudConnectionCommand;
-import com.example.dvely.cloudconnection.application.result.CloudConnectionHealthResult;
+import com.example.dvely.cloudconnection.application.result.CloudConnectionVerificationJobResult;
 import com.example.dvely.cloudconnection.application.result.CreateCloudConnectionResult;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
+import com.example.dvely.cloudconnection.domain.model.CloudConnectionVerificationJob;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
+import com.example.dvely.cloudconnection.domain.repository.CloudConnectionVerificationJobRepository;
 import com.example.dvely.cloudconnection.domain.value.AwsCredentialType;
-import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
+import com.example.dvely.cloudconnection.domain.value.CloudConnectionVerificationJobStatus;
 import com.example.dvely.cloudconnection.domain.value.CloudProvider;
 import com.example.dvely.cloudconnection.domain.value.GcpCredentialType;
 import com.example.dvely.common.exception.NotFoundException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.time.LocalDateTime;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -26,7 +27,7 @@ public class CloudConnectionCommandService {
 
     private static final Pattern AWS_ACCOUNT_ID = Pattern.compile("^\\d{12}$");
     private static final Pattern AWS_ROLE_ARN = Pattern.compile("^arn:aws(?:-[a-z]+)*:iam::(\\d{12}):role/.+$");
-    private static final Pattern AWS_REGION = Pattern.compile("^[a-z]{2}-[a-z]+-\\d+$");
+    private static final Pattern AWS_REGION = Pattern.compile("^[a-z]{2}(?:-[a-z]+)+-\\d+$");
     private static final Pattern AWS_ACCESS_KEY_ID = Pattern.compile("^(AKIA|ASIA)[A-Z0-9]{16}$");
     private static final Pattern AWS_SECRET_ACCESS_KEY = Pattern.compile("^[A-Za-z0-9/+=]{20,}$");
     private static final Pattern GCP_PROJECT_ID = Pattern.compile("^[a-z][a-z0-9-]{4,28}[a-z0-9]$");
@@ -34,10 +35,12 @@ public class CloudConnectionCommandService {
     private static final Pattern GCP_SERVICE_ACCOUNT_EMAIL = Pattern.compile(
             "^[A-Za-z0-9._%+-]+@([a-z][a-z0-9-]{4,28}[a-z0-9])\\.iam\\.gserviceaccount\\.com$"
     );
+    private static final String GCP_TOKEN_URI = "https://oauth2.googleapis.com/token";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final UserRepository userRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
+    private final CloudConnectionVerificationJobRepository verificationJobRepository;
 
     @Transactional
     public CreateCloudConnectionResult create(Long ownerUserId, CreateCloudConnectionCommand command) {
@@ -48,28 +51,34 @@ public class CloudConnectionCommandService {
             case GCP -> createGcpConnection(ownerUserId, command);
         };
         CloudConnection saved = cloudConnectionRepository.save(cloudConnection);
+        CloudConnectionVerificationJob job = verificationJobRepository.save(
+                new CloudConnectionVerificationJob(saved.getId(), ownerUserId)
+        );
         return new CreateCloudConnectionResult(
                 saved.getId(),
                 saved.getProvider(),
                 saved.getStatus(),
-                createHealthJobId(saved.getId())
+                job.getId()
         );
     }
 
     @Transactional
-    public CloudConnectionHealthResult checkHealth(Long ownerUserId, Long cloudConnectionId) {
+    public CloudConnectionVerificationJobResult requestVerification(Long ownerUserId, Long cloudConnectionId) {
         CloudConnection cloudConnection = resolveCloudConnection(ownerUserId, cloudConnectionId);
-        HealthEvaluation evaluation = evaluateHealth(cloudConnection);
-        LocalDateTime checkedAt = LocalDateTime.now();
-        cloudConnection.markHealth(evaluation.status(), checkedAt);
-        CloudConnection saved = cloudConnectionRepository.save(cloudConnection);
-        return new CloudConnectionHealthResult(
-                saved.getId(),
-                saved.getProvider(),
-                saved.getStatus(),
-                evaluation.message(),
-                saved.getLastCheckedAt()
+        CloudConnectionVerificationJob activeJob = verificationJobRepository
+                .findLatestByCloudConnectionId(cloudConnectionId)
+                .filter(job -> job.getStatus() == CloudConnectionVerificationJobStatus.PENDING
+                        || job.getStatus() == CloudConnectionVerificationJobStatus.RUNNING)
+                .orElse(null);
+        if (activeJob != null) {
+            return toJobResult(activeJob);
+        }
+        cloudConnection.markValidated();
+        cloudConnectionRepository.save(cloudConnection);
+        CloudConnectionVerificationJob job = verificationJobRepository.save(
+                new CloudConnectionVerificationJob(cloudConnectionId, ownerUserId)
         );
+        return toJobResult(job);
     }
 
     @Transactional
@@ -81,12 +90,18 @@ public class CloudConnectionCommandService {
     private CloudConnection createAwsConnection(Long ownerUserId, CreateCloudConnectionCommand command) {
         String displayName = requireText(command.displayName(), "displayName");
         String region = requireText(command.region(), "region").toLowerCase();
+        if (!AWS_REGION.matcher(region).matches()) {
+            throw new IllegalArgumentException("AWS region 형식이 올바르지 않습니다.");
+        }
         AwsCredentialType credentialType = resolveAwsCredentialType(command);
 
         if (credentialType == AwsCredentialType.ACCESS_KEY) {
             String accessKeyId = requireText(command.accessKeyId(), "accessKeyId");
             String secretAccessKey = requireText(command.secretAccessKey(), "secretAccessKey");
             validateAwsAccessKey(accessKeyId, secretAccessKey, command.sessionToken());
+            if (hasText(command.accountId()) && !AWS_ACCOUNT_ID.matcher(command.accountId().trim()).matches()) {
+                throw new IllegalArgumentException("AWS accountId는 12자리 숫자여야 합니다.");
+            }
             String sessionToken = accessKeyId.startsWith("ASIA")
                     ? trimToNull(command.sessionToken())
                     : null;
@@ -132,6 +147,9 @@ public class CloudConnectionCommandService {
     private CloudConnection createGcpConnection(Long ownerUserId, CreateCloudConnectionCommand command) {
         String displayName = requireText(command.displayName(), "displayName");
         String region = requireText(command.region(), "region").toLowerCase();
+        if (!GCP_REGION.matcher(region).matches()) {
+            throw new IllegalArgumentException("GCP region 형식이 올바르지 않습니다.");
+        }
         GcpCredentialType credentialType = resolveGcpCredentialType(command);
 
         if (credentialType == GcpCredentialType.SERVICE_ACCOUNT_KEY) {
@@ -193,84 +211,6 @@ public class CloudConnectionCommandService {
         );
     }
 
-    private HealthEvaluation evaluateHealth(CloudConnection cloudConnection) {
-        return switch (cloudConnection.getProvider()) {
-            case AWS -> evaluateAwsHealth(cloudConnection);
-            case GCP -> evaluateGcpHealth(cloudConnection);
-        };
-    }
-
-    private HealthEvaluation evaluateAwsHealth(CloudConnection cloudConnection) {
-        if (!AWS_REGION.matcher(cloudConnection.getRegion()).matches()) {
-            return new HealthEvaluation(
-                    CloudConnectionStatus.REGION_UNSUPPORTED,
-                    "AWS region 형식이 올바르지 않습니다."
-            );
-        }
-        AwsCredentialType credentialType = AwsCredentialType.from(cloudConnection.getAwsCredentialType());
-        if (credentialType == AwsCredentialType.ACCESS_KEY) {
-            if (cloudConnection.getAccessKeyId() == null || cloudConnection.getSecretAccessKey() == null) {
-                return new HealthEvaluation(
-                        CloudConnectionStatus.INVALID_CREDENTIAL,
-                        "AWS accessKeyId 또는 secretAccessKey가 누락되었습니다."
-                );
-            }
-            if (cloudConnection.getAccessKeyId().startsWith("ASIA") && cloudConnection.getSessionToken() == null) {
-                return new HealthEvaluation(
-                        CloudConnectionStatus.INVALID_CREDENTIAL,
-                        "임시 AWS Access Key는 sessionToken이 필요합니다."
-                );
-            }
-            return new HealthEvaluation(
-                    CloudConnectionStatus.CONNECTED,
-                    "AWS Access Key 입력값 검증을 통과했습니다. 실제 STS 호출은 외부 연동 단계에서 수행됩니다."
-            );
-        }
-        if (cloudConnection.getAccountId() == null || cloudConnection.getRoleArn() == null) {
-            return new HealthEvaluation(
-                    CloudConnectionStatus.INVALID_CREDENTIAL,
-                    "AWS accountId 또는 roleArn이 누락되었습니다."
-            );
-        }
-        return new HealthEvaluation(
-                CloudConnectionStatus.CONNECTED,
-                "AWS 연결 입력값 검증을 통과했습니다. 실제 AssumeRole 권한 확인은 외부 연동 단계에서 수행됩니다."
-        );
-    }
-
-    private HealthEvaluation evaluateGcpHealth(CloudConnection cloudConnection) {
-        if (!GCP_REGION.matcher(cloudConnection.getRegion()).matches()) {
-            return new HealthEvaluation(
-                    CloudConnectionStatus.REGION_UNSUPPORTED,
-                    "GCP region 형식이 올바르지 않습니다."
-            );
-        }
-        if (cloudConnection.getGcpProjectId() == null || cloudConnection.getServiceAccountEmail() == null) {
-            return new HealthEvaluation(
-                    CloudConnectionStatus.INVALID_CREDENTIAL,
-                    "GCP projectId 또는 serviceAccountEmail이 누락되었습니다."
-            );
-        }
-        GcpCredentialType credentialType = GcpCredentialType.from(cloudConnection.getGcpCredentialType());
-        if (credentialType == GcpCredentialType.SERVICE_ACCOUNT_KEY
-                && cloudConnection.getServiceAccountKeyJson() == null) {
-            return new HealthEvaluation(
-                    CloudConnectionStatus.INVALID_CREDENTIAL,
-                    "GCP serviceAccountKeyJson이 누락되었습니다."
-            );
-        }
-        if (credentialType == GcpCredentialType.SERVICE_ACCOUNT_KEY) {
-            return new HealthEvaluation(
-                    CloudConnectionStatus.CONNECTED,
-                    "GCP Service Account Key JSON 입력값 검증을 통과했습니다. 실제 IAM/Billing 확인은 외부 연동 단계에서 수행됩니다."
-            );
-        }
-        return new HealthEvaluation(
-                CloudConnectionStatus.CONNECTED,
-                "GCP 연결 입력값 검증을 통과했습니다. 실제 IAM/Billing 확인은 외부 연동 단계에서 수행됩니다."
-        );
-    }
-
     private void resolveUser(Long ownerUserId) {
         userRepository.findById(ownerUserId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다. userId=" + ownerUserId));
@@ -280,10 +220,6 @@ public class CloudConnectionCommandService {
         return cloudConnectionRepository.findByIdAndOwnerUserId(cloudConnectionId, ownerUserId)
                 .orElseThrow(() -> new NotFoundException(
                         "클라우드 연결을 찾을 수 없습니다. cloudConnectionId=" + cloudConnectionId));
-    }
-
-    private String createHealthJobId(Long cloudConnectionId) {
-        return "cloud_connection_health_" + cloudConnectionId;
     }
 
     private AwsCredentialType resolveAwsCredentialType(CreateCloudConnectionCommand command) {
@@ -339,6 +275,7 @@ public class CloudConnectionCommandService {
             String projectId = textValue(root, "project_id");
             String clientEmail = textValue(root, "client_email");
             String privateKey = textValue(root, "private_key");
+            String tokenUri = textValue(root, "token_uri");
 
             if (!"service_account".equals(type)) {
                 throw new IllegalArgumentException("GCP service account key JSON의 type은 service_account여야 합니다.");
@@ -356,6 +293,9 @@ public class CloudConnectionCommandService {
             if (!privateKey.contains("-----BEGIN PRIVATE KEY-----")
                     || !privateKey.contains("-----END PRIVATE KEY-----")) {
                 throw new IllegalArgumentException("GCP service account key JSON의 private_key 형식이 올바르지 않습니다.");
+            }
+            if (!GCP_TOKEN_URI.equals(tokenUri)) {
+                throw new IllegalArgumentException("GCP service account key JSON의 token_uri가 올바르지 않습니다.");
             }
             return new GcpServiceAccountKey(projectId, clientEmail);
         } catch (IllegalArgumentException e) {
@@ -391,7 +331,18 @@ public class CloudConnectionCommandService {
         return value != null && !value.isBlank();
     }
 
-    private record HealthEvaluation(CloudConnectionStatus status, String message) {
+    private CloudConnectionVerificationJobResult toJobResult(CloudConnectionVerificationJob job) {
+        return new CloudConnectionVerificationJobResult(
+                job.getId(),
+                job.getCloudConnectionId(),
+                job.getStatus(),
+                job.getConnectionStatus(),
+                job.getMessage(),
+                job.getAttempt(),
+                job.getCreatedAt(),
+                job.getStartedAt(),
+                job.getCompletedAt()
+        );
     }
 
     private record GcpServiceAccountKey(String projectId, String clientEmail) {

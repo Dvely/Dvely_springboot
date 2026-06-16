@@ -1,8 +1,10 @@
 package com.example.dvely.agent.application.result;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
+import com.example.dvely.agent.application.dto.AgentSubmission;
 
 public record AgentSubmitResult(
-        String    taskId,
-        AgentPlan plan
-) {}
+        AgentPlan plan,
+        AgentSubmission submission
+) {
+}

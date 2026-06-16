@@ -6,10 +6,12 @@ public record ProjectOverviewResult(
         String currentUrl,
         String deployStatus,
         String currentVersion,
-        List<String> recentChanges,
+        String repositoryVersion,
+        List<ActivityLogResult> recentChanges,
         CommitResult latestCommit,
-        String trafficSummary,
         RepositoryHealthResult repositoryHealth,
-        String domainSummary
+        ProjectDomainSummaryResult domainSummary,
+        ProjectCloudSummaryResult cloudSummary,
+        List<ProjectOperationActionResult> operationActions
 ) {
 }

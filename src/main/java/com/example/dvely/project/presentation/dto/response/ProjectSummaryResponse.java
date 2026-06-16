@@ -11,7 +11,7 @@ public record ProjectSummaryResponse(
         @Schema(description = "프로젝트 이름", example = "my-landing")
         String name,
 
-        @Schema(description = "현재 배포 상태", allowableValues = {"DRAFT", "IN_PROGRESS", "PREVIEW_READY", "LIVE", "FAILED"}, example = "DRAFT")
+        @Schema(description = "현재 배포 상태", allowableValues = {"DRAFT", "PENDING", "IN_PROGRESS", "PREVIEW_READY", "LIVE", "FAILED"}, example = "DRAFT")
         String deployStatus,
 
         @Schema(description = "현재 배포 URL. 배포 전이면 null")
