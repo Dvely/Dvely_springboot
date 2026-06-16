@@ -5,6 +5,8 @@ import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.ExecCreateCmdResponse;
 import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.github.dockerjava.api.exception.NotFoundException;
+import com.github.dockerjava.api.exception.NotModifiedException;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
@@ -53,6 +55,10 @@ public class DockerContainerService {
                 .sslConfig(config.getSSLConfig())
                 .build();
         this.dockerClient = DockerClientImpl.getInstance(config, httpClient);
+    }
+
+    DockerContainerService(DockerClient dockerClient) {
+        this.dockerClient = dockerClient;
     }
 
     public String createAndStartContainer(Long userId,
@@ -112,8 +118,20 @@ public class DockerContainerService {
 
     public int getMappedPort(String containerId) {
         InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
-        Ports.Binding[] bindings = inspect.getNetworkSettings().getPorts()
-                .getBindings().get(ExposedPort.tcp(CONTAINER_PORT));
+        Ports.Binding[] bindings = inspect.getNetworkSettings() == null
+                || inspect.getNetworkSettings().getPorts() == null
+                || inspect.getNetworkSettings().getPorts().getBindings() == null
+                ? null
+                : inspect.getNetworkSettings().getPorts()
+                .getBindings()
+                .get(ExposedPort.tcp(CONTAINER_PORT));
+        if (bindings == null
+                || bindings.length == 0
+                || bindings[0] == null
+                || bindings[0].getHostPortSpec() == null
+                || bindings[0].getHostPortSpec().isBlank()) {
+            throw new IllegalStateException("컨테이너 포트 바인딩이 없습니다. containerId=" + containerId);
+        }
         return Integer.parseInt(bindings[0].getHostPortSpec());
     }
 
@@ -155,11 +173,19 @@ public class DockerContainerService {
     public void removeContainer(String containerId) {
         try {
             dockerClient.stopContainerCmd(containerId).withTimeout(5).exec();
-            dockerClient.removeContainerCmd(containerId).exec();
-            log.info("Docker 컨테이너 제거: id={}", containerId);
-        } catch (Exception e) {
-            log.warn("컨테이너 제거 실패: {}", containerId, e);
+        } catch (NotFoundException e) {
+            log.info("Docker 컨테이너가 이미 없습니다. stop 생략: id={}", containerId);
+            return;
+        } catch (NotModifiedException e) {
+            log.info("Docker 컨테이너가 이미 중지되어 있습니다. remove 진행: id={}", containerId);
         }
+        try {
+            dockerClient.removeContainerCmd(containerId).withForce(true).exec();
+        } catch (NotFoundException e) {
+            log.info("Docker 컨테이너가 이미 없습니다. remove 생략: id={}", containerId);
+            return;
+        }
+        log.info("Docker 컨테이너 제거: id={}", containerId);
     }
 
     private void pullImageIfNeeded() {

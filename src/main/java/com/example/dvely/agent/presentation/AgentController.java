@@ -1,11 +1,11 @@
 package com.example.dvely.agent.presentation;
 
-import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentSubmission;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.AgentTaskFailure;
+import com.example.dvely.agent.application.facade.AgentFacade;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
-import com.example.dvely.agent.application.service.DecisionAgentService;
+import com.example.dvely.agent.application.result.AgentSubmitResult;
 import com.example.dvely.agent.application.service.AgentEventStreamService;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
@@ -44,7 +44,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RequiredArgsConstructor
 public class AgentController {
 
-    private final DecisionAgentService  decisionAgentService;
+    private final AgentFacade           agentFacade;
     private final AgentOrchestrator     agentOrchestrator;
     private final TaskStore             taskStore;
     private final InputWaitStore        inputWaitStore;
@@ -67,17 +67,18 @@ public class AgentController {
             @AuthenticationPrincipal Long userId,
             @Valid @RequestBody DecisionRequest request) {
 
-        Long projectId = agentOrchestrator.resolveProjectId(
+        AgentSubmitResult result = agentFacade.submit(
                 userId,
                 request.projectId(),
-                request.conversationId()
+                request.conversationId(),
+                request.content(),
+                request.aiProvider()
         );
-        AgentPlan plan = decisionAgentService.decide(request.content(), request.aiProvider(), projectId);
-        AgentSubmission submission = agentOrchestrator.submit(plan, userId, request.conversationId());
+        AgentSubmission submission = result.submission();
         return new DecisionResponse(
-                plan.steps(),
-                plan.reasoning(),
-                request.aiProvider(),
+                result.plan().steps(),
+                result.plan().reasoning(),
+                result.plan().aiProvider(),
                 submission.taskId(),
                 submission.status().name(),
                 submission.approvalIds()

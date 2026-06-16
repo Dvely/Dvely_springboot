@@ -104,7 +104,7 @@ public class AuthController {
             @Parameter(description = "설치 요청 시 포함했던 서비스 JWT (settings 경유 시 없을 수 있음)") @RequestParam(value = "state", required = false) String state,
             @Parameter(hidden = true) @RequestParam(value = "code", required = false) String code
     ) {
-        String baseUrl = frontendProperties.redirectUrl();
+        String baseUrl = frontendProperties.redirectUrl() + "/auth/app-callback";
         try {
             if (!"delete".equals(setupAction)) {
                 if (state != null) {

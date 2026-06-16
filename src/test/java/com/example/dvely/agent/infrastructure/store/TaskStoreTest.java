@@ -87,6 +87,24 @@ class TaskStoreTest {
     }
 
     @Test
+    void repeatedInputSupplyIsRejectedAfterTaskIsQueued() {
+        taskStore.save(task(TaskStatus.WAITING_INPUT));
+
+        assertThat(taskStore.supplyInput("task-1", 1L, "first")).isTrue();
+        assertThat(taskStore.supplyInput("task-1", 1L, "second")).isFalse();
+        assertThat(taskStore.consumeInput("task-1")).contains("first");
+    }
+
+    @Test
+    void blankInputSupplyIsRejectedAndTaskStaysWaiting() {
+        taskStore.save(task(TaskStatus.WAITING_INPUT));
+
+        assertThat(taskStore.supplyInput("task-1", 1L, " ")).isFalse();
+        assertThat(taskStore.getOwned("task-1", 1L).status()).isEqualTo(TaskStatus.WAITING_INPUT);
+        assertThat(taskStore.consumeInput("task-1")).isEmpty();
+    }
+
+    @Test
     void persistedPlanCanBeReadByNewStoreInstance() {
         taskStore.save(task(TaskStatus.PENDING));
         AgentPlan plan = new AgentPlan(

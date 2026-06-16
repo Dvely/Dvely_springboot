@@ -219,6 +219,9 @@ public class TaskStore {
 
     @Transactional
     public boolean supplyInput(String taskId, Long ownerUserId, String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
         AgentRunEntity run = runRepository.findByTaskIdAndOwnerUserId(taskId, ownerUserId)
                 .orElse(null);
         if (run == null || TaskStatus.valueOf(run.getStatus()) != TaskStatus.WAITING_INPUT) {
