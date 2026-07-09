@@ -53,3 +53,4 @@ Dvely_FE_test/
 ### Local config ###
 gradle.properties
 src/main/resources/application-local.yml
+CLAUDE.md
