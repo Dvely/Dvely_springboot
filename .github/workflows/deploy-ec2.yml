@@ -1,0 +1,105 @@
+name: Deploy to EC2
+
+# v로 시작하는 태그를 푸시할 때만 배포한다. (예: v1.0.0)
+# 브랜치 푸시나 PR로는 실행되지 않는다.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 태그를 연달아 밀어도 배포가 겹치지 않게 직렬화한다.
+# 배포 도중 취소하면 EC2가 어중간한 상태로 남으므로 cancel-in-progress는 끈다.
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_NAME: dvely
+  REMOTE_DIR: /opt/dvely
+
+jobs:
+  deploy:
+    name: Build and deploy ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 테스트는 돌리지 않는다. @SpringBootTest 3종(DvelyApplicationTests,
+      # ProjectSchemaTest, CloudConnectionSchemaTest)이 실제 MySQL과 Flyway 마이그레이션,
+      # 그리고 gitignore된 application-local.yml의 시크릿을 요구하기 때문이다.
+      # CI에서 검증하려면 MySQL 서비스 컨테이너와 시크릿 주입을 먼저 붙여야 한다.
+      - name: Build bootJar
+        run: ./gradlew clean bootJar -x test --no-daemon
+
+      - name: Resolve jar path
+        id: jar
+        run: |
+          set -euo pipefail
+          jar=$(find build/libs -maxdepth 1 -name '*.jar' ! -name '*-plain.jar' | head -1)
+          if [ -z "$jar" ]; then
+            echo "::error::build/libs 에서 부팅 가능한 jar를 찾지 못했습니다."
+            exit 1
+          fi
+          cp "$jar" build/libs/app.jar
+          echo "size=$(du -h "$jar" | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload jar to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_SSH_PORT || 22 }}
+          source: build/libs/app.jar
+          target: /tmp/${{ env.APP_NAME }}-deploy
+          strip_components: 2
+
+      - name: Swap jar and restart service
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_SSH_PORT || 22 }}
+          envs: APP_NAME,REMOTE_DIR,RELEASE_TAG
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            staged="/tmp/${APP_NAME}-deploy/app.jar"
+            test -s "$staged"
+
+            # 롤백할 수 있도록 직전 jar를 남긴다.
+            if [ -f "${REMOTE_DIR}/app.jar" ]; then
+              sudo cp "${REMOTE_DIR}/app.jar" "${REMOTE_DIR}/app.jar.prev"
+            fi
+
+            sudo install -m 0644 -o "${APP_NAME}" -g "${APP_NAME}" "$staged" "${REMOTE_DIR}/app.jar"
+            rm -f "$staged"
+
+            sudo systemctl restart "${APP_NAME}"
+
+            # 재시작 직후에는 아직 살아있을 수 있으므로 잠시 뒤 상태를 확인한다.
+            sleep 10
+            if ! sudo systemctl is-active --quiet "${APP_NAME}"; then
+              echo "::error::${APP_NAME} 서비스가 기동하지 못했습니다. 최근 로그:"
+              sudo journalctl -u "${APP_NAME}" -n 50 --no-pager
+              exit 1
+            fi
+            echo "${RELEASE_TAG} 배포 완료"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
