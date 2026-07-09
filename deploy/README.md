@@ -40,10 +40,23 @@ systemctl status dvely
 워크플로는 SSH로 붙어 jar를 교체하고 서비스를 재시작한다. 해당 계정(`EC2_USER`)이
 비밀번호 없이 아래를 실행할 수 있어야 한다.
 
+sudo는 인자까지 그대로 대조하므로 스크립트가 호출하는 형태와 정확히 일치해야 한다.
+경로도 실제 위치와 같아야 한다. 우분투에서는 `command -v systemctl`이 `/usr/bin/systemctl`을
+가리키므로 `/bin/systemctl`로 적으면 매칭되지 않는다.
+
 ```
-# /etc/sudoers.d/dvely-deploy
-ubuntu ALL=(root) NOPASSWD: /usr/bin/install, /bin/cp, /bin/systemctl restart dvely, /bin/systemctl is-active dvely, /usr/bin/journalctl -u dvely *
+# /etc/sudoers.d/dvely-deploy  (visudo -f 로 편집할 것)
+ubuntu ALL=(root) NOPASSWD: /usr/bin/install, /usr/bin/cp, /usr/bin/systemctl restart dvely
 ```
+
+`is-active`와 `journalctl`은 sudo 없이 실행한다. 다만 배포 계정이 서비스 로그를 읽으려면
+저널 접근 권한이 필요하다.
+
+```bash
+sudo usermod -aG systemd-journal ubuntu
+```
+
+이걸 빠뜨리면 배포는 되지만, 실패했을 때 워크플로 로그에 원인이 안 찍힌다.
 
 ## 5. GitHub Secrets
 

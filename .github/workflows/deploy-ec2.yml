@@ -93,11 +93,26 @@ jobs:
 
             sudo systemctl restart "${APP_NAME}"
 
-            # 재시작 직후에는 아직 살아있을 수 있으므로 잠시 뒤 상태를 확인한다.
-            sleep 10
-            if ! sudo systemctl is-active --quiet "${APP_NAME}"; then
-              echo "::error::${APP_NAME} 서비스가 기동하지 못했습니다. 최근 로그:"
-              sudo journalctl -u "${APP_NAME}" -n 50 --no-pager
+            # Type=simple이라 systemd는 프로세스가 뜨는 즉시 active로 본다.
+            # Flyway validate 실패나 빈 생성 오류는 그보다 늦게 터지므로
+            # is-active만으로는 "배포 성공, 앱은 사망"을 걸러내지 못한다.
+            # 실제로 HTTP 요청을 받을 수 있을 때까지 health를 폴링한다.
+            healthy=0
+            for _ in $(seq 1 45); do
+              if curl -fsS -o /dev/null "http://127.0.0.1:8080/actuator/health"; then
+                healthy=1
+                break
+              fi
+              # 프로세스가 이미 죽었다면 더 기다릴 이유가 없다.
+              if ! systemctl is-active --quiet "${APP_NAME}"; then
+                break
+              fi
+              sleep 2
+            done
+
+            if [ "$healthy" -ne 1 ]; then
+              echo "::error::${APP_NAME}가 90초 안에 health 응답을 내지 못했습니다. 최근 로그:"
+              journalctl -u "${APP_NAME}" -n 50 --no-pager || true
               exit 1
             fi
             echo "${RELEASE_TAG} 배포 완료"

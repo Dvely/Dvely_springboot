@@ -20,6 +20,16 @@ spring:
       hibernate:
         format_sql: true # 출력되는 SQL 쿼리를 보기 좋게 포맷팅
 
+# 배포 워크플로가 기동 확인에 쓴다. health 외에는 노출하지 않는다.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never # DB 접속 정보 등 내부 상태가 새어나가지 않게 상태값만 응답
+
 # GitHub OAuth App - 유저 인증/신원
 github:
   oauth:
