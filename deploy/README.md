@@ -9,6 +9,13 @@ sudo useradd --system --shell /usr/sbin/nologin --home-dir /opt/dvely dvely
 sudo usermod -aG docker dvely          # 앱이 /var/run/docker.sock 을 쓴다
 sudo mkdir -p /opt/dvely /etc/dvely
 sudo chown dvely:dvely /opt/dvely
+
+# 워크플로가 jar를 올려두는 곳. 반드시 root 소유여야 한다.
+# /tmp 아래에 두면 권한 낮은 로컬 계정이 디렉터리를 미리 만들어 소유권을 가로챈 뒤
+# jar를 바꿔치기하거나 심볼릭 링크를 심을 수 있고, 그걸 root로 도는 래퍼가 그대로 읽는다.
+sudo mkdir -p /var/lib/dvely/staging
+sudo chown root:ubuntu /var/lib/dvely/staging   # ubuntu = EC2_USER
+sudo chmod 0770 /var/lib/dvely/staging
 ```
 
 `docker` 그룹 추가를 빠뜨려도 앱은 정상 기동한다. `DockerContainerService`가 첫 사용

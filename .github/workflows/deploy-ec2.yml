@@ -55,8 +55,13 @@ jobs:
             exit 1
           fi
           cp "$jar" build/libs/app.jar
+          # EC2의 래퍼가 설치 직전에 대조한다. 경로가 아니라 파일명만 담아야 staging
+          # 디렉터리에서 그대로 `sha256sum -c` 가 통한다.
+          (cd build/libs && sha256sum app.jar > app.jar.sha256)
           echo "배포 대상: $jar ($(du -h "$jar" | cut -f1))"
 
+      # staging 디렉터리는 EC2에 root:${EC2_USER} 0770 으로 미리 만들어 둔다.
+      # /tmp 처럼 아무나 만들 수 있는 위치에 두면 디렉터리를 선점당해 jar가 바꿔치기된다.
       - name: Upload jar to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -64,8 +69,8 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: ${{ secrets.EC2_SSH_PORT || 22 }}
-          source: build/libs/app.jar
-          target: /tmp/${{ env.APP_NAME }}-deploy
+          source: build/libs/app.jar,build/libs/app.jar.sha256
+          target: /var/lib/${{ env.APP_NAME }}/staging
           strip_components: 2
 
       - name: Swap jar and restart service
