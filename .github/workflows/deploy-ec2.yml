@@ -17,8 +17,9 @@ permissions:
   contents: read
 
 env:
+  # 배포 대상 경로(/opt/dvely)는 EC2의 dvely-deploy 래퍼가 소유한다.
+  # 여기에 중복해 두면 양쪽이 어긋날 수 있다.
   APP_NAME: dvely
-  REMOTE_DIR: /opt/dvely
 
 jobs:
   deploy:
@@ -46,7 +47,6 @@ jobs:
         run: ./gradlew clean bootJar -x test --no-daemon
 
       - name: Resolve jar path
-        id: jar
         run: |
           set -euo pipefail
           jar=$(find build/libs -maxdepth 1 -name '*.jar' ! -name '*-plain.jar' | head -1)
@@ -55,7 +55,7 @@ jobs:
             exit 1
           fi
           cp "$jar" build/libs/app.jar
-          echo "size=$(du -h "$jar" | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "배포 대상: $jar ($(du -h "$jar" | cut -f1))"
 
       - name: Upload jar to EC2
         uses: appleboy/scp-action@v0.1.7
@@ -75,23 +75,14 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: ${{ secrets.EC2_SSH_PORT || 22 }}
-          envs: APP_NAME,REMOTE_DIR,RELEASE_TAG
+          envs: APP_NAME,RELEASE_TAG
           script_stop: true
           script: |
             set -euo pipefail
 
-            staged="/tmp/${APP_NAME}-deploy/app.jar"
-            test -s "$staged"
-
-            # 롤백할 수 있도록 직전 jar를 남긴다.
-            if [ -f "${REMOTE_DIR}/app.jar" ]; then
-              sudo cp "${REMOTE_DIR}/app.jar" "${REMOTE_DIR}/app.jar.prev"
-            fi
-
-            sudo install -m 0644 -o "${APP_NAME}" -g "${APP_NAME}" "$staged" "${REMOTE_DIR}/app.jar"
-            rm -f "$staged"
-
-            sudo systemctl restart "${APP_NAME}"
+            # jar 교체와 재시작은 인자를 받지 않는 래퍼가 root로 수행한다.
+            # install/cp 에 직접 sudo를 주면 인자 제한이 없어 무제한 root 권한이 된다.
+            sudo /usr/local/sbin/dvely-deploy
 
             # Type=simple이라 systemd는 프로세스가 뜨는 즉시 active로 본다.
             # Flyway validate 실패나 빈 생성 오류는 그보다 늦게 터지므로

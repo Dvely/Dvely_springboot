@@ -37,17 +37,21 @@ systemctl status dvely
 
 ## 4. 배포 계정의 sudo 권한
 
-워크플로는 SSH로 붙어 jar를 교체하고 서비스를 재시작한다. 해당 계정(`EC2_USER`)이
-비밀번호 없이 아래를 실행할 수 있어야 한다.
+워크플로는 SSH로 붙어 jar를 교체하고 서비스를 재시작한다. 이 두 동작만 root로 수행하도록
+인자 없는 래퍼 스크립트를 설치하고, 그 스크립트 하나만 sudo로 허용한다.
 
-sudo는 인자까지 그대로 대조하므로 스크립트가 호출하는 형태와 정확히 일치해야 한다.
-경로도 실제 위치와 같아야 한다. 우분투에서는 `command -v systemctl`이 `/usr/bin/systemctl`을
-가리키므로 `/bin/systemctl`로 적으면 매칭되지 않는다.
+```bash
+sudo install -m 0755 -o root -g root dvely-deploy.sh /usr/local/sbin/dvely-deploy
+```
 
 ```
 # /etc/sudoers.d/dvely-deploy  (visudo -f 로 편집할 것)
-ubuntu ALL=(root) NOPASSWD: /usr/bin/install, /usr/bin/cp, /usr/bin/systemctl restart dvely
+ubuntu ALL=(root) NOPASSWD: /usr/local/sbin/dvely-deploy
 ```
+
+`install`이나 `cp`를 직접 NOPASSWD로 허용하면 안 된다. sudoers는 인자를 제한하지 않으므로
+`sudo install -m 4755 /tmp/sh /usr/local/bin/rootsh` 같은 호출이 통해 사실상 무제한 root
+권한이 된다. 래퍼는 인자를 받지 않아 그 여지가 없다.
 
 `is-active`와 `journalctl`은 sudo 없이 실행한다. 다만 배포 계정이 서비스 로그를 읽으려면
 저널 접근 권한이 필요하다.
@@ -90,3 +94,8 @@ sudo systemctl restart dvely
   `./gradlew test`를 돌리는 것을 전제로 한다.
 - `application.yaml`의 `baseline-version: 5` 때문에 **빈 DB에서는 V1~V5가 실행되지 않는다.**
   새 DB로 붙일 때는 `schema.sql`로 기준 스키마를 먼저 만들거나 baseline을 조정해야 한다.
+- 배포 후 기동 확인은 `http://127.0.0.1:8080/actuator/health`를 폴링한다. 포트가 워크플로에
+  하드코딩돼 있으므로 `SERVER_PORT`로 포트를 바꾸면 워크플로도 같이 고쳐야 한다. 안 그러면
+  헬스체크가 엉뚱한 포트를 보고 배포가 실패로 끝난다.
+- `/actuator/health`는 인증 없이 열려 있다(`show-details: never`라 상태값만 응답). 8080을
+  인터넷에 직접 노출하지 말고 리버스 프록시나 보안그룹으로 막는 것을 전제한다.
