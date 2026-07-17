@@ -11,7 +11,6 @@ import com.example.dvely.preview.infrastructure.persistence.repository.SpringDat
 import java.time.Instant;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Read-only observability for a preview session's Docker container: current state (§ status)
@@ -24,6 +23,15 @@ import org.springframework.transaction.annotation.Transactional;
  * another user (or that doesn't exist) is a 404, regardless of its lifecycle status. Sessions
  * that are already CLOSED/EXPIRED are still readable — {@code containerRunning=false} is itself
  * useful information for a FE polling this endpoint.
+ *
+ * Deliberately NOT {@code @Transactional} at the method level: {@link #getStatus} and
+ * {@link #getLogs} both make Docker I/O calls (stats ~1-3s, logs up to 10s) after the ownership
+ * lookup, and wrapping the whole method in a transaction would hold a pooled DB connection idle
+ * for that entire span — with a small Hikari pool (default 10), a handful of concurrent slow
+ * Docker calls could exhaust the pool and start failing unrelated requests (review F2). Spring
+ * Data JPA repository methods already run in their own short-lived transaction by default
+ * (see {@code SimpleJpaRepository}), so calling {@code repository.findByIdAndOwnerUserId(...)}
+ * directly already scopes the connection to just that one query.
  */
 @Service
 @RequiredArgsConstructor
@@ -38,7 +46,6 @@ public class PreviewContainerOpsService {
     private final SpringDataPreviewSessionRepository repository;
     private final DockerContainerService dockerService;
 
-    @Transactional(readOnly = true)
     public PreviewContainerStatusResult getStatus(Long ownerUserId, String sessionId) {
         PreviewSessionEntity session = findOwned(sessionId, ownerUserId);
         ContainerRuntimeStatus runtimeStatus = dockerService.getContainerStatus(session.getContainerId());
@@ -50,7 +57,6 @@ public class PreviewContainerOpsService {
         return PreviewContainerStatusResult.of(session, runtimeStatus, usage);
     }
 
-    @Transactional(readOnly = true)
     public PreviewContainerLogsResult getLogs(Long ownerUserId, String sessionId, Integer tail, Integer sinceSeconds) {
         PreviewSessionEntity session = findOwned(sessionId, ownerUserId);
         boolean running = dockerService.isContainerRunning(session.getContainerId());
@@ -78,6 +84,24 @@ public class PreviewContainerOpsService {
         if (sinceSeconds == null) {
             return null;
         }
-        return (int) (Instant.now().getEpochSecond() - sinceSeconds);
+        // "recent N seconds" can't be negative — clamp instead of erroring, mirroring the tail
+        // clamp policy (design doc §1.2's "클램프, 에러 아님" applies uniformly to query params;
+        // review F8).
+        int flooredSinceSeconds = Math.max(0, sinceSeconds);
+        return clampToEpochSeconds(Instant.now().getEpochSecond(), flooredSinceSeconds);
+    }
+
+    /**
+     * Package-private (not private) so it's directly unit-testable against a fabricated "now"
+     * without mocking the system clock — the int-range clamp below is otherwise unreachable in
+     * a test, since the real current epoch is nowhere near the int boundary until ~2038. Docker's
+     * `since` filter is a 32-bit unix timestamp; clamping into int range replaces an unchecked
+     * narrowing `(int)` cast that would otherwise silently wrap around near that boundary
+     * (review F8).
+     */
+    static int clampToEpochSeconds(long nowEpochSecond, int flooredSinceSeconds) {
+        long epochCutoff = nowEpochSecond - flooredSinceSeconds;
+        long clamped = Math.max(Integer.MIN_VALUE, Math.min(epochCutoff, Integer.MAX_VALUE));
+        return (int) clamped;
     }
 }

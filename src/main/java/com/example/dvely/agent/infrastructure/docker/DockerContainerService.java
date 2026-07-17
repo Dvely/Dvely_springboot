@@ -16,6 +16,7 @@ import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
 import com.github.dockerjava.api.model.MemoryStatsConfig;
+import com.github.dockerjava.api.model.Network;
 import com.github.dockerjava.api.model.Ports;
 import com.github.dockerjava.api.model.Statistics;
 import com.github.dockerjava.api.model.StreamType;
@@ -26,6 +27,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -143,11 +145,18 @@ public class DockerContainerService {
      * either way by the time we observe it.
      */
     private void ensurePreviewNetwork() {
-        boolean exists = !dockerClient.listNetworksCmd()
+        // Docker's network list "name" filter matches by substring, not exact name — filtering
+        // the returned candidates down to an exact name match avoids a superstring collision
+        // (e.g. a leftover "qeploy-preview-old" network) being mistaken for the real one, which
+        // would short-circuit real network creation and leave createAndStartContainer attaching
+        // to a network name that was never actually created (review F1).
+        List<Network> candidates = dockerClient.listNetworksCmd()
                 .withNameFilter(PREVIEW_NETWORK_NAME)
-                .exec()
-                .isEmpty();
+                .exec();
+        boolean exists = candidates.stream()
+                .anyMatch(network -> PREVIEW_NETWORK_NAME.equals(network.getName()));
         if (exists) {
+            verifyIccDisabled();
             return;
         }
         try {
@@ -163,6 +172,33 @@ public class DockerContainerService {
             log.info("Docker preview 네트워크 생성: name={}", PREVIEW_NETWORK_NAME);
         } catch (ConflictException e) {
             log.debug("Docker preview 네트워크가 동시 생성 레이스로 이미 존재함: name={}", PREVIEW_NETWORK_NAME);
+        }
+    }
+
+    /**
+     * An existing "qeploy-preview" network may predate this isolation policy (or have been
+     * recreated manually) without the enable_icc=false option — that would silently disable the
+     * inter-container isolation the whole policy exists for, with no other visible symptom.
+     * We deliberately don't auto-fix/recreate it (a live network may already have containers
+     * attached); a warn log is the operator-facing signal that isolation isn't actually in
+     * effect (review F1). The list response doesn't reliably carry the full Options map, so
+     * this re-fetches via inspect specifically to check it.
+     */
+    private void verifyIccDisabled() {
+        Network network;
+        try {
+            network = dockerClient.inspectNetworkCmd().withNetworkId(PREVIEW_NETWORK_NAME).exec();
+        } catch (Exception e) {
+            log.warn("Docker preview 네트워크 격리 옵션 검증 실패(inspect 불가): name={} reason={}",
+                    PREVIEW_NETWORK_NAME, e.getMessage());
+            return;
+        }
+        Map<String, String> options = network.getOptions();
+        String iccValue = options != null ? options.get("com.docker.network.bridge.enable_icc") : null;
+        if (!"false".equals(iccValue)) {
+            log.warn("Docker preview 네트워크의 격리 옵션(enable_icc=false)이 확인되지 않음 — "
+                            + "컨테이너 간 통신이 차단되지 않을 수 있습니다: name={} actualIcc={}",
+                    PREVIEW_NETWORK_NAME, iccValue);
         }
     }
 
@@ -193,10 +229,15 @@ public class DockerContainerService {
         if (state == null) {
             return ContainerRuntimeStatus.notFound();
         }
+        boolean running = Boolean.TRUE.equals(state.getRunning());
+        // Docker keeps reporting the *previous* exit code (often a stale 0) while a container is
+        // running — that's not a meaningful "it exited with 0" signal, so the contract (design
+        // doc §1.1: "실행 중이거나 확인 불가 → null") requires forcing it to null while running,
+        // regardless of what the raw inspect state says (review F3).
         return new ContainerRuntimeStatus(
-                Boolean.TRUE.equals(state.getRunning()),
+                running,
                 state.getOOMKilled(),
-                state.getExitCodeLong(),
+                running ? null : state.getExitCodeLong(),
                 parseStartedAt(state.getStartedAt())
         );
     }
@@ -243,15 +284,22 @@ public class DockerContainerService {
         if (stats == null || stats.getMemoryStats() == null) {
             return Optional.empty();
         }
+        // memory usage/limit missing is itself a "can't determine resource usage" signal — the
+        // design contract (§3: "memory: memoryStats.getUsage()/getLimit()") calls for degrading
+        // the whole sample to empty rather than silently reporting a fabricated 0-byte reading,
+        // which would look like a legitimately idle container instead of an unknown state
+        // (review F7).
+        MemoryStatsConfig memory = stats.getMemoryStats();
+        if (memory.getUsage() == null || memory.getLimit() == null) {
+            return Optional.empty();
+        }
         return Optional.of(toResourceUsage(stats));
     }
 
     private ContainerResourceUsage toResourceUsage(Statistics stats) {
         MemoryStatsConfig memory = stats.getMemoryStats();
-        long usageBytes = memory.getUsage() != null ? memory.getUsage() : 0L;
-        long limitBytes = memory.getLimit() != null ? memory.getLimit() : 0L;
         double cpuPercent = computeCpuPercent(stats.getCpuStats(), stats.getPreCpuStats());
-        return new ContainerResourceUsage(usageBytes, limitBytes, cpuPercent);
+        return new ContainerResourceUsage(memory.getUsage(), memory.getLimit(), cpuPercent);
     }
 
     /**
@@ -319,15 +367,11 @@ public class DockerContainerService {
             command.withSince(sinceEpochSeconds);
         }
 
-        StringBuilder logs = new StringBuilder();
+        LogCollectorCallback callback = new LogCollectorCallback();
+        boolean completed;
         try {
-            command.exec(new ResultCallback.Adapter<Frame>() {
-                        @Override
-                        public void onNext(Frame frame) {
-                            logs.append(new String(frame.getPayload(), StandardCharsets.UTF_8));
-                        }
-                    })
-                    .awaitCompletion(LOGS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            command.exec(callback);
+            completed = callback.awaitCompletion(LOGS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (NotFoundException e) {
             // Container already removed — the session itself still exists, so this is a normal
             // "no logs available" 200 response, not a 404 (design doc §1.2).
@@ -336,8 +380,50 @@ public class DockerContainerService {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Docker 로그 조회 인터럽트: containerId=" + containerId, e);
         }
+        String logText = callback.getLogText();
+        if (!completed) {
+            // Symmetric with getContainerStats' degrade-on-timeout style: rather than silently
+            // returning a partial log as if it were complete, warn (server-side) and mark the
+            // truncation in-band (client-facing) since logText has no separate "complete" flag
+            // in the response contract (review F10).
+            log.warn("Docker 로그 조회 타임아웃({}s), 절단된 로그 반환: containerId={} tail={}",
+                    LOGS_TIMEOUT_SECONDS, containerId, tail);
+            logText = logText + "\n[TRUNCATED] log fetch exceeded " + LOGS_TIMEOUT_SECONDS + "s timeout";
+        }
         log.debug("Docker 컨테이너 로그 조회: containerId={} tail={}", containerId, tail);
-        return logs.toString();
+        return logText;
+    }
+
+    /**
+     * Accumulates raw frame bytes across the whole stream and decodes UTF-8 exactly once at the
+     * end, instead of decoding each {@link Frame} independently — a single log line frequently
+     * spans multiple frames, and a multi-byte UTF-8 character (e.g. Korean output) split across
+     * a frame boundary would otherwise decode as U+FFFD replacement characters per-frame even
+     * though the full byte sequence is valid (review F9).
+     *
+     * {@code onNext}/{@code getLogText} are both synchronized on {@code this}: the caller reads
+     * {@link #getLogText()} right after {@code awaitCompletion} returns, which can be a timeout
+     * (false) while the docker-java callback thread is still mid-write to {@code buffer} — the
+     * synchronization isn't about serializing concurrent writers (Docker only opens one stream
+     * per command), it's to guarantee the reading thread observes a consistent, fully-flushed
+     * buffer instead of racing a concurrent write (review F10).
+     */
+    private static final class LogCollectorCallback extends ResultCallback.Adapter<Frame> {
+        private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+
+        @Override
+        public synchronized void onNext(Frame frame) {
+            try {
+                buffer.write(frame.getPayload());
+            } catch (IOException e) {
+                // ByteArrayOutputStream never actually throws IOException; kept as a checked
+                // catch only because OutputStream#write(byte[]) declares it.
+            }
+        }
+
+        synchronized String getLogText() {
+            return buffer.toString(StandardCharsets.UTF_8);
+        }
     }
 
     public List<com.github.dockerjava.api.model.Container> listAgentContainers() {
