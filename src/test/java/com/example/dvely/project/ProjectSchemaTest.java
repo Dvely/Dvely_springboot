@@ -157,16 +157,16 @@ class ProjectSchemaTest {
 
         assertTrue("1".equals(v21Applied) || "true".equalsIgnoreCase(v21Applied));
 
-        String v24Applied = jdbcTemplate.queryForObject(
+        String v23Applied = jdbcTemplate.queryForObject(
                 """
                         select coalesce(max(success), 0)
                         from flyway_schema_history
-                        where version = '24'
+                        where version = '23'
                         """,
                 String.class
         );
 
-        assertTrue("1".equals(v24Applied) || "true".equalsIgnoreCase(v24Applied));
+        assertTrue("1".equals(v23Applied) || "true".equalsIgnoreCase(v23Applied));
         assertEquals("CASCADE", foreignKeyDeleteRule("fk_chat_messages_session"));
         assertEquals("SET NULL", foreignKeyDeleteRule("fk_approvals_chat_session"));
         assertEquals("SET NULL", foreignKeyDeleteRule("fk_agent_runs_chat_session"));

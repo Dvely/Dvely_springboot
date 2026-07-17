@@ -35,11 +35,19 @@ class ProjectRepositorySettingsServiceTest {
 
     private ProjectRepositorySettingsService service;
     private LocalDateTime now;
+    private LocalDateTime connectedAt;
+    private LocalDateTime lastSyncedAt;
 
     @BeforeEach
     void setUp() {
         service = new ProjectRepositorySettingsService(projectRepository, githubRepositoryPort);
         now = LocalDateTime.now();
+        // Deliberately distinct from each other (and from `now`): the service copies
+        // project.getRepositoryConnectedAt() and project.getRepositoryHeadSyncedAt() into the
+        // result's last two constructor args. If those two calls were ever swapped, a fixture
+        // where both timestamps were equal would let the bug pass silently.
+        connectedAt = now.minusDays(10);
+        lastSyncedAt = now.minusHours(2);
     }
 
     @Test
@@ -67,8 +75,8 @@ class ProjectRepositorySettingsServiceTest {
         assertThat(result.repositoryVisibility()).isEqualTo("PUBLIC");
         assertThat(result.bindingStatus()).isEqualTo("BOUND");
         assertThat(result.repositoryHealth()).isEqualTo("HEALTHY");
-        assertThat(result.connectedAt()).isEqualTo(now);
-        assertThat(result.lastSyncedAt()).isEqualTo(now);
+        assertThat(result.connectedAt()).isEqualTo(connectedAt);
+        assertThat(result.lastSyncedAt()).isEqualTo(lastSyncedAt);
     }
 
     @Test
@@ -153,9 +161,9 @@ class ProjectRepositorySettingsServiceTest {
     }
 
     // Uses the persistence-shaped full constructor (rather than domain mutation methods like
-    // bindRepository()) so connectedAt/lastSyncedAt are pinned to the test's `now` value —
-    // bindRepository() would otherwise stamp its own LocalDateTime.now(), which is
-    // non-deterministic and would make the equality assertions below flaky.
+    // bindRepository()) so connectedAt/lastSyncedAt are pinned to deterministic, distinct
+    // values instead of two separate LocalDateTime.now() calls that would be flaky to compare
+    // (bindRepository()/synchronizeRepositoryHead() each stamp their own "now").
     private Project boundProject() {
         return new Project(
                 11L,
@@ -177,10 +185,10 @@ class ProjectRepositorySettingsServiceTest {
                 "feat: init",
                 "octo",
                 now,
-                now,
+                lastSyncedAt,
                 "v1",
                 now,
-                now,
+                connectedAt,
                 false,
                 now,
                 now

@@ -141,6 +141,10 @@ class ProjectCommandServiceTest {
         assertThat(result.repositoryVisibility()).isEqualTo("PUBLIC");
         assertThat(result.bindingStatus()).isEqualTo("BOUND");
         assertThat(result.repositoryHealth()).isEqualTo("HEALTHY");
+        // ProjectRepositoryResult itself has no connectedAt field, so the V24/D4 stamp is
+        // verified on the saved domain object — this is what the repository settings screen
+        // (GET .../settings/repository) reads back later.
+        assertThat(project.getRepositoryConnectedAt()).isNotNull();
 
         verify(githubRepositoryPort).preparePreviewBranch(1L, "octo/repo");
         verify(githubRepositoryPort, never()).createRepository(eq(1L), any(), any());
@@ -165,6 +169,7 @@ class ProjectCommandServiceTest {
         assertThat(result.repositoryFullName()).isEqualTo("octo/new-repo");
         assertThat(result.repositoryVisibility()).isEqualTo("PRIVATE");
         assertThat(result.bindingStatus()).isEqualTo("BOUND");
+        assertThat(project.getRepositoryConnectedAt()).isNotNull();
 
         verify(githubRepositoryPort).preparePreviewBranch(1L, "octo/new-repo");
     }
