@@ -65,9 +65,19 @@ public class GlobalExceptionHandler {
         String requiredType = e.getRequiredType() != null ? e.getRequiredType().getSimpleName() : "알 수 없음";
         String message = "'%s' 파라미터의 값 '%s'이(가) 올바른 형식(%s)이 아닙니다"
                 .formatted(e.getName(), e.getValue(), requiredType);
-        log.warn("Type mismatch: parameter={}, value={}, requiredType={}", e.getName(), e.getValue(), requiredType);
+        // Unlike other handlers above, this value is whatever failed to convert to the target
+        // type — for query parameters that can be arbitrary attacker-controlled text (path
+        // variables are constrained by servlet URL decoding, but query strings are more
+        // permissive). Strip CR/LF before logging so a crafted value (e.g. "1%0d%0a[ERROR] fake")
+        // cannot forge extra lines in the plain-text console log.
+        log.warn("Type mismatch: parameter={}, value={}, requiredType={}",
+                e.getName(), sanitizeForLog(e.getValue()), requiredType);
         return ResponseEntity.badRequest()
                 .body(ApiResponse.error(ErrorCode.BAD_REQUEST, message));
+    }
+
+    private static String sanitizeForLog(Object value) {
+        return String.valueOf(value).replaceAll("[\r\n]", "_");
     }
 
     // 400 - 잘못된 요청 인자
