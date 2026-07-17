@@ -5,12 +5,19 @@ import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.ExecCreateCmdResponse;
 import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.github.dockerjava.api.command.LogContainerCmd;
+import com.github.dockerjava.api.exception.ConflictException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.exception.NotModifiedException;
+import com.github.dockerjava.api.model.Capability;
+import com.github.dockerjava.api.model.CpuStatsConfig;
+import com.github.dockerjava.api.model.CpuUsageConfig;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.MemoryStatsConfig;
 import com.github.dockerjava.api.model.Ports;
+import com.github.dockerjava.api.model.Statistics;
 import com.github.dockerjava.api.model.StreamType;
 import com.github.dockerjava.core.DefaultDockerClientConfig;
 import com.github.dockerjava.core.DockerClientImpl;
@@ -20,10 +27,15 @@ import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeParseException;
 import java.util.LinkedHashMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -40,6 +52,21 @@ public class DockerContainerService {
     private static final String CONVERSATION_ID_LABEL = "qeploy.conversationId";
     private static final String TASK_ID_LABEL = "qeploy.taskId";
     private static final String LEGACY_AGENT_LABEL = "dvely.agent";
+
+    // --- Preview container isolation policy (BI-194). Kept as plain constants rather than
+    // configuration properties, matching the existing IMAGE/CONTAINER_PORT style above — this
+    // becomes a @ConfigurationProperties surface only once a concrete need to tune it appears.
+    private static final long MEMORY_LIMIT_BYTES = 1L << 30; // 1 GiB: dev server + npm install headroom
+    // Swap == memory (no extra swap): letting a container swap past its memory limit would hide
+    // an OOM behind slow disk I/O instead of a clean, visible kill (surfaced via oomKilled below).
+    private static final long MEMORY_SWAP_LIMIT_BYTES = MEMORY_LIMIT_BYTES;
+    private static final long NANO_CPUS = 1_000_000_000L; // 1.0 vCPU per session, fair-share
+    private static final long PIDS_LIMIT = 256L; // fork-bomb guard; ~4x observed npm install process counts
+    private static final String PREVIEW_NETWORK_NAME = "qeploy-preview";
+    // one-shot `stats` needs ~1s to sample a CPU delta (see getContainerStats); 3s is the
+    // point past which we degrade the /status response instead of blocking the caller.
+    private static final long STATS_TIMEOUT_SECONDS = 3L;
+    private static final long LOGS_TIMEOUT_SECONDS = 10L;
 
     private final DockerClient dockerClient;
 
@@ -67,6 +94,7 @@ public class DockerContainerService {
                                           Long conversationId,
                                           String taskId) {
         pullImageIfNeeded();
+        ensurePreviewNetwork();
 
         ExposedPort exposedPort = ExposedPort.tcp(CONTAINER_PORT);
         Ports portBindings = new Ports();
@@ -80,11 +108,24 @@ public class DockerContainerService {
         putLabel(labels, CONVERSATION_ID_LABEL, conversationId);
         putLabel(labels, TASK_ID_LABEL, taskId);
 
+        // Isolation policy (BI-194): memory+swap cap with a visible OOM signal, a fair CPU
+        // share, a pids ceiling against fork bombs, a minimal capability set (only what npm's
+        // lifecycle scripts need to drop privileges to `nobody` and chown files), no privilege
+        // escalation, and a dedicated bridge network with inter-container communication
+        // disabled. Rootfs stays read-write (the agent writes project files into the container)
+        // and no restart policy is set (a dead container surfaces via the status API instead).
         CreateContainerResponse container = dockerClient.createContainerCmd(IMAGE)
                 .withExposedPorts(exposedPort)
                 .withHostConfig(HostConfig.newHostConfig()
                         .withPortBindings(portBindings)
-                        .withMemory(1024 * 1024 * 1024L))
+                        .withMemory(MEMORY_LIMIT_BYTES)
+                        .withMemorySwap(MEMORY_SWAP_LIMIT_BYTES)
+                        .withNanoCPUs(NANO_CPUS)
+                        .withPidsLimit(PIDS_LIMIT)
+                        .withCapDrop(Capability.ALL)
+                        .withCapAdd(Capability.CHOWN, Capability.SETUID, Capability.SETGID)
+                        .withSecurityOpts(List.of("no-new-privileges"))
+                        .withNetworkMode(PREVIEW_NETWORK_NAME))
                 .withLabels(labels)
                 .withCmd("tail", "-f", "/dev/null")
                 .exec();
@@ -94,6 +135,37 @@ public class DockerContainerService {
         return container.getId();
     }
 
+    /**
+     * Ensures the dedicated preview bridge network exists before a container is attached to it.
+     * Called on every {@link #createAndStartContainer} so it's idempotent by construction: the
+     * exists-check + create isn't atomic, so a concurrent call can race past it and get a 409
+     * (Conflict) from Docker on create — that's caught and ignored since the network exists
+     * either way by the time we observe it.
+     */
+    private void ensurePreviewNetwork() {
+        boolean exists = !dockerClient.listNetworksCmd()
+                .withNameFilter(PREVIEW_NETWORK_NAME)
+                .exec()
+                .isEmpty();
+        if (exists) {
+            return;
+        }
+        try {
+            dockerClient.createNetworkCmd()
+                    .withName(PREVIEW_NETWORK_NAME)
+                    .withDriver("bridge")
+                    // Disables inter-container communication on this bridge so one user's
+                    // preview can't reach another's over the container network (lateral
+                    // movement). Host reachability (gateway -> container, and container ->
+                    // host services) is unaffected by this option — see design doc §2.
+                    .withOptions(Map.of("com.docker.network.bridge.enable_icc", "false"))
+                    .exec();
+            log.info("Docker preview 네트워크 생성: name={}", PREVIEW_NETWORK_NAME);
+        } catch (ConflictException e) {
+            log.debug("Docker preview 네트워크가 동시 생성 레이스로 이미 존재함: name={}", PREVIEW_NETWORK_NAME);
+        }
+    }
+
     public boolean isContainerRunning(String containerId) {
         try {
             InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
@@ -101,6 +173,171 @@ public class DockerContainerService {
         } catch (Exception exception) {
             return false;
         }
+    }
+
+    /**
+     * Maps Docker's raw `inspect` state onto a serving-friendly snapshot for the status API.
+     * A missing container is treated as "not running" rather than propagated (design doc D5) —
+     * a preview session row can legitimately outlive its container (already removed by the
+     * cleanup scheduler, or never started this run). Any other failure (daemon unreachable,
+     * etc.) is left to propagate so it surfaces as a 500 instead of being disguised as 404.
+     */
+    public ContainerRuntimeStatus getContainerStatus(String containerId) {
+        InspectContainerResponse inspect;
+        try {
+            inspect = dockerClient.inspectContainerCmd(containerId).exec();
+        } catch (NotFoundException e) {
+            return ContainerRuntimeStatus.notFound();
+        }
+        InspectContainerResponse.ContainerState state = inspect.getState();
+        if (state == null) {
+            return ContainerRuntimeStatus.notFound();
+        }
+        return new ContainerRuntimeStatus(
+                Boolean.TRUE.equals(state.getRunning()),
+                state.getOOMKilled(),
+                state.getExitCodeLong(),
+                parseStartedAt(state.getStartedAt())
+        );
+    }
+
+    private LocalDateTime parseStartedAt(String startedAt) {
+        if (startedAt == null || startedAt.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDateTime.ofInstant(Instant.parse(startedAt), ZoneId.systemDefault());
+        } catch (DateTimeParseException e) {
+            // A cosmetic field is not worth a 500 — degrade to null per design doc §1.1.
+            return null;
+        }
+    }
+
+    /**
+     * One-shot memory/CPU snapshot for a running container. Docker's `stats` endpoint needs at
+     * least one CPU-usage sample plus a short settle window to compute a delta, so even a
+     * successful call takes roughly a second (design doc §1.1) — that's why {@link #getStatus}
+     * callers should treat this as expensive and only call it when the container is running.
+     * Every failure mode here (container removed mid-call, timeout, missing fields) degrades to
+     * {@link Optional#empty()} rather than failing the whole request, so the status endpoint can
+     * still report running/oomKilled/exitCode with resources=null (design doc D5).
+     */
+    public Optional<ContainerResourceUsage> getContainerStats(String containerId) {
+        StatsCallback callback = new StatsCallback();
+        boolean completed;
+        try {
+            dockerClient.statsCmd(containerId).withNoStream(true).exec(callback);
+            completed = callback.awaitCompletion(STATS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (NotFoundException e) {
+            return Optional.empty();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Optional.empty();
+        }
+        if (!completed) {
+            log.warn("Docker stats 조회 타임아웃({}s), resources=null로 degrade: containerId={}",
+                    STATS_TIMEOUT_SECONDS, containerId);
+            return Optional.empty();
+        }
+        Statistics stats = callback.getStatistics();
+        if (stats == null || stats.getMemoryStats() == null) {
+            return Optional.empty();
+        }
+        return Optional.of(toResourceUsage(stats));
+    }
+
+    private ContainerResourceUsage toResourceUsage(Statistics stats) {
+        MemoryStatsConfig memory = stats.getMemoryStats();
+        long usageBytes = memory.getUsage() != null ? memory.getUsage() : 0L;
+        long limitBytes = memory.getLimit() != null ? memory.getLimit() : 0L;
+        double cpuPercent = computeCpuPercent(stats.getCpuStats(), stats.getPreCpuStats());
+        return new ContainerResourceUsage(usageBytes, limitBytes, cpuPercent);
+    }
+
+    /**
+     * cpuPercent = (cpuTotal - preCpuTotal) / (systemTotal - preSystemTotal) * onlineCpus * 100.
+     * The very first stats sample after a container starts has an all-zero precpu_stats (no
+     * prior sample to diff against), which would otherwise divide by zero or read as a negative
+     * delta — both guarded here to return 0.0, matching `docker stats`' own first-sample
+     * behavior instead of surfacing a bogus/negative percentage.
+     */
+    private double computeCpuPercent(CpuStatsConfig current, CpuStatsConfig previous) {
+        if (current == null || previous == null) {
+            return 0.0;
+        }
+        CpuUsageConfig currentUsage = current.getCpuUsage();
+        CpuUsageConfig previousUsage = previous.getCpuUsage();
+        if (currentUsage == null || previousUsage == null
+                || currentUsage.getTotalUsage() == null || previousUsage.getTotalUsage() == null
+                || current.getSystemCpuUsage() == null || previous.getSystemCpuUsage() == null) {
+            return 0.0;
+        }
+        long cpuDelta = currentUsage.getTotalUsage() - previousUsage.getTotalUsage();
+        long systemDelta = current.getSystemCpuUsage() - previous.getSystemCpuUsage();
+        if (systemDelta <= 0 || cpuDelta < 0) {
+            return 0.0;
+        }
+        long onlineCpus = current.getOnlineCpus() != null && current.getOnlineCpus() > 0
+                ? current.getOnlineCpus()
+                : 1L;
+        return (double) cpuDelta / systemDelta * onlineCpus * 100;
+    }
+
+    /**
+     * Adapter callback that keeps only the latest {@link Statistics} sample. `withNoStream(true)`
+     * means Docker should emit exactly one sample before completing, but we defensively keep the
+     * latest rather than the first in case that assumption ever changes upstream.
+     */
+    private static final class StatsCallback extends ResultCallback.Adapter<Statistics> {
+        private volatile Statistics statistics;
+
+        @Override
+        public void onNext(Statistics object) {
+            this.statistics = object;
+        }
+
+        Statistics getStatistics() {
+            return statistics;
+        }
+    }
+
+    /**
+     * Fetches stdout+stderr for a container as a single timestamped text blob, mirroring the
+     * Deployment `logText` contract (design doc D2) rather than returning structured line
+     * objects. Logs are never persisted (D4) — Docker's json-file log driver is the source of
+     * truth and disappears with the container. Callers must not re-log the returned text
+     * server-side: it can contain secrets from the user's own application output.
+     */
+    public String getContainerLogs(String containerId, int tail, Integer sinceEpochSeconds) {
+        LogContainerCmd command = dockerClient.logContainerCmd(containerId)
+                .withStdOut(true)
+                .withStdErr(true)
+                .withTimestamps(true)
+                .withFollowStream(false)
+                .withTail(tail);
+        if (sinceEpochSeconds != null) {
+            command.withSince(sinceEpochSeconds);
+        }
+
+        StringBuilder logs = new StringBuilder();
+        try {
+            command.exec(new ResultCallback.Adapter<Frame>() {
+                        @Override
+                        public void onNext(Frame frame) {
+                            logs.append(new String(frame.getPayload(), StandardCharsets.UTF_8));
+                        }
+                    })
+                    .awaitCompletion(LOGS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (NotFoundException e) {
+            // Container already removed — the session itself still exists, so this is a normal
+            // "no logs available" 200 response, not a 404 (design doc §1.2).
+            return "";
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Docker 로그 조회 인터럽트: containerId=" + containerId, e);
+        }
+        log.debug("Docker 컨테이너 로그 조회: containerId={} tail={}", containerId, tail);
+        return logs.toString();
     }
 
     public List<com.github.dockerjava.api.model.Container> listAgentContainers() {
