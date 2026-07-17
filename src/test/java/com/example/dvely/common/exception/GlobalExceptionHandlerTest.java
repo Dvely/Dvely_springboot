@@ -6,8 +6,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -36,7 +38,8 @@ class GlobalExceptionHandlerTest {
         // Standalone MockMvc wired only with the controller advice under test, mirroring the
         // pattern used by ApiResponseContractTest — no full Spring context is needed to prove
         // the exception -> HTTP status mapping.
-        mockMvc = MockMvcBuilders.standaloneSetup(new PathVariableController(), new QueryParamController())
+        mockMvc = MockMvcBuilders.standaloneSetup(
+                        new PathVariableController(), new QueryParamController(), new ConcurrentDeleteController())
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -70,6 +73,18 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.message").value("'afterEventId' 파라미터의 값 'abc'이(가) 올바른 형식(Long)이 아닙니다"));
     }
 
+    @Test
+    void returnsNotFoundWhenTargetRowWasDeletedConcurrently() throws Exception {
+        // U3 review follow-up: a PATCH/DELETE that reads-then-flushes an entity concurrently
+        // deleted by another request surfaces as ObjectOptimisticLockingFailureException at
+        // flush time (Hibernate's expected-row-count check), not IllegalStateException/
+        // NotFoundException — without this handler it fell through to the generic 500 handler.
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/contract/variables/1"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+    }
+
     @RestController
     private static class PathVariableController {
 
@@ -85,6 +100,15 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/contract/agent/events")
         Long listEvents(@RequestParam Long afterEventId) {
             return afterEventId;
+        }
+    }
+
+    @RestController
+    private static class ConcurrentDeleteController {
+
+        @DeleteMapping("/contract/variables/{id}")
+        void delete(@PathVariable Long id) {
+            throw new ObjectOptimisticLockingFailureException("EnvironmentVariable", id);
         }
     }
 }

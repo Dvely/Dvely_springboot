@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -110,6 +111,19 @@ public class GlobalExceptionHandler {
         log.warn("Not found: {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ApiResponse.error(ErrorCode.NOT_FOUND, e.getMessage()));
+    }
+
+    // 404 - 수정/삭제 진행 중 대상 행이 동시에 삭제된 경합
+    // Hibernate는 UPDATE/DELETE 실행 시 영향받은 행 수를 확인하는데, flush 시점에 대상 행이 이미
+    // 없으면(동시 삭제) 0건으로 판정해 StaleStateException을 던지고 Spring이 이를
+    // ObjectOptimisticLockingFailureException으로 감싼다. @Version 없이도 발생할 수 있는 케이스이며,
+    // "행이 사라졌다"는 의미상 404가 적절하다(락 경합이 아니라 존재 자체가 사라진 것이므로 409보다
+    // NotFoundException과 같은 404 계열로 응답하는 편이 클라이언트 처리(재조회 후 재시도)에 더 맞는다).
+    @ExceptionHandler(ObjectOptimisticLockingFailureException.class)
+    public ResponseEntity<ApiResponse<Void>> handleConcurrentDeleteRace(ObjectOptimisticLockingFailureException e) {
+        log.warn("Concurrent delete race (stale row): {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ApiResponse.error(ErrorCode.NOT_FOUND, "요청을 처리하는 중 대상 리소스가 삭제되었습니다."));
     }
 
     // 405 - 허용되지 않는 HTTP 메서드
