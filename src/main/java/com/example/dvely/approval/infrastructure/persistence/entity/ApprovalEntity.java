@@ -35,7 +35,11 @@ public class ApprovalEntity {
     @Column(name = "chat_session_id")
     private Long conversationId;
 
-    @Column(name = "task_id", nullable = false, length = 64)
+    // nullable=false intentionally removed (V25/D6): standalone approvals (Approval#isStandalone)
+    // have no owning agent task. Hibernate's ddl-auto=validate does not check column
+    // nullability, so this mapping alone would still start up fine against a pre-V25 database —
+    // ProjectInfrastructureSettingsSchemaTest asserts the DB column itself is actually nullable.
+    @Column(name = "task_id", length = 64)
     private String taskId;
 
     @Column(name = "approval_type", nullable = false, length = 30)

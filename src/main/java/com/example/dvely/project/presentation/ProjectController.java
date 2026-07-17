@@ -7,19 +7,25 @@ import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
 import com.example.dvely.project.application.facade.ProjectFacade;
 import com.example.dvely.project.application.result.ProjectChatSettingsResult;
 import com.example.dvely.project.application.service.ProjectChatSettingsService;
+import com.example.dvely.project.application.result.ProjectInfrastructureChangeResult;
+import com.example.dvely.project.application.result.ProjectInfrastructureConfigurationResult;
 import com.example.dvely.project.application.result.ProjectInfrastructureSettingsResult;
+import com.example.dvely.project.application.service.ProjectInfrastructureConfigurationService;
 import com.example.dvely.project.application.service.ProjectInfrastructureSettingsService;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
 import com.example.dvely.project.presentation.dto.request.ConnectProjectRepositoryRequest;
 import com.example.dvely.project.presentation.dto.request.CreateProjectRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectChatSettingsRequest;
+import com.example.dvely.project.presentation.dto.request.UpdateProjectInfrastructureConfigurationRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectInfrastructureSettingsRequest;
 import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectActivityLogResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCommitResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectInfrastructureChangeResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectInfrastructureConfigurationResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectOverviewResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectRepositorySettingsResponse;
@@ -57,6 +63,7 @@ public class ProjectController {
     private final ProjectMapper projectMapper;
     private final ProjectChatSettingsService projectChatSettingsService;
     private final ProjectInfrastructureSettingsService projectInfrastructureSettingsService;
+    private final ProjectInfrastructureConfigurationService projectInfrastructureConfigurationService;
 
     @Operation(
             summary = "프로젝트 생성",
@@ -289,6 +296,60 @@ public class ProjectController {
     }
 
     @Operation(
+            summary = "프로젝트 인프라 설정 조회",
+            description = "배포 아키텍처/컴퓨팅 티어/스토리지/네트워크 4개 설정과 승인 대기 중인 변경을 조회합니다. " +
+                          "CONNECTED 클라우드 연결이 선택되지 않은 프로젝트도 200으로 응답하며 configurable=false로 표시합니다."
+    )
+    @GetMapping("/{projectId}/settings/infrastructure/configuration")
+    public ProjectInfrastructureConfigurationResponse getInfrastructureConfiguration(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "설정을 조회할 프로젝트 ID") @PathVariable Long projectId
+    ) {
+        return toInfrastructureConfigurationResponse(
+                projectInfrastructureConfigurationService.get(ownerUserId, projectId));
+    }
+
+    @Operation(
+            summary = "프로젝트 인프라 설정 저장/변경",
+            description = "CONNECTED 클라우드 연결이 선택되어 있어야 합니다(아니면 409). " +
+                          "Chat 설정의 infraApprovalRequired가 true(기본값)면 즉시 적용되지 않고 INFRA_OPERATION 승인이 생성되며 " +
+                          "settings는 기존 값을 유지한 채 pendingChange로 대기 건이 반환됩니다. false면 즉시 적용됩니다. " +
+                          "현재 적용값과 완전히 동일한 요청은 이력·승인 생성 없이 현재 상태 그대로 반환됩니다(no-op). " +
+                          "승인 대기 중인 변경이 이미 있으면 409를 반환합니다(먼저 처리 필요)."
+    )
+    @PutMapping("/{projectId}/settings/infrastructure/configuration")
+    public ProjectInfrastructureConfigurationResponse updateInfrastructureConfiguration(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "설정을 저장할 프로젝트 ID") @PathVariable Long projectId,
+            @Valid @RequestBody UpdateProjectInfrastructureConfigurationRequest request
+    ) {
+        return toInfrastructureConfigurationResponse(projectInfrastructureConfigurationService.update(
+                ownerUserId,
+                projectId,
+                request.deploymentArchitecture(),
+                request.computeTier(),
+                request.storageType(),
+                request.networkAccess()
+        ));
+    }
+
+    @Operation(
+            summary = "프로젝트 인프라 설정 변경 이력 조회",
+            description = "limit 기본 50, 최대 200(초과 시 200으로 보정, 0·음수는 50으로 보정). 최신순(생성시각 desc). " +
+                          "PENDING_APPROVAL·REJECTED를 포함한 모든 상태를 반환합니다(감사 목적)."
+    )
+    @GetMapping("/{projectId}/settings/infrastructure/configuration/history")
+    public List<ProjectInfrastructureChangeResponse> getInfrastructureConfigurationHistory(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "이력을 조회할 프로젝트 ID") @PathVariable Long projectId,
+            @Parameter(description = "조회 개수. 기본 50, 최대 200") @RequestParam(required = false) Integer limit
+    ) {
+        return projectInfrastructureConfigurationService.getHistory(ownerUserId, projectId, limit).stream()
+                .map(this::toInfrastructureChangeResponse)
+                .toList();
+    }
+
+    @Operation(
             summary = "프로젝트 Repository 설정 조회",
             description = "연결된 GitHub 저장소 정보와 기본 브랜치를 조회합니다. 저장소가 연결되지 않은 프로젝트도 " +
                           "200과 connected=false로 응답합니다. defaultBranch는 매 요청마다 GitHub에서 라이브 조회하므로 " +
@@ -324,6 +385,56 @@ public class ProjectController {
                 result.status(),
                 result.lastCheckedAt(),
                 result.updatedAt()
+        );
+    }
+
+    private ProjectInfrastructureConfigurationResponse toInfrastructureConfigurationResponse(
+            ProjectInfrastructureConfigurationResult result
+    ) {
+        ProjectInfrastructureConfigurationResponse.Settings settings = result.settings() == null
+                ? null
+                : new ProjectInfrastructureConfigurationResponse.Settings(
+                        result.settings().deploymentArchitecture(),
+                        result.settings().computeTier(),
+                        result.settings().storageType(),
+                        result.settings().networkAccess(),
+                        result.settings().updatedAt()
+                );
+        ProjectInfrastructureConfigurationResponse.PendingChange pendingChange = result.pendingChange() == null
+                ? null
+                : new ProjectInfrastructureConfigurationResponse.PendingChange(
+                        result.pendingChange().changeId(),
+                        result.pendingChange().approvalId(),
+                        result.pendingChange().action(),
+                        result.pendingChange().deploymentArchitecture(),
+                        result.pendingChange().computeTier(),
+                        result.pendingChange().storageType(),
+                        result.pendingChange().networkAccess(),
+                        result.pendingChange().createdAt()
+                );
+        return new ProjectInfrastructureConfigurationResponse(
+                result.projectId(),
+                result.configurable(),
+                settings,
+                pendingChange
+        );
+    }
+
+    private ProjectInfrastructureChangeResponse toInfrastructureChangeResponse(
+            ProjectInfrastructureChangeResult result
+    ) {
+        return new ProjectInfrastructureChangeResponse(
+                result.changeId(),
+                result.action(),
+                result.status(),
+                result.deploymentArchitecture(),
+                result.computeTier(),
+                result.storageType(),
+                result.networkAccess(),
+                result.approvalId(),
+                result.actorUserId(),
+                result.createdAt(),
+                result.decidedAt()
         );
     }
 }
