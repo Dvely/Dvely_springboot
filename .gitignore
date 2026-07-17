@@ -53,3 +53,9 @@ Dvely_FE_test/
 ### Local config ###
 gradle.properties
 src/main/resources/application-local.yml
+
+### AI harness (Claude Code / BATHOS) ###
+/.claude/
+/.agent-team/
+/assets/
+/modules/
