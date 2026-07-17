@@ -17,6 +17,7 @@ class ProjectSchemaMappingTest {
         assertColumnName(ProjectEntity.class, "id", "project_id");
         assertColumnName(ProjectEntity.class, "repositoryHeadSha", "repository_head_sha");
         assertColumnName(ProjectEntity.class, "repositoryVersion", "repository_version");
+        assertColumnName(ProjectEntity.class, "repositoryConnectedAt", "repository_connected_at");
         assertColumnName(ConversationEntity.class, "projectId", "project_id");
         assertColumnName(DomainBindingEntity.class, "projectId", "project_id");
     }

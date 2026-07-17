@@ -22,6 +22,7 @@ import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse
 import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectOverviewResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectRepositorySettingsResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectChatSettingsResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectInfrastructureSettingsResponse;
 import com.example.dvely.project.presentation.dto.response.RepositoryHealthResponse;
@@ -92,6 +93,19 @@ public class ProjectController {
                 request.repositoryVisibility()
         ));
         return projectMapper.toProjectRepositoryResponse(result);
+    }
+
+    @Operation(
+            summary = "프로젝트 GitHub 저장소 연결 해제",
+            description = "프로젝트에서 GitHub 저장소 연결 정보를 제거합니다. GitHub 저장소·워크플로·Pages는 삭제되지 않으며, " +
+                          "배포 이력·도메인 연결 등 다른 도메인의 상태도 별도로 정리하지 않습니다(자연 단절). " +
+                          "해제 후 POST로 동일하거나 다른 저장소를 다시 연결할 수 있습니다."
+    )
+    @DeleteMapping("/{projectId}/repository")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void disconnectRepository(@Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+                                     @Parameter(description = "저장소 연결을 해제할 프로젝트 ID") @PathVariable Long projectId) {
+        projectFacade.disconnectRepository(ownerUserId, projectId);
     }
 
     @Operation(
@@ -272,6 +286,20 @@ public class ProjectController {
             @PathVariable Long projectId
     ) {
         projectInfrastructureSettingsService.clear(ownerUserId, projectId);
+    }
+
+    @Operation(
+            summary = "프로젝트 Repository 설정 조회",
+            description = "연결된 GitHub 저장소 정보와 기본 브랜치를 조회합니다. 저장소가 연결되지 않은 프로젝트도 " +
+                          "200과 connected=false로 응답합니다. defaultBranch는 매 요청마다 GitHub에서 라이브 조회하므로 " +
+                          "GitHub 왕복 지연(p95 약 500ms)이 추가되며, 조회에 실패하면 null로 degrade합니다."
+    )
+    @GetMapping("/{projectId}/settings/repository")
+    public ProjectRepositorySettingsResponse getRepositorySettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "설정을 조회할 프로젝트 ID") @PathVariable Long projectId
+    ) {
+        return projectMapper.toRepositorySettingsResponse(projectFacade.getRepositorySettings(ownerUserId, projectId));
     }
 
     private ProjectChatSettingsResponse toChatSettingsResponse(ProjectChatSettingsResult result) {

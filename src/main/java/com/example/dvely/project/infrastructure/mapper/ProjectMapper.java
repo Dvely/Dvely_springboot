@@ -7,6 +7,7 @@ import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectCreationResult;
 import com.example.dvely.project.application.result.ProjectOverviewResult;
 import com.example.dvely.project.application.result.ProjectRepositoryResult;
+import com.example.dvely.project.application.result.ProjectRepositorySettingsResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
 import com.example.dvely.project.application.result.RepositoryHealthResult;
 import com.example.dvely.project.presentation.dto.response.ProjectActivityLogResponse;
@@ -19,6 +20,7 @@ import com.example.dvely.project.presentation.dto.response.GithubRepositoryRespo
 import com.example.dvely.project.presentation.dto.response.ProjectOperationActionResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectOverviewResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectRepositorySettingsResponse;
 import com.example.dvely.project.presentation.dto.response.RepositoryHealthResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectSummaryResponse;
 import java.time.Duration;
@@ -144,6 +146,21 @@ public class ProjectMapper {
 
     public RepositoryHealthResponse toRepositoryHealthResponse(RepositoryHealthResult result) {
         return new RepositoryHealthResponse(result.health());
+    }
+
+    public ProjectRepositorySettingsResponse toRepositorySettingsResponse(ProjectRepositorySettingsResult result) {
+        return new ProjectRepositorySettingsResponse(
+                result.projectId(),
+                result.connected(),
+                result.repositoryFullName(),
+                result.repositoryUrl(),
+                result.defaultBranch(),
+                result.repositoryVisibility(),
+                result.bindingStatus(),
+                result.repositoryHealth(),
+                result.connectedAt(),
+                result.lastSyncedAt()
+        );
     }
 
     private String toRelativeText(LocalDateTime updatedAt) {

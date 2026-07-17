@@ -32,6 +32,7 @@ public class Project {
     private LocalDateTime repositoryHeadSyncedAt;
     private String repositoryVersion;
     private LocalDateTime repositoryVersionSyncedAt;
+    private LocalDateTime repositoryConnectedAt;
     private boolean deleted;
     private final LocalDateTime createdAt;
     private final LocalDateTime updatedAt;
@@ -105,6 +106,7 @@ public class Project {
                 null,
                 null,
                 null,
+                null,
                 deleted,
                 createdAt,
                 updatedAt
@@ -133,6 +135,7 @@ public class Project {
                    LocalDateTime repositoryHeadSyncedAt,
                    String repositoryVersion,
                    LocalDateTime repositoryVersionSyncedAt,
+                   LocalDateTime repositoryConnectedAt,
                    boolean deleted,
                    LocalDateTime createdAt,
                    LocalDateTime updatedAt) {
@@ -158,6 +161,7 @@ public class Project {
         this.repositoryHeadSyncedAt = repositoryHeadSyncedAt;
         this.repositoryVersion = repositoryVersion;
         this.repositoryVersionSyncedAt = repositoryVersionSyncedAt;
+        this.repositoryConnectedAt = repositoryConnectedAt;
         this.deleted = deleted;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
@@ -251,6 +255,10 @@ public class Project {
         return repositoryVersionSyncedAt;
     }
 
+    public LocalDateTime getRepositoryConnectedAt() {
+        return repositoryConnectedAt;
+    }
+
     public boolean isDeleted() {
         return deleted;
     }
@@ -276,6 +284,38 @@ public class Project {
         this.deploymentRepository = this.sourceRepository;
         this.repositoryVisibility = Objects.requireNonNull(visibility, "repositoryVisibility must not be null");
         this.repositoryBindingStatus = RepositoryBindingStatus.BOUND;
+        this.repositoryConnectedAt = LocalDateTime.now();
+    }
+
+    /**
+     * Disconnects the GitHub repository from this project without touching GitHub itself
+     * (no API call happens here — see {@code GithubRepositoryPort} usage at the call site,
+     * which must remain absent by design). Only repository-scoped fields are cleared;
+     * deployment artifact fields ({@code deployStatus}/{@code currentUrl}/{@code currentVersion})
+     * are intentionally preserved because the previously deployed GitHub Pages site keeps
+     * existing after this call — clearing them would misrepresent reality.
+     * Throws if the project has no repository connected, mirroring the "already connected"
+     * 409 guard on {@code connectRepository}.
+     */
+    public void unbindRepository() {
+        if (!hasSourceRepository()) {
+            throw new IllegalStateException("프로젝트에 연결된 저장소가 없습니다.");
+        }
+        this.sourceRepository = null;
+        this.deploymentRepository = null;
+        this.repositoryVisibility = RepositoryVisibility.PRIVATE;
+        this.repositoryBindingStatus = RepositoryBindingStatus.NOT_BOUND;
+        this.repositoryHealthStatus = RepositoryHealthStatus.UNKNOWN_ERROR;
+        this.repositoryHeadSha = null;
+        this.repositoryHeadMessage = null;
+        this.repositoryHeadAuthor = null;
+        this.repositoryHeadCommittedAt = null;
+        // Clearing the head-sync timestamp prevents a re-connected (different) repository
+        // from inheriting a stale "last synced" marker before its own webhook events arrive.
+        this.repositoryHeadSyncedAt = null;
+        this.repositoryVersion = null;
+        this.repositoryVersionSyncedAt = null;
+        this.repositoryConnectedAt = null;
     }
 
     public void updateRepositoryHealth(RepositoryHealthStatus healthStatus) {

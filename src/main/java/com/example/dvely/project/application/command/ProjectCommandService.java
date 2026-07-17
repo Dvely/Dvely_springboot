@@ -80,6 +80,33 @@ public class ProjectCommandService {
         return toRepositoryResult(savedProject);
     }
 
+    /**
+     * Disconnects the GitHub repository binding from a project.
+     * <p>
+     * This is intentionally non-destructive (design D2/D3): the method only clears DB fields
+     * via {@link Project#unbindRepository()} and never calls {@link GithubRepositoryPort} —
+     * the GitHub repository, its workflows, and any published GitHub Pages site are left
+     * untouched. Derived state in other domains (webhook sync, deployment history, domain
+     * binding, in-flight agent tasks) is not inspected or cleaned up here; each naturally
+     * disconnects on its own once {@code sourceRepository} is null (see design D3), which
+     * keeps this service inside the project domain's own boundary. Because there is no
+     * external call, the single {@code save} below is the only side effect and the whole
+     * operation is atomic within the transaction.
+     * <p>
+     * Known race (accepted for now, not fixed here): this read-modify-write is not guarded by
+     * optimistic locking, so a concurrent webhook head-sync write (see
+     * {@code WebhookEventHandler}/{@code synchronizeRepositoryHead}) racing with a disconnect
+     * can lost-update each other's column changes — whichever {@code save} commits last wins,
+     * silently discarding the other write. The root fix (a version column / optimistic lock on
+     * {@code Project}) is tracked separately as Issue #45; this method's behavior is unchanged.
+     */
+    @Transactional
+    public void disconnectRepository(Long ownerUserId, Long projectId) {
+        Project project = getProject(ownerUserId, projectId);
+        project.unbindRepository();
+        projectRepository.save(project);
+    }
+
     @Transactional
     public ProjectDetailResult updateProject(Long ownerUserId, Long projectId, UpdateProjectCommand command) {
         Project project = getProject(ownerUserId, projectId);
