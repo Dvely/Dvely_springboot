@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.example.dvely.common.response.ApiResponseAdvice;
 import com.example.dvely.project.application.facade.ProjectFacade;
 import com.example.dvely.project.application.service.ProjectChatSettingsService;
+import com.example.dvely.project.application.service.ProjectInfrastructureConfigurationService;
 import com.example.dvely.project.application.service.ProjectInfrastructureSettingsService;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,7 +43,8 @@ class ProjectRepositoryDisconnectContractTest {
                         projectFacade,
                         new ProjectMapper(),
                         mock(ProjectChatSettingsService.class),
-                        mock(ProjectInfrastructureSettingsService.class)
+                        mock(ProjectInfrastructureSettingsService.class),
+                        mock(ProjectInfrastructureConfigurationService.class)
                 ))
                 .setControllerAdvice(new ApiResponseAdvice())
                 // @AuthenticationPrincipal normally resolves from Spring Security's

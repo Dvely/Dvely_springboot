@@ -1,12 +1,15 @@
 package com.example.dvely.approval.application.command;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.service.AgentMessageService;
+import com.example.dvely.approval.application.port.out.StandaloneApprovalHandler;
 import com.example.dvely.approval.application.query.ApprovalQueryService;
 import com.example.dvely.approval.application.result.ApprovalResult;
 import com.example.dvely.approval.domain.model.Approval;
@@ -30,7 +33,8 @@ class ApprovalCommandServiceTest {
                 repository,
                 queryService,
                 orchestrator,
-                messageService
+                messageService,
+                List.of()
         );
         Approval change = approval(1L, ApprovalType.CHANGE, 21L);
         Approval deployment = approval(2L, ApprovalType.DEPLOYMENT, 21L);
@@ -63,7 +67,8 @@ class ApprovalCommandServiceTest {
                 repository,
                 queryService,
                 orchestrator,
-                messageService
+                messageService,
+                List.of()
         );
         Approval approval = approval(1L, ApprovalType.CHANGE, 21L);
         when(repository.findByIdAndOwnerUserId(1L, 7L)).thenReturn(Optional.of(approval));
@@ -77,6 +82,84 @@ class ApprovalCommandServiceTest {
                 21L,
                 "작업이 거절되어 실행하지 않았습니다: 요청 작업"
         );
+    }
+
+    @Test
+    void standaloneApprovalDispatchesToHandlerAndSkipsAgentPath() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        StandaloneApprovalHandler handler = mock(StandaloneApprovalHandler.class);
+        when(handler.supports(ApprovalType.INFRA_OPERATION)).thenReturn(true);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(handler)
+        );
+        Approval standalone = Approval.standalone(7L, 11L, ApprovalType.INFRA_OPERATION, "인프라 설정 변경 요청");
+        Approval persisted = new Approval(
+                5L, 7L, 11L, null, null, ApprovalType.INFRA_OPERATION,
+                ApprovalStatus.PENDING, "인프라 설정 변경 요청", LocalDateTime.now(), null
+        );
+        when(repository.findByIdAndOwnerUserId(5L, 7L)).thenReturn(Optional.of(persisted));
+        when(repository.save(persisted)).thenReturn(persisted);
+        when(queryService.toResult(persisted)).thenReturn(result(persisted));
+
+        service.approve(7L, 5L);
+
+        verify(handler).onApproved(persisted);
+        // Standalone approvals have no taskId/conversationId to drive the agent-task path with —
+        // dispatching to it anyway would NPE on a null taskId, so this also doubles as a
+        // regression guard for the isStandalone() branch actually short-circuiting.
+        verifyNoInteractions(orchestrator, messageService);
+    }
+
+    @Test
+    void standaloneRejectionDispatchesToHandlerAndSkipsAgentPath() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        StandaloneApprovalHandler handler = mock(StandaloneApprovalHandler.class);
+        when(handler.supports(ApprovalType.INFRA_OPERATION)).thenReturn(true);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(handler)
+        );
+        Approval persisted = new Approval(
+                5L, 7L, 11L, null, null, ApprovalType.INFRA_OPERATION,
+                ApprovalStatus.PENDING, "인프라 설정 변경 요청", LocalDateTime.now(), null
+        );
+        when(repository.findByIdAndOwnerUserId(5L, 7L)).thenReturn(Optional.of(persisted));
+        when(repository.save(persisted)).thenReturn(persisted);
+        when(queryService.toResult(persisted)).thenReturn(result(persisted));
+
+        service.reject(7L, 5L);
+
+        verify(handler).onRejected(persisted);
+        verifyNoInteractions(orchestrator, messageService);
+    }
+
+    @Test
+    void standaloneApprovalWithoutMatchingHandlerFailsWithConflict() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of()
+        );
+        Approval persisted = new Approval(
+                5L, 7L, 11L, null, null, ApprovalType.INFRA_OPERATION,
+                ApprovalStatus.PENDING, "인프라 설정 변경 요청", LocalDateTime.now(), null
+        );
+        when(repository.findByIdAndOwnerUserId(5L, 7L)).thenReturn(Optional.of(persisted));
+        when(repository.save(persisted)).thenReturn(persisted);
+
+        assertThatThrownBy(() -> service.approve(7L, 5L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("standalone 승인을 처리할 핸들러가 없습니다")
+                .hasMessageContaining("INFRA_OPERATION");
+
+        verifyNoInteractions(queryService);
     }
 
     private Approval approval(Long id, ApprovalType type, Long conversationId) {

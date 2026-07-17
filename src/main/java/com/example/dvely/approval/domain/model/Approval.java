@@ -52,12 +52,32 @@ public class Approval {
         this.ownerUserId = Objects.requireNonNull(ownerUserId, "ownerUserId must not be null");
         this.projectId = projectId;
         this.conversationId = conversationId;
-        this.taskId = requireText(taskId, "taskId");
+        // Standalone approvals (design D6) have no owning agent task, so taskId is now allowed
+        // to be null — but if a caller does pass a non-null value it must still be real text,
+        // same as before. Every existing agent-task call site already passes a non-null taskId,
+        // so this loosening is behavior-preserving for them.
+        this.taskId = taskId == null ? null : requireText(taskId, "taskId");
         this.type = Objects.requireNonNull(type, "type must not be null");
         this.status = Objects.requireNonNull(status, "status must not be null");
         this.summary = requireText(summary, "summary");
         this.createdAt = createdAt;
         this.decidedAt = decidedAt;
+    }
+
+    /**
+     * Creates a PENDING approval that is not tied to any agent task (design D6) — e.g. an
+     * infrastructure configuration change requested directly through the API. {@code taskId}
+     * and {@code conversationId} are both null: there is no task to execute on approval and no
+     * chat conversation to post a follow-up assistant message to. {@link #isStandalone()}
+     * distinguishes these rows so {@code ApprovalCommandService} can dispatch to a
+     * {@code StandaloneApprovalHandler} instead of the agent-task approve/reject path.
+     */
+    public static Approval standalone(Long ownerUserId, Long projectId, ApprovalType type, String summary) {
+        return new Approval(null, ownerUserId, projectId, null, null, type, ApprovalStatus.PENDING, summary, null, null);
+    }
+
+    public boolean isStandalone() {
+        return taskId == null;
     }
 
     public void approve() {
