@@ -93,6 +93,9 @@ public class ProjectEntity {
     @Column(name = "repository_version_synced_at")
     private LocalDateTime repositoryVersionSyncedAt;
 
+    @Column(name = "repository_connected_at")
+    private LocalDateTime repositoryConnectedAt;
+
     @Column(name = "is_deleted", nullable = false)
     private boolean deleted;
 
@@ -161,6 +164,7 @@ public class ProjectEntity {
         entity.repositoryHeadSyncedAt = project.getRepositoryHeadSyncedAt();
         entity.repositoryVersion = project.getRepositoryVersion();
         entity.repositoryVersionSyncedAt = project.getRepositoryVersionSyncedAt();
+        entity.repositoryConnectedAt = project.getRepositoryConnectedAt();
         return entity;
     }
 
@@ -186,6 +190,7 @@ public class ProjectEntity {
         this.repositoryHeadSyncedAt = project.getRepositoryHeadSyncedAt();
         this.repositoryVersion = project.getRepositoryVersion();
         this.repositoryVersionSyncedAt = project.getRepositoryVersionSyncedAt();
+        this.repositoryConnectedAt = project.getRepositoryConnectedAt();
         this.deleted = project.isDeleted();
     }
 
@@ -213,6 +218,7 @@ public class ProjectEntity {
                 repositoryHeadSyncedAt,
                 repositoryVersion,
                 repositoryVersionSyncedAt,
+                repositoryConnectedAt,
                 deleted,
                 createdAt,
                 updatedAt
