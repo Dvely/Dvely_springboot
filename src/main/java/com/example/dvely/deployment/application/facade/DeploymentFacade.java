@@ -4,12 +4,14 @@ import com.example.dvely.deployment.application.command.DeploymentCommandService
 import com.example.dvely.deployment.application.command.dto.DeployCommand;
 import com.example.dvely.deployment.application.query.DeploymentQueryService;
 import com.example.dvely.deployment.application.result.DeploymentCandidateResult;
+import com.example.dvely.deployment.application.result.DeploymentFailureAnalysisResult;
 import com.example.dvely.deployment.application.result.DeploymentHistoryResult;
 import com.example.dvely.deployment.application.result.DeploymentLogsResult;
 import com.example.dvely.deployment.application.result.DeploymentStatusResult;
 import com.example.dvely.deployment.application.result.DeployResult;
 import com.example.dvely.deployment.application.result.VersionDetailResult;
 import com.example.dvely.deployment.application.result.VersionResult;
+import com.example.dvely.deployment.application.service.DeploymentFailureAnalysisService;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -20,9 +22,22 @@ public class DeploymentFacade {
 
     private final DeploymentCommandService deploymentCommandService;
     private final DeploymentQueryService deploymentQueryService;
+    private final DeploymentFailureAnalysisService deploymentFailureAnalysisService;
 
     public DeployResult deploy(Long ownerUserId, Long projectId, DeployCommand command) {
         return deploymentCommandService.deploy(ownerUserId, projectId, command);
+    }
+
+    public DeployResult retryDeployment(Long ownerUserId, Long historyId) {
+        return deploymentCommandService.retryDeployment(ownerUserId, historyId);
+    }
+
+    public DeploymentFailureAnalysisResult analyzeFailure(Long ownerUserId, Long historyId) {
+        return deploymentFailureAnalysisService.analyze(ownerUserId, historyId);
+    }
+
+    public DeploymentFailureAnalysisResult getFailureAnalysis(Long ownerUserId, Long historyId) {
+        return deploymentFailureAnalysisService.getAnalysis(ownerUserId, historyId);
     }
 
     public List<DeploymentHistoryResult> getDeploymentHistories(Long ownerUserId, Long projectId) {

@@ -1,6 +1,7 @@
 package com.example.dvely.deployment.application.command;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -34,6 +35,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -85,6 +87,102 @@ class DeploymentCommandServiceTest {
         assertThat(result.pagesUrl()).isNull();
         assertThat(project.getDeployStatus()).isEqualTo(DeployStatus.PENDING);
         verifyNoInteractions(userRepository, githubPagesPort, githubActionsPort, githubRepoPort);
+    }
+
+    @Test
+    void retry_createsNewHistoryLinkedToTheFailedOneAndCopiesTargetTypeAndVersion() {
+        Project project = boundProject();
+        DeploymentHistory failed = failedHistory(DeployTargetType.VERSION, "v3");
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(failed));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> persisted(invocation.getArgument(0), 52L));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DeployResult result = service.retryDeployment(1L, 51L);
+
+        assertThat(result.deploymentId()).isEqualTo(52L);
+        assertThat(result.status()).isEqualTo("PENDING");
+        assertThat(result.versionName()).isEqualTo("v3");
+        assertThat(project.getDeployStatus()).isEqualTo(DeployStatus.PENDING);
+
+        ArgumentCaptor<DeploymentHistory> captor = ArgumentCaptor.forClass(DeploymentHistory.class);
+        verify(deploymentHistoryRepository).save(captor.capture());
+        DeploymentHistory created = captor.getValue();
+        assertThat(created.getDeployTargetType()).isEqualTo(DeployTargetType.VERSION);
+        assertThat(created.getVersionLabel()).isEqualTo("v3");
+        assertThat(created.getRetriedFromHistoryId()).isEqualTo(51L);
+        assertThat(created.getCorrelationId()).isNotEqualTo(failed.getCorrelationId());
+        assertThat(created.getTaskId()).isNull();
+        verifyNoInteractions(userRepository, githubPagesPort, githubActionsPort, githubRepoPort);
+    }
+
+    @Test
+    void retry_ofALatestTargetLeavesRequestedVersionNull() {
+        Project project = boundProject();
+        DeploymentHistory failed = failedHistory(DeployTargetType.LATEST, "v3");
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(failed));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> persisted(invocation.getArgument(0), 52L));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.retryDeployment(1L, 51L);
+
+        ArgumentCaptor<DeploymentHistory> captor = ArgumentCaptor.forClass(DeploymentHistory.class);
+        verify(deploymentHistoryRepository).save(captor.capture());
+        // LATEST retries re-resolve the current head commit at execute() time (worker), not the
+        // version that was live when the original attempt failed — so no version is carried over.
+        assertThat(captor.getValue().getVersionLabel()).isNull();
+    }
+
+    @Test
+    void retry_rejectsWhenTargetIsNotFailed() {
+        DeploymentHistory inProgress = new DeploymentHistory(
+                51L, 1L, 11L, DeployTargetType.LATEST, "v3", null, DeployStatus.IN_PROGRESS, 901L,
+                "correlation-51", null, null, null, null, null, null, null, null, null, null,
+                1, 3, null, null, null, LocalDateTime.now(), LocalDateTime.now(), null
+        );
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(inProgress));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(boundProject()));
+
+        assertThatThrownBy(() -> service.retryDeployment(1L, 51L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("IN_PROGRESS");
+        verify(deploymentHistoryRepository, never()).save(any());
+    }
+
+    @Test
+    void retry_rejectsWhenCallerDoesNotOwnTheProject() {
+        DeploymentHistory failed = failedHistory(DeployTargetType.LATEST, null);
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(failed));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 2L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.retryDeployment(2L, 51L))
+                .isInstanceOf(com.example.dvely.project.domain.exception.ProjectNotFoundException.class);
+        verify(deploymentHistoryRepository, never()).save(any());
+    }
+
+    @Test
+    void retry_rejectsWhenHistoryDoesNotExist() {
+        when(deploymentHistoryRepository.findById(999L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.retryDeployment(1L, 999L))
+                .isInstanceOf(com.example.dvely.common.exception.NotFoundException.class);
+    }
+
+    private DeploymentHistory failedHistory(DeployTargetType targetType, String versionLabel) {
+        LocalDateTime now = LocalDateTime.now();
+        return new DeploymentHistory(
+                51L, 1L, 11L, targetType, versionLabel, "https://octo.github.io/repo/",
+                DeployStatus.FAILED, 901L, "correlation-51", null, null, null, null, null, null, null, null,
+                null, "빌드 실패", 3, 3, null, null, null, now, now, null
+        );
     }
 
     @Test
@@ -184,7 +282,8 @@ class DeploymentCommandServiceTest {
                 source.getLeaseOwner(),
                 source.getLeaseUntil(),
                 source.getTriggeredAt(),
-                source.getUpdatedAt()
+                source.getUpdatedAt(),
+                source.getRetriedFromHistoryId()
         );
     }
 
@@ -216,7 +315,8 @@ class DeploymentCommandServiceTest {
                 "worker-1",
                 now.plusMinutes(2),
                 now,
-                now
+                now,
+                null
         );
     }
 

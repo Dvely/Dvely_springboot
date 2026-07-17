@@ -275,7 +275,8 @@ class DeploymentQueryServiceTest {
                 null,
                 null,
                 now,
-                now
+                now,
+                null
         );
         when(deploymentHistoryRepository.findById(101L)).thenReturn(Optional.of(history));
         return history;

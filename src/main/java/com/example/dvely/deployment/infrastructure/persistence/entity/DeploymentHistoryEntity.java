@@ -96,6 +96,9 @@ public class DeploymentHistoryEntity {
     @Column(name = "lease_until")
     private LocalDateTime leaseUntil;
 
+    @Column(name = "retried_from_history_id")
+    private Long retriedFromHistoryId;
+
     @CreationTimestamp
     @Column(name = "triggered_at", updatable = false)
     private LocalDateTime triggeredAt;
@@ -138,6 +141,7 @@ public class DeploymentHistoryEntity {
         nextRunAt = history.getNextRunAt();
         leaseOwner = history.getLeaseOwner();
         leaseUntil = history.getLeaseUntil();
+        retriedFromHistoryId = history.getRetriedFromHistoryId();
     }
 
     public DeploymentHistory toDomain() {
@@ -167,7 +171,8 @@ public class DeploymentHistoryEntity {
                 leaseOwner,
                 leaseUntil,
                 triggeredAt,
-                updatedAt
+                updatedAt,
+                retriedFromHistoryId
         );
     }
 }
