@@ -75,15 +75,22 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    void returnsNotFoundWhenTargetRowWasDeletedConcurrently() throws Exception {
+    void returnsConflictWhenTargetRowWasDeletedOrModifiedConcurrently() throws Exception {
         // U3 review follow-up: a PATCH/DELETE that reads-then-flushes an entity concurrently
         // deleted by another request surfaces as ObjectOptimisticLockingFailureException at
         // flush time (Hibernate's expected-row-count check), not IllegalStateException/
         // NotFoundException — without this handler it fell through to the generic 500 handler.
+        //
+        // I45 (#45) follow-up: this used to assert 404 (U3 F5), back when OOLFE's only real
+        // cause was a concurrently-deleted row. Now that `projects` carries @Version, OOLFE's
+        // dominant meaning is "version conflict on a row that still exists", so responding 404
+        // to an existing resource would be wrong — the handler (and this assertion) moved to 409
+        // (design D3). A genuinely deleted row still resolves correctly for the client: their
+        // follow-up GET converges to 404 on its own.
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/contract/variables/1"))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.status").value(404))
-                .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.code").value("CONFLICT"));
     }
 
     @Test

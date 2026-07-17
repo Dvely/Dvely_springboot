@@ -36,6 +36,13 @@ public class Project {
     private boolean deleted;
     private final LocalDateTime createdAt;
     private final LocalDateTime updatedAt;
+    // I45: read-time snapshot of ProjectEntity's @Version, carried by the domain model so
+    // ProjectRepositoryAdapter#save can detect a lost-update even outside a Spring-managed
+    // transaction (where the adapter's own findById re-reads fresh DB state instead of hitting
+    // the L1 cache — see the adapter's javadoc for the full case A/B analysis). Null for a
+    // not-yet-persisted Project or one built through a legacy fixture constructor; the adapter
+    // treats null as "skip the version guard" (nothing to compare against).
+    private final Long version;
 
     public Project(Long ownerUserId,
                    String name,
@@ -109,7 +116,8 @@ public class Project {
                 null,
                 deleted,
                 createdAt,
-                updatedAt
+                updatedAt,
+                null
         );
     }
 
@@ -138,7 +146,8 @@ public class Project {
                    LocalDateTime repositoryConnectedAt,
                    boolean deleted,
                    LocalDateTime createdAt,
-                   LocalDateTime updatedAt) {
+                   LocalDateTime updatedAt,
+                   Long version) {
         this.id = id;
         this.ownerUserId = Objects.requireNonNull(ownerUserId, "ownerUserId must not be null");
         this.name = Objects.requireNonNull(name, "name must not be null");
@@ -165,6 +174,7 @@ public class Project {
         this.deleted = deleted;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
+        this.version = version;
     }
 
     public Long getId() {
@@ -269,6 +279,10 @@ public class Project {
 
     public LocalDateTime getUpdatedAt() {
         return updatedAt;
+    }
+
+    public Long getVersion() {
+        return version;
     }
 
     public void rename(String newName) {

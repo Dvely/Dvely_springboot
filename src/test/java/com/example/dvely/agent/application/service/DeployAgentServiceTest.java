@@ -1,11 +1,14 @@
 package com.example.dvely.agent.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -36,6 +39,7 @@ import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 class DeployAgentServiceTest {
 
@@ -111,6 +115,149 @@ class DeployAgentServiceTest {
                 1L,
                 11L,
                 new DeployCommand(DeployTargetType.LATEST, null, "task123")
+        );
+    }
+
+    // ── I45 (#45): autoBindRepository's single inline retry on ObjectOptimisticLockingFailureException ──
+
+    @Test
+    void autoBindRepositoryRetriesOnceAfterOptimisticLockingFailureAndSucceeds() {
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
+        GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
+        UserRepository userRepository = mock(UserRepository.class);
+        AuthCommandService authCommandService = mock(AuthCommandService.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
+        DeployAgentService service = new DeployAgentService(
+                dockerService, previewSessionService, githubRepositoryPort, userRepository,
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+        );
+        Project notBound = notBoundProject();
+        Project reloaded = notBoundProject();
+        when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(notBound), Optional.of(reloaded));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepositoryPort.repositoryExists(1L, "octo/my-project")).thenReturn(true);
+        when(githubRepositoryPort.getRepository(1L, "octo/my-project")).thenReturn(Optional.of(
+                new GithubRepositoryPort.GithubRepository(
+                        "octo/my-project", "my-project", "octo", null, false, "main", null)
+        ));
+        // First save attempt loses the race; reload still shows NOT_BOUND, so the retry reapplies
+        // the binding and saves again.
+        when(projectRepository.save(notBound)).thenThrow(
+                new ObjectOptimisticLockingFailureException(Project.class, 11L));
+        when(projectRepository.save(reloaded)).thenAnswer(invocation -> invocation.getArgument(0));
+        when(deploymentFacade.deploy(eq(1L), eq(11L), any(DeployCommand.class))).thenReturn(
+                new DeployResult(51L, 11L, "LATEST", null, "PENDING", null, LocalDateTime.now())
+        );
+
+        service.execute(new AgentStep(AgentType.DEPLOY, Map.of()), 1L, "task123", 11L);
+
+        verify(projectRepository, times(1)).save(notBound);
+        verify(projectRepository, times(1)).save(reloaded);
+        assertThat(reloaded.getRepositoryBindingStatus()).isEqualTo(RepositoryBindingStatus.BOUND);
+    }
+
+    @Test
+    void autoBindRepositoryReturnsReloadedProjectWithoutResavingWhenAlreadyBoundAfterRace() {
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
+        GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
+        UserRepository userRepository = mock(UserRepository.class);
+        AuthCommandService authCommandService = mock(AuthCommandService.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
+        DeployAgentService service = new DeployAgentService(
+                dockerService, previewSessionService, githubRepositoryPort, userRepository,
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+        );
+        Project notBound = notBoundProject();
+        when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepositoryPort.repositoryExists(1L, "octo/my-project")).thenReturn(true);
+        when(githubRepositoryPort.getRepository(1L, "octo/my-project")).thenReturn(Optional.of(
+                new GithubRepositoryPort.GithubRepository(
+                        "octo/my-project", "my-project", "octo", null, false, "main", null)
+        ));
+        when(projectRepository.save(notBound)).thenThrow(
+                new ObjectOptimisticLockingFailureException(Project.class, 11L));
+        // Someone else already bound a repository (any repository) to this project while we
+        // were retrying — the precondition autoBindRepository exists to satisfy is already met.
+        Project alreadyBound = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(notBound), Optional.of(alreadyBound));
+        when(deploymentFacade.deploy(eq(1L), eq(11L), any(DeployCommand.class))).thenReturn(
+                new DeployResult(51L, 11L, "LATEST", null, "PENDING", null, LocalDateTime.now())
+        );
+
+        service.execute(new AgentStep(AgentType.DEPLOY, Map.of()), 1L, "task123", 11L);
+
+        verify(projectRepository, times(1)).save(notBound);
+        // No second save — the reloaded project was already BOUND, so re-applying the binding
+        // would be pointless (and could itself race again for no reason).
+        verify(projectRepository, never()).save(alreadyBound);
+    }
+
+    @Test
+    void autoBindRepositoryPropagatesWhenTheRetryAlsoHitsAnOptimisticLockingFailure() {
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
+        GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
+        UserRepository userRepository = mock(UserRepository.class);
+        AuthCommandService authCommandService = mock(AuthCommandService.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
+        DeployAgentService service = new DeployAgentService(
+                dockerService, previewSessionService, githubRepositoryPort, userRepository,
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+        );
+        Project notBound = notBoundProject();
+        Project reloaded = notBoundProject();
+        when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepositoryPort.repositoryExists(1L, "octo/my-project")).thenReturn(true);
+        when(githubRepositoryPort.getRepository(1L, "octo/my-project")).thenReturn(Optional.of(
+                new GithubRepositoryPort.GithubRepository(
+                        "octo/my-project", "my-project", "octo", null, false, "main", null)
+        ));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(notBound), Optional.of(reloaded));
+        when(projectRepository.save(notBound)).thenThrow(
+                new ObjectOptimisticLockingFailureException(Project.class, 11L));
+        when(projectRepository.save(reloaded)).thenThrow(
+                new ObjectOptimisticLockingFailureException(Project.class, 11L));
+
+        assertThatThrownBy(() -> service.execute(new AgentStep(AgentType.DEPLOY, Map.of()), 1L, "task123", 11L))
+                .isInstanceOf(ObjectOptimisticLockingFailureException.class);
+
+        verify(projectRepository, times(1)).save(notBound);
+        verify(projectRepository, times(1)).save(reloaded);
+        verify(deploymentFacade, never()).deploy(any(), any(), any());
+    }
+
+    private Project notBoundProject() {
+        LocalDateTime now = LocalDateTime.now();
+        return new Project(
+                11L,
+                1L,
+                "my-project",
+                ProjectStatus.ACTIVE,
+                "vue",
+                null,
+                "fast",
+                DeployStatus.DRAFT,
+                null,
+                null,
+                null,
+                null,
+                RepositoryVisibility.PRIVATE,
+                RepositoryBindingStatus.NOT_BOUND,
+                RepositoryHealthStatus.UNKNOWN_ERROR,
+                false,
+                now,
+                now
         );
     }
 
