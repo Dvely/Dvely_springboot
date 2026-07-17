@@ -88,13 +88,17 @@ public class ChatQueryService {
     }
 
     private MessageResult toMessageResult(ChatMessage message) {
+        // Historical reads have no 1:1 message-to-task correlation (ChatMessage does not persist
+        // a taskId column), so taskId is always null here — only the just-created message
+        // returned by ChatCommandService.sendMessage() carries the freshly submitted taskId.
         return new MessageResult(
                 message.getId(),
                 message.getConversationId(),
                 message.getRole().toStorage(),
                 message.getContent(),
                 message.getTokenCount(),
-                message.getCreatedAt()
+                message.getCreatedAt(),
+                null
         );
     }
 

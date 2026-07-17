@@ -6,6 +6,7 @@ import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.exception.AgentInputRequiredException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
 import com.example.dvely.agent.application.service.BuildFailureRecoveryService;
+import com.example.dvely.agent.application.service.ChatAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.application.service.DeployAgentService;
@@ -26,6 +27,7 @@ public class AgentPlanExecutor {
     private final CodeAgentService       codeAgentService;
     private final DeployAgentService     deployAgentService;
     private final DomainBindAgentService domainBindAgentService;
+    private final ChatAgentService       chatAgentService;
     private final TaskStore              taskStore;
     private final AgentMessageService    agentMessageService;
     private final BuildFailureRecoveryService buildFailureRecoveryService;
@@ -134,7 +136,7 @@ public class AgentPlanExecutor {
             case CODE        -> handleCode(step, aiProvider, userId, projectId, taskId);
             case DEPLOY      -> handleDeploy(step, userId, taskId, projectId);
             case DOMAIN_BIND -> handleDomainBind(step, userId, taskId, projectId);
-            case CHAT        -> handleChat(step);
+            case CHAT        -> handleChat(step, aiProvider, taskId);
         };
     }
 
@@ -163,10 +165,9 @@ public class AgentPlanExecutor {
         return domainBindAgentService.execute(step, userId, taskId, projectId);
     }
 
-    private CodeResult handleChat(AgentStep step) {
-        log.info("[CHAT 에이전트] 대화 요청 수신");
+    private CodeResult handleChat(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, String taskId) {
+        log.info("[CHAT 에이전트] 대화 요청 수신 | provider={} taskId={}", aiProvider, taskId);
         log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
-        // TODO: ChatAgentService.execute(step) 연결 예정
-        return null;
+        return chatAgentService.execute(step, aiProvider, taskId);
     }
 }

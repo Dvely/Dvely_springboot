@@ -12,6 +12,7 @@ import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.exception.AgentInputRequiredException;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.application.service.BuildFailureRecoveryService;
+import com.example.dvely.agent.application.service.ChatAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
@@ -48,6 +49,27 @@ class AgentPlanExecutorTest {
     }
 
     @Test
+    void dispatchesChatStepToChatAgentServiceAndStoresAnswerAsSummary() {
+        ChatAgentService chatService = mock(ChatAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentPlanExecutor executor = executor(mock(CodeAgentService.class), chatService, taskStore, messageService);
+        AgentStep step = new AgentStep(AgentType.CHAT, Map.of("instruction", "휴지통 정책이 뭐야?"));
+        when(chatService.execute(step, AiProvider.ANTHROPIC, "task-1"))
+                .thenReturn(new CodeAgentService.CodeResult(null, "휴지통 보관 기간은 7일입니다."));
+
+        executor.execute(
+                new AgentPlan(List.of(step), "reason", AiProvider.ANTHROPIC, 11L),
+                "task-1",
+                1L
+        );
+
+        verify(taskStore).markStepCompleted("task-1", 1);
+        verify(taskStore).markDone("task-1", null, "휴지통 보관 기간은 7일입니다.");
+        verify(messageService).appendAssistant(21L, "휴지통 보관 기간은 7일입니다.");
+    }
+
+    @Test
     void storesFailureAsAssistantMessage() {
         CodeAgentService codeService = mock(CodeAgentService.class);
         TaskStore taskStore = taskStore();
@@ -76,11 +98,13 @@ class AgentPlanExecutorTest {
                 mock(CodeAgentService.class),
                 mock(DeployAgentService.class),
                 domainService,
+                mock(ChatAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
                 mock(ChangeService.class)
         );
+
         AgentStep step = new AgentStep(AgentType.DOMAIN_BIND, Map.of());
         when(domainService.execute(step, 1L, "task-1", 11L))
                 .thenThrow(new AgentInputRequiredException("도메인을 입력해주세요."));
@@ -98,10 +122,18 @@ class AgentPlanExecutorTest {
     private AgentPlanExecutor executor(CodeAgentService codeService,
                                        TaskStore taskStore,
                                        AgentMessageService messageService) {
+        return executor(codeService, mock(ChatAgentService.class), taskStore, messageService);
+    }
+
+    private AgentPlanExecutor executor(CodeAgentService codeService,
+                                       ChatAgentService chatService,
+                                       TaskStore taskStore,
+                                       AgentMessageService messageService) {
         return new AgentPlanExecutor(
                 codeService,
                 mock(DeployAgentService.class),
                 mock(DomainBindAgentService.class),
+                chatService,
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),

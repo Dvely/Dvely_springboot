@@ -31,7 +31,8 @@ public class ChatMapper {
                 result.role(),
                 result.content(),
                 result.tokenCount(),
-                result.createdAt()
+                result.createdAt(),
+                result.taskId()
         );
     }
 }

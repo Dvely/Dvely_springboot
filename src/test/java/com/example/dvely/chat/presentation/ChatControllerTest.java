@@ -98,7 +98,8 @@ class ChatControllerTest {
                                 "user",
                                 "hello",
                                 0,
-                                LocalDateTime.now()
+                                LocalDateTime.now(),
+                                null
                 );
                 MessageResponse response = new MessageResponse(
                                 100L,
@@ -106,7 +107,8 @@ class ChatControllerTest {
                                 "user",
                                 "hello",
                                 0,
-                                LocalDateTime.now()
+                                LocalDateTime.now(),
+                                null
                 );
 
                 when(chatFacade.getMessages(1L, 20L)).thenReturn(List.of(result));
@@ -128,7 +130,8 @@ class ChatControllerTest {
                                 "user",
                                 "hi",
                                 0,
-                                LocalDateTime.now()
+                                LocalDateTime.now(),
+                                "task-abc123"
                 );
                 MessageResponse response = new MessageResponse(
                                 101L,
@@ -136,7 +139,8 @@ class ChatControllerTest {
                                 "user",
                                 "hi",
                                 0,
-                                LocalDateTime.now()
+                                LocalDateTime.now(),
+                                "task-abc123"
                 );
 
                 when(chatFacade.sendMessage(1L, 30L, "hi")).thenReturn(result);
@@ -145,6 +149,7 @@ class ChatControllerTest {
                 MessageResponse actual = chatController.sendMessage(1L, 30L, request);
 
                 assertThat(actual.messageId()).isEqualTo(101L);
+                assertThat(actual.taskId()).isEqualTo("task-abc123");
                 verify(chatFacade).sendMessage(1L, 30L, "hi");
         }
 
