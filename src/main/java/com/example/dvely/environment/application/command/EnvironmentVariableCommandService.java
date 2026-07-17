@@ -60,9 +60,17 @@ public class EnvironmentVariableCommandService {
         }
         EnvironmentVariable variable = queryService.findOwned(projectId, variableId);
 
+        // Whether the variable is (or is about to become) secret must be decided before we
+        // touch valueChanged: comparing plaintext for a secret value would turn the history log
+        // into a 1-bit oracle for anyone who can read it (an attacker submitting a guessed value
+        // learns "was my guess exactly right?" from valueChanged alone). So when the variable
+        // is/becomes secret we skip the comparison entirely and just record "changed" — the
+        // history is metadata-only by design anyway (D5), it never needed the real answer.
+        boolean secretAfterThisUpdate = secretRequest != null ? secretRequest : variable.isSecret();
+
         boolean valueChanged = false;
         if (newValue != null) {
-            valueChanged = !newValue.equals(variable.getValue());
+            valueChanged = secretAfterThisUpdate || !newValue.equals(variable.getValue());
             variable.changeValue(newValue);
         }
         if (secretRequest != null) {

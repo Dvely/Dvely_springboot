@@ -28,7 +28,12 @@ public class EnvironmentVariableRepositoryAdapter implements EnvironmentVariable
         EnvironmentVariableEntity entity = springDataRepository.findById(variable.getId())
                 .orElseThrow(() -> new IllegalStateException("환경변수를 찾을 수 없습니다. id=" + variable.getId()));
         entity.updateFrom(variable);
-        return springDataRepository.save(entity).toDomain();
+        // saveAndFlush here too: a plain save() only schedules the UPDATE for the next flush
+        // (typically at transaction commit), and Hibernate's @UpdateTimestamp is populated as
+        // part of that flush — so without forcing it now, toDomain() below would read back the
+        // *pre-update* updatedAt, and the PATCH response would show a stale timestamp even
+        // though the write itself succeeded (review finding: stale updatedAt in PATCH response).
+        return springDataRepository.saveAndFlush(entity).toDomain();
     }
 
     @Override
