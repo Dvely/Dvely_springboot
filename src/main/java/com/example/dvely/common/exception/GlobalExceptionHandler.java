@@ -12,6 +12,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @Slf4j
 @RestControllerAdvice
@@ -52,6 +53,31 @@ public class GlobalExceptionHandler {
         log.warn("Message not readable: {}", e.getMessage());
         return ResponseEntity.badRequest()
                 .body(ApiResponse.error(ErrorCode.BAD_REQUEST, "요청 본문을 읽을 수 없습니다. JSON 형식과 Content-Type을 확인해주세요."));
+    }
+
+    // 400 - 경로 변수/쿼리 파라미터 타입 불일치 (예: @PathVariable Long projectId 에 "abc" 전달)
+    // Spring MVC는 바인딩 단계에서 타입 변환에 실패하면 MethodArgumentTypeMismatchException을 던지는데,
+    // 이는 클라이언트가 잘못된 형식의 입력을 보낸 것이지 서버 내부 오류가 아니므로 400으로 응답해야 한다.
+    // 이 핸들러가 없으면 최하단 handleException(Exception)으로 흘러 500이 반환되어(클라이언트 입력 오류를
+    // 서버 장애로 오인하게 만듦), FE 에러 처리 로직이 재시도 등을 잘못 트리거할 수 있다.
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException e) {
+        String requiredType = e.getRequiredType() != null ? e.getRequiredType().getSimpleName() : "알 수 없음";
+        String message = "'%s' 파라미터의 값 '%s'이(가) 올바른 형식(%s)이 아닙니다"
+                .formatted(e.getName(), e.getValue(), requiredType);
+        // Unlike other handlers above, this value is whatever failed to convert to the target
+        // type — for query parameters that can be arbitrary attacker-controlled text (path
+        // variables are constrained by servlet URL decoding, but query strings are more
+        // permissive). Strip CR/LF before logging so a crafted value (e.g. "1%0d%0a[ERROR] fake")
+        // cannot forge extra lines in the plain-text console log.
+        log.warn("Type mismatch: parameter={}, value={}, requiredType={}",
+                e.getName(), sanitizeForLog(e.getValue()), requiredType);
+        return ResponseEntity.badRequest()
+                .body(ApiResponse.error(ErrorCode.BAD_REQUEST, message));
+    }
+
+    private static String sanitizeForLog(Object value) {
+        return String.valueOf(value).replaceAll("[\r\n]", "_");
     }
 
     // 400 - 잘못된 요청 인자
