@@ -120,7 +120,8 @@ public class DeploymentQueryService {
                 h.getDeployedUrl(),
                 h.getStatus().name(),
                 h.getTriggeredAt(),
-                h.getUpdatedAt()
+                h.getUpdatedAt(),
+                h.getRetriedFromHistoryId()
         );
     }
 

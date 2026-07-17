@@ -285,7 +285,8 @@ class WebhookEventHandlerTest {
                 null,
                 null,
                 now,
-                now
+                now,
+                null
         );
     }
 

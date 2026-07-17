@@ -10,5 +10,6 @@ public record DeploymentHistoryResult(
         String deployedUrl,
         String status,
         LocalDateTime triggeredAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        Long retriedFromHistoryId
 ) {}

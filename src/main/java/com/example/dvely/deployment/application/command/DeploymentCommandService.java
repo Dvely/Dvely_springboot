@@ -52,17 +52,68 @@ public class DeploymentCommandService {
     @Transactional
     public DeployResult deploy(Long ownerUserId, Long projectId, DeployCommand command) {
         Project project = resolveProject(ownerUserId, projectId);
+        return createAndQueueDeployment(ownerUserId, project, command, null);
+    }
+
+    /**
+     * Re-queues a failed deployment as a brand-new job rather than resetting the failed row in
+     * place (U6 design D3): reusing the same history would collide with its own
+     * {@code correlationId}/workflow-run identity and would erase the failed attempt from the
+     * audit trail. The new row links back via {@code retriedFromHistoryId} so the FE can render
+     * a retry chain, and otherwise flows through the exact same PENDING → worker-lease pipeline
+     * as a fresh {@link #deploy}.
+     *
+     * <p>No approval gate here (D5): {@code POST /deployments} itself never requires DEPLOYMENT
+     * approval for direct user action (that ApprovalType is only created by the agent planning
+     * path via AgentOrchestrator) — retry is the same kind of direct action, so the click itself
+     * is the approval.</p>
+     *
+     * <p><b>Accepted risk (review follow-up F5, design D3/§7 — deliberate, not an oversight):</b>
+     * there is no limit on how many times a given history can be retried, and no check for an
+     * already in-flight PENDING/IN_PROGRESS job on the same project before queuing another one.
+     * Design §7 explicitly scopes both out ("재시도 횟수 제한·rate limit", "진행 중 job 존재 시
+     * 차단") as MVP simplifications, and D3 argues the same asymmetry already exists for the
+     * plain {@code POST /projects/{id}/deployments} endpoint (which also queues unconditionally
+     * regardless of concurrent jobs) — making retry strict here while the primary deploy path
+     * isn't would be an inconsistent, surprising restriction rather than a safety improvement.
+     * If abuse or accidental repeated retries become a real problem, the fix belongs at this
+     * call site (e.g. a per-project in-flight check, or a retry-count/backoff column on
+     * {@code DeploymentHistory}) — not a broader change to the shared queuing pipeline.</p>
+     */
+    @Transactional
+    public DeployResult retryDeployment(Long ownerUserId, Long historyId) {
+        DeploymentHistory target = deploymentHistoryRepository.findById(historyId)
+                .orElseThrow(() -> new NotFoundException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));
+        Project project = resolveProject(ownerUserId, target.getProjectId());
+        if (target.getStatus() != DeployStatus.FAILED) {
+            throw new IllegalStateException("실패한 배포만 재시도할 수 있습니다. status=" + target.getStatus());
+        }
+
+        String requestedVersion = target.getDeployTargetType() == DeployTargetType.VERSION
+                ? target.getVersionLabel()
+                : null;
+        // taskId=null: unlike agent-triggered deploys, a retry is a direct user click, not
+        // something an Agent plan is tracking.
+        DeployCommand command = new DeployCommand(target.getDeployTargetType(), requestedVersion, null);
+        return createAndQueueDeployment(ownerUserId, project, command, target.getId());
+    }
+
+    private DeployResult createAndQueueDeployment(Long ownerUserId,
+                                                  Project project,
+                                                  DeployCommand command,
+                                                  Long retriedFromHistoryId) {
         DeploymentHistory history = deploymentHistoryRepository.save(new DeploymentHistory(
                 ownerUserId,
-                projectId,
+                project.getId(),
                 command.deployTargetType(),
                 command.versionName(),
-                command.taskId()
+                command.taskId(),
+                retriedFromHistoryId
         ));
         project.updateDeployment(DeployStatus.PENDING, project.getCurrentUrl(), project.getCurrentVersion());
         projectRepository.save(project);
-        log.info("배포 요청 저장: projectId={} historyId={} correlationId={}",
-                projectId, history.getId(), history.getCorrelationId());
+        log.info("배포 요청 저장: projectId={} historyId={} correlationId={} retriedFromHistoryId={}",
+                project.getId(), history.getId(), history.getCorrelationId(), retriedFromHistoryId);
         return toResult(history);
     }
 

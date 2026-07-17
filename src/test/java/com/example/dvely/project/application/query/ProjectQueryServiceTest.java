@@ -240,7 +240,8 @@ class ProjectQueryServiceTest {
                 url,
                 status,
                 timestamp,
-                timestamp
+                timestamp,
+                null
         );
     }
 
