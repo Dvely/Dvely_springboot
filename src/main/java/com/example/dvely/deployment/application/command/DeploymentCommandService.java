@@ -23,8 +23,10 @@ import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import java.time.Duration;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -163,8 +165,7 @@ public class DeploymentCommandService {
         );
         history = deploymentHistoryRepository.save(history);
         if (isLatestProjectDeployment(history)) {
-            project.updateDeployment(DeployStatus.IN_PROGRESS, pagesUrl, release.versionLabel());
-            projectRepository.save(project);
+            updateProjectDeploymentState(project.getId(), DeployStatus.IN_PROGRESS, pagesUrl, release.versionLabel());
         }
 
         WorkflowRunMatch existingRun = githubActionsPort.findWorkflowRun(
@@ -212,6 +213,39 @@ public class DeploymentCommandService {
                 history.getId(), run.runId(), history.getCorrelationId(), history.getVersionLabel());
     }
 
+    /**
+     * I45 (#45) review follow-up F1: {@code execute()} is deliberately not
+     * {@code @Transactional} (design §0 case B — see {@code ProjectRepositoryAdapter}'s javadoc),
+     * so it originally reused the {@code Project} snapshot read at the very top of
+     * {@code execute()} for this save. Between that read and this write, this same method's own
+     * GitHub I/O runs — {@code ensureWorkflow} commits the workflow file, {@code prepareRelease}
+     * can merge a PR — both of which are pushes to the project's own repository that trigger
+     * {@code WebhookEventHandler}'s push handling against this exact project row. That made this
+     * a <em>self-inflicted</em> race: on a completely normal, uncontested deploy, the adapter's
+     * version guard would frequently catch the webhook's commit landing first and reject this
+     * save, burning one retry attempt (5s+ backoff) every time — not a rare concurrent-user edge
+     * case but a routine tax on the deploy pipeline's own success path.
+     * <p>
+     * Re-reading the project immediately before this write shrinks that race window from "the
+     * entire GitHub I/O phase of execute()" down to milliseconds. A concurrent version conflict
+     * is still possible in that narrow window (e.g. a true concurrent user edit) — that still
+     * throws {@link ObjectOptimisticLockingFailureException} up through {@code executeQueued}'s
+     * catch to {@link #handleExecutionFailure}, i.e. into the existing worker-retry machine
+     * exactly as design §2 intends, unaffected by this fix.
+     */
+    private void updateProjectDeploymentState(Long projectId, DeployStatus status, String url, String version) {
+        Optional<Project> fresh = projectRepository.findById(projectId);
+        if (fresh.isEmpty()) {
+            // Project was deleted concurrently — the deployment history itself is already saved
+            // and unaffected; there is simply nothing left to mirror this status onto.
+            log.warn("배포 상태 프로젝트 반영 스킵: 프로젝트를 찾을 수 없습니다. projectId={}", projectId);
+            return;
+        }
+        Project project = fresh.get();
+        project.updateDeployment(status, url, version);
+        projectRepository.save(project);
+    }
+
     private void handleExecutionFailure(Long historyId, Exception exception) {
         DeploymentHistory history = deploymentHistoryRepository.findById(historyId).orElse(null);
         if (history == null || history.getStatus() == DeployStatus.LIVE) {
@@ -223,14 +257,26 @@ public class DeploymentCommandService {
         history.retry(message, Duration.ofSeconds(Math.max(5, history.getAttempt() * 5L)));
         deploymentHistoryRepository.save(history);
         if (history.getStatus() == DeployStatus.FAILED && isLatestProjectDeployment(history)) {
-            projectRepository.findById(history.getProjectId()).ifPresent(project -> {
-                project.updateDeployment(
-                        DeployStatus.FAILED,
-                        history.getDeployedUrl(),
-                        history.getVersionLabel()
-                );
-                projectRepository.save(project);
-            });
+            try {
+                projectRepository.findById(history.getProjectId()).ifPresent(project -> {
+                    project.updateDeployment(
+                            DeployStatus.FAILED,
+                            history.getDeployedUrl(),
+                            history.getVersionLabel()
+                    );
+                    projectRepository.save(project);
+                });
+            } catch (ObjectOptimisticLockingFailureException lockException) {
+                // F2 (design §2 "로그 후 소실 허용"): the deployment history's retry/fail state
+                // was already saved above — that (not this best-effort project mirror) is the
+                // durable source of truth a later webhook/retry converges from. A version
+                // conflict here is not worth crashing this async worker over: caught, logged,
+                // and left for the next successful project save/webhook to catch the row up.
+                // The log.error(...) below (the actual failure cause) still runs either way —
+                // this catch exists precisely so it isn't skipped by an uncaught exception here.
+                log.warn("배포 실패 처리 중 프로젝트 상태 반영이 버전 경합으로 무시됨: historyId={} projectId={}",
+                        historyId, history.getProjectId(), lockException);
+            }
         }
         log.error("배포 worker 실행 실패: historyId={} attempt={}/{} status={}",
                 historyId, history.getAttempt(), history.getMaxAttempts(), history.getStatus(), exception);

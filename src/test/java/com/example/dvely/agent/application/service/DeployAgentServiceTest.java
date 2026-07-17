@@ -237,6 +237,103 @@ class DeployAgentServiceTest {
         verify(deploymentFacade, never()).deploy(any(), any(), any());
     }
 
+    @Test
+    void autoBindRepositoryFailsFastWhenReloadAfterTheRaceFindsTheProjectGone() {
+        // I45 (#45) review follow-up F7: the reload branch inside bindAndSaveWithSingleRetry has
+        // its own failure mode distinct from "still NOT_BOUND" (F1 test) and "already BOUND"
+        // (F2 test above) — the project was deleted entirely between the failed first save and
+        // the retry's reload. That must fail fast with a clear message, not NPE or loop.
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
+        GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
+        UserRepository userRepository = mock(UserRepository.class);
+        AuthCommandService authCommandService = mock(AuthCommandService.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
+        DeployAgentService service = new DeployAgentService(
+                dockerService, previewSessionService, githubRepositoryPort, userRepository,
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+        );
+        Project notBound = notBoundProject();
+        when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepositoryPort.repositoryExists(1L, "octo/my-project")).thenReturn(true);
+        when(githubRepositoryPort.getRepository(1L, "octo/my-project")).thenReturn(Optional.of(
+                new GithubRepositoryPort.GithubRepository(
+                        "octo/my-project", "my-project", "octo", null, false, "main", null)
+        ));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(notBound), Optional.empty());
+        when(projectRepository.save(notBound)).thenThrow(
+                new ObjectOptimisticLockingFailureException(Project.class, 11L));
+
+        assertThatThrownBy(() -> service.execute(new AgentStep(AgentType.DEPLOY, Map.of()), 1L, "task123", 11L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("재조회");
+
+        verify(projectRepository, times(1)).save(notBound);
+        verify(deploymentFacade, never()).deploy(any(), any(), any());
+    }
+
+    // ── I45 (#45): deployWithSingleRetry's single inline retry on ObjectOptimisticLockingFailureException ──
+
+    @Test
+    void deployRetriesOnceAfterOptimisticLockingFailureAndSucceeds() {
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
+        GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
+        UserRepository userRepository = mock(UserRepository.class);
+        AuthCommandService authCommandService = mock(AuthCommandService.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
+        DeployAgentService service = new DeployAgentService(
+                dockerService, previewSessionService, githubRepositoryPort, userRepository,
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+        );
+        Project project = boundProject();
+        when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        DeployCommand command = new DeployCommand(DeployTargetType.LATEST, null, "task123");
+        DeployResult success = new DeployResult(51L, 11L, "LATEST", null, "PENDING", null, LocalDateTime.now());
+        when(deploymentFacade.deploy(1L, 11L, command))
+                .thenThrow(new ObjectOptimisticLockingFailureException(Project.class, 11L))
+                .thenReturn(success);
+
+        CodeAgentService.CodeResult result = service.execute(
+                new AgentStep(AgentType.DEPLOY, Map.of()), 1L, "task123", 11L);
+
+        assertThat(result.summary()).contains("배포 ID: 51");
+        verify(deploymentFacade, times(2)).deploy(1L, 11L, command);
+    }
+
+    @Test
+    void deployPropagatesWhenTheRetryAlsoHitsAnOptimisticLockingFailure() {
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
+        GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
+        UserRepository userRepository = mock(UserRepository.class);
+        AuthCommandService authCommandService = mock(AuthCommandService.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
+        DeployAgentService service = new DeployAgentService(
+                dockerService, previewSessionService, githubRepositoryPort, userRepository,
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+        );
+        Project project = boundProject();
+        when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        DeployCommand command = new DeployCommand(DeployTargetType.LATEST, null, "task123");
+        when(deploymentFacade.deploy(1L, 11L, command))
+                .thenThrow(new ObjectOptimisticLockingFailureException(Project.class, 11L));
+
+        assertThatThrownBy(() -> service.execute(new AgentStep(AgentType.DEPLOY, Map.of()), 1L, "task123", 11L))
+                .isInstanceOf(ObjectOptimisticLockingFailureException.class);
+
+        verify(deploymentFacade, times(2)).deploy(1L, 11L, command);
+    }
+
     private Project notBoundProject() {
         LocalDateTime now = LocalDateTime.now();
         return new Project(

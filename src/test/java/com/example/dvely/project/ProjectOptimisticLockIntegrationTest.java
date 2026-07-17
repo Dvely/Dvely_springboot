@@ -13,6 +13,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * I45 (#45): deterministic, thread-free reproduction of the "case B" lost-update scenario the
@@ -34,6 +39,9 @@ class ProjectOptimisticLockIntegrationTest {
 
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @Test
     void secondSaveOfAnOlderSnapshotFailsWithOptimisticLockingFailure() {
@@ -63,5 +71,64 @@ class ProjectOptimisticLockIntegrationTest {
 
         Project finalState = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, owner.getId()).orElseThrow();
         assertThat(finalState.getName()).isEqualTo("renamed-by-a");
+    }
+
+    /**
+     * I45 (#45) review follow-up F5: the "case A" half of the design's §0 analysis (a
+     * {@code @Transactional} service method's {@code find} populates the persistence context, so
+     * the adapter's own {@code findById} is an L1-cache hit — meaning it never disagrees with the
+     * domain object's carried version at read time, and the actual conflict is caught purely by
+     * Hibernate's own {@code @Version} flush check, not the adapter's manual comparison) was
+     * previously only asserted by inference, never actually reproduced. This test drives two real,
+     * separately-committed transactions against the same row with manual
+     * {@link PlatformTransactionManager} control (no threads needed — transaction 2 is opened,
+     * reads and caches the row, is deliberately left uncommitted while transaction 1 runs to
+     * completion, then transaction 2 resumes and is forced to flush a now-stale version at
+     * commit time).
+     */
+    @Test
+    void aTransactionalReadThenLateCommitConflictsWithHibernatesOwnVersionCheckAtFlushTime() {
+        User owner = userRepository.save(new User(new GithubId("i45-lock-test-casea-" + System.nanoTime()), "octo", null));
+        TransactionTemplate txTemplate = new TransactionTemplate(transactionManager);
+        Long projectId = txTemplate.execute(status -> projectRepository.save(
+                new Project(owner.getId(), "case-a-project", "blank", null, "fast", RepositoryVisibility.PRIVATE)
+        ).getId());
+
+        // "Transaction 2" begins first and reads the row — this find() populates *its own*
+        // persistence context's L1 cache with the current (pre-tx1) version, and is deliberately
+        // left open (not committed yet), simulating a second concurrent request that started
+        // before the first one finished.
+        TransactionStatus tx2 = transactionManager.getTransaction(new DefaultTransactionDefinition());
+        Project readByTx2 = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, owner.getId()).orElseThrow();
+
+        // "Transaction 1" runs to completion and commits in between — genuinely separate from
+        // tx2, not merely nested inside it. PROPAGATION_REQUIRES_NEW is essential here: tx2 is
+        // still open on this same thread, so a plain PROPAGATION_REQUIRED template would just
+        // join it (one shared persistence context, one flush, no real conflict to observe) —
+        // REQUIRES_NEW suspends tx2's transactional resources for the duration of this block and
+        // resumes them afterward, giving tx1 its own physical transaction and commit.
+        TransactionTemplate requiresNewTemplate = new TransactionTemplate(transactionManager);
+        requiresNewTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        requiresNewTemplate.execute(status -> {
+            Project readByTx1 = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, owner.getId()).orElseThrow();
+            readByTx1.rename("renamed-by-tx1");
+            projectRepository.save(readByTx1);
+            return null;
+        });
+
+        // Resume tx2: mutate the snapshot it read *before* tx1 committed, and save it. Inside
+        // tx2's still-open persistence context, the adapter's own findById() is an L1-cache hit
+        // returning the *same* managed instance readByTx2 came from — so the adapter's manual
+        // version comparison sees matching (both still pre-tx1) versions and does not throw here.
+        // The row's real version has moved on in the database, though, so the conflict can only
+        // be caught when this transaction actually flushes.
+        readByTx2.rename("renamed-by-tx2");
+        projectRepository.save(readByTx2);
+
+        assertThatThrownBy(() -> transactionManager.commit(tx2))
+                .isInstanceOf(ObjectOptimisticLockingFailureException.class);
+
+        Project finalState = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, owner.getId()).orElseThrow();
+        assertThat(finalState.getName()).isEqualTo("renamed-by-tx1");
     }
 }

@@ -107,14 +107,37 @@ public class DeployAgentService {
         }
 
         // AgentPlanExecutor는 필요한 승인이 모두 끝난 뒤에만 이 서비스를 호출한다.
-        DeployResult result = deploymentFacade.deploy(userId, project.getId(),
-                new DeployCommand(DeployTargetType.LATEST, null, taskId));
+        DeployResult result = deployWithSingleRetry(userId, project.getId(), taskId);
 
         String summary = sourceChanged
                 ? buildApprovedChangeSummary(project.getSourceRepository(), taskId, result.deploymentId())
                 : buildSummary(project.getSourceRepository(), result.deploymentId());
         log.info("[DeployAgent] 배포 요청 저장 | deploymentId={}", result.deploymentId());
         return new CodeResult(null, summary);
+    }
+
+    /**
+     * I45 (#45) review follow-up F3: this call runs from an async Agent task with no
+     * surrounding transaction, so — like {@link #bindAndSaveWithSingleRetry} above —
+     * {@code deploymentFacade.deploy()} can surface
+     * {@link ObjectOptimisticLockingFailureException} out of its own internal project save
+     * (see {@code DeploymentCommandService.createAndQueueDeployment}) if this project row was
+     * updated concurrently between when it was read here and when {@code deploy()} tries to
+     * write it. One inline retry: {@code deploy()} re-resolves the project fresh from the DB on
+     * every call ({@code DeploymentCommandService.resolveProject}), so simply calling it again
+     * is already a complete, safe retry — there is no partial state from the first attempt to
+     * reconcile (the history + project mutation both happen fully inside that one call, or not
+     * at all). A second failure propagates to the existing Agent-task failure path, same as
+     * {@link #bindAndSaveWithSingleRetry}.
+     */
+    private DeployResult deployWithSingleRetry(Long userId, Long projectId, String taskId) {
+        DeployCommand command = new DeployCommand(DeployTargetType.LATEST, null, taskId);
+        try {
+            return deploymentFacade.deploy(userId, projectId, command);
+        } catch (ObjectOptimisticLockingFailureException exception) {
+            log.warn("[DeployAgent] 배포 요청 저장 중 버전 경합 발생, 1회 재시도: projectId={}", projectId);
+            return deploymentFacade.deploy(userId, projectId, command);
+        }
     }
 
     // ── 저장소명 결정 ──────────────────────────────────────────────────────────
