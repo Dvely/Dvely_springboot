@@ -93,12 +93,14 @@ public class ProjectCommandService {
      * external call, the single {@code save} below is the only side effect and the whole
      * operation is atomic within the transaction.
      * <p>
-     * Known race (accepted for now, not fixed here): this read-modify-write is not guarded by
-     * optimistic locking, so a concurrent webhook head-sync write (see
-     * {@code WebhookEventHandler}/{@code synchronizeRepositoryHead}) racing with a disconnect
-     * can lost-update each other's column changes — whichever {@code save} commits last wins,
-     * silently discarding the other write. The root fix (a version column / optimistic lock on
-     * {@code Project}) is tracked separately as Issue #45; this method's behavior is unchanged.
+     * Race with a concurrent webhook head-sync write (see
+     * {@code WebhookEventHandler}/{@code synchronizeRepositoryHead}): both are guarded now
+     * (Issue #45) by {@code Project}'s optimistic version — whichever {@code save} commits
+     * second sees a stale version and gets {@code ObjectOptimisticLockingFailureException}
+     * instead of silently discarding the other write. This is the "사용자 대면" policy (design
+     * I45 §2): the exception propagates out of this {@code @Transactional} method to
+     * {@code GlobalExceptionHandler} as 409, and the caller is expected to retry — no automatic
+     * re-apply here, since the user already saw the state their disconnect click was based on.
      */
     @Transactional
     public void disconnectRepository(Long ownerUserId, Long projectId) {

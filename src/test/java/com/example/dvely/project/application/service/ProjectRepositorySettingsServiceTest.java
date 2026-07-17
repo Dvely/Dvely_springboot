@@ -191,7 +191,8 @@ class ProjectRepositorySettingsServiceTest {
                 connectedAt,
                 false,
                 now,
-                now
+                now,
+                0L
         );
     }
 }

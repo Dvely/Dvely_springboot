@@ -12,6 +12,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.time.LocalDateTime;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -99,6 +100,14 @@ public class ProjectEntity {
     @Column(name = "is_deleted", nullable = false)
     private boolean deleted;
 
+    // I45: optimistic-lock counter. Hibernate manages this column entirely — it's set to 0 on
+    // insert and incremented (with a `WHERE version = ?` guard) on every UPDATE automatically.
+    // Never assign it from a domain Project in from()/updateFrom() (see those methods' comments)
+    // — doing so would let application code override Hibernate's own concurrency bookkeeping.
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
@@ -139,6 +148,10 @@ public class ProjectEntity {
         this.deleted = deleted;
     }
 
+    // Note: neither this factory nor updateFrom() below ever assigns `version` — see that
+    // field's comment. from() is only used for brand-new inserts (id == null); Hibernate writes
+    // 0 for a new row regardless of whatever the (always-null, for a not-yet-persisted domain
+    // Project) version happens to be.
     public static ProjectEntity from(Project project) {
         ProjectEntity entity = new ProjectEntity(
                 project.getOwnerUserId(),
@@ -221,7 +234,8 @@ public class ProjectEntity {
                 repositoryConnectedAt,
                 deleted,
                 createdAt,
-                updatedAt
+                updatedAt,
+                version
         );
     }
 }

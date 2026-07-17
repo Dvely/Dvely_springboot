@@ -38,6 +38,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 @ExtendWith(MockitoExtension.class)
 class DeploymentCommandServiceTest {
@@ -202,6 +203,10 @@ class DeploymentCommandServiceTest {
         when(deploymentHistoryRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(project));
+        // I45 F1: execute() now re-fetches the project fresh (via plain findById) immediately
+        // before the deployment-status save, instead of reusing the snapshot read at the top of
+        // execute() — see DeploymentCommandService#updateProjectDeploymentState.
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
         when(githubRepoPort.detectPackageManager("user-token", "octo/repo"))
                 .thenReturn(PackageManager.NPM);
@@ -253,6 +258,132 @@ class DeploymentCommandServiceTest {
                 "main",
                 "correlation-51"
         );
+    }
+
+    // ── I45 (#45) review follow-up F1: execute() re-fetches the project immediately before the
+    // deployment-status save instead of reusing the snapshot read at the top of the method ──
+
+    @Test
+    void execute_savesTheFreshlyRefetchedProjectRatherThanTheSnapshotReadAtTheTopOfExecute() {
+        Project staleSnapshot = boundProject(); // read at the top of execute(), used for GitHub calls
+        Project freshFromDb = boundProject();   // what updateProjectDeploymentState() re-fetches
+        DeploymentHistory history = claimedHistory();
+        ReleaseMetadata metadata = new ReleaseMetadata(
+                "abc123", "Release title", "Release body", "octo",
+                "https://avatars.example/octo", 17, LocalDateTime.of(2026, 6, 10, 9, 30)
+        );
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(history));
+        when(deploymentHistoryRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(staleSnapshot));
+        // The self-inflicted race this fix closes: by the time execute() is ready to save the
+        // deployment status, the row has already moved on (e.g. ensureWorkflow's own commit
+        // triggered a webhook head-sync) — modeled here simply as "a different Project instance",
+        // since the fix's whole point is that this call, not the stale snapshot, is what gets saved.
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(freshFromDb));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepoPort.detectPackageManager("user-token", "octo/repo")).thenReturn(PackageManager.NPM);
+        when(githubRepoPort.detectNodeVersion("user-token", "octo/repo")).thenReturn("20");
+        when(githubRepoPort.detectFrameworkType("user-token", "octo/repo")).thenReturn("vue");
+        when(githubRepoPort.hasNewCommits("user-token", "octo/repo", "main", "preview")).thenReturn(false);
+        when(githubRepoPort.getHeadCommitSha("user-token", "octo/repo", "main")).thenReturn("abc123");
+        when(githubRepoPort.findSequentialTagForCommit("user-token", "octo/repo", "abc123")).thenReturn("v7");
+        when(githubRepoPort.getReleaseMetadata("user-token", "octo/repo", "abc123", null)).thenReturn(metadata);
+        when(githubPagesPort.getPages("user-token", "octo/repo")).thenReturn(
+                new GithubPagesPort.PagesInfo(true, "https://octo.github.io/repo/", "gh-pages", "site.example.com"));
+        when(githubActionsPort.findWorkflowRun(
+                "user-token", "octo/repo", "qeploy-deploy.yml", "correlation-51", "abc123", history.getTriggeredAt()
+        )).thenReturn(new WorkflowRunMatch(901L, "abc123", "queued", null));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.execute(51L);
+
+        ArgumentCaptor<Project> savedCaptor = ArgumentCaptor.forClass(Project.class);
+        verify(projectRepository).save(savedCaptor.capture());
+        assertThat(savedCaptor.getValue()).isSameAs(freshFromDb);
+        assertThat(savedCaptor.getValue()).isNotSameAs(staleSnapshot);
+        assertThat(freshFromDb.getDeployStatus()).isEqualTo(DeployStatus.IN_PROGRESS);
+    }
+
+    @Test
+    void execute_skipsProjectStatusSaveWithoutFailingWhenProjectWasDeletedConcurrently() {
+        Project staleSnapshot = boundProject();
+        DeploymentHistory history = claimedHistory();
+        ReleaseMetadata metadata = new ReleaseMetadata(
+                "abc123", "Release title", "Release body", "octo",
+                "https://avatars.example/octo", 17, LocalDateTime.of(2026, 6, 10, 9, 30)
+        );
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(history));
+        when(deploymentHistoryRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(staleSnapshot));
+        // The row is gone by the time we go to save the deployment status — a genuine concurrent
+        // delete, not just a version conflict.
+        when(projectRepository.findById(11L)).thenReturn(Optional.empty());
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepoPort.detectPackageManager("user-token", "octo/repo")).thenReturn(PackageManager.NPM);
+        when(githubRepoPort.detectNodeVersion("user-token", "octo/repo")).thenReturn("20");
+        when(githubRepoPort.detectFrameworkType("user-token", "octo/repo")).thenReturn("vue");
+        when(githubRepoPort.hasNewCommits("user-token", "octo/repo", "main", "preview")).thenReturn(false);
+        when(githubRepoPort.getHeadCommitSha("user-token", "octo/repo", "main")).thenReturn("abc123");
+        when(githubRepoPort.findSequentialTagForCommit("user-token", "octo/repo", "abc123")).thenReturn("v7");
+        when(githubRepoPort.getReleaseMetadata("user-token", "octo/repo", "abc123", null)).thenReturn(metadata);
+        when(githubPagesPort.getPages("user-token", "octo/repo")).thenReturn(
+                new GithubPagesPort.PagesInfo(true, "https://octo.github.io/repo/", "gh-pages", "site.example.com"));
+        when(githubActionsPort.findWorkflowRun(
+                "user-token", "octo/repo", "qeploy-deploy.yml", "correlation-51", "abc123", history.getTriggeredAt()
+        )).thenReturn(new WorkflowRunMatch(901L, "abc123", "queued", null));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.execute(51L); // must not throw
+
+        verify(projectRepository, never()).save(any());
+        assertThat(history.getStatus()).isEqualTo(DeployStatus.IN_PROGRESS);
+    }
+
+    // ── I45 (#45) review follow-up F2: handleExecutionFailure swallows (logs, does not
+    // propagate) an OOLFE from its own best-effort project-status mirror ──
+
+    @Test
+    void executeQueued_swallowsOptimisticLockingFailureFromProjectStatusMirrorAfterAnExecutionFailure() {
+        Project notBound = new Project(
+                11L, 1L, "my-project", ProjectStatus.ACTIVE, "vue", null, "fast",
+                DeployStatus.LIVE, "https://octo.github.io/repo/", "v6", null, null,
+                RepositoryVisibility.PUBLIC, RepositoryBindingStatus.NOT_BOUND, RepositoryHealthStatus.HEALTHY,
+                false, LocalDateTime.now(), LocalDateTime.now()
+        );
+        // attempt already at maxAttempts so history.retry(...) inside handleExecutionFailure
+        // goes straight to fail() (single call, deterministic — no need to simulate 3 rounds).
+        DeploymentHistory exhaustedHistory = new DeploymentHistory(
+                51L, 1L, 11L, DeployTargetType.LATEST, null, null, DeployStatus.IN_PROGRESS, null,
+                "correlation-51", null, null, null, null, null, null, null, null, "task-51", null,
+                3, 3, null, "worker-1", LocalDateTime.now().plusMinutes(2), LocalDateTime.now(), LocalDateTime.now(), null
+        );
+        // First findById (top of execute()) resolves the history and drives it to FAILED inside
+        // handleExecutionFailure's own second findById call.
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(exhaustedHistory));
+        when(deploymentHistoryRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(exhaustedHistory));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(notBound));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        // handleExecutionFailure's best-effort project mirror: found, but saving it loses a
+        // version race.
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(notBound));
+        when(projectRepository.save(notBound)).thenThrow(
+                new ObjectOptimisticLockingFailureException(Project.class, 11L));
+
+        // resolveProject() rejects a NOT_BOUND project with ForbiddenException — that's execute()'s
+        // failure, which executeQueued's catch(Exception) routes into handleExecutionFailure.
+        service.executeQueued(51L); // must not throw despite the project save's OOLFE
+
+        assertThat(exhaustedHistory.getStatus()).isEqualTo(DeployStatus.FAILED);
+        verify(deploymentHistoryRepository).save(exhaustedHistory);
+        verify(projectRepository).save(notBound);
     }
 
     private DeploymentHistory persisted(DeploymentHistory source, Long id) {
