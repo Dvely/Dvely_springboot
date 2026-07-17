@@ -141,7 +141,10 @@ public class ChatController {
 
     @Operation(
             summary = "대화 메시지 생성",
-            description = "대화 세션에 사용자 메시지를 저장합니다. 현재 구현은 USER 메시지만 저장하며, Agent 실행은 포함하지 않습니다."
+            description = "대화 세션에 사용자 메시지를 저장합니다. 저장 직후 Decision Agent가 해당 메시지를 동기적으로 판단하여 " +
+                          "승인 정책에 따라 Agent 작업을 큐잉(제출)까지 수행합니다(외부 AI API 호출 포함, 승인이 필요한 경우 " +
+                          "승인 대기 상태로 큐잉됩니다). 이 응답 자체(MessageResponse)에는 생성된 Agent 작업의 taskId가 " +
+                          "포함되지 않으므로, 진행 상황은 메시지 목록을 재조회해 assistant 메시지 유무로 확인해야 합니다."
     )
     @PostMapping("/api/v1/conversations/{conversationId}/messages")
     @ResponseStatus(HttpStatus.CREATED)
