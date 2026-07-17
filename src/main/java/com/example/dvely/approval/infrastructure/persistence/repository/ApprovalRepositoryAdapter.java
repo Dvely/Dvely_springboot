@@ -32,6 +32,12 @@ public class ApprovalRepositoryAdapter implements ApprovalRepository {
     }
 
     @Override
+    public Optional<Approval> findByIdAndOwnerUserIdForUpdate(Long approvalId, Long ownerUserId) {
+        return springDataRepository.findByIdAndOwnerUserIdForUpdate(approvalId, ownerUserId)
+                .map(ApprovalEntity::toDomain);
+    }
+
+    @Override
     public List<Approval> findByProjectIdAndOwnerUserIdOrderByCreatedAtDesc(Long projectId, Long ownerUserId) {
         return springDataRepository.findByProjectIdAndOwnerUserIdOrderByCreatedAtDesc(projectId, ownerUserId)
                 .stream()

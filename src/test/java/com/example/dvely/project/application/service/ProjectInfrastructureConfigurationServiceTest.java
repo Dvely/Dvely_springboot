@@ -43,6 +43,7 @@ import com.example.dvely.project.domain.value.StorageType;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -151,6 +152,41 @@ class ProjectInfrastructureConfigurationServiceTest {
         assertThat(result.settings().updatedAt()).isEqualTo(updatedAt);
     }
 
+    @Test
+    void get_withPendingChange_returnsPendingChangeInResponse() {
+        // Review F5: this scenario was previously unreachable in the test suite because
+        // setUp()'s lenient default always answered the pending-change lookup with an empty
+        // list — every existing GET/PUT test therefore silently asserted (or simply never
+        // checked) pendingChange()==null, even the "policy ON" PUT test whose whole point is
+        // creating a pending change. Explicitly overriding the stub here proves the non-null
+        // shape is actually wired through.
+        connectAsConnected();
+        when(settingRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+        ProjectInfrastructureSettingChange pending = ProjectInfrastructureSettingChange.pendingApproval(
+                11L, InfrastructureChangeAction.CREATED, requested, 77L, 1L
+        );
+        when(changeRepository.findByProjectIdAndStatusOrderByIdAsc(11L, InfrastructureChangeStatus.PENDING_APPROVAL))
+                .thenReturn(List.of(pending));
+
+        ProjectInfrastructureConfigurationResult result = service.get(1L, 11L);
+
+        assertThat(result.pendingChange()).isNotNull();
+        assertThat(result.pendingChange().approvalId()).isEqualTo(77L);
+        assertThat(result.pendingChange().action()).isEqualTo("CREATED");
+        assertThat(result.pendingChange().deploymentArchitecture()).isEqualTo("CONTAINER");
+        assertThat(result.pendingChange().computeTier()).isEqualTo("SMALL");
+        assertThat(result.pendingChange().storageType()).isEqualTo("OBJECT_STORAGE");
+        assertThat(result.pendingChange().networkAccess()).isEqualTo("PUBLIC");
+    }
+
+    @Test
+    void get_otherUsersProject_throwsProjectNotFound() {
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.get(1L, 11L))
+                .isInstanceOf(ProjectNotFoundException.class);
+    }
+
     // ---- PUT: guards ----
 
     @Test
@@ -256,9 +292,29 @@ class ProjectInfrastructureConfigurationServiceTest {
                     LocalDateTime.now(), null
             );
         });
-        when(changeRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        // Review F5: captures what was actually persisted (with a generated changeId, as a real
+        // save() would return) and feeds it back through the pending-change lookup — so the
+        // assertions below on the *returned result* exercise the same toResult() re-read path a
+        // real GET/PUT response goes through, instead of only checking what was passed to save().
+        AtomicReference<ProjectInfrastructureSettingChange> persistedChange = new AtomicReference<>();
+        when(changeRepository.save(any())).thenAnswer(invocation -> {
+            ProjectInfrastructureSettingChange toSave = invocation.getArgument(0);
+            ProjectInfrastructureSettingChange persisted = new ProjectInfrastructureSettingChange(
+                    55L, toSave.getProjectId(), toSave.getAction(), toSave.getStatus(),
+                    toSave.getConfiguration(), toSave.getApprovalId(), toSave.getActorUserId(),
+                    LocalDateTime.now(), toSave.getDecidedAt()
+            );
+            persistedChange.set(persisted);
+            return persisted;
+        });
+        when(changeRepository.findByProjectIdAndStatusOrderByIdAsc(11L, InfrastructureChangeStatus.PENDING_APPROVAL))
+                .thenAnswer(invocation -> {
+                    ProjectInfrastructureSettingChange change = persistedChange.get();
+                    return change == null ? List.of() : List.of(change);
+                });
 
-        service.update(1L, 11L, "CONTAINER", "SMALL", "OBJECT_STORAGE", "PUBLIC");
+        ProjectInfrastructureConfigurationResult result =
+                service.update(1L, 11L, "CONTAINER", "SMALL", "OBJECT_STORAGE", "PUBLIC");
 
         ArgumentCaptor<Approval> approvalCaptor = ArgumentCaptor.forClass(Approval.class);
         verify(approvalRepository).save(approvalCaptor.capture());
@@ -267,6 +323,9 @@ class ProjectInfrastructureConfigurationServiceTest {
         assertThat(savedApproval.getTaskId()).isNull();
         assertThat(savedApproval.isStandalone()).isTrue();
         assertThat(savedApproval.getStatus()).isEqualTo(ApprovalStatus.PENDING);
+        // Review F3 / design §3.2: exact summary format, not just the bare configuration text.
+        assertThat(savedApproval.getSummary())
+                .isEqualTo("인프라 설정 변경 요청: " + requested.summaryText());
 
         ArgumentCaptor<ProjectInfrastructureSettingChange> changeCaptor =
                 ArgumentCaptor.forClass(ProjectInfrastructureSettingChange.class);
@@ -277,6 +336,17 @@ class ProjectInfrastructureConfigurationServiceTest {
         assertThat(savedChange.getApprovalId()).isEqualTo(99L);
 
         verify(settingRepository, never()).save(any());
+
+        // Review F5: the response itself — not just the save() arguments — must carry the
+        // pending change. settings must stay at the pre-existing value (SERVER/MICRO/NONE/
+        // PRIVATE) since nothing was applied yet.
+        assertThat(result.pendingChange()).isNotNull();
+        assertThat(result.pendingChange().changeId()).isEqualTo(55L);
+        assertThat(result.pendingChange().approvalId()).isEqualTo(99L);
+        assertThat(result.pendingChange().action()).isEqualTo("UPDATED");
+        assertThat(result.pendingChange().deploymentArchitecture()).isEqualTo("CONTAINER");
+        assertThat(result.settings()).isNotNull();
+        assertThat(result.settings().deploymentArchitecture()).isEqualTo("SERVER");
     }
 
     @Test
@@ -296,7 +366,12 @@ class ProjectInfrastructureConfigurationServiceTest {
 
         service.update(1L, 11L, "CONTAINER", "SMALL", "OBJECT_STORAGE", "PUBLIC");
 
-        verify(approvalRepository).save(any());
+        ArgumentCaptor<Approval> approvalCaptor = ArgumentCaptor.forClass(Approval.class);
+        verify(approvalRepository).save(approvalCaptor.capture());
+        // Review F3: the CREATED-branch wording ("저장") is distinct from UPDATED's ("변경"),
+        // covered separately by update_policyOn_createsStandaloneApprovalAndPendingChangeWithoutApplyingSetting.
+        assertThat(approvalCaptor.getValue().getSummary())
+                .isEqualTo("인프라 설정 저장 요청: " + requested.summaryText());
         verify(settingRepository, never()).save(any());
     }
 
@@ -341,6 +416,14 @@ class ProjectInfrastructureConfigurationServiceTest {
     }
 
     // ---- history ----
+
+    @Test
+    void getHistory_otherUsersProject_throwsProjectNotFound() {
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.getHistory(1L, 11L, null))
+                .isInstanceOf(ProjectNotFoundException.class);
+    }
 
     @Test
     void getHistory_clampsNullZeroNegativeAndOversizedLimits() {

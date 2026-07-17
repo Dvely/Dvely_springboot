@@ -3,8 +3,11 @@ package com.example.dvely.project.application.service;
 import com.example.dvely.approval.application.port.out.StandaloneApprovalHandler;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
+import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.project.domain.model.ProjectInfrastructureSetting;
 import com.example.dvely.project.domain.model.ProjectInfrastructureSettingChange;
+import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
 import com.example.dvely.project.domain.repository.ProjectInfrastructureSettingChangeRepository;
 import com.example.dvely.project.domain.repository.ProjectInfrastructureSettingRepository;
 import com.example.dvely.project.domain.value.InfrastructureChangeStatus;
@@ -31,6 +34,8 @@ public class InfrastructureChangeApprovalHandler implements StandaloneApprovalHa
 
     private final ProjectInfrastructureSettingRepository settingRepository;
     private final ProjectInfrastructureSettingChangeRepository changeRepository;
+    private final ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
+    private final CloudConnectionRepository cloudConnectionRepository;
 
     @Override
     public boolean supports(ApprovalType type) {
@@ -40,6 +45,18 @@ public class InfrastructureChangeApprovalHandler implements StandaloneApprovalHa
     @Override
     public void onApproved(Approval approval) {
         ProjectInfrastructureSettingChange change = findPending(approval.getId());
+        // Review F2 / design D7: the CONNECTED precondition was only true at PUT time — the
+        // approval can sit pending for a while, during which the connection may have been
+        // unselected or lost its CONNECTED status. Re-check it now rather than trusting the
+        // state captured when the change was requested. Throwing here (before markApplied())
+        // leaves the change row at PENDING_APPROVAL and — because this method runs inside
+        // ApprovalCommandService.approve()'s transaction — rolls the approval's status back to
+        // PENDING too, so the user can simply restore the connection and re-approve instead of
+        // redoing the whole PUT.
+        if (!isConnectedCloudSelected(approval.getOwnerUserId(), change.getProjectId())) {
+            throw new IllegalStateException(
+                    "클라우드 연결이 해제되어 적용할 수 없습니다. 연결을 다시 선택한 뒤 승인해주세요. changeId=" + change.getId());
+        }
         ProjectInfrastructureSetting setting = settingRepository.findByProjectId(change.getProjectId())
                 .orElseGet(() -> new ProjectInfrastructureSetting(change.getProjectId(), change.getConfiguration()));
         setting.apply(change.getConfiguration());
@@ -64,5 +81,17 @@ public class InfrastructureChangeApprovalHandler implements StandaloneApprovalHa
                 .filter(change -> change.getStatus() == InfrastructureChangeStatus.PENDING_APPROVAL)
                 .orElseThrow(() -> new IllegalStateException(
                         "승인에 연결된 대기 중 인프라 설정 변경을 찾을 수 없습니다. approvalId=" + approvalId));
+    }
+
+    // Deliberately self-contained (design §6 precedent) rather than delegating to
+    // ProjectInfrastructureConfigurationService's private equivalent — keeps this handler's only
+    // dependencies scoped to what it actually touches, instead of pulling in the whole
+    // configuration service (and its own approval-repository dependency) just for a 4-line check.
+    private boolean isConnectedCloudSelected(Long ownerUserId, Long projectId) {
+        return cloudConnectionSettingRepository.findByProjectId(projectId)
+                .flatMap(setting -> cloudConnectionRepository
+                        .findByIdAndOwnerUserId(setting.getCloudConnectionId(), ownerUserId))
+                .map(connection -> connection.getStatus() == CloudConnectionStatus.CONNECTED)
+                .orElse(false);
     }
 }

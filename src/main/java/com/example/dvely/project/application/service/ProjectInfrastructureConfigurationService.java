@@ -108,7 +108,7 @@ public class ProjectInfrastructureConfigurationService {
         // change is the payload the approval is "about", and it must always be resolvable from
         // the approval (InfrastructureChangeApprovalHandler looks it up by approvalId).
         Approval approval = approvalRepository.save(Approval.standalone(
-                ownerUserId, projectId, ApprovalType.INFRA_OPERATION, requested.summaryText()
+                ownerUserId, projectId, ApprovalType.INFRA_OPERATION, summaryFor(action, requested)
         ));
         changeRepository.save(ProjectInfrastructureSettingChange.pendingApproval(
                 projectId, action, requested, approval.getId(), ownerUserId
@@ -215,6 +215,14 @@ public class ProjectInfrastructureConfigurationService {
                 change.getCreatedAt(),
                 change.getDecidedAt()
         );
+    }
+
+    // Design §3.2's exact summary format: "인프라 설정 저장 요청: ..." for a first-ever save,
+    // "인프라 설정 변경 요청: ..." for a change to an already-applied configuration — this is the
+    // only human-readable trace of the request an approver sees before deciding.
+    private String summaryFor(InfrastructureChangeAction action, InfrastructureConfiguration configuration) {
+        String verb = action == InfrastructureChangeAction.CREATED ? "저장" : "변경";
+        return "인프라 설정 " + verb + " 요청: " + configuration.summaryText();
     }
 
     private static int clampLimit(Integer requested) {

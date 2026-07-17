@@ -22,7 +22,14 @@ public class ProjectInfrastructureSettingRepositoryAdapter implements ProjectInf
         ProjectInfrastructureSettingEntity entity = springDataRepository.findById(setting.getProjectId())
                 .orElseGet(() -> ProjectInfrastructureSettingEntity.from(setting));
         entity.updateFrom(setting);
-        return springDataRepository.save(entity).toDomain();
+        // saveAndFlush (review F4, same root cause as U3 F2): a plain save() on an existing row
+        // only schedules the UPDATE for the next flush, and @UpdateTimestamp is only populated
+        // as part of that flush. The immediate-apply PUT path
+        // (ProjectInfrastructureConfigurationService.update) re-reads this row in the same
+        // transaction right after saving it to build the response — without forcing the flush
+        // now, that re-read would return the *pre-update* updatedAt from the still-open
+        // persistence context, showing a stale timestamp even though the write itself succeeded.
+        return springDataRepository.saveAndFlush(entity).toDomain();
     }
 
     @Override

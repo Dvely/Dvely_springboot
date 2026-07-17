@@ -1,6 +1,7 @@
 package com.example.dvely.approval.application.command;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -38,8 +39,8 @@ class ApprovalCommandServiceTest {
         );
         Approval change = approval(1L, ApprovalType.CHANGE, 21L);
         Approval deployment = approval(2L, ApprovalType.DEPLOYMENT, 21L);
-        when(repository.findByIdAndOwnerUserId(1L, 7L)).thenReturn(Optional.of(change));
-        when(repository.findByIdAndOwnerUserId(2L, 7L)).thenReturn(Optional.of(deployment));
+        when(repository.findByIdAndOwnerUserIdForUpdate(1L, 7L)).thenReturn(Optional.of(change));
+        when(repository.findByIdAndOwnerUserIdForUpdate(2L, 7L)).thenReturn(Optional.of(deployment));
         when(repository.save(change)).thenReturn(change);
         when(repository.save(deployment)).thenReturn(deployment);
         when(repository.findByTaskIdOrderByIdAsc("task-1"))
@@ -71,7 +72,7 @@ class ApprovalCommandServiceTest {
                 List.of()
         );
         Approval approval = approval(1L, ApprovalType.CHANGE, 21L);
-        when(repository.findByIdAndOwnerUserId(1L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.findByIdAndOwnerUserIdForUpdate(1L, 7L)).thenReturn(Optional.of(approval));
         when(repository.save(approval)).thenReturn(approval);
         when(queryService.toResult(approval)).thenReturn(result(approval));
 
@@ -100,7 +101,7 @@ class ApprovalCommandServiceTest {
                 5L, 7L, 11L, null, null, ApprovalType.INFRA_OPERATION,
                 ApprovalStatus.PENDING, "인프라 설정 변경 요청", LocalDateTime.now(), null
         );
-        when(repository.findByIdAndOwnerUserId(5L, 7L)).thenReturn(Optional.of(persisted));
+        when(repository.findByIdAndOwnerUserIdForUpdate(5L, 7L)).thenReturn(Optional.of(persisted));
         when(repository.save(persisted)).thenReturn(persisted);
         when(queryService.toResult(persisted)).thenReturn(result(persisted));
 
@@ -128,7 +129,7 @@ class ApprovalCommandServiceTest {
                 5L, 7L, 11L, null, null, ApprovalType.INFRA_OPERATION,
                 ApprovalStatus.PENDING, "인프라 설정 변경 요청", LocalDateTime.now(), null
         );
-        when(repository.findByIdAndOwnerUserId(5L, 7L)).thenReturn(Optional.of(persisted));
+        when(repository.findByIdAndOwnerUserIdForUpdate(5L, 7L)).thenReturn(Optional.of(persisted));
         when(repository.save(persisted)).thenReturn(persisted);
         when(queryService.toResult(persisted)).thenReturn(result(persisted));
 
@@ -136,6 +137,32 @@ class ApprovalCommandServiceTest {
 
         verify(handler).onRejected(persisted);
         verifyNoInteractions(orchestrator, messageService);
+    }
+
+    @Test
+    void taskBoundApprovalStillUsesAgentPathEvenWhenAStandaloneHandlerIsRegistered() {
+        // Review F6: dispatch must key off Approval#isStandalone() (taskId == null), not off
+        // "is there any StandaloneApprovalHandler bean present". A handler registered for
+        // INFRA_OPERATION must not divert a task-bound CHANGE approval away from the agent path.
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        StandaloneApprovalHandler infraHandler = mock(StandaloneApprovalHandler.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(infraHandler)
+        );
+        Approval taskApproval = approval(1L, ApprovalType.CHANGE, 21L);
+        when(repository.findByIdAndOwnerUserIdForUpdate(1L, 7L)).thenReturn(Optional.of(taskApproval));
+        when(repository.save(taskApproval)).thenReturn(taskApproval);
+        when(repository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of(taskApproval));
+        when(queryService.toResult(taskApproval)).thenReturn(result(taskApproval));
+
+        service.approve(7L, 1L);
+
+        verify(orchestrator).executeApproved("task-1");
+        verify(messageService).appendAssistant(21L, "모든 승인이 완료되어 작업을 시작합니다.");
+        verifyNoInteractions(infraHandler);
     }
 
     @Test
@@ -151,7 +178,7 @@ class ApprovalCommandServiceTest {
                 5L, 7L, 11L, null, null, ApprovalType.INFRA_OPERATION,
                 ApprovalStatus.PENDING, "인프라 설정 변경 요청", LocalDateTime.now(), null
         );
-        when(repository.findByIdAndOwnerUserId(5L, 7L)).thenReturn(Optional.of(persisted));
+        when(repository.findByIdAndOwnerUserIdForUpdate(5L, 7L)).thenReturn(Optional.of(persisted));
         when(repository.save(persisted)).thenReturn(persisted);
 
         assertThatThrownBy(() -> service.approve(7L, 5L))
@@ -160,6 +187,61 @@ class ApprovalCommandServiceTest {
                 .hasMessageContaining("INFRA_OPERATION");
 
         verifyNoInteractions(queryService);
+    }
+
+    @Test
+    void bothApproveAndRejectAcquireTheLockedLookup_notThePlainOne() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of()
+        );
+        Approval approveTarget = approval(1L, ApprovalType.CHANGE, 21L);
+        Approval rejectTarget = approval(2L, ApprovalType.CHANGE, 21L);
+        when(repository.findByIdAndOwnerUserIdForUpdate(1L, 7L)).thenReturn(Optional.of(approveTarget));
+        when(repository.findByIdAndOwnerUserIdForUpdate(2L, 7L)).thenReturn(Optional.of(rejectTarget));
+        when(repository.save(approveTarget)).thenReturn(approveTarget);
+        when(repository.save(rejectTarget)).thenReturn(rejectTarget);
+        when(queryService.toResult(approveTarget)).thenReturn(result(approveTarget));
+        when(queryService.toResult(rejectTarget)).thenReturn(result(rejectTarget));
+
+        service.approve(7L, 1L);
+        service.reject(7L, 2L);
+
+        verify(repository).findByIdAndOwnerUserIdForUpdate(1L, 7L);
+        verify(repository).findByIdAndOwnerUserIdForUpdate(2L, 7L);
+        // Review F1: decision paths must never fall back to the unlocked read — that would
+        // reopen the exact blind-overwrite race the locked method exists to close.
+        verify(repository, never()).findByIdAndOwnerUserId(anyLong(), anyLong());
+    }
+
+    @Test
+    void secondDecisionOnAnAlreadyDecidedApprovalFailsInsteadOfBlindOverwriting() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of()
+        );
+        Approval approval = approval(1L, ApprovalType.CHANGE, 21L);
+        // Models the two racing transactions both resolving to the same row: with the
+        // PESSIMISTIC_WRITE lock in place, the second transaction's SELECT ... FOR UPDATE only
+        // proceeds after the first commits — so by the time it reads, it sees the row exactly as
+        // the winner left it. Reusing the same mutable `approval` instance for both calls
+        // reproduces that "second reader sees the first writer's result" ordering without
+        // needing real threads/transactions in a unit test.
+        when(repository.findByIdAndOwnerUserIdForUpdate(1L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.save(approval)).thenReturn(approval);
+        when(queryService.toResult(approval)).thenReturn(result(approval));
+
+        service.approve(7L, 1L);
+
+        assertThatThrownBy(() -> service.reject(7L, 1L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("이미 처리된 승인입니다");
     }
 
     private Approval approval(Long id, ApprovalType type, Long conversationId) {

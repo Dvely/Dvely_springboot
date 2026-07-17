@@ -11,13 +11,20 @@ import static org.mockito.Mockito.when;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.cloudconnection.domain.model.CloudConnection;
+import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
+import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
+import com.example.dvely.cloudconnection.domain.value.CloudProvider;
+import com.example.dvely.project.domain.model.ProjectCloudConnectionSetting;
 import com.example.dvely.project.domain.model.ProjectInfrastructureSetting;
 import com.example.dvely.project.domain.model.ProjectInfrastructureSettingChange;
+import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
 import com.example.dvely.project.domain.repository.ProjectInfrastructureSettingChangeRepository;
 import com.example.dvely.project.domain.repository.ProjectInfrastructureSettingRepository;
 import com.example.dvely.project.domain.value.ComputeTier;
 import com.example.dvely.project.domain.value.DeploymentArchitecture;
 import com.example.dvely.project.domain.value.InfrastructureChangeAction;
+import com.example.dvely.project.domain.value.InfrastructureChangeStatus;
 import com.example.dvely.project.domain.value.InfrastructureConfiguration;
 import com.example.dvely.project.domain.value.NetworkAccess;
 import com.example.dvely.project.domain.value.StorageType;
@@ -39,6 +46,12 @@ class InfrastructureChangeApprovalHandlerTest {
     @Mock
     private ProjectInfrastructureSettingChangeRepository changeRepository;
 
+    @Mock
+    private ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
+
+    @Mock
+    private CloudConnectionRepository cloudConnectionRepository;
+
     private InfrastructureChangeApprovalHandler handler;
 
     private final InfrastructureConfiguration configuration = new InfrastructureConfiguration(
@@ -47,7 +60,9 @@ class InfrastructureChangeApprovalHandlerTest {
 
     @BeforeEach
     void setUp() {
-        handler = new InfrastructureChangeApprovalHandler(settingRepository, changeRepository);
+        handler = new InfrastructureChangeApprovalHandler(
+                settingRepository, changeRepository, cloudConnectionSettingRepository, cloudConnectionRepository
+        );
     }
 
     @Test
@@ -60,6 +75,7 @@ class InfrastructureChangeApprovalHandlerTest {
 
     @Test
     void onApproved_createsNewSettingWhenNoneExistsYetAndMarksChangeApplied() {
+        connectAsConnected();
         Approval approval = approvedApproval(34L);
         ProjectInfrastructureSettingChange pending = ProjectInfrastructureSettingChange.pendingApproval(
                 11L, InfrastructureChangeAction.CREATED, configuration, 34L, 7L
@@ -82,6 +98,7 @@ class InfrastructureChangeApprovalHandlerTest {
 
     @Test
     void onApproved_overwritesExistingSettingInPlace() {
+        connectAsConnected();
         Approval approval = approvedApproval(34L);
         ProjectInfrastructureSettingChange pending = ProjectInfrastructureSettingChange.pendingApproval(
                 11L, InfrastructureChangeAction.UPDATED, configuration, 34L, 7L
@@ -106,6 +123,46 @@ class InfrastructureChangeApprovalHandlerTest {
         // proves the "upsert onto the existing row" path, not "always create new".
         assertThat(settingCaptor.getValue()).isSameAs(existing);
         assertThat(settingCaptor.getValue().getConfiguration()).isEqualTo(configuration);
+    }
+
+    @Test
+    void onApproved_connectionNoLongerConnected_rejectsApplicationAndKeepsChangePending() {
+        // Review F2 / design D7: the connection could have been unselected or lost CONNECTED
+        // status while the approval sat pending — must not silently apply against a project that
+        // no longer has a target.
+        when(cloudConnectionSettingRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+        Approval approval = approvedApproval(34L);
+        ProjectInfrastructureSettingChange pending = ProjectInfrastructureSettingChange.pendingApproval(
+                11L, InfrastructureChangeAction.CREATED, configuration, 34L, 7L
+        );
+        when(changeRepository.findByApprovalId(34L)).thenReturn(Optional.of(pending));
+
+        assertThatThrownBy(() -> handler.onApproved(approval))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("클라우드 연결이 해제되어 적용할 수 없습니다");
+
+        assertThat(pending.getStatus()).isEqualTo(InfrastructureChangeStatus.PENDING_APPROVAL);
+        verify(settingRepository, never()).save(any());
+        verify(changeRepository, never()).save(any());
+    }
+
+    @Test
+    void onApproved_connectionSelectedButNotConnectedStatus_rejectsApplication() {
+        when(cloudConnectionSettingRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(11L, 10L)));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(10L, 7L))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.VALIDATED)));
+        Approval approval = approvedApproval(34L);
+        ProjectInfrastructureSettingChange pending = ProjectInfrastructureSettingChange.pendingApproval(
+                11L, InfrastructureChangeAction.CREATED, configuration, 34L, 7L
+        );
+        when(changeRepository.findByApprovalId(34L)).thenReturn(Optional.of(pending));
+
+        assertThatThrownBy(() -> handler.onApproved(approval))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("클라우드 연결이 해제되어 적용할 수 없습니다");
+
+        verify(settingRepository, never()).save(any());
     }
 
     @Test
@@ -150,6 +207,37 @@ class InfrastructureChangeApprovalHandlerTest {
         assertThatThrownBy(() -> handler.onApproved(approval))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("승인에 연결된 대기 중 인프라 설정 변경을 찾을 수 없습니다");
+    }
+
+    private void connectAsConnected() {
+        when(cloudConnectionSettingRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(11L, 10L)));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(10L, 7L))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+    }
+
+    private CloudConnection connection(CloudConnectionStatus status) {
+        return new CloudConnection(
+                10L,
+                7L,
+                CloudProvider.AWS,
+                "production",
+                "123456789012",
+                "ap-northeast-2",
+                null,
+                "ACCESS_KEY",
+                "AKIA1234567890ABCDEF",
+                "abcdefghijklmnopqrstuvwxyz1234567890ABCD",
+                null,
+                null,
+                null,
+                null,
+                null,
+                status,
+                LocalDateTime.now(),
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
     }
 
     private Approval approvedApproval(Long approvalId) {
