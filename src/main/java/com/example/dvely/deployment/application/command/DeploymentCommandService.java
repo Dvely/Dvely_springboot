@@ -67,6 +67,18 @@ public class DeploymentCommandService {
      * approval for direct user action (that ApprovalType is only created by the agent planning
      * path via AgentOrchestrator) — retry is the same kind of direct action, so the click itself
      * is the approval.</p>
+     *
+     * <p><b>Accepted risk (review follow-up F5, design D3/§7 — deliberate, not an oversight):</b>
+     * there is no limit on how many times a given history can be retried, and no check for an
+     * already in-flight PENDING/IN_PROGRESS job on the same project before queuing another one.
+     * Design §7 explicitly scopes both out ("재시도 횟수 제한·rate limit", "진행 중 job 존재 시
+     * 차단") as MVP simplifications, and D3 argues the same asymmetry already exists for the
+     * plain {@code POST /projects/{id}/deployments} endpoint (which also queues unconditionally
+     * regardless of concurrent jobs) — making retry strict here while the primary deploy path
+     * isn't would be an inconsistent, surprising restriction rather than a safety improvement.
+     * If abuse or accidental repeated retries become a real problem, the fix belongs at this
+     * call site (e.g. a per-project in-flight check, or a retry-count/backoff column on
+     * {@code DeploymentHistory}) — not a broader change to the shared queuing pipeline.</p>
      */
     @Transactional
     public DeployResult retryDeployment(Long ownerUserId, Long historyId) {

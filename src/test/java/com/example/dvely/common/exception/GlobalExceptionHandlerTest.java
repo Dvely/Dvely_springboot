@@ -39,7 +39,8 @@ class GlobalExceptionHandlerTest {
         // pattern used by ApiResponseContractTest — no full Spring context is needed to prove
         // the exception -> HTTP status mapping.
         mockMvc = MockMvcBuilders.standaloneSetup(
-                        new PathVariableController(), new QueryParamController(), new ConcurrentDeleteController())
+                        new PathVariableController(), new QueryParamController(),
+                        new ConcurrentDeleteController(), new ConflictController())
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -85,6 +86,19 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.code").value("NOT_FOUND"));
     }
 
+    @Test
+    void returnsConflictWhenIllegalStateExceptionIsThrown() throws Exception {
+        // U6 review follow-up F6: several deployment endpoints (retry, failure-analysis) throw
+        // IllegalStateException for "not in the right state" cases (e.g. "실패한 배포만 재시도할
+        // 수 있습니다") and rely on this handler mapping it to 409 — that mapping itself had no
+        // direct test before, only IllegalArgumentException/NotFoundException/etc did.
+        mockMvc.perform(get("/contract/conflict"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.code").value("CONFLICT"))
+                .andExpect(jsonPath("$.message").value("이미 처리된 상태입니다"));
+    }
+
     @RestController
     private static class PathVariableController {
 
@@ -109,6 +123,15 @@ class GlobalExceptionHandlerTest {
         @DeleteMapping("/contract/variables/{id}")
         void delete(@PathVariable Long id) {
             throw new ObjectOptimisticLockingFailureException("EnvironmentVariable", id);
+        }
+    }
+
+    @RestController
+    private static class ConflictController {
+
+        @GetMapping("/contract/conflict")
+        Long conflict() {
+            throw new IllegalStateException("이미 처리된 상태입니다");
         }
     }
 }

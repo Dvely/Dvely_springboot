@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.service.BuildFailureAnalyzer;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
@@ -40,7 +41,15 @@ import com.example.dvely.project.domain.value.RepositoryVisibility;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
 
 class DeploymentFailureAnalysisServiceTest {
@@ -271,6 +280,165 @@ class DeploymentFailureAnalysisServiceTest {
 
         assertThatThrownBy(() -> service.getAnalysis(1L, 51L))
                 .isInstanceOf(NotFoundException.class);
+    }
+
+    // ── F1: in-flight lock ───────────────────────────────────────────────────
+
+    @Test
+    void concurrentAnalyzeCallsForTheSameHistoryOnlyInvokeTheLlmOnce() throws Exception {
+        stubOwnedHistory(failedHistoryWithRunId());
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
+                new GithubActionsPort.DeploymentLogs(901L, List.of(), "some log")
+        );
+        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
+
+        // Stateful fake instead of a one-shot stub: the whole point is to prove the *second*
+        // caller sees the *first* caller's saved row via the double-checked cache, so
+        // findByHistoryId must actually reflect what save() stored.
+        AtomicReference<DeploymentFailureAnalysis> stored = new AtomicReference<>();
+        when(analysisRepository.findByHistoryId(51L)).thenAnswer(invocation -> Optional.ofNullable(stored.get()));
+        when(analysisRepository.save(any(DeploymentFailureAnalysis.class))).thenAnswer(invocation -> {
+            DeploymentFailureAnalysis saved = withId(invocation.getArgument(0), 1L);
+            stored.set(saved);
+            return saved;
+        });
+
+        AtomicInteger llmCallCount = new AtomicInteger();
+        CountDownLatch llmEntered = new CountDownLatch(1);
+        CountDownLatch releaseLlm = new CountDownLatch(1);
+        when(llmPort.complete(any(), anyList())).thenAnswer(invocation -> {
+            llmCallCount.incrementAndGet();
+            llmEntered.countDown();
+            assertThat(releaseLlm.await(5, TimeUnit.SECONDS)).isTrue();
+            return "{\"summary\": \"동시성 테스트 요약\", \"suggestedFix\": \"수정안\"}";
+        });
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<DeploymentFailureAnalysisResult> first = pool.submit(() -> service.analyze(1L, 51L));
+            // Deterministically wait until the first call is inside the (mocked) LLM call —
+            // i.e. holding the per-history lock — before starting the second, so the second is
+            // guaranteed to hit the lock-wait + double-check path rather than racing in by luck.
+            assertThat(llmEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<DeploymentFailureAnalysisResult> second = pool.submit(() -> service.analyze(1L, 51L));
+            Thread.sleep(200); // let the second call physically reach the blocked lock
+            releaseLlm.countDown();
+
+            DeploymentFailureAnalysisResult firstResult = first.get(5, TimeUnit.SECONDS);
+            DeploymentFailureAnalysisResult secondResult = second.get(5, TimeUnit.SECONDS);
+
+            assertThat(llmCallCount.get()).isEqualTo(1);
+            assertThat(secondResult.summary()).isEqualTo(firstResult.summary());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    // ── F2: secret redaction ─────────────────────────────────────────────────
+
+    // GitHub push protection scans raw source text for contiguous secret-shaped literals
+    // (AKIA…, ghp_…). These fixtures are fake, but to keep pushes unblocked the token bodies
+    // are concatenated at runtime — the production SECRET_PATTERN still sees the joined string.
+    private static final String FAKE_GITHUB_TOKEN = "ghp_" + "1234567890abcdefghijklmno";
+    private static final String FAKE_AWS_KEY_ID = "AKIA" + "ABCDEFGHIJKLMNOP";
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void secretsInLogsAreRedactedBeforeStorageAndBeforeReachingTheLlm() {
+        stubOwnedHistory(failedHistoryWithRunId());
+        when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        String secretLaden = String.join("\n",
+                "npm ERR! auth failed",
+                "token: " + FAKE_GITHUB_TOKEN,
+                "aws key: " + FAKE_AWS_KEY_ID,
+                "slack: xoxb-1234567890-abcdefghij",
+                "jwt: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PYtRAzJj8HH8",
+                "Authorization: Bearer abcdef1234567890zzzz"
+        );
+        when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
+                new GithubActionsPort.DeploymentLogs(901L, List.of(), secretLaden)
+        );
+        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
+        ArgumentCaptor<List<LlmMessage>> messagesCaptor = ArgumentCaptor.forClass(List.class);
+        when(llmPort.complete(any(), messagesCaptor.capture())).thenReturn(
+                "{\"summary\": \"실패\", \"suggestedFix\": \"수정\"}"
+        );
+        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
+                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
+
+        DeploymentFailureAnalysisResult result = service.analyze(1L, 51L);
+
+        assertThat(result.logExcerpt())
+                .doesNotContain(FAKE_GITHUB_TOKEN)
+                .doesNotContain(FAKE_AWS_KEY_ID)
+                .doesNotContain("xoxb-1234567890-abcdefghij")
+                .doesNotContain("eyJhbGciOiJIUzI1NiJ9")
+                .doesNotContain("Bearer abcdef1234567890zzzz")
+                .contains("***REDACTED***");
+
+        String sentToLlm = messagesCaptor.getValue().get(0).content();
+        assertThat(sentToLlm)
+                .doesNotContain(FAKE_GITHUB_TOKEN)
+                .contains("***REDACTED***");
+    }
+
+    // ── F3: GitHub log-fetch failure degrades instead of propagating ────────
+
+    @Test
+    void analyzeDegradesToErrorMessageBasedAnalysisWhenGithubLogFetchFails() {
+        DeploymentHistory history = new DeploymentHistory(
+                51L, 1L, 11L, DeployTargetType.LATEST, "v7", "https://octo.github.io/repo/",
+                DeployStatus.FAILED, 901L, "correlation-51", null, null, null, null, null, null, null, null,
+                "task-51", "이전 실행 오류 메시지", 3, 3, null, null, null, LocalDateTime.now(), LocalDateTime.now(), null
+        );
+        stubOwnedHistory(history);
+        when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L))
+                .thenThrow(new RuntimeException("GitHub API rate limit exceeded"));
+        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
+        when(llmPort.complete(any(), anyList())).thenReturn(
+                "{\"summary\": \"요약\", \"suggestedFix\": \"수정\"}"
+        );
+        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
+                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
+
+        DeploymentFailureAnalysisResult result = service.analyze(1L, 51L);
+
+        assertThat(result.logExcerpt()).contains("이전 실행 오류 메시지");
+        assertThat(result.analysisSource()).isEqualTo("LLM");
+    }
+
+    // ── F4: LLM timeout falls back to rule-based ─────────────────────────────
+
+    @Test
+    void analyzeFallsBackToRuleBasedWhenLlmCallExceedsTheTimeout() {
+        service.setLlmTimeoutSecondsForTesting(1);
+        stubOwnedHistory(failedHistoryWithRunId());
+        when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
+                new GithubActionsPort.DeploymentLogs(901L, List.of(), "some log")
+        );
+        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
+        when(llmPort.complete(any(), anyList())).thenAnswer(invocation -> {
+            // Sleeps far longer than the 1-second test timeout above; orTimeout must win the
+            // race and hand control to the rule-based fallback rather than waiting on this.
+            Thread.sleep(3000);
+            return "{\"summary\": \"너무 늦은 응답\", \"suggestedFix\": \"무시되어야 함\"}";
+        });
+        when(buildFailureAnalyzer.analyze(any())).thenReturn(new BuildFailureAnalyzer.Analysis(
+                "타임아웃으로 인한 룰 기반 요약", "some log", "타임아웃 후 제안"
+        ));
+        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
+                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
+
+        DeploymentFailureAnalysisResult result = service.analyze(1L, 51L);
+
+        assertThat(result.analysisSource()).isEqualTo("RULE_BASED");
+        assertThat(result.summary()).isEqualTo("타임아웃으로 인한 룰 기반 요약");
     }
 
     // ── fixtures ─────────────────────────────────────────────────────────────

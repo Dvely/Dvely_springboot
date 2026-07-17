@@ -25,6 +25,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -59,6 +64,34 @@ public class DeploymentFailureAnalysisService {
     private static final Pattern ERROR_LINE_PATTERN = Pattern.compile(
             "##\\[error\\]|\\berror\\b|npm ERR!|exception|failed", Pattern.CASE_INSENSITIVE);
 
+    // Review follow-up F2: minimal secret redaction applied to the excerpt before it is sent to
+    // the LLM or persisted. This is deliberately a small, high-confidence allowlist of common
+    // token shapes (GitHub PATs, AWS access key ids, Slack tokens, JWT-like base64 blobs, and
+    // generic "Bearer <token>" headers) rather than an attempt at exhaustive secret detection —
+    // build logs can leak arbitrary custom secrets this can't catch, but redacting the common,
+    // reliably-shaped ones meaningfully reduces what ends up in an LLM request body and the DB.
+    private static final Pattern SECRET_PATTERN = Pattern.compile(
+            "(?:ghp_|gho_|ghs_|github_pat_)[A-Za-z0-9_]{10,}"
+                    + "|(?:AKIA|ASIA)[A-Z0-9]{12,}"
+                    + "|xox[baprs]-[A-Za-z0-9-]{10,}"
+                    + "|eyJ[A-Za-z0-9._-]{20,}"
+                    + "|(?i:bearer\\s+\\S{16,})"
+    );
+    private static final String REDACTED = "***REDACTED***";
+
+    // Review follow-up F4: ClaudeClient itself has no read timeout (agent/** — out of scope to
+    // change here, see class javadoc on the fallback), so without a caller-side cutoff a stuck
+    // LLM call would block this request indefinitely and never reach the rule-based fallback.
+    // Not `static final`: a real 60s wait is impractical inside a fast unit test suite, so this
+    // is a plain instance field with a production default that tests can override via the
+    // package-private setter below (production code never calls it).
+    private long llmTimeoutSeconds = 60;
+
+    /** Test-only seam for {@link #llmTimeoutSeconds} — see the field's comment. */
+    void setLlmTimeoutSecondsForTesting(long seconds) {
+        this.llmTimeoutSeconds = seconds;
+    }
+
     // English system prompt to match DecisionAgentService/ChatAgentService's prompt convention;
     // the model is instructed to answer in Korean since that's the product's user-facing language.
     private static final String SYSTEM_PROMPT = """
@@ -90,6 +123,13 @@ public class DeploymentFailureAnalysisService {
     private final AiProperties aiProperties;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    // Review follow-up F1: per-historyId in-flight lock so concurrent POSTs on *this instance*
+    // serialize onto a single LLM call instead of each independently paying for one (see
+    // analyzeExclusively()). Entries are removed once their analysis completes — see that
+    // method's try/finally — so this stays bounded by "analyses currently in flight", not by
+    // total historical analysis count.
+    private final ConcurrentHashMap<Long, Object> inFlightLocks = new ConcurrentHashMap<>();
+
     /**
      * GET semantics: returns only a previously saved analysis, no side effects, no LLM/GitHub
      * calls. 404 when nothing has been saved yet — the FE is expected to offer a "run analysis"
@@ -120,26 +160,67 @@ public class DeploymentFailureAnalysisService {
             throw new IllegalStateException("실패한 배포만 분석할 수 있습니다. status=" + history.getStatus());
         }
 
-        long startedAt = System.currentTimeMillis();
-        GithubActionsPort.DeploymentLogs logs = collectLogs(ownerUserId, history);
-        String excerpt = buildExcerpt(logs.jobs(), logs.logText());
-        AnalysisOutcome outcome = runAnalysis(excerpt);
+        return analyzeExclusively(ownerUserId, history);
+    }
 
-        DeploymentFailureAnalysis analysis = new DeploymentFailureAnalysis(
-                history.getId(),
-                ownerUserId,
-                outcome.source(),
-                outcome.summary(),
-                excerpt,
-                outcome.suggestedFix(),
-                outcome.provider(),
-                outcome.model()
-        );
-        DeploymentFailureAnalysis saved = saveGuardingAgainstRace(history.getId(), analysis);
-        log.info("배포 실패 분석 완료: historyId={} runId={} source={} excerptLength={} elapsedMs={}",
-                history.getId(), history.getWorkflowRunId(), saved.getSource(),
-                excerpt.length(), System.currentTimeMillis() - startedAt);
-        return toResult(saved);
+    /**
+     * F1 fix: the cache-miss check in {@link #analyze} is not itself exclusive — without this,
+     * N concurrent POSTs for the same historyId would each pass that check and independently
+     * pay for a full GitHub-log-fetch + LLM call. {@code uk_deployment_failure_analyses_history}
+     * (see {@link #saveGuardingAgainstRace}) only prevents the duplicate row, not the duplicate
+     * work (and duplicate LLM billing), so it alone doesn't guarantee the "one analysis per
+     * history" cost promise (design D1). A per-historyId in-memory lock serializes concurrent requests
+     * <b>on this instance</b> so only the first caller actually does the work; every other
+     * caller blocks briefly on the same lock and then hits the double-checked cache below
+     * instead of redoing it.
+     *
+     * <p>This is a single-instance guard only. If this service ever runs behind more than one
+     * app instance, {@code uk_deployment_failure_analyses_history} + the race recovery in
+     * {@link #saveGuardingAgainstRace} remain the cross-instance backstop exactly as before this
+     * fix — a second instance could still pay for one redundant LLM call in that narrow
+     * cross-instance race window, but never produce a duplicate row.</p>
+     */
+    private DeploymentFailureAnalysisResult analyzeExclusively(Long ownerUserId, DeploymentHistory history) {
+        Long historyId = history.getId();
+        Object lock = inFlightLocks.computeIfAbsent(historyId, id -> new Object());
+        try {
+            synchronized (lock) {
+                // Double-check: another thread on this instance may have finished computing and
+                // saving the analysis while we were waiting to acquire this lock.
+                Optional<DeploymentFailureAnalysis> settled = analysisRepository.findByHistoryId(historyId);
+                if (settled.isPresent()) {
+                    return toResult(settled.get());
+                }
+
+                long startedAt = System.currentTimeMillis();
+                GithubActionsPort.DeploymentLogs logs = collectLogs(ownerUserId, history);
+                // F2: redact before the excerpt goes anywhere else — into the LLM request body
+                // or into the DB row — not just at one of the two.
+                String excerpt = redact(buildExcerpt(logs.jobs(), logs.logText()));
+                AnalysisOutcome outcome = runAnalysis(excerpt);
+
+                DeploymentFailureAnalysis analysis = new DeploymentFailureAnalysis(
+                        historyId,
+                        ownerUserId,
+                        outcome.source(),
+                        outcome.summary(),
+                        excerpt,
+                        outcome.suggestedFix(),
+                        outcome.provider(),
+                        outcome.model()
+                );
+                DeploymentFailureAnalysis saved = saveGuardingAgainstRace(historyId, analysis);
+                log.info("배포 실패 분석 완료: historyId={} runId={} source={} excerptLength={} elapsedMs={}",
+                        historyId, history.getWorkflowRunId(), saved.getSource(),
+                        excerpt.length(), System.currentTimeMillis() - startedAt);
+                return toResult(saved);
+            }
+        } finally {
+            // Only remove the entry if it's still *our* lock object — if it already changed
+            // (shouldn't happen given the computeIfAbsent/remove pairing here, but this keeps
+            // the operation safe/idempotent rather than assuming it) this is a no-op.
+            inFlightLocks.remove(historyId, lock);
+        }
     }
 
     // ── 로그 수집 ────────────────────────────────────────────────────────────
@@ -150,16 +231,32 @@ public class DeploymentFailureAnalysisService {
             // existed) — there is no GitHub Actions run to fetch logs from. Fall back to
             // whatever the worker recorded when it gave up (DeploymentCommandService's retry/
             // fail path). No GitHub call at all in this branch.
-            String errorMessage = history.getErrorMessage() == null ? "" : history.getErrorMessage();
-            return new GithubActionsPort.DeploymentLogs(null, List.of(), errorMessage);
+            return fallbackLogsFromErrorMessage(history, null);
         }
-        Project project = resolveProject(ownerUserId, history.getProjectId());
-        User user = resolveUser(ownerUserId);
-        return githubActionsPort.getJobLogs(
-                user.getGithubUserAccessToken(),
-                project.getSourceRepository(),
-                history.getWorkflowRunId()
-        );
+        try {
+            Project project = resolveProject(ownerUserId, history.getProjectId());
+            User user = resolveUser(ownerUserId);
+            return githubActionsPort.getJobLogs(
+                    user.getGithubUserAccessToken(),
+                    project.getSourceRepository(),
+                    history.getWorkflowRunId()
+            );
+        } catch (RuntimeException exception) {
+            // F3: GitHub Actions log retrieval can fail independently of the deployment itself
+            // (rate limit, log retention expired, transient API error, revoked token) — without
+            // this guard that failure propagated out of analyze() unhandled, defeating the "this
+            // endpoint always returns 200 with *some* analysis" guarantee the LLM-failure
+            // fallback already provides (design §3.3). Degrade to the same errorMessage-based
+            // input used when there's no run at all, rather than failing the whole request.
+            log.warn("배포 로그 수집 실패, errorMessage 기반으로 분석 진행: historyId={} runId={} exceptionType={}",
+                    history.getId(), history.getWorkflowRunId(), exception.getClass().getSimpleName());
+            return fallbackLogsFromErrorMessage(history, history.getWorkflowRunId());
+        }
+    }
+
+    private GithubActionsPort.DeploymentLogs fallbackLogsFromErrorMessage(DeploymentHistory history, Long runId) {
+        String errorMessage = history.getErrorMessage() == null ? "" : history.getErrorMessage();
+        return new GithubActionsPort.DeploymentLogs(runId, List.of(), errorMessage);
     }
 
     // ── 발췌 전략 (design §3.2: 최대 12,000자, 에러 라인 우선) ──────────────────
@@ -227,12 +324,32 @@ public class DeploymentFailureAnalysisService {
         return text.length() <= maxLength ? text : text.substring(0, maxLength);
     }
 
+    /** F2: replace common token shapes with a fixed placeholder — see {@link #SECRET_PATTERN}. */
+    private static String redact(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        return SECRET_PATTERN.matcher(text).replaceAll(REDACTED);
+    }
+
     // ── LLM 호출 + 룰 기반 fallback (design §3.3) ────────────────────────────
 
     private AnalysisOutcome runAnalysis(String excerpt) {
+        // F4: ClaudeClient issues a plain blocking HTTP call with no read timeout configured
+        // (agent/** — out of scope for this fix, see design §4 "agent 도메인은 주입만"), so a
+        // stuck upstream connection could otherwise block this call forever and never reach the
+        // rule-based fallback below. CompletableFuture#orTimeout enforces a caller-side cutoff
+        // without touching ClaudeClient itself.
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         try {
-            String raw = llmRouter.route(AiProvider.ANTHROPIC)
-                    .complete(SYSTEM_PROMPT, List.of(new LlmMessage("user", excerpt)));
+            String raw = CompletableFuture
+                    .supplyAsync(
+                            () -> llmRouter.route(AiProvider.ANTHROPIC)
+                                    .complete(SYSTEM_PROMPT, List.of(new LlmMessage("user", excerpt))),
+                            executor
+                    )
+                    .orTimeout(llmTimeoutSeconds, TimeUnit.SECONDS)
+                    .join();
             ParsedLlmOutput parsed = parseJson(raw);
             return new AnalysisOutcome(
                     AnalysisSource.LLM,
@@ -242,13 +359,26 @@ public class DeploymentFailureAnalysisService {
                     aiProperties.getAnthropic().getModel()
             );
         } catch (RuntimeException exception) {
-            // Any LLM transport failure or unparseable response falls back to the existing
-            // rule-based analyzer rather than failing the whole request — this endpoint always
-            // returns 200 with *some* analysis (design §3.3). Exception type only, no message:
-            // some provider error bodies could plausibly echo back log content we sent them.
-            log.warn("배포 실패 분석 LLM 실패, 룰 기반으로 폴백: exceptionType={}", exception.getClass().getSimpleName());
+            // Any LLM transport failure, timeout, or unparseable response falls back to the
+            // existing rule-based analyzer rather than failing the whole request — this
+            // endpoint always returns 200 with *some* analysis (design §3.3). Exception type
+            // only, no message: some provider error bodies could plausibly echo back log
+            // content we sent them. join() wraps the real cause (including orTimeout's
+            // TimeoutException) in a CompletionException, so unwrap one level for a clearer log.
+            Throwable cause = exception.getCause() != null ? exception.getCause() : exception;
+            log.warn("배포 실패 분석 LLM 실패, 룰 기반으로 폴백: exceptionType={}", cause.getClass().getSimpleName());
             BuildFailureAnalyzer.Analysis ruleBased = buildFailureAnalyzer.analyze(excerpt);
             return new AnalysisOutcome(AnalysisSource.RULE_BASED, ruleBased.userMessage(), ruleBased.suggestedFix(), null, null);
+        } finally {
+            // Non-blocking: shutdown() only stops the executor from accepting new tasks, it does
+            // NOT cancel or wait for the LLM call submitted above. If that call is still running
+            // past the timeout (exactly the case this whole wrapper exists for), it is simply
+            // abandoned to finish or die on its own virtual thread — deliberately NOT using
+            // try-with-resources/ExecutorService#close() here, since close() awaits termination
+            // and would block just as indefinitely as the un-timed-out call would have, defeating
+            // the point of this fix. Virtual threads are always daemon threads, so an abandoned
+            // one cannot prevent JVM shutdown either.
+            executor.shutdown();
         }
     }
 
