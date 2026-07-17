@@ -56,9 +56,11 @@ public class ChatAgentService {
         AgentTask task = taskStore.get(taskId);
         Long conversationId = task == null ? null : task.conversationId();
 
-        List<LlmMessage> messages = new ArrayList<>(
-                conversationId == null ? List.of() : agentMessageService.getConversationContext(conversationId)
-        );
+        List<LlmMessage> history = conversationId == null
+                ? List.of()
+                : agentMessageService.getConversationContext(conversationId);
+
+        List<LlmMessage> messages = new ArrayList<>(withoutRedundantUserTurn(history));
         messages.add(new LlmMessage("user", instruction));
 
         // No local try/catch: LLM transport failures surface as RuntimeExceptions (see
@@ -69,5 +71,44 @@ public class ChatAgentService {
         String answer = llmRouter.route(provider).complete(SYSTEM_PROMPT, messages);
         log.info("[ChatAgent] 완료 | taskId={}", taskId);
         return new CodeResult(null, answer);
+    }
+
+    /**
+     * {@code instruction} is Decision Agent's self-contained rewrite of the most recent user
+     * message in this conversation (its system prompt asks for "a complete, self-contained
+     * natural language request ... as if the original message did not exist"). Replaying that
+     * original message unchanged and then appending {@code instruction} as a new turn would show
+     * the model the same request twice in different words — wasted tokens and an odd-reading
+     * transcript. So we drop the most recent USER turn here; {@code instruction} takes its place
+     * as the new final user turn.
+     *
+     * <p>Anthropic's Messages API additionally requires the turn sequence to start with role
+     * "user". If dropping that turn leaves a leading run of assistant turns with nothing before
+     * them — the common case for a conversation's first exchange, where history is just
+     * {@code [user, assistant-ack]} and becomes {@code [assistant-ack]} — we drop that leading
+     * run too rather than send an assistant-first payload the API would reject. Any genuine
+     * earlier conversation history (from previous rounds) is preserved as-is.</p>
+     */
+    private List<LlmMessage> withoutRedundantUserTurn(List<LlmMessage> history) {
+        int lastUserIndex = -1;
+        for (int i = history.size() - 1; i >= 0; i--) {
+            if ("user".equals(history.get(i).role())) {
+                lastUserIndex = i;
+                break;
+            }
+        }
+        if (lastUserIndex == -1) {
+            return history;
+        }
+
+        List<LlmMessage> withoutLastUserTurn = new ArrayList<>(history);
+        withoutLastUserTurn.remove(lastUserIndex);
+
+        int firstUserIndex = 0;
+        while (firstUserIndex < withoutLastUserTurn.size()
+                && !"user".equals(withoutLastUserTurn.get(firstUserIndex).role())) {
+            firstUserIndex++;
+        }
+        return withoutLastUserTurn.subList(firstUserIndex, withoutLastUserTurn.size());
     }
 }
