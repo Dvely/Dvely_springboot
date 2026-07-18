@@ -14,6 +14,7 @@ import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.value.GithubId;
+import com.example.dvely.change.application.service.ResultApprovalService;
 import com.example.dvely.deployment.application.command.dto.DeployCommand;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort.WorkflowRunMatch;
@@ -55,6 +56,7 @@ class DeploymentCommandServiceTest {
     @Mock private GithubRepoPort githubRepoPort;
     @Mock private DeploymentHistoryRepository deploymentHistoryRepository;
     @Mock private ProjectApprovalPolicyRepository policyRepository;
+    @Mock private ResultApprovalService resultApprovalService;
 
     private DeploymentCommandService service;
 
@@ -68,7 +70,8 @@ class DeploymentCommandServiceTest {
                 githubActionsPort,
                 githubRepoPort,
                 deploymentHistoryRepository,
-                policyRepository
+                policyRepository,
+                resultApprovalService
         );
     }
 
@@ -469,6 +472,10 @@ class DeploymentCommandServiceTest {
         // "must already be BOUND" gate never had a chance to fire for it; prepareRelease is the
         // only thing that will ever get preview's content onto main.
         when(policyRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+        // ...and this project never went through a RESULT-gate decision either (no REJECTED/MERGED
+        // Change row yet) — the "never released" carve-out only applies when BOTH facts hold
+        // (BLOCKING-1 fix). See the dedicated test below for the case where it does NOT hold.
+        when(resultApprovalService.hasResultGateHistory(11L)).thenReturn(false);
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
         when(githubRepoPort.detectPackageManager("user-token", "octo/repo")).thenReturn(PackageManager.NPM);
         when(githubRepoPort.detectNodeVersion("user-token", "octo/repo")).thenReturn("20");
@@ -498,6 +505,59 @@ class DeploymentCommandServiceTest {
                 "user-token", "octo/repo", "preview", "main", "[Qeploy] Deploy preview to main");
         verify(githubRepoPort).mergePullRequest("user-token", "octo/repo", 99);
         assertThat(history.getVersionLabel()).isEqualTo("v1");
+    }
+
+    // ── Review follow-up (BLOCKING-1): the "never released yet" merge carve-out must NOT also
+    // cover a project that already has a REJECTED RESULT-gate decision sitting in preview — that
+    // decision is exactly what the "never released before" test above did not model. This is the
+    // deterministic (no concurrency needed) repro from the review: BOUND, never deployed
+    // (currentVersion == null), but the RESULT gate already rejected once. ──
+
+    @Test
+    void prepareRelease_neverReleasedButAlreadyRejectedByResultGateSkipsAutomaticMergeOfTheRejectedContent() {
+        Project project = neverReleasedBoundProject(); // currentVersion == null -> never released
+        DeploymentHistory history = claimedHistory();
+        ReleaseMetadata metadata = new ReleaseMetadata(
+                "abc123", "Release title", "Release body", "octo",
+                "https://avatars.example/octo", null, LocalDateTime.of(2026, 6, 10, 9, 30)
+        );
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(history));
+        when(deploymentHistoryRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
+        // Policy ON (fail-safe default).
+        when(policyRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+        // The crux of BLOCKING-1: this project already had a RESULT decision (REJECTED) even
+        // though it was never actually deployed — hasResultGateHistory must be what disqualifies
+        // it from the "first release" exception, not project.getCurrentVersion().
+        when(resultApprovalService.hasResultGateHistory(11L)).thenReturn(true);
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepoPort.detectPackageManager("user-token", "octo/repo")).thenReturn(PackageManager.NPM);
+        when(githubRepoPort.detectNodeVersion("user-token", "octo/repo")).thenReturn("20");
+        when(githubRepoPort.detectFrameworkType("user-token", "octo/repo")).thenReturn("vue");
+        when(githubRepoPort.getHeadCommitSha("user-token", "octo/repo", "main")).thenReturn("abc123");
+        when(githubRepoPort.findSequentialTagForCommit("user-token", "octo/repo", "abc123")).thenReturn("v7");
+        when(githubRepoPort.getReleaseMetadata("user-token", "octo/repo", "abc123", null)).thenReturn(metadata);
+        when(githubPagesPort.getPages("user-token", "octo/repo")).thenReturn(
+                new GithubPagesPort.PagesInfo(true, "https://octo.github.io/repo/", "gh-pages", "site.example.com"));
+        when(githubActionsPort.findWorkflowRun(
+                "user-token", "octo/repo", "qeploy-deploy.yml", "correlation-51", "abc123", history.getTriggeredAt()
+        )).thenReturn(new WorkflowRunMatch(901L, "abc123", "queued", null));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.execute(51L);
+
+        // The rejected content must never be merged by this direct deploy — merge is the RESULT
+        // approval flow's job now, and this project has already been through it once (and was
+        // rejected). A direct deploy just publishes whatever main already has.
+        verify(githubRepoPort, never()).hasNewCommits(anyString(), anyString(), anyString(), anyString());
+        verify(githubRepoPort, never()).createOrGetPullRequest(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(githubRepoPort, never()).mergePullRequest(anyString(), anyString(), anyInt());
+        assertThat(history.getVersionLabel()).isEqualTo("v7");
+        assertThat(history.getCommitSha()).isEqualTo("abc123");
     }
 
     // ── I45 (#45) review follow-up F2: handleExecutionFailure swallows (logs, does not

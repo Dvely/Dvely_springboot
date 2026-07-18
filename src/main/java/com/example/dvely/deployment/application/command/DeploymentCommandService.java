@@ -3,6 +3,7 @@ package com.example.dvely.deployment.application.command;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
+import com.example.dvely.change.application.service.ResultApprovalService;
 import com.example.dvely.common.exception.ForbiddenException;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.deployment.application.command.dto.DeployCommand;
@@ -55,6 +56,11 @@ public class DeploymentCommandService {
     // Track Z (#56) D1/§5.4: needed so a direct deploy can no longer silently merge preview into
     // main once the result-approval gate owns that project (see prepareRelease's mergeAllowed).
     private final ProjectApprovalPolicyRepository projectApprovalPolicyRepository;
+    // Review follow-up (BLOCKING-1): source of truth for "has this project already gone through a
+    // RESULT-gate decision" (see #hasResultGateHistory) — needed to correct the "never released"
+    // merge exception in prepareRelease below, which must not also cover a project whose only
+    // history is a REJECTED result.
+    private final ResultApprovalService resultApprovalService;
 
     @Transactional
     public DeployResult deploy(Long ownerUserId, Long projectId, DeployCommand command) {
@@ -327,8 +333,27 @@ public class DeploymentCommandService {
         // existence alone cannot distinguish "never released" from "already established". See
         // backend.md for the full writeup of why this deviates from the design draft's
         // branchExists-based rule.
+        //
+        // Review follow-up (BLOCKING-1): `currentVersion == null` alone is NOT a safe proxy for
+        // "never went through the RESULT gate" — a project can be BOUND, never successfully
+        // deployed (currentVersion still null), and yet already have a REJECTED Change sitting in
+        // preview from a prior RESULT decision. Treating that project as "never released" would
+        // let this direct-deploy path silently merge exactly the content the user rejected. The
+        // "never gated" carve-out must therefore hold both facts at once: never released AND never
+        // decided by the gate (no REJECTED/MERGED Change row yet) — the latter is the shared
+        // judgment call centralized in ResultApprovalService#hasResultGateHistory so this project's
+        // gate-history fact is computed the same way everywhere it matters, not re-approximated
+        // here with a second, weaker signal.
+        //
+        // Left-to-right short-circuiting is deliberate and load-bearing here (kept as a single
+        // expression rather than a separate boolean variable): when the policy is OFF, or when
+        // the project has already been released once, hasResultGateHistory's DB lookup below is
+        // never even reached — preserving §8's "policy OFF/already-established project costs
+        // nothing new" invariant instead of paying for a gate-history query that can't change the
+        // outcome anyway.
         boolean mergeAllowed = !resolvePolicy(project.getId()).isResultApprovalRequired()
-                || project.getCurrentVersion() == null;
+                || (project.getCurrentVersion() == null
+                        && !resultApprovalService.hasResultGateHistory(project.getId()));
         if (mergeAllowed && githubRepoPort.hasNewCommits(userToken, sourceRepo, MAIN_BRANCH, PREVIEW_BRANCH)) {
             prNumber = githubRepoPort.createOrGetPullRequest(
                     userToken,

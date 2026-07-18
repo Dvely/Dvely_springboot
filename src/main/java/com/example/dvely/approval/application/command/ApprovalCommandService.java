@@ -46,6 +46,16 @@ public class ApprovalCommandService {
         }
 
         if (saved.getType() == ApprovalType.RESULT) {
+            // Review follow-up (BLOCKING-3): verify + lock the rollback-able DB precondition
+            // (task must still be WAITING_RESULT_APPROVAL) BEFORE reflect()'s irreversible
+            // external GitHub merge below. Previously reflect() ran first and this check ran
+            // only afterward (via resumeAfterResult) — a precondition failure there rolled back
+            // this transaction's DB writes but could not undo a merge that had already actually
+            // happened on GitHub (e.g. the task raced to CANCELLED via a concurrent
+            // DELETE /tasks/{id} between the RESULT approval's creation and this approve call).
+            // Ordering the check first means that failure path now has zero external side
+            // effects — it aborts before reflect() is ever called.
+            agentOrchestrator.verifyResumableAfterResult(saved.getTaskId());
             ResultApprovalService.ReflectResult reflectResult = resultApprovalService.reflect(saved);
             agentOrchestrator.resumeAfterResult(saved.getTaskId());
             agentMessageService.appendAssistant(

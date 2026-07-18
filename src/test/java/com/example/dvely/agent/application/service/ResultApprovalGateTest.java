@@ -107,6 +107,25 @@ class ResultApprovalGateTest {
     }
 
     @Test
+    void doesNotFireWhenTaskWasAlreadyCancelledBeforeGateEntry() {
+        // BLOCKING-2 regression: models a DELETE /tasks/{id} landing during the CODE step / the
+        // gap before this method starts (AgentPlanExecutor's own isCancelled check happens before
+        // this method is even called) — the gate must not push, must not revive the cancelled
+        // task into WAITING_RESULT_APPROVAL, and must not create an orphaned RESULT approval for
+        // it. Bailing out here should also mean zero GitHub work — not just zero DB writes.
+        AgentPlan plan = codePlan();
+        stubBoundPolicyOnProject();
+        when(taskStore.isCancelled("task-1")).thenReturn(true);
+
+        boolean fired = gate.requestIfRequired(plan, 0, "task-1", 1L, 11L);
+
+        assertThat(fired).isFalse();
+        verifyNoInteractions(previewSessionService, previewBranchPushService, approvalRepository);
+        verify(taskStore, never()).markStepCompleted(anyString(), org.mockito.ArgumentMatchers.anyInt());
+        verify(taskStore, never()).markWaitingResultApproval(anyString(), anyString());
+    }
+
+    @Test
     void doesNotFireWhenPolicyIsOff() {
         AgentPlan plan = codePlan();
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))

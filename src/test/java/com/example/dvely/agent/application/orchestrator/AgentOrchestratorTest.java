@@ -251,6 +251,49 @@ class AgentOrchestratorTest {
                 .hasMessageContaining("task-1");
     }
 
+    // ── Review follow-up (BLOCKING-3): verifyResumableAfterResult — the locked precondition check
+    // that must run BEFORE ResultApprovalService#reflect()'s irreversible GitHub merge. ──────────
+
+    @Test
+    void verifyResumableAfterResultDelegatesToTaskStoresLockedGuard() {
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+
+        orchestrator.verifyResumableAfterResult("task-1");
+
+        verify(taskStore).requireWaitingResultApproval("task-1");
+    }
+
+    @Test
+    void verifyResumableAfterResultPropagatesTaskStoresConflict() {
+        // A racing cancel/duplicate-approve makes the locked precondition fail — this must
+        // surface as a thrown exception (-> 409) so the caller (ApprovalCommandService) never
+        // proceeds to the irreversible external merge.
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+        org.mockito.Mockito.doThrow(new IllegalStateException(
+                        "결과 승인 대기 상태가 아닌 Agent task입니다. taskId=task-1"))
+                .when(taskStore).requireWaitingResultApproval("task-1");
+
+        assertThatThrownBy(() -> orchestrator.verifyResumableAfterResult("task-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("task-1");
+    }
+
     @Test
     void cancellingTaskAlsoCancelsPendingApprovals() {
         TaskStore taskStore = mock(TaskStore.class);

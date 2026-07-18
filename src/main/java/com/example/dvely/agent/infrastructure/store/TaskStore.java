@@ -215,12 +215,57 @@ public class TaskStore {
      * {@code agent_run_events} audit trail (mirroring every other {@code markX} method here); it
      * intentionally does not touch the entity's {@code summary} (see
      * {@link AgentRunEntity#waitForResultApproval()} javadoc for why).
+     * <p>
+     * Review follow-up (BLOCKING-2): guarded with the same {@code if (CANCELLED) return;} pattern
+     * already used by {@link #markDone}, {@link #markFailed}, and {@link #markWaitingInput} — this
+     * method was the one gap in that convention. Without it, a task cancelled (e.g. via
+     * {@code DELETE /tasks/{id}}) while the gate's slow preview-branch push was still in flight
+     * would get silently revived from CANCELLED back into WAITING_RESULT_APPROVAL the moment the
+     * gate's push finally completed, because {@link AgentRunEntity#waitForResultApproval()} used
+     * to transition unconditionally. {@link AgentRunEntity#waitForResultApproval()} now also
+     * guards against this directly (defense in depth for any future caller that bypasses
+     * {@code TaskStore}), so this check is technically redundant with the entity's own guard —
+     * kept anyway so the early {@code return} here also skips appending a misleading
+     * "WAITING_RESULT_APPROVAL" audit event for a transition that never actually happened.
      */
     @Transactional
     public void markWaitingResultApproval(String taskId, String message) {
         AgentRunEntity run = requireRun(taskId);
+        if (TaskStatus.valueOf(run.getStatus()) == TaskStatus.CANCELLED) {
+            return;
+        }
         run.waitForResultApproval();
         appendEvent(taskId, "WAITING_RESULT_APPROVAL", TaskStatus.WAITING_RESULT_APPROVAL, message);
+    }
+
+    /**
+     * Review follow-up (BLOCKING-3): locks the task row ({@code PESSIMISTIC_WRITE}, held for the
+     * rest of the caller's transaction) and verifies it is still WAITING_RESULT_APPROVAL —
+     * without performing the QUEUED transition itself (that remains {@link
+     * #resumeAfterResultApproval}'s job). Callers (the RESULT branch of {@code
+     * ApprovalCommandService.approve}) must call this <em>before</em> {@code
+     * ResultApprovalService#reflect()}'s irreversible GitHub merge, so a precondition failure
+     * (e.g. the task raced to CANCELLED via a concurrent {@code DELETE /tasks/{id}}) aborts with
+     * zero external side effects. Previously this same check only ran (via {@link
+     * #resumeAfterResultApproval}) <em>after</em> {@code reflect()} had already merged — a failure
+     * there rolled back the DB but could not undo the GitHub merge that had already happened.
+     * <p>
+     * The lock acquired here is what makes the later {@link #resumeAfterResultApproval} call
+     * (same transaction, same Hibernate persistence context — no second row fetch) safe to assume
+     * will still observe WAITING_RESULT_APPROVAL and therefore succeed.
+     *
+     * @throws IllegalStateException (-&gt; 409, E-RA-03) if the task is missing or not currently
+     *         WAITING_RESULT_APPROVAL.
+     */
+    @Transactional
+    public void requireWaitingResultApproval(String taskId) {
+        AgentRunEntity run = runRepository.findByTaskIdForUpdate(taskId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "결과 승인 대기 상태가 아닌 Agent task입니다. taskId=" + taskId));
+        if (TaskStatus.valueOf(run.getStatus()) != TaskStatus.WAITING_RESULT_APPROVAL) {
+            throw new IllegalStateException(
+                    "결과 승인 대기 상태가 아닌 Agent task입니다. taskId=" + taskId);
+        }
     }
 
     /**

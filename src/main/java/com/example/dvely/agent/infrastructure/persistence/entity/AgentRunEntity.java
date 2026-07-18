@@ -192,8 +192,21 @@ public class AgentRunEntity {
      * what {@code GET /tasks/{id}} should keep showing while the task waits — the gate's own
      * "review and approve" message is delivered separately as a chat message, not through this
      * field.
+     * <p>
+     * Review follow-up (BLOCKING-2): no-ops on a terminal task (mirrors {@link #cancel}'s own
+     * {@code isTerminal()} check) instead of unconditionally overwriting {@code status} the way
+     * {@link #transition} normally does. This closes the gap the review found: a task cancelled
+     * while the gate's slow preview push was still running used to come back to life as
+     * WAITING_RESULT_APPROVAL the instant the push finished, because this method never checked
+     * what state it was overwriting. {@code TaskStore.markWaitingResultApproval} already checks
+     * for CANCELLED before calling this — this guard is the belt-and-suspenders entity-level
+     * invariant so "terminal states are never overwritten" holds even for a future caller that
+     * invokes this entity method directly.
      */
     public void waitForResultApproval() {
+        if (isTerminal()) {
+            return;
+        }
         transition(TaskStatus.WAITING_RESULT_APPROVAL);
         leaseOwner = null;
         leaseUntil = null;

@@ -3,6 +3,7 @@ package com.example.dvely.approval.application.command;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -23,6 +24,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
+import org.mockito.Mockito;
 
 class ApprovalCommandServiceTest {
 
@@ -276,8 +279,15 @@ class ApprovalCommandServiceTest {
 
         service.approve(7L, 9L);
 
+        verify(orchestrator).verifyResumableAfterResult("task-1");
         verify(resultApprovalService).reflect(approval);
         verify(orchestrator).resumeAfterResult("task-1");
+        // BLOCKING-3 fix: the locked DB precondition check must run strictly before the
+        // irreversible external merge, and the actual resume transition strictly after it.
+        InOrder order = Mockito.inOrder(orchestrator, resultApprovalService);
+        order.verify(orchestrator).verifyResumableAfterResult("task-1");
+        order.verify(resultApprovalService).reflect(approval);
+        order.verify(orchestrator).resumeAfterResult("task-1");
         // RESULT never joins the plan's allApproved vote (design D2/§3.3) — no findByTaskIdOrderByIdAsc
         // aggregate lookup, no executeApproved call.
         verify(repository, never()).findByTaskIdOrderByIdAsc(anyString());
@@ -286,6 +296,37 @@ class ApprovalCommandServiceTest {
                 21L,
                 "결과가 승인되어 main에 반영되었습니다.\n- PR: #42\n- commit: abcdef1\n남은 작업을 이어서 진행합니다."
         );
+    }
+
+    @Test
+    void resultApprovalAbortsBeforeTheIrreversibleMergeWhenTheLockedPreconditionFails() {
+        // BLOCKING-3 regression: models the race where the task independently moved off
+        // WAITING_RESULT_APPROVAL (e.g. cancelled) between the RESULT approval's creation and
+        // this approve call — the locked precondition check must reject the whole approve before
+        // resultApprovalService.reflect() (the irreversible external GitHub merge) is ever
+        // invoked, and before the task is ever resumed.
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ResultApprovalService resultApprovalService = mock(ResultApprovalService.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(),
+                resultApprovalService
+        );
+        Approval approval = approval(9L, ApprovalType.RESULT, 21L);
+        when(repository.findByIdAndOwnerUserIdForUpdate(9L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.save(approval)).thenReturn(approval);
+        doThrow(new IllegalStateException("결과 승인 대기 상태가 아닌 Agent task입니다. taskId=task-1"))
+                .when(orchestrator).verifyResumableAfterResult("task-1");
+
+        assertThatThrownBy(() -> service.approve(7L, 9L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("task-1");
+
+        verifyNoInteractions(resultApprovalService);
+        verify(orchestrator, never()).resumeAfterResult(anyString());
+        verifyNoInteractions(messageService);
     }
 
     @Test

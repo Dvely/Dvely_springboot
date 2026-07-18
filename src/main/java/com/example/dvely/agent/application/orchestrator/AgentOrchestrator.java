@@ -110,6 +110,19 @@ public class AgentOrchestrator {
         }
     }
 
+    /**
+     * Review follow-up (BLOCKING-3): the "may this RESULT approval still proceed" half of
+     * resuming a task past its result-approval gate, split out from {@link #resumeAfterResult} so
+     * {@code ApprovalCommandService} can call this <em>before</em> {@code
+     * ResultApprovalService#reflect()}'s irreversible GitHub merge, and only call {@link
+     * #resumeAfterResult} itself after that merge has already succeeded. See {@code
+     * TaskStore#requireWaitingResultApproval} for the row-locking contract that makes the later
+     * {@link #resumeAfterResult} call safe to assume will not fail on this same guard.
+     */
+    public void verifyResumableAfterResult(String taskId) {
+        taskStore.requireWaitingResultApproval(taskId);
+    }
+
     public void reject(String taskId, Long ownerUserId) {
         if (!taskStore.cancel(taskId, ownerUserId)) {
             throw new IllegalStateException("거절할 Agent task를 찾을 수 없습니다. taskId=" + taskId);

@@ -1,6 +1,7 @@
 package com.example.dvely.agent.infrastructure.store;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -49,6 +50,12 @@ class TaskStoreTest {
                             ? Optional.of(run)
                             : Optional.empty();
                 });
+        // BLOCKING-3: models the PESSIMISTIC_WRITE-locked lookup backing
+        // requireWaitingResultApproval — a plain in-memory stand-in is enough here since this
+        // suite tests the state-machine guard itself, not real row-locking (that's covered by the
+        // repository query being exercised against a real DB elsewhere).
+        when(runRepository.findByTaskIdForUpdate(any(String.class)))
+                .thenAnswer(invocation -> Optional.ofNullable(runs.get(invocation.getArgument(0))));
         taskStore = new TaskStore(runRepository, eventRepository, new ObjectMapper());
     }
 
@@ -117,6 +124,20 @@ class TaskStoreTest {
     }
 
     @Test
+    void markWaitingResultApprovalIsANoOpWhenTaskIsAlreadyCancelled() {
+        // BLOCKING-2 regression: a task cancelled mid-flight (DELETE /tasks/{id} arriving while
+        // the gate's slow preview-branch push is still in progress) must never be revived into
+        // WAITING_RESULT_APPROVAL by a gate call that started executing before the cancellation
+        // landed.
+        taskStore.save(task(TaskStatus.RUNNING));
+        taskStore.cancel("task-1", 1L);
+
+        taskStore.markWaitingResultApproval("task-1", "[결과 반영] 요약");
+
+        assertThat(taskStore.getOwned("task-1", 1L).status()).isEqualTo(TaskStatus.CANCELLED);
+    }
+
+    @Test
     void resumeAfterResultApprovalRequeuesOnlyFromWaitingResultApproval() {
         taskStore.save(task(TaskStatus.RUNNING));
         taskStore.markWaitingResultApproval("task-1", "[결과 반영] 요약");
@@ -145,6 +166,41 @@ class TaskStoreTest {
         // A second, racing approve/resume call against the same task must not re-enqueue it a
         // second time now that it has already moved past WAITING_RESULT_APPROVAL.
         assertThat(taskStore.resumeAfterResultApproval("task-1")).isFalse();
+    }
+
+    // ── Track Z (#56) review follow-up (BLOCKING-3): requireWaitingResultApproval — the locked
+    // precondition check that must run BEFORE ResultApprovalService#reflect()'s external merge. ──
+
+    @Test
+    void requireWaitingResultApprovalPassesSilentlyWhenTaskIsWaitingForResultApproval() {
+        taskStore.save(task(TaskStatus.RUNNING));
+        taskStore.markWaitingResultApproval("task-1", "[결과 반영] 요약");
+
+        taskStore.requireWaitingResultApproval("task-1"); // must not throw
+    }
+
+    @Test
+    void requireWaitingResultApprovalThrowsWhenTaskNeverEnteredTheGate() {
+        taskStore.save(task(TaskStatus.RUNNING));
+
+        assertThatThrownBy(() -> taskStore.requireWaitingResultApproval("task-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("task-1");
+    }
+
+    @Test
+    void requireWaitingResultApprovalThrowsWhenTaskWasCancelledConcurrently() {
+        // BLOCKING-3 regression: models the race where the task is cancelled between the gate
+        // creating the RESULT approval and the user approving it — the locked precondition check
+        // must reject the resume attempt (before any external merge is ever attempted), not
+        // silently let it through.
+        taskStore.save(task(TaskStatus.RUNNING));
+        taskStore.markWaitingResultApproval("task-1", "[결과 반영] 요약");
+        taskStore.cancel("task-1", 1L);
+
+        assertThatThrownBy(() -> taskStore.requireWaitingResultApproval("task-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("task-1");
     }
 
     @Test

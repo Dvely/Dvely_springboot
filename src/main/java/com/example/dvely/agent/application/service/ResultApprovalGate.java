@@ -84,6 +84,19 @@ public class ResultApprovalGate {
             return false;
         }
 
+        // Review follow-up (BLOCKING-2): re-check cancellation right before starting the slow
+        // preview-branch push (docker exec git push, NFR p95 < 10s, §8). AgentPlanExecutor already
+        // checks isCancelled right after the CODE step itself finishes, but that check happens
+        // *before* this method is even called — without this second check here, a cancel landing
+        // during the push (the largest part of the vulnerable window the review identified) would
+        // still push to GitHub and open a RESULT approval for a task nobody is waiting on anymore.
+        // Bailing out here — before pushPreviewBranch — also means a cancelled task's gate does
+        // zero GitHub work, not just zero DB writes.
+        if (taskStore.isCancelled(taskId)) {
+            log.info("[ResultApprovalGate] 게이트 진입 시점에 이미 취소된 task — 게이트 생략 taskId={}", taskId);
+            return false;
+        }
+
         pushPreviewBranch(taskId, userId, project);
 
         // §5.2 ordering: completeStep only after the push above has actually succeeded, so a push

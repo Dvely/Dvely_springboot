@@ -173,6 +173,26 @@ class ResultApprovalServiceTest {
         verify(changeRepository, never()).save(any());
     }
 
+    // ── Review follow-up (BLOCKING-1): hasResultGateHistory — the shared judgment call consumed
+    // by DeploymentCommandService's mergeAllowed rule. ──────────────────────────────────────────
+
+    @Test
+    void hasResultGateHistoryQueriesBothRejectedAndMergedStatuses() {
+        when(changeRepository.existsByProjectIdAndStatusIn(
+                11L, java.util.List.of(ChangeStatus.REJECTED.name(), ChangeStatus.MERGED.name())
+        )).thenReturn(true);
+
+        assertThat(service.hasResultGateHistory(11L)).isTrue();
+    }
+
+    @Test
+    void hasResultGateHistoryIsFalseWhenNoChangeHasEverBeenDecidedForTheProject() {
+        when(changeRepository.existsByProjectIdAndStatusIn(11L, java.util.List.of(
+                ChangeStatus.REJECTED.name(), ChangeStatus.MERGED.name()))).thenReturn(false);
+
+        assertThat(service.hasResultGateHistory(11L)).isFalse();
+    }
+
     private ChangeEntity changeEntity() {
         return new ChangeEntity(1L, 11L, 21L, "task-1", "preview-session-1", "요약", "diff");
     }
