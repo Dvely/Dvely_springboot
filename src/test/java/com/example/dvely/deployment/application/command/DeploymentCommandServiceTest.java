@@ -3,6 +3,8 @@ package com.example.dvely.deployment.application.command;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -24,6 +26,8 @@ import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepositor
 import com.example.dvely.deployment.domain.value.DeployTargetType;
 import com.example.dvely.deployment.domain.value.PackageManager;
 import com.example.dvely.project.domain.model.Project;
+import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
+import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.project.domain.value.ProjectStatus;
@@ -50,6 +54,7 @@ class DeploymentCommandServiceTest {
     @Mock private GithubActionsPort githubActionsPort;
     @Mock private GithubRepoPort githubRepoPort;
     @Mock private DeploymentHistoryRepository deploymentHistoryRepository;
+    @Mock private ProjectApprovalPolicyRepository policyRepository;
 
     private DeploymentCommandService service;
 
@@ -62,7 +67,8 @@ class DeploymentCommandServiceTest {
                 githubPagesPort,
                 githubActionsPort,
                 githubRepoPort,
-                deploymentHistoryRepository
+                deploymentHistoryRepository,
+                policyRepository
         );
     }
 
@@ -207,6 +213,11 @@ class DeploymentCommandServiceTest {
         // before the deployment-status save, instead of reusing the snapshot read at the top of
         // execute() — see DeploymentCommandService#updateProjectDeploymentState.
         when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
+        // Policy OFF here so this pre-existing (Track Z-unrelated) test keeps exercising the same
+        // merge call it always did — see the dedicated mergeAllowed matrix tests below for the ON
+        // behavior itself.
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, true, true, true, true, false)));
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
         when(githubRepoPort.detectPackageManager("user-token", "octo/repo"))
                 .thenReturn(PackageManager.NPM);
@@ -281,6 +292,8 @@ class DeploymentCommandServiceTest {
         // triggered a webhook head-sync) — modeled here simply as "a different Project instance",
         // since the fix's whole point is that this call, not the stale snapshot, is what gets saved.
         when(projectRepository.findById(11L)).thenReturn(Optional.of(freshFromDb));
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, true, true, true, true, false)));
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
         when(githubRepoPort.detectPackageManager("user-token", "octo/repo")).thenReturn(PackageManager.NPM);
         when(githubRepoPort.detectNodeVersion("user-token", "octo/repo")).thenReturn("20");
@@ -323,6 +336,8 @@ class DeploymentCommandServiceTest {
         // The row is gone by the time we go to save the deployment status — a genuine concurrent
         // delete, not just a version conflict.
         when(projectRepository.findById(11L)).thenReturn(Optional.empty());
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, true, true, true, true, false)));
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
         when(githubRepoPort.detectPackageManager("user-token", "octo/repo")).thenReturn(PackageManager.NPM);
         when(githubRepoPort.detectNodeVersion("user-token", "octo/repo")).thenReturn("20");
@@ -343,6 +358,146 @@ class DeploymentCommandServiceTest {
 
         verify(projectRepository, never()).save(any());
         assertThat(history.getStatus()).isEqualTo(DeployStatus.IN_PROGRESS);
+    }
+
+    // ── Track Z (#56) D1/§5.4: prepareRelease's mergeAllowed matrix. None of the pre-existing
+    // execute_* tests above ever exercised hasNewCommits=true (they all stub it false), so this
+    // also closes a pre-existing gap in "does a direct deploy merge at all" coverage. ──
+
+    @Test
+    void prepareRelease_policyOnAndAlreadyReleasedProjectSkipsAutomaticMergeWithoutEvenCheckingForNewCommits() {
+        Project project = boundProject(); // currentVersion = "v6" -> already released once
+        DeploymentHistory history = claimedHistory();
+        ReleaseMetadata metadata = new ReleaseMetadata(
+                "abc123", "Release title", "Release body", "octo",
+                "https://avatars.example/octo", null, LocalDateTime.of(2026, 6, 10, 9, 30)
+        );
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(history));
+        when(deploymentHistoryRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
+        // Policy ON via the fail-safe default (no policy row yet) — D1 must still block this
+        // direct deploy's merge for an already-established project.
+        when(policyRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepoPort.detectPackageManager("user-token", "octo/repo")).thenReturn(PackageManager.NPM);
+        when(githubRepoPort.detectNodeVersion("user-token", "octo/repo")).thenReturn("20");
+        when(githubRepoPort.detectFrameworkType("user-token", "octo/repo")).thenReturn("vue");
+        when(githubRepoPort.getHeadCommitSha("user-token", "octo/repo", "main")).thenReturn("abc123");
+        when(githubRepoPort.findSequentialTagForCommit("user-token", "octo/repo", "abc123")).thenReturn("v7");
+        when(githubRepoPort.getReleaseMetadata("user-token", "octo/repo", "abc123", null)).thenReturn(metadata);
+        when(githubPagesPort.getPages("user-token", "octo/repo")).thenReturn(
+                new GithubPagesPort.PagesInfo(true, "https://octo.github.io/repo/", "gh-pages", "site.example.com"));
+        when(githubActionsPort.findWorkflowRun(
+                "user-token", "octo/repo", "qeploy-deploy.yml", "correlation-51", "abc123", history.getTriggeredAt()
+        )).thenReturn(new WorkflowRunMatch(901L, "abc123", "queued", null));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.execute(51L);
+
+        // mergeAllowed is computed (and false) before the `&&` short-circuits past hasNewCommits
+        // — a blocked project doesn't even pay for the extra GitHub compare call.
+        verify(githubRepoPort, never()).hasNewCommits(anyString(), anyString(), anyString(), anyString());
+        verify(githubRepoPort, never()).createOrGetPullRequest(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(githubRepoPort, never()).mergePullRequest(anyString(), anyString(), anyInt());
+        // main's head is still resolved and tagged as-is — a direct deploy still publishes
+        // whatever IS on main, it just no longer drags preview onto it.
+        assertThat(history.getVersionLabel()).isEqualTo("v7");
+        assertThat(history.getCommitSha()).isEqualTo("abc123");
+    }
+
+    @Test
+    void prepareRelease_policyOffMergesDespiteAlreadyBeingReleased() {
+        Project project = boundProject(); // currentVersion = "v6" -> already released once
+        DeploymentHistory history = claimedHistory();
+        ReleaseMetadata metadata = new ReleaseMetadata(
+                "merged-sha", "Release title", "Release body", "octo",
+                "https://avatars.example/octo", 99, LocalDateTime.of(2026, 6, 10, 9, 30)
+        );
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(history));
+        when(deploymentHistoryRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, true, true, true, true, false)));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepoPort.detectPackageManager("user-token", "octo/repo")).thenReturn(PackageManager.NPM);
+        when(githubRepoPort.detectNodeVersion("user-token", "octo/repo")).thenReturn("20");
+        when(githubRepoPort.detectFrameworkType("user-token", "octo/repo")).thenReturn("vue");
+        when(githubRepoPort.hasNewCommits("user-token", "octo/repo", "main", "preview")).thenReturn(true);
+        when(githubRepoPort.createOrGetPullRequest(
+                "user-token", "octo/repo", "preview", "main", "[Qeploy] Deploy preview to main"
+        )).thenReturn(99);
+        when(githubRepoPort.mergePullRequest("user-token", "octo/repo", 99)).thenReturn("merged-sha");
+        when(githubRepoPort.getHeadCommitSha("user-token", "octo/repo", "main")).thenReturn("merged-sha");
+        when(githubRepoPort.findSequentialTagForCommit("user-token", "octo/repo", "merged-sha")).thenReturn("v7");
+        when(githubRepoPort.getReleaseMetadata("user-token", "octo/repo", "merged-sha", 99)).thenReturn(metadata);
+        when(githubPagesPort.getPages("user-token", "octo/repo")).thenReturn(
+                new GithubPagesPort.PagesInfo(true, "https://octo.github.io/repo/", "gh-pages", "site.example.com"));
+        when(githubActionsPort.findWorkflowRun(
+                "user-token", "octo/repo", "qeploy-deploy.yml", "correlation-51", "merged-sha", history.getTriggeredAt()
+        )).thenReturn(new WorkflowRunMatch(901L, "merged-sha", "queued", null));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.execute(51L);
+
+        verify(githubRepoPort).createOrGetPullRequest(
+                "user-token", "octo/repo", "preview", "main", "[Qeploy] Deploy preview to main");
+        verify(githubRepoPort).mergePullRequest("user-token", "octo/repo", 99);
+        assertThat(history.getCommitSha()).isEqualTo("merged-sha");
+    }
+
+    @Test
+    void prepareRelease_policyOnButNeverReleasedBeforeStillMergesForTheFirstPublish() {
+        Project project = neverReleasedBoundProject(); // currentVersion = null -> never released
+        DeploymentHistory history = claimedHistory();
+        ReleaseMetadata metadata = new ReleaseMetadata(
+                "merged-sha", "Release title", "Release body", "octo",
+                "https://avatars.example/octo", 99, LocalDateTime.of(2026, 6, 10, 9, 30)
+        );
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(history));
+        when(deploymentHistoryRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
+        // Policy ON (fail-safe default) — but this is the project's very first release, so D9's
+        // "must already be BOUND" gate never had a chance to fire for it; prepareRelease is the
+        // only thing that will ever get preview's content onto main.
+        when(policyRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepoPort.detectPackageManager("user-token", "octo/repo")).thenReturn(PackageManager.NPM);
+        when(githubRepoPort.detectNodeVersion("user-token", "octo/repo")).thenReturn("20");
+        when(githubRepoPort.detectFrameworkType("user-token", "octo/repo")).thenReturn("vue");
+        when(githubRepoPort.hasNewCommits("user-token", "octo/repo", "main", "preview")).thenReturn(true);
+        when(githubRepoPort.createOrGetPullRequest(
+                "user-token", "octo/repo", "preview", "main", "[Qeploy] Deploy preview to main"
+        )).thenReturn(99);
+        when(githubRepoPort.mergePullRequest("user-token", "octo/repo", 99)).thenReturn("merged-sha");
+        when(githubRepoPort.getHeadCommitSha("user-token", "octo/repo", "main")).thenReturn("merged-sha");
+        when(githubRepoPort.findSequentialTagForCommit("user-token", "octo/repo", "merged-sha")).thenReturn(null);
+        when(githubRepoPort.createNextSequentialTag("user-token", "octo/repo", "merged-sha")).thenReturn("v1");
+        when(githubRepoPort.getReleaseMetadata("user-token", "octo/repo", "merged-sha", 99)).thenReturn(metadata);
+        when(githubPagesPort.getPages("user-token", "octo/repo")).thenReturn(
+                new GithubPagesPort.PagesInfo(true, "https://octo.github.io/repo/", "gh-pages", "site.example.com"));
+        when(githubActionsPort.findWorkflowRun(
+                "user-token", "octo/repo", "qeploy-deploy.yml", "correlation-51", "merged-sha", history.getTriggeredAt()
+        )).thenReturn(new WorkflowRunMatch(901L, "merged-sha", "queued", null));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.execute(51L);
+
+        verify(githubRepoPort).createOrGetPullRequest(
+                "user-token", "octo/repo", "preview", "main", "[Qeploy] Deploy preview to main");
+        verify(githubRepoPort).mergePullRequest("user-token", "octo/repo", 99);
+        assertThat(history.getVersionLabel()).isEqualTo("v1");
     }
 
     // ── I45 (#45) review follow-up F2: handleExecutionFailure swallows (logs, does not
@@ -464,6 +619,30 @@ class DeploymentCommandServiceTest {
                 DeployStatus.LIVE,
                 "https://octo.github.io/repo/",
                 "v6",
+                "octo/repo",
+                "octo/repo",
+                RepositoryVisibility.PUBLIC,
+                RepositoryBindingStatus.BOUND,
+                RepositoryHealthStatus.HEALTHY,
+                false,
+                now,
+                now
+        );
+    }
+
+    private Project neverReleasedBoundProject() {
+        LocalDateTime now = LocalDateTime.now();
+        return new Project(
+                11L,
+                1L,
+                "my-project",
+                ProjectStatus.ACTIVE,
+                "vue",
+                null,
+                "fast",
+                DeployStatus.PENDING,
+                null,
+                null, // currentVersion == null -> this project has never completed a release
                 "octo/repo",
                 "octo/repo",
                 RepositoryVisibility.PUBLIC,

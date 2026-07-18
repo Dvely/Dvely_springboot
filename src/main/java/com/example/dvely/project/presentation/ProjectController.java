@@ -268,7 +268,8 @@ public class ProjectController {
                 request.changeApprovalRequired(),
                 request.deploymentApprovalRequired(),
                 request.domainApprovalRequired(),
-                request.infraApprovalRequired()
+                request.infraApprovalRequired(),
+                request.resultApprovalRequired()
         ));
     }
 
@@ -438,7 +439,8 @@ public class ProjectController {
                 result.changeApprovalRequired(),
                 result.deploymentApprovalRequired(),
                 result.domainApprovalRequired(),
-                result.infraApprovalRequired()
+                result.infraApprovalRequired(),
+                result.resultApprovalRequired()
         );
     }
 

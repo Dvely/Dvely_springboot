@@ -207,6 +207,38 @@ public class TaskStore {
         appendEvent(taskId, "FAILED", TaskStatus.FAILED, error);
     }
 
+    /**
+     * Track Z (#56) §5.2 ordering contract: callers must invoke this only after the CODE step's
+     * diff has already been recorded ({@code ChangeService.record}) and the preview branch has
+     * already been pushed to GitHub — this method is the state-transition step of the gate
+     * sequence, not a place to trigger those side effects. {@code message} is logged on the
+     * {@code agent_run_events} audit trail (mirroring every other {@code markX} method here); it
+     * intentionally does not touch the entity's {@code summary} (see
+     * {@link AgentRunEntity#waitForResultApproval()} javadoc for why).
+     */
+    @Transactional
+    public void markWaitingResultApproval(String taskId, String message) {
+        AgentRunEntity run = requireRun(taskId);
+        run.waitForResultApproval();
+        appendEvent(taskId, "WAITING_RESULT_APPROVAL", TaskStatus.WAITING_RESULT_APPROVAL, message);
+    }
+
+    /**
+     * Requeues a task past its RESULT approval (design D3) — returns {@code false} (no event
+     * appended) instead of throwing when the task is not currently WAITING_RESULT_APPROVAL, so
+     * {@code AgentOrchestrator.resumeAfterResult} can turn that into a clean 409 (E-RA-03) rather
+     * than a raw "task not found"-style error.
+     */
+    @Transactional
+    public boolean resumeAfterResultApproval(String taskId) {
+        AgentRunEntity run = requireRun(taskId);
+        if (!run.resumeAfterResultApproval()) {
+            return false;
+        }
+        appendEvent(taskId, "RESULT_APPROVED", TaskStatus.QUEUED, "결과 승인이 완료되어 남은 작업을 재개합니다.");
+        return true;
+    }
+
     @Transactional
     public void markWaitingInput(String taskId, String question) {
         AgentRunEntity run = requireRun(taskId);

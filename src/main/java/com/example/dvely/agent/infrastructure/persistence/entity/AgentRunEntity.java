@@ -182,6 +182,39 @@ public class AgentRunEntity {
         leaseUntil = null;
     }
 
+    /**
+     * Track Z (#56) D3: transitions into the result-approval gate right after the plan's last
+     * CODE step completes. Lease is released the same way {@link #waitForInput} releases it —
+     * this row is no longer RUNNING, so there is nothing left for a worker to renew, and holding
+     * a stale lease would only be confusing to read later. Unlike {@link #waitForApproval}, this
+     * intentionally does NOT overwrite {@code summary}: by this point summary already holds the
+     * actual CODE-step result text (set via {@link #updateProgress} moments earlier), which is
+     * what {@code GET /tasks/{id}} should keep showing while the task waits — the gate's own
+     * "review and approve" message is delivered separately as a chat message, not through this
+     * field.
+     */
+    public void waitForResultApproval() {
+        transition(TaskStatus.WAITING_RESULT_APPROVAL);
+        leaseOwner = null;
+        leaseUntil = null;
+    }
+
+    /**
+     * Resumes a task past its result-approval gate (design D3) — the WAITING_RESULT_APPROVAL
+     * mirror of {@link #supplyInput}'s WAITING_INPUT -> QUEUED resume. Returns {@code false}
+     * instead of transitioning when the row is not currently WAITING_RESULT_APPROVAL (E-RA-03):
+     * callers use this as a compare-and-swap guard against a racing duplicate approve, or against
+     * approving a RESULT approval whose task already moved on (e.g. was cancelled) between the
+     * approval decision and this call.
+     */
+    public boolean resumeAfterResultApproval() {
+        if (TaskStatus.valueOf(status) != TaskStatus.WAITING_RESULT_APPROVAL) {
+            return false;
+        }
+        enqueue(false);
+        return true;
+    }
+
     public void supplyInput(String inputValue) {
         this.inputValue = inputValue;
         transition(TaskStatus.QUEUED);

@@ -19,6 +19,8 @@ import com.example.dvely.deployment.domain.value.PackageManager;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.model.Project;
+import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
+import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
@@ -50,6 +52,9 @@ public class DeploymentCommandService {
     private final GithubActionsPort githubActionsPort;
     private final GithubRepoPort githubRepoPort;
     private final DeploymentHistoryRepository deploymentHistoryRepository;
+    // Track Z (#56) D1/§5.4: needed so a direct deploy can no longer silently merge preview into
+    // main once the result-approval gate owns that project (see prepareRelease's mergeAllowed).
+    private final ProjectApprovalPolicyRepository projectApprovalPolicyRepository;
 
     @Transactional
     public DeployResult deploy(Long ownerUserId, Long projectId, DeployCommand command) {
@@ -143,7 +148,7 @@ public class DeploymentCommandService {
 
         ensureWorkflow(userToken, sourceRepo, project.getTemplateType());
 
-        ReleaseSelection release = prepareRelease(userToken, sourceRepo, history);
+        ReleaseSelection release = prepareRelease(userToken, sourceRepo, history, project);
         String deployBranch = resolveDeployBranch(
                 userToken,
                 deploymentRepo,
@@ -290,7 +295,8 @@ public class DeploymentCommandService {
 
     private ReleaseSelection prepareRelease(String userToken,
                                             String sourceRepo,
-                                            DeploymentHistory history) {
+                                            DeploymentHistory history,
+                                            Project project) {
         if (history.getDeployTargetType() == DeployTargetType.VERSION) {
             String commitSha = githubRepoPort.resolveCommitSha(
                     userToken,
@@ -307,7 +313,23 @@ public class DeploymentCommandService {
         }
 
         Integer prNumber = null;
-        if (githubRepoPort.hasNewCommits(userToken, sourceRepo, MAIN_BRANCH, PREVIEW_BRANCH)) {
+        // Track Z (#56) D1/§5.4: once this project's policy requires RESULT approval, a direct
+        // deploy must not drag un-approved preview commits into main on its own — merging is the
+        // RESULT approval flow's job now (ResultApprovalService#reflect). The one exception is
+        // this project's very first release (currentVersion still null): it never had a chance to
+        // go through the gate — D9 only fires once a project is already BOUND, but a brand-new
+        // project only becomes BOUND *during* this very deploy — so without this exception main
+        // would never receive the initial content and Pages would publish nothing.
+        //
+        // Deliberately NOT keyed off whether the `main` branch exists on GitHub: every repository
+        // this app creates (GithubRepositoryPort#createRepository) is created with auto_init=true,
+        // so `main` already exists (with just a README) the instant the repo is created — branch
+        // existence alone cannot distinguish "never released" from "already established". See
+        // backend.md for the full writeup of why this deviates from the design draft's
+        // branchExists-based rule.
+        boolean mergeAllowed = !resolvePolicy(project.getId()).isResultApprovalRequired()
+                || project.getCurrentVersion() == null;
+        if (mergeAllowed && githubRepoPort.hasNewCommits(userToken, sourceRepo, MAIN_BRANCH, PREVIEW_BRANCH)) {
             prNumber = githubRepoPort.createOrGetPullRequest(
                     userToken,
                     sourceRepo,
@@ -330,6 +352,11 @@ public class DeploymentCommandService {
                 prNumber
         );
         return new ReleaseSelection(versionLabel, metadata);
+    }
+
+    private ProjectApprovalPolicy resolvePolicy(Long projectId) {
+        return projectApprovalPolicyRepository.findByProjectId(projectId)
+                .orElseGet(() -> new ProjectApprovalPolicy(projectId));
     }
 
     private Project resolveProject(Long ownerUserId, Long projectId) {

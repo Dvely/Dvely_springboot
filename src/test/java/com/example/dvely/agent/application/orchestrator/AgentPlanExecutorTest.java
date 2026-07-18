@@ -17,6 +17,7 @@ import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
 import com.example.dvely.agent.application.service.InfraOpsAgentService;
+import com.example.dvely.agent.application.service.ResultApprovalGate;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
@@ -47,6 +48,75 @@ class AgentPlanExecutorTest {
         verify(taskStore).markStepCompleted("task-1", 1);
         verify(taskStore).markDone("task-1", "preview", "수정 완료");
         verify(messageService).appendAssistant(21L, "수정 완료");
+    }
+
+    // ── Track Z (#56): result-approval gate wiring ──────────────────────────────────────────
+
+    @Test
+    void stopsAfterLastCodeStepWithoutMarkingDoneWhenResultApprovalGateFires() {
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ResultApprovalGate gate = mock(ResultApprovalGate.class);
+        ChangeService changeService = mock(ChangeService.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                taskStore,
+                messageService,
+                mock(BuildFailureRecoveryService.class),
+                changeService,
+                gate
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
+        when(codeService.execute(step, AiProvider.OPENAI, 1L, 11L, "task-1"))
+                .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
+        // The gate itself is responsible for markStepCompleted when it fires (see
+        // ResultApprovalGate javadoc) — this test only asserts the executor's side: record the
+        // diff, delegate to the gate, then stop without ever calling markDone/removePlan.
+        when(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(true);
+
+        executor.execute(plan, "task-1", 1L);
+
+        verify(changeService).record("task-1", "수정 완료");
+        verify(gate).requestIfRequired(plan, 0, "task-1", 1L, 11L);
+        verify(taskStore, org.mockito.Mockito.never()).markStepCompleted(org.mockito.ArgumentMatchers.eq("task-1"), org.mockito.ArgumentMatchers.anyInt());
+        verify(taskStore, org.mockito.Mockito.never()).markDone(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(taskStore, org.mockito.Mockito.never()).removePlan(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void continuesNormallyWhenResultApprovalGateDoesNotFire() {
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ResultApprovalGate gate = mock(ResultApprovalGate.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                taskStore,
+                messageService,
+                mock(BuildFailureRecoveryService.class),
+                mock(ChangeService.class),
+                gate
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
+        when(codeService.execute(step, AiProvider.OPENAI, 1L, 11L, "task-1"))
+                .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
+        when(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(false);
+
+        executor.execute(plan, "task-1", 1L);
+
+        verify(taskStore).markStepCompleted("task-1", 1);
+        verify(taskStore).markDone("task-1", "preview", "수정 완료");
     }
 
     @Test
@@ -104,7 +174,8 @@ class AgentPlanExecutorTest {
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
-                mock(ChangeService.class)
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class)
         );
 
         AgentStep step = new AgentStep(AgentType.DOMAIN_BIND, Map.of());
@@ -135,7 +206,8 @@ class AgentPlanExecutorTest {
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
-                mock(ChangeService.class)
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class)
         );
         AgentStep step = new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "STATUS_CHECK"));
         when(infraOpsAgentService.execute(step, 1L, "task-1", 11L))
@@ -170,7 +242,8 @@ class AgentPlanExecutorTest {
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
-                mock(ChangeService.class)
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class)
         );
     }
 

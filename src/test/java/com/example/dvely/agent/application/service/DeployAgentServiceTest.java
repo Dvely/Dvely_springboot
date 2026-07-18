@@ -60,7 +60,8 @@ class DeployAgentServiceTest {
                 authCommandService,
                 projectRepository,
                 deploymentFacade,
-                mock(InputWaitStore.class)
+                mock(InputWaitStore.class),
+                new PreviewBranchPushService(dockerService)
         );
         Project project = boundProject();
         when(previewSessionService.findByTaskId("task123"))
@@ -131,7 +132,8 @@ class DeployAgentServiceTest {
         DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
-                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
+                new PreviewBranchPushService(dockerService)
         );
         Project notBound = notBoundProject();
         Project reloaded = notBoundProject();
@@ -171,7 +173,8 @@ class DeployAgentServiceTest {
         DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
-                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
+                new PreviewBranchPushService(dockerService)
         );
         Project notBound = notBoundProject();
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
@@ -211,7 +214,8 @@ class DeployAgentServiceTest {
         DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
-                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
+                new PreviewBranchPushService(dockerService)
         );
         Project notBound = notBoundProject();
         Project reloaded = notBoundProject();
@@ -252,7 +256,8 @@ class DeployAgentServiceTest {
         DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
-                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
+                new PreviewBranchPushService(dockerService)
         );
         Project notBound = notBoundProject();
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
@@ -288,7 +293,8 @@ class DeployAgentServiceTest {
         DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
-                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
+                new PreviewBranchPushService(dockerService)
         );
         Project project = boundProject();
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
@@ -318,7 +324,8 @@ class DeployAgentServiceTest {
         DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
-                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class)
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
+                new PreviewBranchPushService(dockerService)
         );
         Project project = boundProject();
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());

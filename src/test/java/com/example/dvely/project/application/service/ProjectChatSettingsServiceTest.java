@@ -33,6 +33,7 @@ class ProjectChatSettingsServiceTest {
         assertThat(result.deploymentApprovalRequired()).isTrue();
         assertThat(result.domainApprovalRequired()).isTrue();
         assertThat(result.infraApprovalRequired()).isTrue();
+        assertThat(result.resultApprovalRequired()).isTrue();
     }
 
     @Test
@@ -56,12 +57,58 @@ class ProjectChatSettingsServiceTest {
                 false,
                 true,
                 false,
-                true
+                true,
+                false
         );
 
         assertThat(result.changeApprovalRequired()).isFalse();
         assertThat(result.deploymentApprovalRequired()).isTrue();
         assertThat(result.domainApprovalRequired()).isFalse();
         assertThat(result.infraApprovalRequired()).isTrue();
+        assertThat(result.resultApprovalRequired()).isFalse();
+    }
+
+    // ── Track Z (#56) D4/§5.5: resultApprovalRequired is the one nullable field in this PATCH ──
+
+    @Test
+    void nullResultApprovalRequiredLeavesTheCurrentValueUnchanged() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ProjectApprovalPolicyRepository policyRepository = mock(ProjectApprovalPolicyRepository.class);
+        ProjectChatSettingsService service = new ProjectChatSettingsService(
+                projectRepository,
+                policyRepository
+        );
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(mock(Project.class)));
+        // Existing policy already has resultApprovalRequired=false — a legacy/partial FE request
+        // that omits the field (null) must not silently flip it back to true.
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, true, true, true, true, false)));
+        when(policyRepository.save(any(ProjectApprovalPolicy.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        ProjectChatSettingsResult result = service.update(1L, 11L, true, true, true, true, null);
+
+        assertThat(result.resultApprovalRequired()).isFalse();
+    }
+
+    @Test
+    void nonNullResultApprovalRequiredOverridesTheCurrentValue() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ProjectApprovalPolicyRepository policyRepository = mock(ProjectApprovalPolicyRepository.class);
+        ProjectChatSettingsService service = new ProjectChatSettingsService(
+                projectRepository,
+                policyRepository
+        );
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(mock(Project.class)));
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L)));
+        when(policyRepository.save(any(ProjectApprovalPolicy.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        ProjectChatSettingsResult result = service.update(1L, 11L, true, true, true, true, false);
+
+        assertThat(result.resultApprovalRequired()).isFalse();
     }
 }
