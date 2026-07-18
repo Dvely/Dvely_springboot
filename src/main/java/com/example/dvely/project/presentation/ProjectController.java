@@ -238,7 +238,11 @@ public class ProjectController {
         return projectMapper.toRepositoryHealthResponse(projectFacade.getRepositoryHealth(ownerUserId, projectId));
     }
 
-    @Operation(summary = "프로젝트 Chat 승인 정책 조회")
+    @Operation(
+            summary = "프로젝트 Chat 승인 정책 조회",
+            description = "Agent가 CODE/DEPLOY/DOMAIN_BIND/INFRA_OPERATE 작업을 실행하기 전 사용자 승인을 요구할지 " +
+                          "여부를 4개 항목으로 조회합니다. 프로젝트 생성 시 모두 기본값으로 초기화되어 있습니다."
+    )
     @GetMapping("/{projectId}/settings/chat")
     public ProjectChatSettingsResponse getChatSettings(
             @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
@@ -247,7 +251,11 @@ public class ProjectController {
         return toChatSettingsResponse(projectChatSettingsService.get(ownerUserId, projectId));
     }
 
-    @Operation(summary = "프로젝트 Chat 승인 정책 수정")
+    @Operation(
+            summary = "프로젝트 Chat 승인 정책 수정",
+            description = "4개 항목 전체를 갱신합니다(전체 문서 PUT과 동일한 시맨틱 — 부분 수정 불가, 요청 DTO의 " +
+                          "모든 필드가 필수입니다)."
+    )
     @PatchMapping("/{projectId}/settings/chat")
     public ProjectChatSettingsResponse updateChatSettings(
             @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
@@ -264,7 +272,11 @@ public class ProjectController {
         ));
     }
 
-    @Operation(summary = "프로젝트 Infrastructure 설정 조회")
+    @Operation(
+            summary = "프로젝트 Infrastructure 설정 조회",
+            description = "프로젝트에 현재 선택된 클라우드 연결(BYOC)을 조회합니다. 아직 아무 연결도 선택하지 않았으면 " +
+                          "cloudConnectionId 이하 필드가 모두 null인 200 응답입니다."
+    )
     @GetMapping("/{projectId}/settings/infrastructure")
     public ProjectInfrastructureSettingsResponse getInfrastructureSettings(
             @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
@@ -290,7 +302,11 @@ public class ProjectController {
         ));
     }
 
-    @Operation(summary = "프로젝트 클라우드 연결 선택 해제")
+    @Operation(
+            summary = "프로젝트 클라우드 연결 선택 해제",
+            description = "프로젝트의 클라우드 연결 선택을 해제합니다(연결 자체는 삭제하지 않음). " +
+                          "이미 미선택 상태에서 호출해도 204입니다(멱등)."
+    )
     @DeleteMapping("/{projectId}/settings/infrastructure")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void clearInfrastructureSettings(
