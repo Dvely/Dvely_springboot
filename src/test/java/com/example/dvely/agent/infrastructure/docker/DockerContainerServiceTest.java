@@ -24,6 +24,7 @@ import com.github.dockerjava.api.command.InspectNetworkCmd;
 import com.github.dockerjava.api.command.ListNetworksCmd;
 import com.github.dockerjava.api.command.LogContainerCmd;
 import com.github.dockerjava.api.command.RemoveContainerCmd;
+import com.github.dockerjava.api.command.RestartContainerCmd;
 import com.github.dockerjava.api.command.StartContainerCmd;
 import com.github.dockerjava.api.command.StatsCmd;
 import com.github.dockerjava.api.command.StopContainerCmd;
@@ -117,6 +118,31 @@ class DockerContainerServiceTest {
         assertThatThrownBy(() -> service.removeContainer("container-1"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("docker unavailable");
+    }
+
+    // --- Cloud Ops Agent RESTART (EPIC 15 design §3.4) -------------------------------------
+
+    @Test
+    void restartContainerStopsWithGracePeriodThenStarts() {
+        RestartContainerCmd restartCommand = mock(RestartContainerCmd.class);
+        when(dockerClient.restartContainerCmd("container-1")).thenReturn(restartCommand);
+        when(restartCommand.withTimeout(5)).thenReturn(restartCommand);
+
+        service.restartContainer("container-1");
+
+        verify(restartCommand).exec();
+    }
+
+    @Test
+    void restartContainerWrapsNotFoundAsIllegalState() {
+        RestartContainerCmd restartCommand = mock(RestartContainerCmd.class);
+        when(dockerClient.restartContainerCmd("container-1")).thenReturn(restartCommand);
+        when(restartCommand.withTimeout(5)).thenReturn(restartCommand);
+        when(restartCommand.exec()).thenThrow(new NotFoundException("missing"));
+
+        assertThatThrownBy(() -> service.restartContainer("container-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("재시작할 컨테이너를 찾을 수 없습니다");
     }
 
     // --- BI-194 isolation policy: HostConfig applied to createContainerCmd -----------------

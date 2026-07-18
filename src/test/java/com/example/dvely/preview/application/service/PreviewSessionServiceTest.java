@@ -94,6 +94,48 @@ class PreviewSessionServiceTest {
         verify(dockerService).removeContainer("container-1");
     }
 
+    @Test
+    void findActiveByProjectDelegatesToOwnerScopedFinder() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository,
+                mock(DockerContainerService.class),
+                mock(TaskStore.class),
+                properties()
+        );
+        PreviewSessionEntity active = new PreviewSessionEntity(
+                "session-1", "token", 1L, 11L, 21L, "task-1",
+                "container-1", 32768, "https://preview.qeploy.test/session-1/",
+                LocalDateTime.now().plusMinutes(30)
+        );
+        when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusOrderByLastAccessedAtDesc(
+                11L, 1L, PreviewSessionStatus.ACTIVE.name()
+        )).thenReturn(Optional.of(active));
+
+        Optional<PreviewSessionInfo> result = service.findActiveByProject(11L, 1L);
+
+        assertThat(result).isPresent();
+        assertThat(result.get().containerId()).isEqualTo("container-1");
+        verify(repository).findFirstByProjectIdAndOwnerUserIdAndStatusOrderByLastAccessedAtDesc(
+                11L, 1L, PreviewSessionStatus.ACTIVE.name());
+    }
+
+    @Test
+    void findActiveByProjectReturnsEmptyWhenNoActiveSessionForOwner() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository,
+                mock(DockerContainerService.class),
+                mock(TaskStore.class),
+                properties()
+        );
+        when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusOrderByLastAccessedAtDesc(
+                11L, 1L, PreviewSessionStatus.ACTIVE.name()
+        )).thenReturn(Optional.empty());
+
+        assertThat(service.findActiveByProject(11L, 1L)).isEmpty();
+    }
+
     private PreviewProperties properties() {
         PreviewProperties properties = new PreviewProperties();
         properties.setGatewayBaseUrl("https://preview.qeploy.test");

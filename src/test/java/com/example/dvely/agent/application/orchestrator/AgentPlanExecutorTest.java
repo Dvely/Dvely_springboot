@@ -16,6 +16,7 @@ import com.example.dvely.agent.application.service.ChatAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
+import com.example.dvely.agent.application.service.InfraOpsAgentService;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
@@ -99,6 +100,7 @@ class AgentPlanExecutorTest {
                 mock(DeployAgentService.class),
                 domainService,
                 mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
@@ -119,6 +121,36 @@ class AgentPlanExecutorTest {
         verify(messageService).appendAssistant(21L, "도메인을 입력해주세요.");
     }
 
+    @Test
+    void dispatchesInfraOperateStepToInfraOpsAgentService() {
+        InfraOpsAgentService infraOpsAgentService = mock(InfraOpsAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                mock(CodeAgentService.class),
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                infraOpsAgentService,
+                taskStore,
+                messageService,
+                mock(BuildFailureRecoveryService.class),
+                mock(ChangeService.class)
+        );
+        AgentStep step = new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "STATUS_CHECK"));
+        when(infraOpsAgentService.execute(step, 1L, "task-1", 11L))
+                .thenReturn(new CodeAgentService.CodeResult(null, "서버/서비스 상태\n- 배포: 배포 이력 없음"));
+
+        executor.execute(
+                new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L),
+                "task-1",
+                1L
+        );
+
+        verify(taskStore).markDone("task-1", null, "서버/서비스 상태\n- 배포: 배포 이력 없음");
+        verify(messageService).appendAssistant(21L, "서버/서비스 상태\n- 배포: 배포 이력 없음");
+    }
+
     private AgentPlanExecutor executor(CodeAgentService codeService,
                                        TaskStore taskStore,
                                        AgentMessageService messageService) {
@@ -134,6 +166,7 @@ class AgentPlanExecutorTest {
                 mock(DeployAgentService.class),
                 mock(DomainBindAgentService.class),
                 chatService,
+                mock(InfraOpsAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),

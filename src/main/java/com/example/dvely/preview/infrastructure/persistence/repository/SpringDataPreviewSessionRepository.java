@@ -21,4 +21,11 @@ public interface SpringDataPreviewSessionRepository extends JpaRepository<Previe
     List<PreviewSessionEntity> findByOwnerUserIdAndStatus(Long ownerUserId, String status);
 
     List<PreviewSessionEntity> findByStatusAndExpiresAtBefore(String status, LocalDateTime expiresAt);
+
+    // Additive for Cloud Ops Agent (EPIC 15, design D8): resolves the RESTART/STATUS_CHECK target
+    // by project rather than by taskId — those chat requests don't carry the originating CODE/DEPLOY
+    // task, only a projectId. ownerUserId stays in the filter for the same defensive-ownership
+    // reason every other finder here has it (agent execution context is not exempt).
+    Optional<PreviewSessionEntity> findFirstByProjectIdAndOwnerUserIdAndStatusOrderByLastAccessedAtDesc(
+            Long projectId, Long ownerUserId, String status);
 }

@@ -83,6 +83,21 @@ public class PreviewSessionService {
                 .map(PreviewSessionEntity::toInfo);
     }
 
+    /**
+     * Resolves the "current preview server" for a project — used by the Cloud Ops Agent
+     * (STATUS_CHECK/RESTART, EPIC 15 design D8) where the caller has a projectId from chat context
+     * but no taskId (the operational request is not itself a CODE/DEPLOY task). Only the most
+     * recently touched ACTIVE session is returned: a project can only meaningfully have one "the
+     * server" at a time from the user's point of view, and an expired/closed session is correctly
+     * "no server running", not a stale ID to act on.
+     */
+    @Transactional(readOnly = true)
+    public Optional<PreviewSessionInfo> findActiveByProject(Long projectId, Long ownerUserId) {
+        return repository.findFirstByProjectIdAndOwnerUserIdAndStatusOrderByLastAccessedAtDesc(
+                        projectId, ownerUserId, PreviewSessionStatus.ACTIVE.name())
+                .map(PreviewSessionEntity::toInfo);
+    }
+
     @Transactional
     public Optional<PreviewSessionInfo> resolveGateway(String sessionId, String accessToken) {
         return repository.findByIdAndAccessTokenAndStatus(
