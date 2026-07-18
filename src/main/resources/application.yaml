@@ -82,6 +82,15 @@ qeploy:
     worker:
       poll-interval-ms: ${QEPLOY_AGENT_WORKER_POLL_INTERVAL_MS:1000}
       heartbeat-interval-ms: ${QEPLOY_AGENT_WORKER_HEARTBEAT_INTERVAL_MS:30000}
+      # ADR-Y3 (#55): backoff applied to a task's next_run_at after the executor pool rejects its
+      # submission (dispatch-time, not execution-time, failure) — keeps a saturated pool from
+      # hot-looping claim<->reject every poll-interval-ms.
+      dispatch-reject-backoff-ms: ${QEPLOY_AGENT_WORKER_DISPATCH_REJECT_BACKOFF_MS:5000}
+    approval:
+      # ADR-Y2 (#55): StuckApprovalSweeper's poll interval — defense-in-depth recovery for the D1
+      # write-skew stuck state (structurally prevented by ADR-Y1's lock hierarchy; this is the
+      # safety net for anything that slips through anyway).
+      sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_SWEEP_INTERVAL_MS:60000}
   deployment:
     worker:
       poll-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_POLL_INTERVAL_MS:1000}

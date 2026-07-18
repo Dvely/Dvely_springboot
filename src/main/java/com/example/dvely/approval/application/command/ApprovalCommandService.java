@@ -2,11 +2,13 @@ package com.example.dvely.approval.application.command;
 
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.service.AgentMessageService;
+import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.application.port.out.StandaloneApprovalHandler;
 import com.example.dvely.approval.application.query.ApprovalQueryService;
 import com.example.dvely.approval.application.result.ApprovalResult;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
+import com.example.dvely.approval.domain.repository.ApprovalRouting;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
 import com.example.dvely.change.application.service.ResultApprovalService;
@@ -33,28 +35,45 @@ public class ApprovalCommandService {
     // ResultApprovalGate) and never joins the allApproved plan-approval vote below — it gets its
     // own branch between the two, matching design D2/§4.2.
     private final ResultApprovalService resultApprovalService;
+    // ADR-Y1 (#55): the task-row mutex (agent_runs, the aggregate root every task-bound decision
+    // must lock FIRST — see TaskStore#lockTask) lives in the agent module's store, not here. This
+    // service already reaches into the agent module for AgentOrchestrator/AgentMessageService, so
+    // this is not a new layering precedent — approval and agent are tightly coupled by design
+    // (approval gates agent task execution).
+    private final TaskStore taskStore;
 
     @Transactional
     public ApprovalResult approve(Long ownerUserId, Long approvalId) {
-        Approval approval = findOwnedForDecide(ownerUserId, approvalId);
-        approval.approve();
-        Approval saved = approvalRepository.save(approval);
-
-        if (saved.isStandalone()) {
+        ApprovalRouting routing = routingFor(ownerUserId, approvalId);
+        if (routing.isStandalone()) {
+            // Standalone: single row, no task to lock, order irrelevant (design §1 step②).
+            Approval approval = findOwnedForDecide(ownerUserId, approvalId);
+            approval.approve();
+            Approval saved = approvalRepository.save(approval);
             resolveStandaloneHandler(saved.getType()).onApproved(saved);
             return queryService.toResult(saved);
         }
 
+        // ADR-Y1 §1 step③: task row lock FIRST — the lock-hierarchy root every task-bound decision
+        // path (approve/reject/cancel/RESULT/sweep) funnels through, structurally closing the D1
+        // write-skew race (two approvals on the same task decided concurrently, each reading the
+        // other's not-yet-committed PENDING row and both skipping executeApproved). This also
+        // supersedes #56's RESULT-branch ordering (approval row -> task row, #62 B3's flagged
+        // inversion) — every branch below, RESULT included, now locks task-then-approval.
+        taskStore.lockTask(routing.taskId());
+        // Fresh fetch under lock: step① deliberately used a scalar projection instead of loading
+        // the Approval entity, so there is no stale L1-cached instance for this FOR UPDATE fetch
+        // to collide with (see ApprovalRouting's javadoc).
+        Approval approval = findOwnedForDecide(ownerUserId, approvalId);
+        approval.approve();
+        Approval saved = approvalRepository.save(approval);
+
         if (saved.getType() == ApprovalType.RESULT) {
-            // Review follow-up (BLOCKING-3): verify + lock the rollback-able DB precondition
-            // (task must still be WAITING_RESULT_APPROVAL) BEFORE reflect()'s irreversible
-            // external GitHub merge below. Previously reflect() ran first and this check ran
-            // only afterward (via resumeAfterResult) — a precondition failure there rolled back
-            // this transaction's DB writes but could not undo a merge that had already actually
-            // happened on GitHub (e.g. the task raced to CANCELLED via a concurrent
-            // DELETE /tasks/{id} between the RESULT approval's creation and this approve call).
-            // Ordering the check first means that failure path now has zero external side
-            // effects — it aborts before reflect() is ever called.
+            // Review follow-up (BLOCKING-3, carried forward): verify + lock the rollback-able DB
+            // precondition (task must still be WAITING_RESULT_APPROVAL) BEFORE reflect()'s
+            // irreversible external GitHub merge below. The task row is already locked (step③
+            // above), so this call only re-affirms a lock this transaction already holds — no new
+            // contention, no possibility of the ordering inversion #62 B3 flagged.
             agentOrchestrator.verifyResumableAfterResult(saved.getTaskId());
             ResultApprovalService.ReflectResult reflectResult = resultApprovalService.reflect(saved);
             agentOrchestrator.resumeAfterResult(saved.getTaskId());
@@ -65,7 +84,14 @@ public class ApprovalCommandService {
             return queryService.toResult(saved);
         }
 
-        List<Approval> taskApprovals = approvalRepository.findByTaskIdOrderByIdAsc(saved.getTaskId());
+        // All-approved check MUST be a locking read (design §1 "왜 all-approved 검사가 locking
+        // read여야 하는가"): under REPEATABLE READ, a plain SELECT can still return a pre-lock
+        // snapshot even after this transaction waited for and acquired the task lock above,
+        // because that snapshot was fixed at this transaction's first non-locking read, not at
+        // lock-acquisition time. A locking read always observes the latest committed version. This
+        // never actually contends in practice — the task lock already serialized every other
+        // decision-maker for this taskId out.
+        List<Approval> taskApprovals = approvalRepository.findByTaskIdOrderByIdAscForUpdate(saved.getTaskId());
         boolean allApproved = !taskApprovals.isEmpty() && taskApprovals.stream()
                 .allMatch(item -> item.getStatus() == ApprovalStatus.APPROVED);
         if (allApproved) {
@@ -77,17 +103,26 @@ public class ApprovalCommandService {
 
     @Transactional
     public ApprovalResult reject(Long ownerUserId, Long approvalId) {
-        Approval approval = findOwnedForDecide(ownerUserId, approvalId);
-        approval.reject();
-        Approval saved = approvalRepository.save(approval);
-
-        if (saved.isStandalone()) {
+        ApprovalRouting routing = routingFor(ownerUserId, approvalId);
+        if (routing.isStandalone()) {
+            Approval approval = findOwnedForDecide(ownerUserId, approvalId);
+            approval.reject();
+            Approval saved = approvalRepository.save(approval);
             resolveStandaloneHandler(saved.getType()).onRejected(saved);
             return queryService.toResult(saved);
         }
 
+        // Same ADR-Y1 lock order as approve() above — reject is just as much a task-bound decision
+        // and must serialize against a concurrent approve/reject/cancel/sweep on the same task.
+        taskStore.lockTask(routing.taskId());
+        Approval approval = findOwnedForDecide(ownerUserId, approvalId);
+        approval.reject();
+        Approval saved = approvalRepository.save(approval);
+
         if (saved.getType() == ApprovalType.RESULT) {
             resultApprovalService.markRejected(saved);
+            // AgentOrchestrator.reject cascades to sibling PENDING approvals (Y6-a) — see its
+            // javadoc for why reject and cancel now share that behavior.
             agentOrchestrator.reject(saved.getTaskId(), ownerUserId);
             agentMessageService.appendAssistant(
                     saved.getConversationId(),
@@ -103,6 +138,14 @@ public class ApprovalCommandService {
                 "작업이 거절되어 실행하지 않았습니다: " + saved.getSummary()
         );
         return queryService.toResult(saved);
+    }
+
+    // ADR-Y1 §1 step①: unlocked scalar routing lookup so approve/reject can decide standalone-vs-
+    // task-bound (and therefore which lock order to take) BEFORE acquiring any lock. Throws 404
+    // here, with no lock ever taken, if the approval does not exist / is not owned by this user.
+    private ApprovalRouting routingFor(Long ownerUserId, Long approvalId) {
+        return approvalRepository.findRoutingInfo(approvalId, ownerUserId)
+                .orElseThrow(() -> new NotFoundException("승인을 찾을 수 없습니다. approvalId=" + approvalId));
     }
 
     private String buildResultApprovedMessage(ResultApprovalService.ReflectResult reflectResult) {

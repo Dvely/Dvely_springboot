@@ -16,6 +16,7 @@ import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.application.service.ResultApprovalGate;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,9 +38,24 @@ public class AgentPlanExecutor {
     private final BuildFailureRecoveryService buildFailureRecoveryService;
     private final ChangeService changeService;
     private final ResultApprovalGate resultApprovalGate;
+    // ADR-Y4 (#55): paired with AgentRunWorker's register-before-submit call — see
+    // AgentExecutionRegistry's javadoc for why registration itself must NOT happen here.
+    private final AgentExecutionRegistry executionRegistry;
 
     @Async("agentExecutor")
     public void execute(AgentPlan plan, String taskId, Long userId) {
+        try {
+            doExecute(plan, taskId, userId);
+        } finally {
+            // The only unregister site for a task that made it onto an executor thread — covers
+            // every exit path below (normal completion and every catch branch) uniformly, so the
+            // registry can never leak an entry for a task whose executor thread has actually
+            // finished one way or another.
+            executionRegistry.unregister(taskId);
+        }
+    }
+
+    private void doExecute(AgentPlan plan, String taskId, Long userId) {
         log.info("=== AgentPlan 실행 시작: taskId={} | 총 {}단계 | reasoning={} ===",
                 taskId, plan.steps().size(), plan.reasoning());
 

@@ -21,6 +21,7 @@ import com.example.dvely.agent.application.service.ResultApprovalGate;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
 import java.time.Instant;
 import java.util.List;
@@ -50,6 +51,67 @@ class AgentPlanExecutorTest {
         verify(messageService).appendAssistant(21L, "수정 완료");
     }
 
+    // ── ADR-Y4 (#55): AgentExecutionRegistry unregister-in-finally wiring ──────────────────────
+
+    @Test
+    void unregistersFromExecutionRegistryAfterSuccessfulCompletion() {
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentExecutionRegistry registry = mock(AgentExecutionRegistry.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                taskStore,
+                mock(AgentMessageService.class),
+                mock(BuildFailureRecoveryService.class),
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class),
+                registry
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        when(codeService.execute(step, AiProvider.OPENAI, 1L, 11L, "task-1"))
+                .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
+
+        executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L), "task-1", 1L);
+
+        verify(registry).unregister("task-1");
+    }
+
+    @Test
+    void unregistersFromExecutionRegistryEvenWhenTheStepThrows() {
+        // The finally-wrapping (ADR-Y4) must unregister on every exit path, not just the happy
+        // path — a leaked registry entry after a genuinely failed/finished execution would let a
+        // *different*, unrelated future claim of the same taskId be silently heartbeat-protected
+        // by this stale entry.
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentExecutionRegistry registry = mock(AgentExecutionRegistry.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                taskStore,
+                mock(AgentMessageService.class),
+                mock(BuildFailureRecoveryService.class),
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class),
+                registry
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        when(codeService.execute(any(), any(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("외부 API 실패"));
+
+        executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L), "task-1", 1L);
+
+        verify(taskStore).markFailed("task-1", "외부 API 실패");
+        verify(registry).unregister("task-1");
+    }
+
     // ── Track Z (#56): result-approval gate wiring ──────────────────────────────────────────
 
     @Test
@@ -69,7 +131,8 @@ class AgentPlanExecutorTest {
                 messageService,
                 mock(BuildFailureRecoveryService.class),
                 changeService,
-                gate
+                gate,
+                mock(AgentExecutionRegistry.class)
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
@@ -105,7 +168,8 @@ class AgentPlanExecutorTest {
                 messageService,
                 mock(BuildFailureRecoveryService.class),
                 mock(ChangeService.class),
-                gate
+                gate,
+                mock(AgentExecutionRegistry.class)
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
@@ -175,7 +239,8 @@ class AgentPlanExecutorTest {
                 messageService,
                 mock(BuildFailureRecoveryService.class),
                 mock(ChangeService.class),
-                mock(ResultApprovalGate.class)
+                mock(ResultApprovalGate.class),
+                mock(AgentExecutionRegistry.class)
         );
 
         AgentStep step = new AgentStep(AgentType.DOMAIN_BIND, Map.of());
@@ -207,7 +272,8 @@ class AgentPlanExecutorTest {
                 messageService,
                 mock(BuildFailureRecoveryService.class),
                 mock(ChangeService.class),
-                mock(ResultApprovalGate.class)
+                mock(ResultApprovalGate.class),
+                mock(AgentExecutionRegistry.class)
         );
         AgentStep step = new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "STATUS_CHECK"));
         when(infraOpsAgentService.execute(step, 1L, "task-1", 11L))
@@ -243,7 +309,8 @@ class AgentPlanExecutorTest {
                 messageService,
                 mock(BuildFailureRecoveryService.class),
                 mock(ChangeService.class),
-                mock(ResultApprovalGate.class)
+                mock(ResultApprovalGate.class),
+                mock(AgentExecutionRegistry.class)
         );
     }
 

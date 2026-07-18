@@ -3,7 +3,12 @@ package com.example.dvely.agent.infrastructure.store;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -14,15 +19,20 @@ import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.persistence.entity.AgentRunEntity;
+import com.example.dvely.agent.infrastructure.persistence.entity.AgentRunEventEntity;
 import com.example.dvely.agent.infrastructure.persistence.repository.SpringDataAgentRunEventRepository;
 import com.example.dvely.agent.infrastructure.persistence.repository.SpringDataAgentRunRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class TaskStoreTest {
 
@@ -235,6 +245,157 @@ class TaskStoreTest {
         TaskStore restartedStore = new TaskStore(runRepository, eventRepository, new ObjectMapper());
 
         assertThat(restartedStore.getPlan("task-1")).isEqualTo(plan);
+    }
+
+    // ── ADR-Y1 (#55): lockTask — the task-row mutex ──────────────────────────────────────────
+
+    @Test
+    void lockTaskReturnsTheTaskWhenFound() {
+        taskStore.save(task(TaskStatus.WAITING_APPROVAL));
+
+        AgentTask locked = taskStore.lockTask("task-1");
+
+        assertThat(locked.taskId()).isEqualTo("task-1");
+        assertThat(locked.status()).isEqualTo(TaskStatus.WAITING_APPROVAL);
+    }
+
+    @Test
+    void lockTaskThrowsWhenTaskIsMissing() {
+        assertThatThrownBy(() -> taskStore.lockTask("does-not-exist"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("does-not-exist");
+    }
+
+    // Note: lockTask's MANDATORY propagation contract (calling it outside any transaction must
+    // fail with IllegalTransactionStateException) is a Spring-proxy-level guarantee that a plain
+    // unit test — which invokes the real object directly, bypassing the transactional AOP proxy —
+    // cannot exercise. See OrchestrationLockOrderIntegrationTest for the @SpringBootTest that
+    // proves it against the real proxied bean.
+
+    // ── ADR-Y3 (#55): releaseClaim ────────────────────────────────────────────────────────────
+
+    @Test
+    void releaseClaimAppendsDispatchRejectedEventOnlyWhenTheUpdateActuallyAffectedARow() {
+        when(runRepository.releaseClaim(eq("task-1"), eq("worker-1"), any(), anyString(), anyString()))
+                .thenReturn(1);
+
+        boolean released = taskStore.releaseClaim("task-1", "worker-1", 5000L);
+
+        assertThat(released).isTrue();
+        ArgumentCaptor<AgentRunEventEntity> captor = ArgumentCaptor.forClass(AgentRunEventEntity.class);
+        verify(eventRepository).save(captor.capture());
+        assertThat(captor.getValue().getType()).isEqualTo("DISPATCH_REJECTED");
+        assertThat(captor.getValue().getStatus()).isEqualTo(TaskStatus.QUEUED.name());
+    }
+
+    @Test
+    void releaseClaimIsASilentNoOpWhenSomeoneElseAlreadyMovedTheRowOffRunning() {
+        // Models losing the race to a concurrent recoverExpiredLeases attempt at the same row —
+        // the conditional UPDATE's WHERE clause matches zero rows, so this must not append a
+        // DISPATCH_REJECTED event describing a transition that never happened.
+        when(runRepository.releaseClaim(eq("task-1"), eq("worker-1"), any(), anyString(), anyString()))
+                .thenReturn(0);
+
+        boolean released = taskStore.releaseClaim("task-1", "worker-1", 5000L);
+
+        assertThat(released).isFalse();
+        verify(eventRepository, never()).save(any());
+    }
+
+    // ── ADR-Y5 (#55): recoverExpiredLeases — atomized conditional UPDATEs ────────────────────
+
+    @Test
+    void recoverExpiredLeasesAppendsRecoveryExhaustedEventOnlyWhenTheExhaustedUpdateAffectsARow() {
+        when(runRepository.findExpiredLeaseTaskIds(eq(TaskStatus.RUNNING.name()), any()))
+                .thenReturn(List.of("task-1"));
+        when(runRepository.failExhaustedLease(eq("task-1"), anyString(), any(), anyString(), anyString(), anyString()))
+                .thenReturn(1);
+
+        taskStore.recoverExpiredLeases();
+
+        ArgumentCaptor<AgentRunEventEntity> captor = ArgumentCaptor.forClass(AgentRunEventEntity.class);
+        verify(eventRepository).save(captor.capture());
+        assertThat(captor.getValue().getType()).isEqualTo("RECOVERY_EXHAUSTED");
+        assertThat(captor.getValue().getStatus()).isEqualTo(TaskStatus.FAILED.name());
+        // The attempt-exhausted branch must win outright — recoverLease must not also be attempted
+        // for the same taskId once failExhaustedLease already claimed the row.
+        verify(runRepository, never()).recoverLease(anyString(), anyString(), any(), anyString());
+    }
+
+    @Test
+    void recoverExpiredLeasesFallsBackToRecoverLeaseWhenAttemptBudgetRemains() {
+        when(runRepository.findExpiredLeaseTaskIds(eq(TaskStatus.RUNNING.name()), any()))
+                .thenReturn(List.of("task-1"));
+        when(runRepository.failExhaustedLease(eq("task-1"), anyString(), any(), anyString(), anyString(), anyString()))
+                .thenReturn(0);
+        when(runRepository.recoverLease(eq("task-1"), anyString(), any(), anyString()))
+                .thenReturn(1);
+
+        taskStore.recoverExpiredLeases();
+
+        ArgumentCaptor<AgentRunEventEntity> captor = ArgumentCaptor.forClass(AgentRunEventEntity.class);
+        verify(eventRepository).save(captor.capture());
+        assertThat(captor.getValue().getType()).isEqualTo("LEASE_RECOVERED");
+        assertThat(captor.getValue().getStatus()).isEqualTo(TaskStatus.RETRY_WAIT.name());
+    }
+
+    @Test
+    void recoverExpiredLeasesNoOpsWhenBothConditionalUpdatesMatchZeroRows() {
+        // Models losing the race to a concurrent recovery attempt (G7 regression guard): some
+        // other actor already moved this row off RUNNING between the candidate read and now.
+        when(runRepository.findExpiredLeaseTaskIds(eq(TaskStatus.RUNNING.name()), any()))
+                .thenReturn(List.of("task-1"));
+        when(runRepository.failExhaustedLease(eq("task-1"), anyString(), any(), anyString(), anyString(), anyString()))
+                .thenReturn(0);
+        when(runRepository.recoverLease(eq("task-1"), anyString(), any(), anyString()))
+                .thenReturn(0);
+
+        taskStore.recoverExpiredLeases();
+
+        verify(eventRepository, never()).save(any());
+    }
+
+    // ── ADR-Y4 (#55): renewWorkerLeases scoped to a registry snapshot ────────────────────────
+
+    @Test
+    void renewWorkerLeasesSkipsTheQueryWhenTheTaskIdSetIsEmpty() {
+        taskStore.renewWorkerLeases("worker-1", Set.of());
+
+        verify(runRepository, never()).renewWorkerLeases(anyString(), any(), anyString(), any());
+    }
+
+    @Test
+    void renewWorkerLeasesQueriesWithExactlyTheGivenTaskIds() {
+        taskStore.renewWorkerLeases("worker-1", Set.of("task-1", "task-2"));
+
+        verify(runRepository, times(1))
+                .renewWorkerLeases(eq("worker-1"), any(), eq(TaskStatus.RUNNING.name()), eq(Set.of("task-1", "task-2")));
+    }
+
+    // ── ADR-Y2 (#55): sweep support ───────────────────────────────────────────────────────────
+
+    @Test
+    void findStuckWaitingApprovalTaskIdsDelegatesWithWaitingApprovalStatusAndAGracePeriod() {
+        when(runRepository.findStuckWaitingApprovalTaskIds(eq(TaskStatus.WAITING_APPROVAL.name()), any()))
+                .thenReturn(List.of("task-1"));
+
+        List<String> candidates = taskStore.findStuckWaitingApprovalTaskIds();
+
+        assertThat(candidates).containsExactly("task-1");
+        ArgumentCaptor<LocalDateTime> beforeCaptor = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(runRepository).findStuckWaitingApprovalTaskIds(eq(TaskStatus.WAITING_APPROVAL.name()), beforeCaptor.capture());
+        // Grace period must be strictly in the past (design ADR-Y2: 30s) — a bug that passed
+        // "now" (or later) would sweep tasks whose approve() is still actively in flight.
+        assertThat(beforeCaptor.getValue()).isBefore(LocalDateTime.now());
+    }
+
+    @Test
+    void recoverStuckApprovalTransitionsToQueuedWithASweepSpecificEvent() {
+        taskStore.save(task(TaskStatus.WAITING_APPROVAL));
+
+        taskStore.recoverStuckApproval("task-1");
+
+        assertThat(taskStore.getOwned("task-1", 1L).status()).isEqualTo(TaskStatus.QUEUED);
     }
 
     private AgentTask task(TaskStatus status) {

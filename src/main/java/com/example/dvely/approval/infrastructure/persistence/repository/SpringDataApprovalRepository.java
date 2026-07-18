@@ -26,4 +26,25 @@ public interface SpringDataApprovalRepository extends JpaRepository<ApprovalEnti
     List<ApprovalEntity> findByProjectIdAndOwnerUserIdOrderByCreatedAtDesc(Long projectId, Long ownerUserId);
 
     List<ApprovalEntity> findByTaskIdOrderByIdAsc(String taskId);
+
+    // ADR-Y1 §1 step① — closed interface projection: Spring Data resolves this straight from the
+    // two aliased scalar columns below, never materializing an ApprovalEntity, so it cannot poison
+    // the persistence context's L1 cache the way an unlocked entity load would (see
+    // ApprovalRouting's javadoc).
+    interface RoutingView {
+        String getTaskId();
+        String getType();
+    }
+
+    @Query("select a.taskId as taskId, a.type as type from ApprovalEntity a "
+            + "where a.id = :approvalId and a.ownerUserId = :ownerUserId")
+    Optional<RoutingView> findRoutingInfo(
+            @Param("approvalId") Long approvalId, @Param("ownerUserId") Long ownerUserId
+    );
+
+    // Backs ApprovalRepository#findByTaskIdOrderByIdAscForUpdate (see its javadoc for why the
+    // all-approved check needs a locking, not plain, read).
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select a from ApprovalEntity a where a.taskId = :taskId order by a.id asc")
+    List<ApprovalEntity> findByTaskIdOrderByIdAscForUpdate(@Param("taskId") String taskId);
 }

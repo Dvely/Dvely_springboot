@@ -3,8 +3,11 @@ package com.example.dvely.agent.application.orchestrator;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -463,5 +466,334 @@ class AgentOrchestratorTest {
 
         assertThat(submission.status()).isEqualTo(TaskStatus.QUEUED);
         verify(approvalRepository, never()).save(any());
+    }
+
+    // ── Y6-a (#55): reject cascades to sibling PENDING approvals, symmetric with cancel ────────
+
+    @Test
+    void rejectCancelsTheTaskAndCascadesToSiblingPendingApprovals() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        Approval siblingPending = new Approval(
+                92L, 1L, 11L, 21L, "task-1", ApprovalType.DEPLOYMENT,
+                ApprovalStatus.PENDING, "배포 승인", LocalDateTime.now(), null
+        );
+        when(taskStore.cancel("task-1", 1L)).thenReturn(true);
+        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of(siblingPending));
+
+        orchestrator.reject("task-1", 1L);
+
+        // G6 regression guard: reject used to leave sibling PENDING approvals untouched — now it
+        // must cancel them exactly the same way user cancel already did (Y6-a symmetry).
+        assertThat(siblingPending.getStatus()).isEqualTo(ApprovalStatus.CANCELLED);
+        verify(approvalRepository).save(siblingPending);
+    }
+
+    @Test
+    void rejectThrowsWhenTheUnderlyingTaskCancelFails() {
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+        when(taskStore.cancel("task-1", 1L)).thenReturn(false);
+
+        assertThatThrownBy(() -> orchestrator.reject("task-1", 1L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("task-1");
+    }
+
+    @Test
+    void cancelAndRejectShareTheSameCascadeSoAnApproveAfterEitherIsRejectedByThePendingGuard() {
+        // Structural guarantee (design invariant "task 터미널 ⇒ PENDING 승인 없음"): both entry points
+        // must funnel through the identical cascade, not two independently-maintained copies that
+        // could drift. Asserted here by checking both leave the same sibling CANCELLED via the
+        // same repository calls, rather than merely inferring it from the production code shape.
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        Approval sibling = new Approval(
+                93L, 1L, 11L, 21L, "task-1", ApprovalType.DOMAIN_BINDING,
+                ApprovalStatus.PENDING, "도메인 승인", LocalDateTime.now(), null
+        );
+        when(taskStore.cancel("task-1", 1L)).thenReturn(true);
+        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of(sibling));
+
+        orchestrator.cancel("task-1", 1L);
+
+        assertThat(sibling.getStatus()).isEqualTo(ApprovalStatus.CANCELLED);
+    }
+
+    // ── ADR-Y1 §1 step⑥-plan guard (#55): executeApproved state guard ──────────────────────────
+
+    @Test
+    void executeApprovedEnqueuesAWaitingApprovalTask() {
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+        when(taskStore.get("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_APPROVAL));
+        when(taskStore.getPlan("task-1")).thenReturn(new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L));
+
+        orchestrator.executeApproved("task-1");
+
+        verify(taskStore).enqueue("task-1");
+    }
+
+    @Test
+    void executeApprovedRetriesAFailedTask() {
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+        when(taskStore.get("task-1")).thenReturn(taskWithStatus(TaskStatus.FAILED));
+        when(taskStore.getPlan("task-1")).thenReturn(new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L));
+        when(taskStore.retry("task-1", 1L)).thenReturn(true);
+
+        orchestrator.executeApproved("task-1");
+
+        verify(taskStore).retry("task-1", 1L);
+        verify(taskStore, never()).enqueue("task-1");
+    }
+
+    @Test
+    void executeApprovedRejectsAnyOtherStatusWithConflict() {
+        // Guards against a caller/state-machine bug reaching this method with a status that is
+        // neither WAITING_APPROVAL nor FAILED — e.g. a duplicate/racing call landing after the
+        // task already moved on. Under ADR-Y1 the caller always holds the task lock by this point,
+        // so this is never a legitimate race — a status guard turning it into 409 is the correct
+        // response, not a silent no-op or an accidental double-enqueue.
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+        when(taskStore.get("task-1")).thenReturn(taskWithStatus(TaskStatus.RUNNING));
+        when(taskStore.getPlan("task-1")).thenReturn(new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L));
+
+        assertThatThrownBy(() -> orchestrator.executeApproved("task-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("task-1");
+
+        verify(taskStore, never()).enqueue(anyString());
+        verify(taskStore, never()).retry(anyString(), anyLong());
+    }
+
+    // ── ADR-Y2 (#55): recoverStuckApprovedTask — the sweep's lock-and-reverify step ─────────────
+
+    @Test
+    void recoverStuckApprovedTaskRecoversWhenEveryApprovalIsApproved() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                messageService
+        );
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_APPROVAL));
+        Approval change = new Approval(1L, 1L, 11L, 21L, "task-1", ApprovalType.CHANGE,
+                ApprovalStatus.APPROVED, "요약1", LocalDateTime.now(), LocalDateTime.now());
+        Approval deployment = new Approval(2L, 1L, 11L, 21L, "task-1", ApprovalType.DEPLOYMENT,
+                ApprovalStatus.APPROVED, "요약2", LocalDateTime.now(), LocalDateTime.now());
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1"))
+                .thenReturn(List.of(change, deployment));
+
+        orchestrator.recoverStuckApprovedTask("task-1");
+
+        verify(taskStore).recoverStuckApproval("task-1");
+        verify(messageService).appendAssistant(21L, "지연된 승인 처리를 복구해 작업을 시작합니다.");
+    }
+
+    @Test
+    void recoverStuckApprovedTaskNoOpsWhenATaskIsNotActuallyWaitingApproval() {
+        // A racing approve/reject/cancel already resolved the task between the sweep's candidate
+        // read and this call acquiring the lock — must be a silent no-op, never a double
+        // transition.
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.QUEUED));
+
+        orchestrator.recoverStuckApprovedTask("task-1");
+
+        verify(taskStore, never()).recoverStuckApproval(anyString());
+    }
+
+    @Test
+    void recoverStuckApprovedTaskNoOpsWhenAnApprovalIsStillPending() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_APPROVAL));
+        Approval change = new Approval(1L, 1L, 11L, 21L, "task-1", ApprovalType.CHANGE,
+                ApprovalStatus.APPROVED, "요약1", LocalDateTime.now(), LocalDateTime.now());
+        Approval pendingDeployment = new Approval(2L, 1L, 11L, 21L, "task-1", ApprovalType.DEPLOYMENT,
+                ApprovalStatus.PENDING, "요약2", LocalDateTime.now(), null);
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1"))
+                .thenReturn(List.of(change, pendingDeployment));
+
+        orchestrator.recoverStuckApprovedTask("task-1");
+
+        verify(taskStore, never()).recoverStuckApproval(anyString());
+    }
+
+    @Test
+    void recoverStuckApprovedTaskNoOpsWhenThereAreNoApprovalsAtAll() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_APPROVAL));
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of());
+
+        orchestrator.recoverStuckApprovedTask("task-1");
+
+        verify(taskStore, never()).recoverStuckApproval(anyString());
+    }
+
+    // ── Y6-b (#55): dedupe summary merge — multiple steps of the same type ─────────────────────
+
+    @Test
+    void multipleCodeStepsMergeIntoOneNumberedChangeApprovalSummary() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ProjectApprovalPolicyRepository policyRepository = mock(ProjectApprovalPolicyRepository.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                projectRepository,
+                mock(ConversationRepository.class),
+                policyRepository,
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(mock(Project.class)));
+        when(policyRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+        when(approvalRepository.save(any(Approval.class))).thenAnswer(invocation -> {
+            Approval source = invocation.getArgument(0);
+            return new Approval(
+                    301L, source.getOwnerUserId(), source.getProjectId(), source.getConversationId(),
+                    source.getTaskId(), source.getType(), ApprovalStatus.PENDING, source.getSummary(),
+                    LocalDateTime.now(), null
+            );
+        });
+        AgentPlan plan = new AgentPlan(
+                List.of(
+                        new AgentStep(AgentType.CODE, Map.of("instruction", "FAQ 페이지를 추가한다")),
+                        new AgentStep(AgentType.CODE, Map.of("instruction", "네비게이션 바를 수정한다"))
+                ),
+                "reason", AiProvider.OPENAI, 11L
+        );
+
+        AgentSubmission submission = orchestrator.submit(plan, 1L, null);
+
+        assertThat(submission.approvalIds()).containsExactly(301L);
+        ArgumentCaptor<Approval> captor = ArgumentCaptor.forClass(Approval.class);
+        verify(approvalRepository, times(1)).save(captor.capture());
+        assertThat(captor.getValue().getType()).isEqualTo(ApprovalType.CHANGE);
+        // G8 regression guard: the old putIfAbsent kept only the first step's summary — both must
+        // now be present, numbered.
+        assertThat(captor.getValue().getSummary())
+                .isEqualTo("1) FAQ 페이지를 추가한다\n2) 네비게이션 바를 수정한다");
+    }
+
+    @Test
+    void singleStepPerTypeSummaryStaysUnnumbered() {
+        // Behavior-preserving for the common (and pre-existing-test-covered) case: a lone step of
+        // a type must not gain a "1) " prefix it never had before Y6-b.
+        TaskStore taskStore = mock(TaskStore.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ProjectApprovalPolicyRepository policyRepository = mock(ProjectApprovalPolicyRepository.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                projectRepository,
+                mock(ConversationRepository.class),
+                policyRepository,
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(mock(Project.class)));
+        when(policyRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+        when(approvalRepository.save(any(Approval.class))).thenAnswer(invocation -> {
+            Approval source = invocation.getArgument(0);
+            return new Approval(
+                    301L, source.getOwnerUserId(), source.getProjectId(), source.getConversationId(),
+                    source.getTaskId(), source.getType(), ApprovalStatus.PENDING, source.getSummary(),
+                    LocalDateTime.now(), null
+            );
+        });
+        AgentPlan plan = new AgentPlan(
+                List.of(new AgentStep(AgentType.CODE, Map.of("instruction", "FAQ 페이지를 추가한다"))),
+                "reason", AiProvider.OPENAI, 11L
+        );
+
+        orchestrator.submit(plan, 1L, null);
+
+        ArgumentCaptor<Approval> captor = ArgumentCaptor.forClass(Approval.class);
+        verify(approvalRepository).save(captor.capture());
+        assertThat(captor.getValue().getSummary()).isEqualTo("FAQ 페이지를 추가한다");
+    }
+
+    private AgentTask taskWithStatus(TaskStatus status) {
+        return new AgentTask("task-1", 1L, 11L, 21L, status, null, null, null, null, java.time.Instant.now());
     }
 }
