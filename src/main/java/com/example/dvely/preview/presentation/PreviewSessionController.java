@@ -8,6 +8,7 @@ import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.preview.presentation.dto.response.PreviewContainerLogsResponse;
 import com.example.dvely.preview.presentation.dto.response.PreviewContainerStatusResponse;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+@Tag(name = "Preview", description = "Agent CODE 작업이 띄운 Docker 프리뷰 컨테이너에 대한 리버스 프록시 및 운영(상태/로그) 조회 API.")
 @RestController
 @RequestMapping("/api/v1/preview-sessions")
 @RequiredArgsConstructor
@@ -26,7 +28,11 @@ public class PreviewSessionController {
     private final PreviewSessionService previewSessionService;
     private final PreviewContainerOpsService previewContainerOpsService;
 
-    @Operation(summary = "Preview session 종료")
+    @Operation(
+            summary = "Preview session 종료",
+            description = "PreviewSession을 즉시 만료 처리하고 연결된 Docker 컨테이너를 종료합니다. " +
+                          "이미 종료/만료된 세션이거나 다른 유저 소유 세션이면 404를 반환합니다."
+    )
     @DeleteMapping("/{sessionId}")
     public ResponseEntity<Void> close(
             @AuthenticationPrincipal Long ownerUserId,

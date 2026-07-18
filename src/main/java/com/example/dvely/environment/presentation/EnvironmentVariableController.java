@@ -8,6 +8,8 @@ import com.example.dvely.environment.presentation.dto.request.UpdateEnvironmentV
 import com.example.dvely.environment.presentation.dto.response.EnvironmentVariableHistoryResponse;
 import com.example.dvely.environment.presentation.dto.response.EnvironmentVariableResponse;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -40,6 +42,7 @@ public class EnvironmentVariableController {
     public List<EnvironmentVariableResponse> getVariables(
             @AuthenticationPrincipal Long userId,
             @PathVariable Long projectId,
+            @Parameter(description = "필터링할 스코프. 생략 시 전체 조회", schema = @Schema(allowableValues = {"PREVIEW", "PRODUCTION"}))
             @RequestParam(required = false) String scope
     ) {
         return environmentVariableFacade.getVariables(userId, projectId, scope).stream()
@@ -56,7 +59,7 @@ public class EnvironmentVariableController {
     public List<EnvironmentVariableHistoryResponse> getHistory(
             @AuthenticationPrincipal Long userId,
             @PathVariable Long projectId,
-            @RequestParam(required = false) Integer limit
+            @Parameter(description = "조회 개수. 기본 50, 최대 200(초과 시 200으로 보정)") @RequestParam(required = false) Integer limit
     ) {
         return environmentVariableFacade.getHistory(userId, projectId, limit).stream()
                 .map(this::toHistoryResponse)

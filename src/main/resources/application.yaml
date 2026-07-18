@@ -4,6 +4,27 @@ spring:
   application:
     name: qeploy
 
+# Swagger UI readability options (SwaggerConfig.java owns the OpenAPI bean/GroupedOpenApi
+# definitions; these are UI-only display preferences, no effect on the API contract itself).
+springdoc:
+  swagger-ui:
+    # method: endpoints within a tag are sorted GET→HEAD→POST→PUT→PATCH→DELETE→OPTIONS→TRACE
+    # instead of declaration order, so CRUD siblings (e.g. GET/POST/PATCH/DELETE
+    # environment-variables) line up predictably regardless of where they sit in the controller.
+    operations-sorter: method
+    # alpha: groups/tags render alphabetically instead of registration order, matching the
+    # alphabetical domain list this project's docs already use (agent, auth, chat, ...).
+    tags-sorter: alpha
+    # none: all operations start collapsed. With 90 endpoints across 14 controllers, an
+    # auto-expanded page is unusable — collapsed-by-default lets FE devs open only what they need.
+    doc-expansion: none
+    # Surfaces per-call latency directly in the "Try it out" response panel, useful when chasing
+    # the documented p95 latencies (e.g. preview status ~1.5s, repository defaultBranch ~500ms).
+    display-request-duration: true
+    # Persists the authorized Bearer token and any "Try it out" filter text across page reloads,
+    # so re-testing a flow doesn't require re-pasting the JWT every time.
+    persist-authorization: true
+
   flyway:
     enabled: true
     locations: classpath:db/migration

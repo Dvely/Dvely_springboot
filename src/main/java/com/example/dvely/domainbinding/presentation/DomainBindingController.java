@@ -12,6 +12,7 @@ import com.example.dvely.domainbinding.presentation.dto.response.DomainResponse;
 import com.example.dvely.domainbinding.presentation.dto.response.DomainSearchResponse;
 import com.example.dvely.domainbinding.presentation.dto.response.VerificationGuideResponse;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -37,7 +38,9 @@ public class DomainBindingController {
 
     @Operation(summary = "도메인 검색", description = "키워드 기준으로 현재 지원하는 관리형 서브도메인의 사용 가능 여부를 조회합니다.")
     @GetMapping("/api/v1/domain-search")
-    public DomainSearchResponse search(@RequestParam String keyword) {
+    public DomainSearchResponse search(
+            @Parameter(description = "검색할 서브도메인 라벨", example = "myproject") @RequestParam String keyword
+    ) {
         return toSearchResponse(domainBindingFacade.search(keyword));
     }
 
