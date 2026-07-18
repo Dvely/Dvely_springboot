@@ -251,16 +251,10 @@ public class AgentRunEntity {
         return true;
     }
 
-    public void recoverExpiredLease() {
-        if (TaskStatus.valueOf(status) != TaskStatus.RUNNING) {
-            return;
-        }
-        transition(TaskStatus.RETRY_WAIT);
-        attempt++;
-        nextRunAt = LocalDateTime.now();
-        leaseOwner = null;
-        leaseUntil = null;
-    }
+    // recoverExpiredLease() removed (design ADR-Y5, #55) — expired-lease recovery is now performed
+    // by two atomic conditional UPDATEs (SpringDataAgentRunRepository#failExhaustedLease /
+    // #recoverLease) instead of this read-then-modify entity method, closing audit G7's
+    // multi-instance double-recovery race. See TaskStore#recoverOneExpiredLease.
 
     public void clearPlan() {
         planJson = null;

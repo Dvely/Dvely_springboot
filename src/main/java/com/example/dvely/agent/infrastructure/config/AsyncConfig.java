@@ -13,8 +13,15 @@ import java.util.concurrent.Executor;
 @Configuration
 public class AsyncConfig {
 
+    // ADR-Y3 (#55): declared as the concrete ThreadPoolTaskExecutor type (not the Executor
+    // interface, unlike the other beans below) so AgentRunWorker can @Qualifier-inject it and read
+    // its queue/pool introspection methods (getThreadPoolExecutor().getQueue(), getPoolSize(),
+    // getActiveCount()) for the capacity-aware claim estimate — Executor alone does not expose
+    // those. Pool sizing itself (core2/max5/queue10) is unchanged: a rejection here is meant to be
+    // a signal (log.warn / DISPATCH_REJECTED event), not something silently absorbed by a bigger
+    // pool.
     @Bean("agentExecutor")
-    public Executor agentExecutor() {
+    public ThreadPoolTaskExecutor agentExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(2);
         executor.setMaxPoolSize(5);
