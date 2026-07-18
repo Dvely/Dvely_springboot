@@ -206,7 +206,7 @@ class AgentOrchestratorTest {
                 ApprovalStatus.PENDING, "[결과 반영] 요약", LocalDateTime.now(), null
         );
         when(taskStore.cancel("task-1", 1L)).thenReturn(true);
-        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of(resultApproval));
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of(resultApproval));
 
         assertThat(orchestrator.cancel("task-1", 1L)).isTrue();
 
@@ -322,7 +322,7 @@ class AgentOrchestratorTest {
                 null
         );
         when(taskStore.cancel("task-1", 1L)).thenReturn(true);
-        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of(approval));
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of(approval));
 
         assertThat(orchestrator.cancel("task-1", 1L)).isTrue();
 
@@ -487,7 +487,7 @@ class AgentOrchestratorTest {
                 ApprovalStatus.PENDING, "배포 승인", LocalDateTime.now(), null
         );
         when(taskStore.cancel("task-1", 1L)).thenReturn(true);
-        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of(siblingPending));
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of(siblingPending));
 
         orchestrator.reject("task-1", 1L);
 
@@ -536,7 +536,7 @@ class AgentOrchestratorTest {
                 ApprovalStatus.PENDING, "도메인 승인", LocalDateTime.now(), null
         );
         when(taskStore.cancel("task-1", 1L)).thenReturn(true);
-        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of(sibling));
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of(sibling));
 
         orchestrator.cancel("task-1", 1L);
 

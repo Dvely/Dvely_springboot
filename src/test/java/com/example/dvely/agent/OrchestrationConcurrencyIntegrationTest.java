@@ -115,6 +115,75 @@ class OrchestrationConcurrencyIntegrationTest {
         assertThat(countEventsOfType(taskId, userId, "QUEUED")).isEqualTo(1);
     }
 
+    // ── Review follow-up (BLOCKING-1, y-hardening-review.md): reject cascade must use a locking
+    // read for its sibling scan ────────────────────────────────────────────────────────────────
+
+    @Test
+    void concurrentApproveOfSiblingAndRejectOfThisApprovalNeverSilentlyOverwritesTheSiblingsCommittedDecision()
+            throws Exception {
+        // reject()'s very first statement is routingFor() (ADR-Y1 step① — a plain, non-locking
+        // scalar read) which runs BEFORE taskStore.lockTask — under MySQL REPEATABLE READ this
+        // fixes the whole transaction's snapshot before the task lock is even acquired. Before
+        // this fix, cancelTaskCascade's sibling scan reused that plain (now-stale) snapshot even
+        // though it ran *after* the task lock was held, so it could observe a sibling approval as
+        // still-PENDING when it had actually already been committed APPROVED by a concurrent
+        // approve() — and silently overwrite it with CANCELLED (data corruption, no exception,
+        // no log). The fix (findByTaskIdOrderByIdAscForUpdate) bypasses the snapshot entirely.
+        Long userId = seedUser();
+        String taskId = uniqueTaskId("y6a-blocking1");
+        seedWaitingApprovalTask(taskId, userId);
+        Approval change = approvalRepository.save(
+                new Approval(userId, null, null, taskId, ApprovalType.CHANGE, "변경 요약"));
+        Approval deployment = approvalRepository.save(
+                new Approval(userId, null, null, taskId, ApprovalType.DEPLOYMENT, "배포 요약"));
+
+        java.util.concurrent.atomic.AtomicBoolean approveSucceeded = new java.util.concurrent.atomic.AtomicBoolean(false);
+        CountDownLatch startBarrier = new CountDownLatch(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Void>> futures = pool.invokeAll(List.of(
+                    raceTask(startBarrier, () -> {
+                        try {
+                            approvalCommandService.approve(userId, deployment.getId());
+                            approveSucceeded.set(true);
+                        } catch (IllegalStateException expectedWhenRejectWonTheTaskLockRaceFirst) {
+                            // The sibling DEPLOYMENT approval was still genuinely PENDING when
+                            // reject's (now-locking) cascade ran first and correctly cancelled it
+                            // — this approve's own PENDING guard then correctly 409s. A
+                            // legitimate outcome, not the bug this test guards against.
+                        }
+                    }),
+                    raceTask(startBarrier, () -> approvalCommandService.reject(userId, change.getId()))
+            ));
+            awaitAll(futures);
+        } finally {
+            pool.shutdown();
+        }
+
+        List<Approval> finalApprovals = approvalRepository.findByTaskIdOrderByIdAsc(taskId);
+        Approval reloadedDeployment = finalApprovals.stream()
+                .filter(approval -> approval.getId().equals(deployment.getId()))
+                .findFirst()
+                .orElseThrow();
+        if (approveSucceeded.get()) {
+            // The exact BLOCKING-1 regression: approve() committed APPROVED (the user would have
+            // received 200 OK) — the concurrent reject's cascade must never overwrite that
+            // already-committed decision with CANCELLED afterward.
+            assertThat(reloadedDeployment.getStatus()).isEqualTo(ApprovalStatus.APPROVED);
+        } else {
+            // reject won the task-lock race while DEPLOYMENT was still genuinely PENDING — the
+            // (locking) cascade correctly cancelled it, and approve's later attempt correctly
+            // 409'd instead of corrupting anything.
+            assertThat(reloadedDeployment.getStatus()).isEqualTo(ApprovalStatus.CANCELLED);
+        }
+        Approval reloadedChange = finalApprovals.stream()
+                .filter(approval -> approval.getId().equals(change.getId()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(reloadedChange.getStatus()).isEqualTo(ApprovalStatus.REJECTED);
+        assertThat(taskStore.get(taskId).status()).isEqualTo(TaskStatus.CANCELLED);
+    }
+
     // ── D1 stress (#55 MUST #2): approve×2 + cancel repeated, no deadlocks, invariant holds ────
 
     @Test

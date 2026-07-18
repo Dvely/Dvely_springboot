@@ -164,19 +164,33 @@ public class AgentOrchestrator {
      * what lets ADR-Y2's sweep condition ("every approval APPROVED") stay a simple predicate with no
      * extra "and no terminal-task leftovers" special case.
      * <p>
-     * Approvals are visited in id-ascending order (LO-1, design §2.1). No explicit {@code FOR
-     * UPDATE} is needed on this read: by the time this runs, the caller's transaction already holds
-     * the task row's lock (either {@link com.example.dvely.agent.infrastructure.store.TaskStore
-     * #cancel}'s own locking read for the cancel path, or {@code ApprovalCommandService}'s {@code
-     * taskStore.lockTask} for the reject path) — that lock alone already serializes every other
-     * task-bound decision-maker for this taskId out, so a plain read here cannot race a concurrent
-     * writer.
+     * Review follow-up (BLOCKING-1, y-hardening-review.md): the sibling scan below MUST be a
+     * locking read ({@code findByTaskIdOrderByIdAscForUpdate}), not the plain {@code
+     * findByTaskIdOrderByIdAsc} this used before — "the caller's transaction already holds the
+     * task lock by the time this runs" is true but insufficient. Design §1's REPEATABLE READ rule
+     * ("a transaction's first non-locking SELECT fixes the snapshot every later non-locking SELECT
+     * in that transaction reuses") bites here specifically because {@code
+     * ApprovalCommandService.reject()}'s very first statement is {@code routingFor()} (a plain
+     * scalar read, step① of ADR-Y1) — which runs <em>before</em> {@code taskStore.lockTask}. That
+     * fixes this transaction's snapshot before the task lock is even acquired, so a later plain
+     * read here — even though it runs after the lock is held — can still observe a sibling
+     * approval as stale PENDING when it was actually already committed APPROVED by a concurrent
+     * approve() that finished and released the task lock in between. Unlike {@code
+     * ApprovalEntity}, which carries no {@code @Version}, that stale read would silently overwrite
+     * the sibling's real APPROVED decision with CANCELLED — no exception, no log, a genuine data
+     * corruption via write-skew, exactly the class of bug ADR-Y1 exists to eliminate. A locking
+     * read bypasses the snapshot and always observes the latest committed version, same as
+     * approve()'s all-approved check (§1) and {@code recoverStuckApprovedTask}'s re-verification.
+     * It never actually contends here either: this transaction is already the sole task-lock
+     * holder, so there is no other writer to block on.
+     * <p>
+     * Approvals are visited in id-ascending order (LO-1, design §2.1).
      */
     private boolean cancelTaskCascade(String taskId, Long ownerUserId) {
         if (!taskStore.cancel(taskId, ownerUserId)) {
             return false;
         }
-        approvalRepository.findByTaskIdOrderByIdAsc(taskId).stream()
+        approvalRepository.findByTaskIdOrderByIdAscForUpdate(taskId).stream()
                 .filter(approval -> approval.getStatus() == ApprovalStatus.PENDING)
                 .forEach(approval -> {
                     approval.cancel();
