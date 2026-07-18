@@ -210,7 +210,21 @@ public class InfraOpsAgentService {
             }
         });
 
-        List<DeploymentHistoryResult> histories = deploymentQueryService.getDeploymentHistories(userId, projectId);
+        // Review Medium (x-cloudops-review.md): this call was previously unguarded while the
+        // preview-log fetch above it already had per-section degrade — a GitHub Actions hiccup
+        // here threw past this point and discarded the [Preview 로그] section already computed
+        // above, escalating a partial-availability situation into a full task FAILED. Now
+        // symmetric with statusCheck()'s section() helper: a failure here degrades only the
+        // [배포 로그] row instead of the whole response.
+        List<DeploymentHistoryResult> histories;
+        try {
+            histories = deploymentQueryService.getDeploymentHistories(userId, projectId);
+        } catch (RuntimeException e) {
+            log.warn("[InfraOpsAgent] 배포 이력 조회 실패, degrade 처리: projectId={} exceptionType={}",
+                    projectId, e.getClass().getSimpleName());
+            sections.add("[배포 로그]\n확인 불가");
+            histories = List.of();
+        }
         if (!histories.isEmpty()) {
             Long historyId = histories.get(0).historyId();
             try {
@@ -253,6 +267,11 @@ public class InfraOpsAgentService {
     // ── 3.3 FAILURE_ANALYSIS — U6 analysis reused as-is; no new analysis logic here ────────────
 
     private String failureAnalysis(Long userId, Long projectId) {
+        // Review Medium (x-cloudops-review.md): unlike logView()'s equivalent call, this one is
+        // deliberately left unguarded — FAILURE_ANALYSIS has no meaningful degrade target without
+        // a history to analyze (there is no "analysis: 확인 불가" that would be useful), so a hard
+        // failure here (-> task FAILED, same as every other agent service's repository read) is
+        // more honest than fabricating a "최근 실패한 배포가 없습니다" answer we can't actually confirm.
         List<DeploymentHistoryResult> histories = deploymentQueryService.getDeploymentHistories(userId, projectId);
         Optional<DeploymentHistoryResult> latest = histories.isEmpty() ? Optional.empty() : Optional.of(histories.get(0));
 
@@ -267,12 +286,27 @@ public class InfraOpsAgentService {
         return body + previewCrashNote(projectId, userId);
     }
 
-    /** Notes a stopped-but-still-ACTIVE preview container without analyzing it (crash analysis is non-goal, §3.3). */
+    /**
+     * Notes a stopped-but-still-ACTIVE preview container without analyzing it (crash analysis is
+     * non-goal, §3.3). Wrapped in try/catch (review Medium, x-cloudops-review.md): this is a
+     * secondary annotation appended to the already-computed {@code failureAnalysis()} body (either
+     * a real analysis or a "no failed deployment" message) — a lookup failure here must degrade to
+     * "no note added" rather than propagate and discard that body. {@code isContainerRunning}
+     * itself already swallows all Docker exceptions internally (never throws), but
+     * {@code findActiveSession} still reads through JPA, so this stays defensive rather than
+     * relying on that internal detail.
+     */
     private String previewCrashNote(Long projectId, Long userId) {
-        return findActiveSession(projectId, userId)
-                .filter(session -> !dockerService.isContainerRunning(session.containerId()))
-                .map(session -> "\n- 참고: preview 컨테이너가 존재하지만 현재 중지 상태입니다.")
-                .orElse("");
+        try {
+            return findActiveSession(projectId, userId)
+                    .filter(session -> !dockerService.isContainerRunning(session.containerId()))
+                    .map(session -> "\n- 참고: preview 컨테이너가 존재하지만 현재 중지 상태입니다.")
+                    .orElse("");
+        } catch (RuntimeException e) {
+            log.warn("[InfraOpsAgent] preview 상태 부가 확인 실패, degrade 처리: projectId={} exceptionType={}",
+                    projectId, e.getClass().getSimpleName());
+            return "";
+        }
     }
 
     // ── 3.4 RESTART — the only mutating operation; target is always the DB-resolved ACTIVE session ──
@@ -292,9 +326,21 @@ public class InfraOpsAgentService {
             // that a genuine failure, not a guidance case, since the DB said ACTIVE moments ago.
             dockerService.restartContainer(containerId);
             log.info("[InfraOpsAgent] preview 컨테이너 재시작 완료 | containerId={} projectId={}", containerId, projectId);
-            ContainerRuntimeStatus status = dockerService.getContainerStatus(containerId);
+            // Review Medium (x-cloudops-review.md): restartContainer() above already succeeded and
+            // mutated real state. getContainerStatus only catches NotFoundException internally, so
+            // any other Docker hiccup on this immediately-following re-check would otherwise turn
+            // an already-completed restart into a task FAILED. Degrade only this status line.
+            String statusLine;
+            try {
+                ContainerRuntimeStatus status = dockerService.getContainerStatus(containerId);
+                statusLine = status.running() ? "정상 실행 중" : "재시작 직후 확인 중 — 잠시 후 다시 확인해주세요";
+            } catch (RuntimeException e) {
+                log.warn("[InfraOpsAgent] 재시작 후 상태 재확인 실패, degrade 처리: containerId={} projectId={} exceptionType={}",
+                        containerId, projectId, e.getClass().getSimpleName());
+                statusLine = "확인 불가(재시작 자체는 완료됨)";
+            }
             body = "preview 서버를 재시작했습니다.\n- URL: " + session.get().publicUrl()
-                    + "\n- 실행 상태: " + (status.running() ? "정상 실행 중" : "재시작 직후 확인 중 — 잠시 후 다시 확인해주세요");
+                    + "\n- 실행 상태: " + statusLine;
         }
         return policyWasOff
                 ? InfraOperation.RESTART.impactMarkers() + "승인 정책이 꺼져 있어 즉시 실행했습니다.\n" + body

@@ -241,6 +241,28 @@ class InfraOpsAgentServiceTest {
         assertThat(result.summary().length()).isLessThan(hugeLog.length());
     }
 
+    @Test
+    void logViewDegradesDeploymentSectionOnHistoryFailureWithoutDiscardingPreviewLog() {
+        // Symmetric with statusCheckDegradesOnlyTheFailingSection (review Medium fix,
+        // x-cloudops-review.md): a GitHub Actions hiccup on the deployment-history lookup must
+        // degrade only the [배포 로그] row, not discard the already-computed [Preview 로그] section
+        // by escalating the whole task to FAILED.
+        stubOwnedProject();
+        PreviewSessionInfo session = previewSession();
+        when(previewSessionService.findActiveByProject(PROJECT_ID, USER_ID)).thenReturn(Optional.of(session));
+        when(dockerService.getContainerLogs(eq("container-1"), eq(50), isNull())).thenReturn("preview log line");
+        when(deploymentQueryService.getDeploymentHistories(USER_ID, PROJECT_ID))
+                .thenThrow(new RuntimeException("GitHub API 일시 장애"));
+        AgentStep step = new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "LOG_VIEW"));
+
+        var result = service.execute(step, USER_ID, TASK_ID, PROJECT_ID);
+
+        assertThat(result.summary())
+                .contains("[Preview 로그]").contains("preview log line")
+                .contains("[배포 로그]").contains("확인 불가");
+        verify(deploymentQueryService, never()).getDeploymentLogs(anyLong(), anyLong());
+    }
+
     // ── FAILURE_ANALYSIS ─────────────────────────────────────────────────────
 
     @Test
@@ -309,6 +331,29 @@ class InfraOpsAgentServiceTest {
         verify(dockerService).restartContainer("container-1");
         assertThat(result.summary()).contains("재시작했습니다").contains(session.publicUrl());
         assertThat(result.summary()).doesNotContain("승인 정책이 꺼져 있어");
+    }
+
+    @Test
+    void restartDegradesPostRestartStatusCheckWithoutFailingTheAlreadyCompletedRestart() {
+        // Review Medium fix (x-cloudops-review.md): restartContainer() already succeeded (and
+        // mutated real state) before the post-restart getContainerStatus re-check runs — a Docker
+        // hiccup on that re-check alone must not turn a completed restart into a task FAILED.
+        stubOwnedProject();
+        PreviewSessionInfo session = previewSession();
+        when(previewSessionService.findActiveByProject(PROJECT_ID, USER_ID)).thenReturn(Optional.of(session));
+        when(dockerService.getContainerStatus("container-1"))
+                .thenThrow(new RuntimeException("Docker 데몬 일시 응답 없음"));
+        when(policyRepository.findByProjectId(PROJECT_ID))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(PROJECT_ID, true, true, true, true)));
+        AgentStep step = new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "RESTART"));
+
+        var result = service.execute(step, USER_ID, TASK_ID, PROJECT_ID);
+
+        verify(dockerService).restartContainer("container-1");
+        assertThat(result.summary())
+                .contains("재시작했습니다")
+                .contains(session.publicUrl())
+                .contains("확인 불가(재시작 자체는 완료됨)");
     }
 
     @Test
