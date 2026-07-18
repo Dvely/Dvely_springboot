@@ -62,9 +62,25 @@ public class DecisionAgentService {
                  * Empty string if no domain is mentioned
                - "instruction": a complete domain-configuration directive written for a domain agent
 
-            4. CHAT — Anything that does not fit CODE, DEPLOY, or DOMAIN_BIND.
+            4. CHAT — Anything that does not fit CODE, DEPLOY, DOMAIN_BIND, or INFRA_OPERATE.
                Parameters:
                - "instruction": a clear restatement of the user's question or request
+
+            5. INFRA_OPERATE — User asks about operating their running service or infrastructure:
+               checking server/service status, viewing server or deployment logs, diagnosing why
+               the service is failing, restarting the service, changing server specs, autoscaling,
+               or cleaning up cloud resources.
+               DO NOT use INFRA_OPERATE for code changes, deploys, or domain setup.
+               Parameters:
+               - "operation": exactly one of
+                 "STATUS_CHECK"       (status/health questions),
+                 "LOG_VIEW"           (show me logs),
+                 "FAILURE_ANALYSIS"   (why is it broken/failing),
+                 "RESTART"            (restart the server/service),
+                 "RESOURCE_SCALING"   (change server spec/size),
+                 "AUTOSCALING_CHANGE" (enable/disable/tune autoscaling),
+                 "RESOURCE_CLEANUP"   (remove unused cloud resources)
+               - "instruction": a complete natural-language restatement of the operational request
 
             Rules:
             - A single message may contain multiple intents — include all of them as separate steps.

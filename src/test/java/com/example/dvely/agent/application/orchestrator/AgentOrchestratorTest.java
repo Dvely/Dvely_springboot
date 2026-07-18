@@ -214,4 +214,142 @@ class AgentOrchestratorTest {
         assertThat(approval.getStatus()).isEqualTo(ApprovalStatus.CANCELLED);
         verify(approvalRepository).save(approval);
     }
+
+    // ── Cloud Ops Agent (INFRA_OPERATE) approval gating — design doc D4/D7 ─────────────────────
+
+    @Test
+    void infraOperateRestartWithPolicyOnCreatesInfraOperationApprovalWithServiceImpactMarker() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ProjectApprovalPolicyRepository policyRepository = mock(ProjectApprovalPolicyRepository.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                projectRepository,
+                mock(ConversationRepository.class),
+                policyRepository,
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(mock(Project.class)));
+        // Empty policy -> ProjectApprovalPolicy's fail-safe default (all required, including infra).
+        when(policyRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+        when(approvalRepository.save(any(Approval.class))).thenAnswer(invocation -> {
+            Approval source = invocation.getArgument(0);
+            return new Approval(
+                    201L, source.getOwnerUserId(), source.getProjectId(), source.getConversationId(),
+                    source.getTaskId(), source.getType(), ApprovalStatus.PENDING, source.getSummary(),
+                    LocalDateTime.now(), null
+            );
+        });
+        AgentPlan plan = new AgentPlan(
+                List.of(new AgentStep(AgentType.INFRA_OPERATE,
+                        Map.of("operation", "RESTART", "instruction", "preview 서버를 재시작해줘"))),
+                "reason", AiProvider.ANTHROPIC, 11L
+        );
+
+        AgentSubmission submission = orchestrator.submit(plan, 1L, null);
+
+        assertThat(submission.status()).isEqualTo(TaskStatus.WAITING_APPROVAL);
+        assertThat(submission.approvalIds()).containsExactly(201L);
+        ArgumentCaptor<Approval> captor = ArgumentCaptor.forClass(Approval.class);
+        verify(approvalRepository).save(captor.capture());
+        assertThat(captor.getValue().getType()).isEqualTo(ApprovalType.INFRA_OPERATION);
+        assertThat(captor.getValue().getSummary())
+                .startsWith("[서비스 영향]")
+                .contains("preview 서버를 재시작해줘");
+    }
+
+    @Test
+    void infraOperateRestartWithPolicyOffSkipsApprovalAndQueuesImmediately() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ProjectApprovalPolicyRepository policyRepository = mock(ProjectApprovalPolicyRepository.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                projectRepository,
+                mock(ConversationRepository.class),
+                policyRepository,
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(mock(Project.class)));
+        // infraApprovalRequired=false — user turned the policy off (User Sovereignty, design D4).
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, true, true, true, false)));
+        AgentPlan plan = new AgentPlan(
+                List.of(new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "RESTART"))),
+                "reason", AiProvider.ANTHROPIC, 11L
+        );
+
+        AgentSubmission submission = orchestrator.submit(plan, 1L, null);
+
+        assertThat(submission.status()).isEqualTo(TaskStatus.QUEUED);
+        assertThat(submission.approvalIds()).isEmpty();
+        verify(approvalRepository, never()).save(any());
+        verify(taskStore).enqueue(submission.taskId());
+    }
+
+    @Test
+    void infraOperateReadOnlyOperationNeverRequiresApproval() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ProjectApprovalPolicyRepository policyRepository = mock(ProjectApprovalPolicyRepository.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                projectRepository,
+                mock(ConversationRepository.class),
+                policyRepository,
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(mock(Project.class)));
+        // Policy fully ON — STATUS_CHECK is still not an approval target (PRD §21.3: read-only
+        // operations are simply out of scope for the approval gate, regardless of policy).
+        when(policyRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+        AgentPlan plan = new AgentPlan(
+                List.of(new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "STATUS_CHECK"))),
+                "reason", AiProvider.ANTHROPIC, 11L
+        );
+
+        AgentSubmission submission = orchestrator.submit(plan, 1L, null);
+
+        assertThat(submission.status()).isEqualTo(TaskStatus.QUEUED);
+        verify(approvalRepository, never()).save(any());
+    }
+
+    @Test
+    void infraOperateWithUnidentifiedOperationSkipsApprovalAndLetsExecutorRespondWithGuidance() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ProjectApprovalPolicyRepository policyRepository = mock(ProjectApprovalPolicyRepository.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                projectRepository,
+                mock(ConversationRepository.class),
+                policyRepository,
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(mock(Project.class)));
+        when(policyRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+        // Missing/garbled "operation" — InfraOperation.parse() returns empty, so the catalog
+        // whitelist boundary (design D3) rules this out of the approval gate entirely.
+        AgentPlan plan = new AgentPlan(
+                List.of(new AgentStep(AgentType.INFRA_OPERATE, Map.of("instruction", "뭔가 이상한 요청"))),
+                "reason", AiProvider.ANTHROPIC, 11L
+        );
+
+        AgentSubmission submission = orchestrator.submit(plan, 1L, null);
+
+        assertThat(submission.status()).isEqualTo(TaskStatus.QUEUED);
+        verify(approvalRepository, never()).save(any());
+    }
 }

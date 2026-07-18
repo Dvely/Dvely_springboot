@@ -493,6 +493,29 @@ public class DockerContainerService {
         return out + (err.isBlank() ? "" : "\n[STDERR]\n" + err);
     }
 
+    /**
+     * Restarts a running preview container in place (Cloud Ops Agent RESTART, EPIC 15 design §3.4)
+     * — stop with a 5s grace period, then start, reusing the same container rather than recreating
+     * it. This matters for the isolation policy in {@link #createAndStartContainer}: HostConfig
+     * (memory/CPU/pids caps, capability drops, network isolation) is set at container-create time,
+     * so a restart of the existing container preserves it automatically, whereas a
+     * remove+recreate would need to reapply it explicitly.
+     */
+    public void restartContainer(String containerId) {
+        try {
+            dockerClient.restartContainerCmd(containerId).withTimeout(5).exec();
+        } catch (NotFoundException e) {
+            // Caller (InfraOpsAgentService) already resolved this containerId from an ACTIVE
+            // preview session moments earlier — reaching here means the container was removed
+            // out-of-band in that narrow window (cleanup scheduler, manual removal). Surfacing
+            // this as a failure is correct (design §4.2 error table): unlike a missing session
+            // (handled before this call is even made), a session that says ACTIVE but whose
+            // container is gone is a genuine inconsistency worth failing the task over.
+            throw new IllegalStateException("재시작할 컨테이너를 찾을 수 없습니다(이미 정리됨). containerId=" + containerId, e);
+        }
+        log.info("Docker 컨테이너 재시작: id={}", containerId);
+    }
+
     public void removeContainer(String containerId) {
         try {
             dockerClient.stopContainerCmd(containerId).withTimeout(5).exec();

@@ -4,5 +4,6 @@ public enum AgentType {
     CHAT,
     CODE,
     DEPLOY,
-    DOMAIN_BIND
+    DOMAIN_BIND,
+    INFRA_OPERATE
 }

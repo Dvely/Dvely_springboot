@@ -7,6 +7,7 @@ import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.domain.value.AgentType;
+import com.example.dvely.agent.domain.value.InfraOperation;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
@@ -124,7 +125,7 @@ public class AgentOrchestrator {
         ProjectApprovalPolicy policy = resolvePolicy(plan.projectId());
         Map<ApprovalType, String> summaries = new LinkedHashMap<>();
         for (AgentStep step : plan.steps()) {
-            ApprovalType type = toApprovalType(step.agentType());
+            ApprovalType type = toApprovalType(step);
             if (type == null || !policy.requires(type)) {
                 continue;
             }
@@ -151,21 +152,45 @@ public class AgentOrchestrator {
                 .orElseGet(() -> new ProjectApprovalPolicy(projectId));
     }
 
-    private ApprovalType toApprovalType(AgentType agentType) {
-        return switch (agentType) {
+    /**
+     * Takes the whole {@link AgentStep} (design D7), not just its {@link AgentType} — INFRA_OPERATE
+     * is the first type whose approval requirement depends on a step parameter (the "operation"
+     * catalog entry) rather than being fixed per type. An unparseable/missing operation and a
+     * read-only or unsupported operation both resolve to {@code null} (no approval): the former
+     * because there is nothing concrete to approve yet (InfraOpsAgentService will respond with
+     * guidance instead), the latter per the catalog's own {@code approvalRequired()} contract.
+     */
+    private ApprovalType toApprovalType(AgentStep step) {
+        return switch (step.agentType()) {
             case CODE -> ApprovalType.CHANGE;
             case DEPLOY -> ApprovalType.DEPLOYMENT;
             case DOMAIN_BIND -> ApprovalType.DOMAIN_BINDING;
+            case INFRA_OPERATE -> InfraOperation.parse(step.parameters().get("operation"))
+                    .filter(InfraOperation::approvalRequired)
+                    .map(op -> ApprovalType.INFRA_OPERATION)
+                    .orElse(null);
             case CHAT -> null;
         };
     }
 
+    /**
+     * Truncated instruction text used as the Approval row's one-line summary. For INFRA_OPERATE
+     * steps that carry a detected impact (BI-176/177), the catalog's marker(s) — e.g.
+     * {@code "[서비스 영향] "} — are prepended so the impact is visible at the single point the user
+     * sees before approving (design D7/§16.7), rather than only being known internally to the
+     * approval-gating decision above. Truncation stays at 200 chars on the instruction itself (the
+     * marker is added on top of that, well within the summary column's 500-char limit).
+     */
     private String summarize(AgentStep step) {
         String instruction = step.parameters().getOrDefault("instruction", "").trim();
         if (instruction.isEmpty()) {
             instruction = step.agentType().name() + " 작업";
         }
-        return instruction.length() <= 200 ? instruction : instruction.substring(0, 197) + "...";
+        String truncated = instruction.length() <= 200 ? instruction : instruction.substring(0, 197) + "...";
+        String markers = step.agentType() == AgentType.INFRA_OPERATE
+                ? InfraOperation.parse(step.parameters().get("operation")).map(InfraOperation::impactMarkers).orElse("")
+                : "";
+        return markers + truncated;
     }
 
     private String buildApprovalMessage(List<Approval> approvals) {

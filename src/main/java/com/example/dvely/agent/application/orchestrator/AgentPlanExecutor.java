@@ -11,6 +11,7 @@ import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
+import com.example.dvely.agent.application.service.InfraOpsAgentService;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.change.application.service.ChangeService;
@@ -28,6 +29,7 @@ public class AgentPlanExecutor {
     private final DeployAgentService     deployAgentService;
     private final DomainBindAgentService domainBindAgentService;
     private final ChatAgentService       chatAgentService;
+    private final InfraOpsAgentService   infraOpsAgentService;
     private final TaskStore              taskStore;
     private final AgentMessageService    agentMessageService;
     private final BuildFailureRecoveryService buildFailureRecoveryService;
@@ -133,10 +135,11 @@ public class AgentPlanExecutor {
 
     private CodeResult dispatch(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, Long userId, String taskId, Long projectId) {
         return switch (step.agentType()) {
-            case CODE        -> handleCode(step, aiProvider, userId, projectId, taskId);
-            case DEPLOY      -> handleDeploy(step, userId, taskId, projectId);
-            case DOMAIN_BIND -> handleDomainBind(step, userId, taskId, projectId);
-            case CHAT        -> handleChat(step, aiProvider, taskId);
+            case CODE          -> handleCode(step, aiProvider, userId, projectId, taskId);
+            case DEPLOY        -> handleDeploy(step, userId, taskId, projectId);
+            case DOMAIN_BIND   -> handleDomainBind(step, userId, taskId, projectId);
+            case INFRA_OPERATE -> handleInfraOperate(step, userId, taskId, projectId);
+            case CHAT          -> handleChat(step, aiProvider, taskId);
         };
     }
 
@@ -163,6 +166,13 @@ public class AgentPlanExecutor {
         log.info("  domain      : {}", step.parameters().getOrDefault("domain", ""));
         log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
         return domainBindAgentService.execute(step, userId, taskId, projectId);
+    }
+
+    private CodeResult handleInfraOperate(AgentStep step, Long userId, String taskId, Long projectId) {
+        log.info("[INFRA_OPERATE 에이전트] 인프라 운영 요청 수신 | userId={} projectId={}", userId, projectId);
+        log.info("  operation   : {}", step.parameters().getOrDefault("operation", ""));
+        log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
+        return infraOpsAgentService.execute(step, userId, taskId, projectId);
     }
 
     private CodeResult handleChat(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, String taskId) {
