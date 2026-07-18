@@ -2,6 +2,8 @@ package com.example.dvely.approval.application.command;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -17,10 +19,13 @@ import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.change.application.service.ResultApprovalService;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
+import org.mockito.Mockito;
 
 class ApprovalCommandServiceTest {
 
@@ -35,7 +40,8 @@ class ApprovalCommandServiceTest {
                 queryService,
                 orchestrator,
                 messageService,
-                List.of()
+                List.of(),
+                mock(ResultApprovalService.class)
         );
         Approval change = approval(1L, ApprovalType.CHANGE, 21L);
         Approval deployment = approval(2L, ApprovalType.DEPLOYMENT, 21L);
@@ -69,7 +75,8 @@ class ApprovalCommandServiceTest {
                 queryService,
                 orchestrator,
                 messageService,
-                List.of()
+                List.of(),
+                mock(ResultApprovalService.class)
         );
         Approval approval = approval(1L, ApprovalType.CHANGE, 21L);
         when(repository.findByIdAndOwnerUserIdForUpdate(1L, 7L)).thenReturn(Optional.of(approval));
@@ -94,7 +101,8 @@ class ApprovalCommandServiceTest {
         StandaloneApprovalHandler handler = mock(StandaloneApprovalHandler.class);
         when(handler.supports(ApprovalType.INFRA_OPERATION)).thenReturn(true);
         ApprovalCommandService service = new ApprovalCommandService(
-                repository, queryService, orchestrator, messageService, List.of(handler)
+                repository, queryService, orchestrator, messageService, List.of(handler),
+                mock(ResultApprovalService.class)
         );
         Approval standalone = Approval.standalone(7L, 11L, ApprovalType.INFRA_OPERATION, "인프라 설정 변경 요청");
         Approval persisted = new Approval(
@@ -123,7 +131,8 @@ class ApprovalCommandServiceTest {
         StandaloneApprovalHandler handler = mock(StandaloneApprovalHandler.class);
         when(handler.supports(ApprovalType.INFRA_OPERATION)).thenReturn(true);
         ApprovalCommandService service = new ApprovalCommandService(
-                repository, queryService, orchestrator, messageService, List.of(handler)
+                repository, queryService, orchestrator, messageService, List.of(handler),
+                mock(ResultApprovalService.class)
         );
         Approval persisted = new Approval(
                 5L, 7L, 11L, null, null, ApprovalType.INFRA_OPERATION,
@@ -150,7 +159,8 @@ class ApprovalCommandServiceTest {
         AgentMessageService messageService = mock(AgentMessageService.class);
         StandaloneApprovalHandler infraHandler = mock(StandaloneApprovalHandler.class);
         ApprovalCommandService service = new ApprovalCommandService(
-                repository, queryService, orchestrator, messageService, List.of(infraHandler)
+                repository, queryService, orchestrator, messageService, List.of(infraHandler),
+                mock(ResultApprovalService.class)
         );
         Approval taskApproval = approval(1L, ApprovalType.CHANGE, 21L);
         when(repository.findByIdAndOwnerUserIdForUpdate(1L, 7L)).thenReturn(Optional.of(taskApproval));
@@ -172,7 +182,8 @@ class ApprovalCommandServiceTest {
         AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
         AgentMessageService messageService = mock(AgentMessageService.class);
         ApprovalCommandService service = new ApprovalCommandService(
-                repository, queryService, orchestrator, messageService, List.of()
+                repository, queryService, orchestrator, messageService, List.of(),
+                mock(ResultApprovalService.class)
         );
         Approval persisted = new Approval(
                 5L, 7L, 11L, null, null, ApprovalType.INFRA_OPERATION,
@@ -196,7 +207,8 @@ class ApprovalCommandServiceTest {
         AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
         AgentMessageService messageService = mock(AgentMessageService.class);
         ApprovalCommandService service = new ApprovalCommandService(
-                repository, queryService, orchestrator, messageService, List.of()
+                repository, queryService, orchestrator, messageService, List.of(),
+                mock(ResultApprovalService.class)
         );
         Approval approveTarget = approval(1L, ApprovalType.CHANGE, 21L);
         Approval rejectTarget = approval(2L, ApprovalType.CHANGE, 21L);
@@ -224,7 +236,8 @@ class ApprovalCommandServiceTest {
         AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
         AgentMessageService messageService = mock(AgentMessageService.class);
         ApprovalCommandService service = new ApprovalCommandService(
-                repository, queryService, orchestrator, messageService, List.of()
+                repository, queryService, orchestrator, messageService, List.of(),
+                mock(ResultApprovalService.class)
         );
         Approval approval = approval(1L, ApprovalType.CHANGE, 21L);
         // Models the two racing transactions both resolving to the same row: with the
@@ -242,6 +255,136 @@ class ApprovalCommandServiceTest {
         assertThatThrownBy(() -> service.reject(7L, 1L))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("이미 처리된 승인입니다");
+    }
+
+    // ── Track Z (#56): RESULT approval branch ───────────────────────────────────────────────
+
+    @Test
+    void resultApprovalReflectsChangeResumesTaskAndNeverJoinsTheAllApprovedVote() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ResultApprovalService resultApprovalService = mock(ResultApprovalService.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(),
+                resultApprovalService
+        );
+        Approval approval = approval(9L, ApprovalType.RESULT, 21L);
+        when(repository.findByIdAndOwnerUserIdForUpdate(9L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.save(approval)).thenReturn(approval);
+        when(queryService.toResult(approval)).thenReturn(result(approval));
+        when(resultApprovalService.reflect(approval))
+                .thenReturn(new ResultApprovalService.ReflectResult(42, "abcdef1234567"));
+
+        service.approve(7L, 9L);
+
+        verify(orchestrator).verifyResumableAfterResult("task-1");
+        verify(resultApprovalService).reflect(approval);
+        verify(orchestrator).resumeAfterResult("task-1");
+        // BLOCKING-3 fix: the locked DB precondition check must run strictly before the
+        // irreversible external merge, and the actual resume transition strictly after it.
+        InOrder order = Mockito.inOrder(orchestrator, resultApprovalService);
+        order.verify(orchestrator).verifyResumableAfterResult("task-1");
+        order.verify(resultApprovalService).reflect(approval);
+        order.verify(orchestrator).resumeAfterResult("task-1");
+        // RESULT never joins the plan's allApproved vote (design D2/§3.3) — no findByTaskIdOrderByIdAsc
+        // aggregate lookup, no executeApproved call.
+        verify(repository, never()).findByTaskIdOrderByIdAsc(anyString());
+        verify(orchestrator, never()).executeApproved(anyString());
+        verify(messageService).appendAssistant(
+                21L,
+                "결과가 승인되어 main에 반영되었습니다.\n- PR: #42\n- commit: abcdef1\n남은 작업을 이어서 진행합니다."
+        );
+    }
+
+    @Test
+    void resultApprovalAbortsBeforeTheIrreversibleMergeWhenTheLockedPreconditionFails() {
+        // BLOCKING-3 regression: models the race where the task independently moved off
+        // WAITING_RESULT_APPROVAL (e.g. cancelled) between the RESULT approval's creation and
+        // this approve call — the locked precondition check must reject the whole approve before
+        // resultApprovalService.reflect() (the irreversible external GitHub merge) is ever
+        // invoked, and before the task is ever resumed.
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ResultApprovalService resultApprovalService = mock(ResultApprovalService.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(),
+                resultApprovalService
+        );
+        Approval approval = approval(9L, ApprovalType.RESULT, 21L);
+        when(repository.findByIdAndOwnerUserIdForUpdate(9L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.save(approval)).thenReturn(approval);
+        doThrow(new IllegalStateException("결과 승인 대기 상태가 아닌 Agent task입니다. taskId=task-1"))
+                .when(orchestrator).verifyResumableAfterResult("task-1");
+
+        assertThatThrownBy(() -> service.approve(7L, 9L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("task-1");
+
+        verifyNoInteractions(resultApprovalService);
+        verify(orchestrator, never()).resumeAfterResult(anyString());
+        verifyNoInteractions(messageService);
+    }
+
+    @Test
+    void resultRejectionMarksChangeRejectedAndCancelsTaskWithoutStandaloneDispatch() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ResultApprovalService resultApprovalService = mock(ResultApprovalService.class);
+        StandaloneApprovalHandler handler = mock(StandaloneApprovalHandler.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(handler),
+                resultApprovalService
+        );
+        Approval approval = approval(9L, ApprovalType.RESULT, 21L);
+        when(repository.findByIdAndOwnerUserIdForUpdate(9L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.save(approval)).thenReturn(approval);
+        when(queryService.toResult(approval)).thenReturn(result(approval));
+
+        service.reject(7L, 9L);
+
+        verify(resultApprovalService).markRejected(approval);
+        verify(orchestrator).reject("task-1", 7L);
+        verify(messageService).appendAssistant(
+                21L,
+                "결과가 거절되어 main에 반영하지 않았습니다. 변경은 preview 브랜치에만 남아 있습니다.\n"
+                        + "이어서 수정을 요청하면 현재 preview 상태 위에서 작업합니다."
+        );
+        // RESULT is never standalone (taskId always set by the gate) — must not divert to a
+        // registered handler even though one exists for a different type.
+        verifyNoInteractions(handler);
+    }
+
+    @Test
+    void resultApprovalIdempotentReflectWithNoPrStillAppendsAConfirmationMessage() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ResultApprovalService resultApprovalService = mock(ResultApprovalService.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(),
+                resultApprovalService
+        );
+        Approval approval = approval(9L, ApprovalType.RESULT, 21L);
+        when(repository.findByIdAndOwnerUserIdForUpdate(9L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.save(approval)).thenReturn(approval);
+        when(queryService.toResult(approval)).thenReturn(result(approval));
+        // D8 idempotent no-op path: no new commits -> no PR, just main's current head SHA.
+        when(resultApprovalService.reflect(approval))
+                .thenReturn(new ResultApprovalService.ReflectResult(null, "1234567abcdef"));
+
+        service.approve(7L, 9L);
+
+        verify(messageService).appendAssistant(
+                21L,
+                "결과가 승인되어 main에 반영되었습니다.\n- commit: 1234567\n남은 작업을 이어서 진행합니다."
+        );
     }
 
     private Approval approval(Long id, ApprovalType type, Long conversationId) {

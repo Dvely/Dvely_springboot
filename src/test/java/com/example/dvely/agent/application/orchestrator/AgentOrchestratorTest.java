@@ -1,6 +1,7 @@
 package com.example.dvely.agent.application.orchestrator;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -180,6 +181,117 @@ class AgentOrchestratorTest {
                 .thenReturn(Optional.of(mock(Project.class)));
 
         assertThat(orchestrator.resolveProjectId(1L, null, 21L)).isEqualTo(11L);
+    }
+
+    @Test
+    void cancellingATaskWaitingOnAResultApprovalAlsoCancelsThatPendingApproval() {
+        // §4.4 edge "대기 중 task 취소": the existing generic cancel machine (design D3) already
+        // covers RESULT — no type-specific branch needed, this just closes the loop with an
+        // explicit RESULT-typed regression guard.
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        Approval resultApproval = new Approval(
+                91L, 1L, 11L, 21L, "task-1", ApprovalType.RESULT,
+                ApprovalStatus.PENDING, "[결과 반영] 요약", LocalDateTime.now(), null
+        );
+        when(taskStore.cancel("task-1", 1L)).thenReturn(true);
+        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of(resultApproval));
+
+        assertThat(orchestrator.cancel("task-1", 1L)).isTrue();
+
+        assertThat(resultApproval.getStatus()).isEqualTo(ApprovalStatus.CANCELLED);
+        verify(approvalRepository).save(resultApproval);
+    }
+
+    // ── Track Z (#56): resumeAfterResult — WAITING_RESULT_APPROVAL -> QUEUED resume gate ──────
+
+    @Test
+    void resumeAfterResultRequeuesAWaitingResultApprovalTask() {
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+        when(taskStore.resumeAfterResultApproval("task-1")).thenReturn(true);
+
+        orchestrator.resumeAfterResult("task-1");
+
+        verify(taskStore).resumeAfterResultApproval("task-1");
+    }
+
+    @Test
+    void resumeAfterResultThrowsConflictWhenTaskIsNotWaitingForResultApproval() {
+        // E-RA-03: guards a racing duplicate approve (or an approve arriving after the task was
+        // independently cancelled) — must fail loudly (-> 409) rather than silently no-op.
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+        when(taskStore.resumeAfterResultApproval("task-1")).thenReturn(false);
+
+        assertThatThrownBy(() -> orchestrator.resumeAfterResult("task-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("task-1");
+    }
+
+    // ── Review follow-up (BLOCKING-3): verifyResumableAfterResult — the locked precondition check
+    // that must run BEFORE ResultApprovalService#reflect()'s irreversible GitHub merge. ──────────
+
+    @Test
+    void verifyResumableAfterResultDelegatesToTaskStoresLockedGuard() {
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+
+        orchestrator.verifyResumableAfterResult("task-1");
+
+        verify(taskStore).requireWaitingResultApproval("task-1");
+    }
+
+    @Test
+    void verifyResumableAfterResultPropagatesTaskStoresConflict() {
+        // A racing cancel/duplicate-approve makes the locked precondition fail — this must
+        // surface as a thrown exception (-> 409) so the caller (ApprovalCommandService) never
+        // proceeds to the irreversible external merge.
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+        org.mockito.Mockito.doThrow(new IllegalStateException(
+                        "결과 승인 대기 상태가 아닌 Agent task입니다. taskId=task-1"))
+                .when(taskStore).requireWaitingResultApproval("task-1");
+
+        assertThatThrownBy(() -> orchestrator.verifyResumableAfterResult("task-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("task-1");
     }
 
     @Test

@@ -9,6 +9,7 @@ import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.change.application.service.ResultApprovalService;
 import com.example.dvely.common.exception.NotFoundException;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -28,6 +29,10 @@ public class ApprovalCommandService {
     // handlers register themselves purely by implementing the interface (design D6/§4.1) with
     // no change needed in this service.
     private final List<StandaloneApprovalHandler> standaloneHandlers;
+    // Track Z (#56): RESULT is never standalone (always task-bound, created only by
+    // ResultApprovalGate) and never joins the allApproved plan-approval vote below — it gets its
+    // own branch between the two, matching design D2/§4.2.
+    private final ResultApprovalService resultApprovalService;
 
     @Transactional
     public ApprovalResult approve(Long ownerUserId, Long approvalId) {
@@ -37,6 +42,26 @@ public class ApprovalCommandService {
 
         if (saved.isStandalone()) {
             resolveStandaloneHandler(saved.getType()).onApproved(saved);
+            return queryService.toResult(saved);
+        }
+
+        if (saved.getType() == ApprovalType.RESULT) {
+            // Review follow-up (BLOCKING-3): verify + lock the rollback-able DB precondition
+            // (task must still be WAITING_RESULT_APPROVAL) BEFORE reflect()'s irreversible
+            // external GitHub merge below. Previously reflect() ran first and this check ran
+            // only afterward (via resumeAfterResult) — a precondition failure there rolled back
+            // this transaction's DB writes but could not undo a merge that had already actually
+            // happened on GitHub (e.g. the task raced to CANCELLED via a concurrent
+            // DELETE /tasks/{id} between the RESULT approval's creation and this approve call).
+            // Ordering the check first means that failure path now has zero external side
+            // effects — it aborts before reflect() is ever called.
+            agentOrchestrator.verifyResumableAfterResult(saved.getTaskId());
+            ResultApprovalService.ReflectResult reflectResult = resultApprovalService.reflect(saved);
+            agentOrchestrator.resumeAfterResult(saved.getTaskId());
+            agentMessageService.appendAssistant(
+                    saved.getConversationId(),
+                    buildResultApprovedMessage(reflectResult)
+            );
             return queryService.toResult(saved);
         }
 
@@ -61,12 +86,36 @@ public class ApprovalCommandService {
             return queryService.toResult(saved);
         }
 
+        if (saved.getType() == ApprovalType.RESULT) {
+            resultApprovalService.markRejected(saved);
+            agentOrchestrator.reject(saved.getTaskId(), ownerUserId);
+            agentMessageService.appendAssistant(
+                    saved.getConversationId(),
+                    "결과가 거절되어 main에 반영하지 않았습니다. 변경은 preview 브랜치에만 남아 있습니다.\n"
+                            + "이어서 수정을 요청하면 현재 preview 상태 위에서 작업합니다."
+            );
+            return queryService.toResult(saved);
+        }
+
         agentOrchestrator.reject(saved.getTaskId(), ownerUserId);
         agentMessageService.appendAssistant(
                 saved.getConversationId(),
                 "작업이 거절되어 실행하지 않았습니다: " + saved.getSummary()
         );
         return queryService.toResult(saved);
+    }
+
+    private String buildResultApprovedMessage(ResultApprovalService.ReflectResult reflectResult) {
+        StringBuilder message = new StringBuilder("결과가 승인되어 main에 반영되었습니다.");
+        if (reflectResult.prNumber() != null) {
+            message.append("\n- PR: #").append(reflectResult.prNumber());
+        }
+        if (reflectResult.mergeCommitSha() != null) {
+            message.append("\n- commit: ")
+                    .append(reflectResult.mergeCommitSha(), 0, Math.min(7, reflectResult.mergeCommitSha().length()));
+        }
+        message.append("\n남은 작업을 이어서 진행합니다.");
+        return message.toString();
     }
 
     // Both approve() and reject() funnel through this single locked lookup (review F1) — the

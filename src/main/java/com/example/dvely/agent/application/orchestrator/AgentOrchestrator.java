@@ -92,6 +92,37 @@ public class AgentOrchestrator {
         taskStore.enqueue(taskId);
     }
 
+    /**
+     * Resumes a task past its RESULT approval (design D3/§4.2) — deliberately a separate method
+     * from {@link #executeApproved}, not a reuse of it: {@code executeApproved} has a
+     * FAILED-then-retry branch (build-failure recovery) that has nothing to do with this "resume
+     * a still-in-progress task's remaining steps" case, and its "every approval decided" chat
+     * message would be wrong here (RESULT approvals never join the plan-approval
+     * {@code allApproved} vote — see {@code ApprovalCommandService}'s RESULT branch). Throws
+     * (-> 409, E-RA-03) instead of silently no-op'ing so a racing duplicate approve — or an
+     * approve arriving after the task was independently cancelled — surfaces as a conflict rather
+     * than pretending to have resumed something that no longer needs resuming.
+     */
+    public void resumeAfterResult(String taskId) {
+        if (!taskStore.resumeAfterResultApproval(taskId)) {
+            throw new IllegalStateException(
+                    "결과 승인 대기 상태가 아닌 Agent task입니다. taskId=" + taskId);
+        }
+    }
+
+    /**
+     * Review follow-up (BLOCKING-3): the "may this RESULT approval still proceed" half of
+     * resuming a task past its result-approval gate, split out from {@link #resumeAfterResult} so
+     * {@code ApprovalCommandService} can call this <em>before</em> {@code
+     * ResultApprovalService#reflect()}'s irreversible GitHub merge, and only call {@link
+     * #resumeAfterResult} itself after that merge has already succeeded. See {@code
+     * TaskStore#requireWaitingResultApproval} for the row-locking contract that makes the later
+     * {@link #resumeAfterResult} call safe to assume will not fail on this same guard.
+     */
+    public void verifyResumableAfterResult(String taskId) {
+        taskStore.requireWaitingResultApproval(taskId);
+    }
+
     public void reject(String taskId, Long ownerUserId) {
         if (!taskStore.cancel(taskId, ownerUserId)) {
             throw new IllegalStateException("거절할 Agent task를 찾을 수 없습니다. taskId=" + taskId);

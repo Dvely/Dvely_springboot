@@ -22,20 +22,30 @@ public class ProjectChatSettingsService {
         return toResult(resolvePolicy(projectId));
     }
 
+    /**
+     * {@code resultApprovalRequired} is nullable (design D4/§5.5) unlike the other four fields:
+     * the RESULT policy shipped after this endpoint's {@code @NotNull}-on-all-fields contract was
+     * already in use by the FE, so a {@code null} here means "leave the current value untouched"
+     * rather than "set to false" — an older FE build that doesn't know about this field yet keeps
+     * working (200, unchanged RESULT policy) instead of getting a validation error or silently
+     * flipping RESULT approval off.
+     */
     @Transactional
     public ProjectChatSettingsResult update(Long ownerUserId,
                                             Long projectId,
                                             boolean changeApprovalRequired,
                                             boolean deploymentApprovalRequired,
                                             boolean domainApprovalRequired,
-                                            boolean infraApprovalRequired) {
+                                            boolean infraApprovalRequired,
+                                            Boolean resultApprovalRequired) {
         assertProjectOwner(ownerUserId, projectId);
         ProjectApprovalPolicy policy = resolvePolicy(projectId);
         policy.update(
                 changeApprovalRequired,
                 deploymentApprovalRequired,
                 domainApprovalRequired,
-                infraApprovalRequired
+                infraApprovalRequired,
+                resultApprovalRequired == null ? policy.isResultApprovalRequired() : resultApprovalRequired
         );
         return toResult(policyRepository.save(policy));
     }
@@ -56,7 +66,8 @@ public class ProjectChatSettingsService {
                 policy.isChangeApprovalRequired(),
                 policy.isDeploymentApprovalRequired(),
                 policy.isDomainApprovalRequired(),
-                policy.isInfraApprovalRequired()
+                policy.isInfraApprovalRequired(),
+                policy.isResultApprovalRequired()
         );
     }
 }

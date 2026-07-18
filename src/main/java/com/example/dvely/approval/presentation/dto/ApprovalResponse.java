@@ -14,7 +14,9 @@ public record ApprovalResponse(
         @Schema(description = "연결된 Agent task ID. standalone 승인은 taskId가 없어 null", nullable = true)
         String taskId,
 
-        @Schema(description = "승인 유형", allowableValues = {"CHANGE", "DEPLOYMENT", "DOMAIN_BINDING", "INFRA_OPERATION"}, example = "DEPLOYMENT")
+        @Schema(description = "승인 유형. RESULT는 계획 승인이 아니라 CODE 실행 '결과'(preview+diff) 확인 승인 — " +
+                "ResultApprovalGate가 마지막 CODE step 완료 직후에만 생성합니다.",
+                allowableValues = {"CHANGE", "DEPLOYMENT", "DOMAIN_BINDING", "INFRA_OPERATION", "RESULT"}, example = "DEPLOYMENT")
         String type,
 
         @Schema(description = "승인 상태. PENDING만 approve/reject 가능(그 외 호출 시 409)", allowableValues = {"PENDING", "APPROVED", "REJECTED", "CANCELLED"}, example = "PENDING")

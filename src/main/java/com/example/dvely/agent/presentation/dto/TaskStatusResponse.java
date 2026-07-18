@@ -17,6 +17,8 @@ public record TaskStatusResponse(
                 - RETRY_WAIT: lease 만료 또는 재시도 대기
                 - RUNNING: 실행 중
                 - WAITING_INPUT: 사용자 입력 필요 (question 필드 확인 후 /input 호출)
+                - WAITING_RESULT_APPROVAL: 마지막 CODE step 완료, 결과(preview+diff) 승인 대기 중 — RESULT 승인
+                  approve 시 main 반영 후 재개, reject 시 CANCELLED
                 - DONE: 완료
                 - FAILED: 실패 (error 필드 참조)
                 - CANCELLED: 취소

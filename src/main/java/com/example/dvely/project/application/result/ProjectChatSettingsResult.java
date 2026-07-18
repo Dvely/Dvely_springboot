@@ -5,6 +5,7 @@ public record ProjectChatSettingsResult(
         boolean changeApprovalRequired,
         boolean deploymentApprovalRequired,
         boolean domainApprovalRequired,
-        boolean infraApprovalRequired
+        boolean infraApprovalRequired,
+        boolean resultApprovalRequired
 ) {
 }

@@ -31,16 +31,22 @@ public class ProjectApprovalPolicyEntity {
     @Column(name = "infra_approval_required", nullable = false)
     private boolean infraApprovalRequired;
 
+    // V28 (Track Z, #56)
+    @Column(name = "result_approval_required", nullable = false)
+    private boolean resultApprovalRequired;
+
     private ProjectApprovalPolicyEntity(Long projectId,
                                         boolean changeApprovalRequired,
                                         boolean deploymentApprovalRequired,
                                         boolean domainApprovalRequired,
-                                        boolean infraApprovalRequired) {
+                                        boolean infraApprovalRequired,
+                                        boolean resultApprovalRequired) {
         this.projectId = projectId;
         this.changeApprovalRequired = changeApprovalRequired;
         this.deploymentApprovalRequired = deploymentApprovalRequired;
         this.domainApprovalRequired = domainApprovalRequired;
         this.infraApprovalRequired = infraApprovalRequired;
+        this.resultApprovalRequired = resultApprovalRequired;
     }
 
     public static ProjectApprovalPolicyEntity from(ProjectApprovalPolicy policy) {
@@ -49,7 +55,8 @@ public class ProjectApprovalPolicyEntity {
                 policy.isChangeApprovalRequired(),
                 policy.isDeploymentApprovalRequired(),
                 policy.isDomainApprovalRequired(),
-                policy.isInfraApprovalRequired()
+                policy.isInfraApprovalRequired(),
+                policy.isResultApprovalRequired()
         );
     }
 
@@ -58,6 +65,7 @@ public class ProjectApprovalPolicyEntity {
         deploymentApprovalRequired = policy.isDeploymentApprovalRequired();
         domainApprovalRequired = policy.isDomainApprovalRequired();
         infraApprovalRequired = policy.isInfraApprovalRequired();
+        resultApprovalRequired = policy.isResultApprovalRequired();
     }
 
     public ProjectApprovalPolicy toDomain() {
@@ -66,7 +74,8 @@ public class ProjectApprovalPolicyEntity {
                 changeApprovalRequired,
                 deploymentApprovalRequired,
                 domainApprovalRequired,
-                infraApprovalRequired
+                infraApprovalRequired,
+                resultApprovalRequired
         );
     }
 }
