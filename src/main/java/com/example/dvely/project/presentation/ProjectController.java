@@ -7,21 +7,25 @@ import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
 import com.example.dvely.project.application.facade.ProjectFacade;
 import com.example.dvely.project.application.result.ProjectChatSettingsResult;
 import com.example.dvely.project.application.service.ProjectChatSettingsService;
+import com.example.dvely.project.application.result.ProjectCostBudgetResult;
 import com.example.dvely.project.application.result.ProjectInfrastructureChangeResult;
 import com.example.dvely.project.application.result.ProjectInfrastructureConfigurationResult;
 import com.example.dvely.project.application.result.ProjectInfrastructureSettingsResult;
+import com.example.dvely.project.application.service.ProjectCostBudgetService;
 import com.example.dvely.project.application.service.ProjectInfrastructureConfigurationService;
 import com.example.dvely.project.application.service.ProjectInfrastructureSettingsService;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
 import com.example.dvely.project.presentation.dto.request.ConnectProjectRepositoryRequest;
 import com.example.dvely.project.presentation.dto.request.CreateProjectRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectRequest;
+import com.example.dvely.project.presentation.dto.request.UpdateProjectBudgetRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectChatSettingsRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectInfrastructureConfigurationRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectInfrastructureSettingsRequest;
 import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectActivityLogResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCommitResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectCostBudgetResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectInfrastructureChangeResponse;
@@ -64,6 +68,7 @@ public class ProjectController {
     private final ProjectChatSettingsService projectChatSettingsService;
     private final ProjectInfrastructureSettingsService projectInfrastructureSettingsService;
     private final ProjectInfrastructureConfigurationService projectInfrastructureConfigurationService;
+    private final ProjectCostBudgetService projectCostBudgetService;
 
     @Operation(
             summary = "프로젝트 생성",
@@ -350,6 +355,54 @@ public class ProjectController {
     }
 
     @Operation(
+            summary = "프로젝트 비용 추정 및 예산 조회",
+            description = "저장된 인프라 구성 기준으로 정적 가격표(가정 기반 추정치이며 실시간 클라우드 요금이 아님)를 사용해 " +
+                          "월 예상 비용을 매 요청마다 온더플라이로 계산합니다(계산 결과는 저장하지 않음). " +
+                          "인프라가 구성되지 않았거나 CONNECTED 클라우드 연결이 선택되지 않은 프로젝트도 200으로 응답하며 " +
+                          "costAvailable=false와 함께 추정 필드는 null/빈 배열로 표시합니다."
+    )
+    @GetMapping("/{projectId}/settings/cost-budget")
+    public ProjectCostBudgetResponse getCostBudget(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "비용/예산을 조회할 프로젝트 ID") @PathVariable Long projectId
+    ) {
+        return toCostBudgetResponse(projectCostBudgetService.get(ownerUserId, projectId));
+    }
+
+    @Operation(
+            summary = "프로젝트 월 예산 설정",
+            description = "월 예산 금액을 저장합니다(upsert, 멱등). 통화는 USD만 지원하며, 인프라가 구성되지 않은 " +
+                          "프로젝트도 예산을 먼저 설정할 수 있습니다(design D5). 저장 직후 재계산된 비용/예산 상태를 " +
+                          "GET과 동일한 shape로 함께 반환해 FE가 경고 상태를 즉시 갱신할 수 있습니다."
+    )
+    @PutMapping("/{projectId}/settings/cost-budget")
+    public ProjectCostBudgetResponse updateCostBudget(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "예산을 설정할 프로젝트 ID") @PathVariable Long projectId,
+            @Valid @RequestBody UpdateProjectBudgetRequest request
+    ) {
+        return toCostBudgetResponse(projectCostBudgetService.update(
+                ownerUserId,
+                projectId,
+                request.monthlyBudgetAmount(),
+                request.currency()
+        ));
+    }
+
+    @Operation(
+            summary = "프로젝트 월 예산 해제",
+            description = "예산 설정을 제거합니다. 미설정 상태에서 호출해도 204입니다(infra settings의 clear와 동일한 멱등 시맨틱)."
+    )
+    @DeleteMapping("/{projectId}/settings/cost-budget")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void clearCostBudget(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "예산을 해제할 프로젝트 ID") @PathVariable Long projectId
+    ) {
+        projectCostBudgetService.clear(ownerUserId, projectId);
+    }
+
+    @Operation(
             summary = "프로젝트 Repository 설정 조회",
             description = "연결된 GitHub 저장소 정보와 기본 브랜치를 조회합니다. 저장소가 연결되지 않은 프로젝트도 " +
                           "200과 connected=false로 응답합니다. defaultBranch는 매 요청마다 GitHub에서 라이브 조회하므로 " +
@@ -417,6 +470,33 @@ public class ProjectController {
                 result.configurable(),
                 settings,
                 pendingChange
+        );
+    }
+
+    private ProjectCostBudgetResponse toCostBudgetResponse(ProjectCostBudgetResult result) {
+        List<ProjectCostBudgetResponse.ResourceCostResponse> resourceCosts = result.resourceCosts().stream()
+                .map(item -> new ProjectCostBudgetResponse.ResourceCostResponse(
+                        item.resourceType(), item.description(), item.monthlyCost()))
+                .toList();
+        ProjectCostBudgetResponse.BudgetResponse budget = result.budget() == null
+                ? null
+                : new ProjectCostBudgetResponse.BudgetResponse(
+                        result.budget().monthlyBudgetAmount(),
+                        result.budget().currency(),
+                        result.budget().updatedAt()
+                );
+        return new ProjectCostBudgetResponse(
+                result.projectId(),
+                result.costAvailable(),
+                result.provider(),
+                result.currency(),
+                result.estimatedMonthlyCost(),
+                resourceCosts,
+                result.assumptions(),
+                result.priceTableVersion(),
+                budget,
+                result.budgetStatus(),
+                result.budgetUsagePercent()
         );
     }
 
