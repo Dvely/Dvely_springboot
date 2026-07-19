@@ -326,6 +326,21 @@ public class InfraOpsAgentService {
             // that a genuine failure, not a guidance case, since the DB said ACTIVE moments ago.
             dockerService.restartContainer(containerId);
             log.info("[InfraOpsAgent] preview 컨테이너 재시작 완료 | containerId={} projectId={}", containerId, projectId);
+            // Issue #71 (High, QA v2 §5): Docker reassigns a fresh ephemeral host port on every
+            // container start — including the stop+start restartContainer() just did — when the
+            // port was bound dynamically (Ports.Binding.bindPort(0), see
+            // DockerContainerService#createAndStartContainer). The preview session row's
+            // hostPort was captured at creation time and is now stale; PreviewGatewayService
+            // resolves its proxy target from that column on every request, so leaving it
+            // unrefreshed here is exactly what turned a "재시작했습니다 / 정상 실행 중" response into a
+            // 502 on the next gateway hit. Deliberately left uncaught (unlike the status re-check
+            // below): if we can't learn or persist the real port, this restart is not actually
+            // usable, and reporting "정상 실행 중" against a container whose reachable port we don't
+            // know would repeat the exact bug this fixes — task FAILED is the honest outcome.
+            int newHostPort = dockerService.getMappedPort(containerId);
+            PreviewSessionInfo refreshed = previewSessionService.updateHostPort(session.get().sessionId(), newHostPort);
+            log.info("[InfraOpsAgent] preview 포트 재바인딩 완료 | containerId={} projectId={} newHostPort={}",
+                    containerId, projectId, newHostPort);
             // Review Medium (x-cloudops-review.md): restartContainer() above already succeeded and
             // mutated real state. getContainerStatus only catches NotFoundException internally, so
             // any other Docker hiccup on this immediately-following re-check would otherwise turn
@@ -339,7 +354,11 @@ public class InfraOpsAgentService {
                         containerId, projectId, e.getClass().getSimpleName());
                 statusLine = "확인 불가(재시작 자체는 완료됨)";
             }
-            body = "preview 서버를 재시작했습니다.\n- URL: " + session.get().publicUrl()
+            // publicUrl itself never encodes the port (only sessionId/accessToken — see
+            // PreviewSessionService#acquire), so it is unchanged by the rebind above; `refreshed`
+            // is used here anyway (instead of the pre-restart `session.get()`) so this line always
+            // reflects the row the gateway will actually read on the next request.
+            body = "preview 서버를 재시작했습니다.\n- URL: " + refreshed.publicUrl()
                     + "\n- 실행 상태: " + statusLine;
         }
         return policyWasOff

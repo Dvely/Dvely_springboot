@@ -98,6 +98,24 @@ public class PreviewSessionService {
                 .map(PreviewSessionEntity::toInfo);
     }
 
+    /**
+     * Persists the new mapped host port Docker assigned when a container was restarted (Cloud
+     * Ops Agent RESTART, issue #71 — see {@link com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity#rebindPort}
+     * for why this is needed). Looked up by id rather than the taskId/status-scoped finders used
+     * elsewhere in this class: the caller (InfraOpsAgentService) already resolved this exact
+     * session moments earlier via {@link #findActiveByProject}, so a second ownership/status
+     * check here would be redundant — a missing row at this point means the session was closed
+     * out-of-band in that narrow window, which is a genuine failure (propagated, not degraded)
+     * exactly like {@code DockerContainerService#restartContainer}'s own NotFound handling.
+     */
+    @Transactional
+    public PreviewSessionInfo updateHostPort(String sessionId, int newHostPort) {
+        PreviewSessionEntity session = repository.findById(sessionId)
+                .orElseThrow(() -> new IllegalStateException("Preview 세션을 찾을 수 없습니다. sessionId=" + sessionId));
+        session.rebindPort(newHostPort);
+        return repository.save(session).toInfo();
+    }
+
     @Transactional
     public Optional<PreviewSessionInfo> resolveGateway(String sessionId, String accessToken) {
         return repository.findByIdAndAccessTokenAndStatus(
