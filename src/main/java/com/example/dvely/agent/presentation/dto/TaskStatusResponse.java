@@ -50,6 +50,23 @@ public record TaskStatusResponse(
         @Schema(description = "최대 재시도 횟수")
         int maxAttempts,
 
-        @Schema(description = "현재 상태에서 재시도 가능한지 여부")
-        boolean retryable
+        @Schema(description = """
+                POST /tasks/{taskId}/retry 호출이 실제로 성공할지 여부(#57).
+                true가 되려면 pendingApprovalId가 null(승인 대기 중인 건이 없음)이면서
+                attempt < maxAttempts여야 한다. pendingApprovalId가 채워져 있으면 이 값은 항상
+                false이며, /retry를 호출해도 409로 거부된다 — 먼저 POST /approvals/{id}/approve로
+                그 승인을 처리해야 하고(승인 자체가 재실행을 트리거함), 승인 대기가 없고
+                attempt<maxAttempts일 때만 /retry를 호출한다.
+                """,
+                example = "true")
+        boolean retryable,
+
+        @Schema(description = """
+                이 태스크에 걸린 PENDING 승인의 ID(예: BuildFailureRecoveryService가 만드는
+                "자동 수정 및 재build" 승인). null이면 승인 대기 없음. 값이 있으면 먼저
+                POST /approvals/{pendingApprovalId}/approve로 처리해야 하며(승인 처리 자체가
+                재실행을 트리거한다), 그 전까지 retryable은 false로 고정된다.
+                """,
+                example = "42", nullable = true)
+        Long pendingApprovalId
 ) {}

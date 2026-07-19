@@ -543,6 +543,106 @@ class AgentOrchestratorTest {
         assertThat(sibling.getStatus()).isEqualTo(ApprovalStatus.CANCELLED);
     }
 
+    // ── #57 (QA report §5.6/H1/M3): retry() / findPendingApprovalId() shared judgment ───────────
+
+    @Test
+    void retryDelegatesToTaskStoreWhenNoApprovalIsPending() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of());
+        when(taskStore.retry("task-1", 1L)).thenReturn(true);
+
+        assertThat(orchestrator.retry("task-1", 1L)).isTrue();
+        verify(taskStore).retry("task-1", 1L);
+    }
+
+    @Test
+    void retryRefusesWithoutEvenAskingTaskStoreWhenAnApprovalIsStillPending() {
+        // The QA-reported drift (H1) was exactly this: attempt<maxAttempts alone said "retryable"
+        // while this method already refused whenever a PENDING approval — e.g.
+        // BuildFailureRecoveryService's "자동 수정 및 재build" CHANGE approval — was still open.
+        // taskStore.retry must never even be consulted once a PENDING approval is found (retry()
+        // short-circuits on findPendingApprovalId, not on taskStore's own attempt/status check).
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        Approval recoveryApproval = new Approval(
+                55L, 1L, 11L, 21L, "task-1", ApprovalType.CHANGE,
+                ApprovalStatus.PENDING, "자동 수정 및 재build: 의존성 설치 후 재빌드", LocalDateTime.now(), null
+        );
+        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of(recoveryApproval));
+
+        assertThat(orchestrator.retry("task-1", 1L)).isFalse();
+        verify(taskStore, never()).retry(anyString(), anyLong());
+    }
+
+    @Test
+    void findPendingApprovalIdReturnsNullWhenEveryApprovalOnTheTaskIsAlreadyDecided() {
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                mock(TaskStore.class),
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        Approval decided = new Approval(
+                61L, 1L, 11L, 21L, "task-1", ApprovalType.CHANGE,
+                ApprovalStatus.APPROVED, "요약", LocalDateTime.now(), LocalDateTime.now()
+        );
+        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of(decided));
+
+        assertThat(orchestrator.findPendingApprovalId("task-1")).isNull();
+    }
+
+    @Test
+    void findPendingApprovalIdReturnsTheOldestPendingApprovalIdAmongMultiple() {
+        // LO-1 (id-ascending): with more than one PENDING approval outstanding, the oldest one is
+        // the one surfaced to the task screen — matches the order the plan-approval flow already
+        // presents approvals in (submit()'s approvalIds list).
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                mock(TaskStore.class),
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                mock(AgentMessageService.class)
+        );
+        Approval decided = new Approval(
+                60L, 1L, 11L, 21L, "task-1", ApprovalType.CHANGE,
+                ApprovalStatus.APPROVED, "요약1", LocalDateTime.now(), LocalDateTime.now()
+        );
+        Approval firstPending = new Approval(
+                61L, 1L, 11L, 21L, "task-1", ApprovalType.DEPLOYMENT,
+                ApprovalStatus.PENDING, "요약2", LocalDateTime.now(), null
+        );
+        Approval secondPending = new Approval(
+                62L, 1L, 11L, 21L, "task-1", ApprovalType.DOMAIN_BINDING,
+                ApprovalStatus.PENDING, "요약3", LocalDateTime.now(), null
+        );
+        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1"))
+                .thenReturn(List.of(decided, firstPending, secondPending));
+
+        assertThat(orchestrator.findPendingApprovalId("task-1")).isEqualTo(61L);
+    }
+
     // ── ADR-Y1 §1 step⑥-plan guard (#55): executeApproved state guard ──────────────────────────
 
     @Test

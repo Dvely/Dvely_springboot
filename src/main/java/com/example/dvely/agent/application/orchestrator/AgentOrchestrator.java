@@ -230,9 +230,34 @@ public class AgentOrchestrator {
     }
 
     public boolean retry(String taskId, Long ownerUserId) {
-        boolean pendingApproval = approvalRepository.findByTaskIdOrderByIdAsc(taskId).stream()
-                .anyMatch(approval -> approval.getStatus() == ApprovalStatus.PENDING);
-        return !pendingApproval && taskStore.retry(taskId, ownerUserId);
+        return findPendingApprovalId(taskId) == null && taskStore.retry(taskId, ownerUserId);
+    }
+
+    /**
+     * Shared "is this task still blocked on an approval" lookup (#57, QA report §5.6/H1/M3).
+     * {@link #retry} above is the actual gate {@code POST /retry} enforces — before this fix,
+     * {@code AgentTaskFailure.retryable()} (the read side surfaced by {@code GET /tasks/{id}})
+     * computed eligibility from {@code attempt < maxAttempts} alone, with no knowledge of a
+     * still-PENDING approval such as {@code BuildFailureRecoveryService}'s "자동 수정 및 재build"
+     * CHANGE approval — so a FAILED task could read {@code retryable:true} and still 409 on
+     * {@code /retry}. Both call sites now go through this single method so the two can never
+     * silently drift apart again: the response-assembly layer (AgentController) calls this to
+     * compute {@code pendingApprovalId} and fold it into {@code retryable}, using the exact same
+     * definition {@link #retry} enforces.
+     * <p>
+     * Matches ANY {@link ApprovalStatus#PENDING} approval on the taskId regardless of {@link
+     * com.example.dvely.approval.domain.value.ApprovalType} — {@link #retry} has never
+     * distinguished by type (a still-open plan/DEPLOYMENT/DOMAIN_BINDING approval blocks retry
+     * exactly the same as a build-failure recovery CHANGE approval does), so this lookup doesn't
+     * either. Returns the oldest (id-ascending, LO-1) PENDING approval's id when more than one
+     * exists, or {@code null} when the task has no outstanding approval at all.
+     */
+    public Long findPendingApprovalId(String taskId) {
+        return approvalRepository.findByTaskIdOrderByIdAsc(taskId).stream()
+                .filter(approval -> approval.getStatus() == ApprovalStatus.PENDING)
+                .map(Approval::getId)
+                .findFirst()
+                .orElse(null);
     }
 
     /**
