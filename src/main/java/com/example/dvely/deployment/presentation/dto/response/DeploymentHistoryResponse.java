@@ -12,5 +12,7 @@ public record DeploymentHistoryResponse(
         @Schema(description = "배포된 GitHub Pages URL") String deployedUrl,
         @Schema(description = "배포 상태 (PENDING | IN_PROGRESS | LIVE | FAILED)") String status,
         @Schema(description = "배포 트리거 시각") LocalDateTime triggeredAt,
-        @Schema(description = "상태 마지막 변경 시각") LocalDateTime updatedAt
+        @Schema(description = "상태 마지막 변경 시각") LocalDateTime updatedAt,
+        @Schema(description = "재시도로 생성된 이력인 경우 원본 배포 이력 ID. 재시도가 아니면 null", nullable = true)
+        Long retriedFromHistoryId
 ) {}

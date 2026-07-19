@@ -12,12 +12,16 @@ import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.exception.AgentInputRequiredException;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.application.service.BuildFailureRecoveryService;
+import com.example.dvely.agent.application.service.ChatAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
+import com.example.dvely.agent.application.service.InfraOpsAgentService;
+import com.example.dvely.agent.application.service.ResultApprovalGate;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
 import java.time.Instant;
 import java.util.List;
@@ -45,6 +49,159 @@ class AgentPlanExecutorTest {
         verify(taskStore).markStepCompleted("task-1", 1);
         verify(taskStore).markDone("task-1", "preview", "수정 완료");
         verify(messageService).appendAssistant(21L, "수정 완료");
+    }
+
+    // ── ADR-Y4 (#55): AgentExecutionRegistry unregister-in-finally wiring ──────────────────────
+
+    @Test
+    void unregistersFromExecutionRegistryAfterSuccessfulCompletion() {
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentExecutionRegistry registry = mock(AgentExecutionRegistry.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                taskStore,
+                mock(AgentMessageService.class),
+                mock(BuildFailureRecoveryService.class),
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class),
+                registry
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        when(codeService.execute(step, AiProvider.OPENAI, 1L, 11L, "task-1"))
+                .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
+
+        executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L), "task-1", 1L);
+
+        verify(registry).unregister("task-1");
+    }
+
+    @Test
+    void unregistersFromExecutionRegistryEvenWhenTheStepThrows() {
+        // The finally-wrapping (ADR-Y4) must unregister on every exit path, not just the happy
+        // path — a leaked registry entry after a genuinely failed/finished execution would let a
+        // *different*, unrelated future claim of the same taskId be silently heartbeat-protected
+        // by this stale entry.
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentExecutionRegistry registry = mock(AgentExecutionRegistry.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                taskStore,
+                mock(AgentMessageService.class),
+                mock(BuildFailureRecoveryService.class),
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class),
+                registry
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        when(codeService.execute(any(), any(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("외부 API 실패"));
+
+        executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L), "task-1", 1L);
+
+        verify(taskStore).markFailed("task-1", "외부 API 실패");
+        verify(registry).unregister("task-1");
+    }
+
+    // ── Track Z (#56): result-approval gate wiring ──────────────────────────────────────────
+
+    @Test
+    void stopsAfterLastCodeStepWithoutMarkingDoneWhenResultApprovalGateFires() {
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ResultApprovalGate gate = mock(ResultApprovalGate.class);
+        ChangeService changeService = mock(ChangeService.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                taskStore,
+                messageService,
+                mock(BuildFailureRecoveryService.class),
+                changeService,
+                gate,
+                mock(AgentExecutionRegistry.class)
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
+        when(codeService.execute(step, AiProvider.OPENAI, 1L, 11L, "task-1"))
+                .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
+        // The gate itself is responsible for markStepCompleted when it fires (see
+        // ResultApprovalGate javadoc) — this test only asserts the executor's side: record the
+        // diff, delegate to the gate, then stop without ever calling markDone/removePlan.
+        when(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(true);
+
+        executor.execute(plan, "task-1", 1L);
+
+        verify(changeService).record("task-1", "수정 완료");
+        verify(gate).requestIfRequired(plan, 0, "task-1", 1L, 11L);
+        verify(taskStore, org.mockito.Mockito.never()).markStepCompleted(org.mockito.ArgumentMatchers.eq("task-1"), org.mockito.ArgumentMatchers.anyInt());
+        verify(taskStore, org.mockito.Mockito.never()).markDone(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(taskStore, org.mockito.Mockito.never()).removePlan(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void continuesNormallyWhenResultApprovalGateDoesNotFire() {
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ResultApprovalGate gate = mock(ResultApprovalGate.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                taskStore,
+                messageService,
+                mock(BuildFailureRecoveryService.class),
+                mock(ChangeService.class),
+                gate,
+                mock(AgentExecutionRegistry.class)
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
+        when(codeService.execute(step, AiProvider.OPENAI, 1L, 11L, "task-1"))
+                .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
+        when(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(false);
+
+        executor.execute(plan, "task-1", 1L);
+
+        verify(taskStore).markStepCompleted("task-1", 1);
+        verify(taskStore).markDone("task-1", "preview", "수정 완료");
+    }
+
+    @Test
+    void dispatchesChatStepToChatAgentServiceAndStoresAnswerAsSummary() {
+        ChatAgentService chatService = mock(ChatAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentPlanExecutor executor = executor(mock(CodeAgentService.class), chatService, taskStore, messageService);
+        AgentStep step = new AgentStep(AgentType.CHAT, Map.of("instruction", "휴지통 정책이 뭐야?"));
+        when(chatService.execute(step, AiProvider.ANTHROPIC, "task-1"))
+                .thenReturn(new CodeAgentService.CodeResult(null, "휴지통 보관 기간은 7일입니다."));
+
+        executor.execute(
+                new AgentPlan(List.of(step), "reason", AiProvider.ANTHROPIC, 11L),
+                "task-1",
+                1L
+        );
+
+        verify(taskStore).markStepCompleted("task-1", 1);
+        verify(taskStore).markDone("task-1", null, "휴지통 보관 기간은 7일입니다.");
+        verify(messageService).appendAssistant(21L, "휴지통 보관 기간은 7일입니다.");
     }
 
     @Test
@@ -76,11 +233,16 @@ class AgentPlanExecutorTest {
                 mock(CodeAgentService.class),
                 mock(DeployAgentService.class),
                 domainService,
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
-                mock(ChangeService.class)
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class),
+                mock(AgentExecutionRegistry.class)
         );
+
         AgentStep step = new AgentStep(AgentType.DOMAIN_BIND, Map.of());
         when(domainService.execute(step, 1L, "task-1", 11L))
                 .thenThrow(new AgentInputRequiredException("도메인을 입력해주세요."));
@@ -95,17 +257,60 @@ class AgentPlanExecutorTest {
         verify(messageService).appendAssistant(21L, "도메인을 입력해주세요.");
     }
 
+    @Test
+    void dispatchesInfraOperateStepToInfraOpsAgentService() {
+        InfraOpsAgentService infraOpsAgentService = mock(InfraOpsAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                mock(CodeAgentService.class),
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                infraOpsAgentService,
+                taskStore,
+                messageService,
+                mock(BuildFailureRecoveryService.class),
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class),
+                mock(AgentExecutionRegistry.class)
+        );
+        AgentStep step = new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "STATUS_CHECK"));
+        when(infraOpsAgentService.execute(step, 1L, "task-1", 11L))
+                .thenReturn(new CodeAgentService.CodeResult(null, "서버/서비스 상태\n- 배포: 배포 이력 없음"));
+
+        executor.execute(
+                new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L),
+                "task-1",
+                1L
+        );
+
+        verify(taskStore).markDone("task-1", null, "서버/서비스 상태\n- 배포: 배포 이력 없음");
+        verify(messageService).appendAssistant(21L, "서버/서비스 상태\n- 배포: 배포 이력 없음");
+    }
+
     private AgentPlanExecutor executor(CodeAgentService codeService,
+                                       TaskStore taskStore,
+                                       AgentMessageService messageService) {
+        return executor(codeService, mock(ChatAgentService.class), taskStore, messageService);
+    }
+
+    private AgentPlanExecutor executor(CodeAgentService codeService,
+                                       ChatAgentService chatService,
                                        TaskStore taskStore,
                                        AgentMessageService messageService) {
         return new AgentPlanExecutor(
                 codeService,
                 mock(DeployAgentService.class),
                 mock(DomainBindAgentService.class),
+                chatService,
+                mock(InfraOpsAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
-                mock(ChangeService.class)
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class),
+                mock(AgentExecutionRegistry.class)
         );
     }
 

@@ -10,19 +10,26 @@ import com.example.dvely.project.application.command.dto.ConnectProjectRepositor
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
 import com.example.dvely.project.application.facade.ProjectFacade;
 import com.example.dvely.project.application.result.GithubRepositoryResult;
+import com.example.dvely.project.application.result.ProjectCostBudgetResult;
 import com.example.dvely.project.application.result.ProjectCreationResult;
 import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectRepositoryResult;
+import com.example.dvely.project.application.result.ProjectRepositorySettingsResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
 import com.example.dvely.agent.application.dto.AgentSubmission;
 import com.example.dvely.agent.application.dto.TaskStatus;
+import com.example.dvely.project.application.service.ProjectCostBudgetService;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
 import com.example.dvely.project.presentation.dto.request.ConnectProjectRepositoryRequest;
 import com.example.dvely.project.presentation.dto.request.CreateProjectRequest;
+import com.example.dvely.project.presentation.dto.request.UpdateProjectBudgetRequest;
 import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectCostBudgetResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectRepositorySettingsResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectSummaryResponse;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -41,6 +48,9 @@ class ProjectControllerTest {
 
     @Mock
     private ProjectMapper projectMapper;
+
+    @Mock
+    private ProjectCostBudgetService projectCostBudgetService;
 
     @InjectMocks
     private ProjectController projectController;
@@ -188,5 +198,122 @@ class ProjectControllerTest {
         assertThat(responses).hasSize(1);
         assertThat(responses.get(0).fullName()).isEqualTo("octo/repo");
         verify(projectFacade).getGithubRepositories(1L);
+    }
+
+    @Test
+    void getRepositorySettings_delegatesUsingAuthenticatedUserIdAndProjectId() {
+        LocalDateTime now = LocalDateTime.now();
+        ProjectRepositorySettingsResult result = new ProjectRepositorySettingsResult(
+                11L,
+                true,
+                "octo/repo",
+                "https://github.com/octo/repo",
+                "main",
+                "PUBLIC",
+                "BOUND",
+                "HEALTHY",
+                now,
+                now
+        );
+        ProjectRepositorySettingsResponse response = new ProjectRepositorySettingsResponse(
+                11L,
+                true,
+                "octo/repo",
+                "https://github.com/octo/repo",
+                "main",
+                "PUBLIC",
+                "BOUND",
+                "HEALTHY",
+                now,
+                now
+        );
+
+        when(projectFacade.getRepositorySettings(1L, 11L)).thenReturn(result);
+        when(projectMapper.toRepositorySettingsResponse(result)).thenReturn(response);
+
+        ProjectRepositorySettingsResponse actual = projectController.getRepositorySettings(1L, 11L);
+
+        assertThat(actual.connected()).isTrue();
+        assertThat(actual.repositoryFullName()).isEqualTo("octo/repo");
+        verify(projectFacade).getRepositorySettings(1L, 11L);
+    }
+
+    @Test
+    void disconnectRepository_delegatesUsingAuthenticatedUserIdAndProjectId() {
+        projectController.disconnectRepository(1L, 11L);
+
+        verify(projectFacade).disconnectRepository(1L, 11L);
+    }
+
+    @Test
+    void getCostBudget_delegatesUsingAuthenticatedUserIdAndProjectIdAndMapsFullShape() {
+        LocalDateTime now = LocalDateTime.now();
+        ProjectCostBudgetResult result = new ProjectCostBudgetResult(
+                11L,
+                true,
+                "AWS",
+                "USD",
+                new BigDecimal("27.15"),
+                List.of(new ProjectCostBudgetResult.ResourceCost("COMPUTE", "SERVER · SMALL (AWS)", new BigDecimal("17.00"))),
+                List.of("월 730시간 상시 가동을 가정합니다."),
+                "2026-07.static.1",
+                new ProjectCostBudgetResult.Budget(new BigDecimal("50.00"), "USD", now),
+                "WITHIN_BUDGET",
+                new BigDecimal("54.3")
+        );
+
+        when(projectCostBudgetService.get(1L, 11L)).thenReturn(result);
+
+        ProjectCostBudgetResponse actual = projectController.getCostBudget(1L, 11L);
+
+        verify(projectCostBudgetService).get(1L, 11L);
+        assertThat(actual.projectId()).isEqualTo(11L);
+        assertThat(actual.costAvailable()).isTrue();
+        assertThat(actual.provider()).isEqualTo("AWS");
+        assertThat(actual.estimatedMonthlyCost()).isEqualByComparingTo("27.15");
+        assertThat(actual.resourceCosts()).hasSize(1);
+        assertThat(actual.resourceCosts().get(0).resourceType()).isEqualTo("COMPUTE");
+        assertThat(actual.budget().monthlyBudgetAmount()).isEqualByComparingTo("50.00");
+        assertThat(actual.budgetStatus()).isEqualTo("WITHIN_BUDGET");
+        assertThat(actual.budgetUsagePercent()).isEqualByComparingTo("54.3");
+    }
+
+    @Test
+    void getCostBudget_mapsNullBudgetToNullInResponse() {
+        ProjectCostBudgetResult result = new ProjectCostBudgetResult(
+                11L, false, null, "USD", null, List.of(), List.of(), "2026-07.static.1",
+                null, "NO_BUDGET", null
+        );
+        when(projectCostBudgetService.get(1L, 11L)).thenReturn(result);
+
+        ProjectCostBudgetResponse actual = projectController.getCostBudget(1L, 11L);
+
+        assertThat(actual.budget()).isNull();
+        assertThat(actual.costAvailable()).isFalse();
+        assertThat(actual.resourceCosts()).isEmpty();
+    }
+
+    @Test
+    void updateCostBudget_delegatesRequestBodyFieldsToService() {
+        UpdateProjectBudgetRequest request = new UpdateProjectBudgetRequest(new BigDecimal("75.50"), "USD");
+        ProjectCostBudgetResult result = new ProjectCostBudgetResult(
+                11L, false, null, "USD", null, List.of(), List.of(), "2026-07.static.1",
+                new ProjectCostBudgetResult.Budget(new BigDecimal("75.50"), "USD", LocalDateTime.now()),
+                "NOT_EVALUABLE", null
+        );
+        when(projectCostBudgetService.update(1L, 11L, new BigDecimal("75.50"), "USD")).thenReturn(result);
+
+        ProjectCostBudgetResponse actual = projectController.updateCostBudget(1L, 11L, request);
+
+        verify(projectCostBudgetService).update(1L, 11L, new BigDecimal("75.50"), "USD");
+        assertThat(actual.budget().monthlyBudgetAmount()).isEqualByComparingTo("75.50");
+        assertThat(actual.budgetStatus()).isEqualTo("NOT_EVALUABLE");
+    }
+
+    @Test
+    void clearCostBudget_delegatesUsingAuthenticatedUserIdAndProjectId() {
+        projectController.clearCostBudget(1L, 11L);
+
+        verify(projectCostBudgetService).clear(1L, 11L);
     }
 }

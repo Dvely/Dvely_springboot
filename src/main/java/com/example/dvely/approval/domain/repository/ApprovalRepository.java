@@ -10,7 +10,39 @@ public interface ApprovalRepository {
 
     Optional<Approval> findByIdAndOwnerUserId(Long approvalId, Long ownerUserId);
 
+    /**
+     * Same lookup as {@link #findByIdAndOwnerUserId}, but acquires a row-level lock
+     * (SELECT ... FOR UPDATE) held for the rest of the caller's transaction. Every approval
+     * decision (approve/reject) must go through this method rather than the unlocked lookup —
+     * the approval row is the single point of contention for a given approval, so funneling
+     * every decide path through one locked query gives a single, easy-to-reason-about lock
+     * order and closes the approve-vs-reject race (review F1): the second transaction blocks
+     * until the first commits, then re-reads the already-decided row and fails
+     * {@code Approval#decide}'s PENDING guard instead of blind-overwriting the outcome.
+     */
+    Optional<Approval> findByIdAndOwnerUserIdForUpdate(Long approvalId, Long ownerUserId);
+
+    /**
+     * ADR-Y1 §1 step①: unlocked scalar lookup (see {@link ApprovalRouting} javadoc for why it must
+     * stay scalar) used by {@code ApprovalCommandService} to decide, before taking any lock,
+     * whether an approval is task-bound (needs the task-row lock first) or standalone (single-row,
+     * order irrelevant).
+     */
+    Optional<ApprovalRouting> findRoutingInfo(Long approvalId, Long ownerUserId);
+
     List<Approval> findByProjectIdAndOwnerUserIdOrderByCreatedAtDesc(Long projectId, Long ownerUserId);
 
     List<Approval> findByTaskIdOrderByIdAsc(String taskId);
+
+    /**
+     * Same rows as {@link #findByTaskIdOrderByIdAsc}, but a locking read (SELECT ... FOR UPDATE)
+     * held for the rest of the caller's transaction — required for the plan-approval "every
+     * approval APPROVED?" check (ADR-Y1 §1): under REPEATABLE READ, a plain SELECT can still
+     * return a pre-lock snapshot even after the caller waited for and acquired the task row lock,
+     * because that snapshot was taken at this transaction's first non-locking read, not at lock
+     * acquisition time. A locking read always observes the latest committed version instead. This
+     * never actually contends in practice: the task row lock ADR-Y1 requires callers to acquire
+     * first already serializes every other decision-maker for the same taskId.
+     */
+    List<Approval> findByTaskIdOrderByIdAscForUpdate(String taskId);
 }

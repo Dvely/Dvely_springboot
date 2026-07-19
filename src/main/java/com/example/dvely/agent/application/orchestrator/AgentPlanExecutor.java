@@ -6,12 +6,17 @@ import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.exception.AgentInputRequiredException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
 import com.example.dvely.agent.application.service.BuildFailureRecoveryService;
+import com.example.dvely.agent.application.service.ChatAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
+import com.example.dvely.agent.application.service.InfraOpsAgentService;
 import com.example.dvely.agent.application.service.AgentMessageService;
+import com.example.dvely.agent.application.service.ResultApprovalGate;
+import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -26,13 +31,31 @@ public class AgentPlanExecutor {
     private final CodeAgentService       codeAgentService;
     private final DeployAgentService     deployAgentService;
     private final DomainBindAgentService domainBindAgentService;
+    private final ChatAgentService       chatAgentService;
+    private final InfraOpsAgentService   infraOpsAgentService;
     private final TaskStore              taskStore;
     private final AgentMessageService    agentMessageService;
     private final BuildFailureRecoveryService buildFailureRecoveryService;
     private final ChangeService changeService;
+    private final ResultApprovalGate resultApprovalGate;
+    // ADR-Y4 (#55): paired with AgentRunWorker's register-before-submit call — see
+    // AgentExecutionRegistry's javadoc for why registration itself must NOT happen here.
+    private final AgentExecutionRegistry executionRegistry;
 
     @Async("agentExecutor")
     public void execute(AgentPlan plan, String taskId, Long userId) {
+        try {
+            doExecute(plan, taskId, userId);
+        } finally {
+            // The only unregister site for a task that made it onto an executor thread — covers
+            // every exit path below (normal completion and every catch branch) uniformly, so the
+            // registry can never leak an entry for a task whose executor thread has actually
+            // finished one way or another.
+            executionRegistry.unregister(taskId);
+        }
+    }
+
+    private void doExecute(AgentPlan plan, String taskId, Long userId) {
         log.info("=== AgentPlan 실행 시작: taskId={} | 총 {}단계 | reasoning={} ===",
                 taskId, plan.steps().size(), plan.reasoning());
 
@@ -56,8 +79,18 @@ public class AgentPlanExecutor {
                     if (result.previewUrl() != null) previewUrl = result.previewUrl();
                     if (result.summary() != null)    summary    = result.summary();
                     taskStore.updateProgress(taskId, previewUrl, summary);
-                    if (step.agentType() == com.example.dvely.agent.domain.value.AgentType.CODE) {
+                    if (step.agentType() == AgentType.CODE) {
                         changeService.record(taskId, summary);
+                        // Track Z (#56): the gate owns markStepCompleted for the CODE step it
+                        // fires on (see ResultApprovalGate javadoc for why — push must succeed
+                        // before the step is considered "done" so a push failure leaves the CODE
+                        // step retryable). When it does not fire (policy OFF, unbound project, or
+                        // not the plan's last CODE step) it makes no writes at all, and the normal
+                        // markStepCompleted below runs exactly as it did before this feature.
+                        if (resultApprovalGate.requestIfRequired(plan, i, taskId, userId, plan.projectId())) {
+                            log.info("=== AgentPlan 결과 승인 대기: taskId={} ===", taskId);
+                            return;
+                        }
                     }
                 }
                 taskStore.markStepCompleted(taskId, i + 1);
@@ -104,7 +137,7 @@ public class AgentPlanExecutor {
     }
 
     private AgentStep withSuggestedFix(AgentStep step, String taskId, Long userId) {
-        if (step.agentType() != com.example.dvely.agent.domain.value.AgentType.CODE) {
+        if (step.agentType() != AgentType.CODE) {
             return step;
         }
         var failure = taskStore.getFailure(taskId, userId);
@@ -131,10 +164,11 @@ public class AgentPlanExecutor {
 
     private CodeResult dispatch(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, Long userId, String taskId, Long projectId) {
         return switch (step.agentType()) {
-            case CODE        -> handleCode(step, aiProvider, userId, projectId, taskId);
-            case DEPLOY      -> handleDeploy(step, userId, taskId, projectId);
-            case DOMAIN_BIND -> handleDomainBind(step, userId, taskId, projectId);
-            case CHAT        -> handleChat(step);
+            case CODE          -> handleCode(step, aiProvider, userId, projectId, taskId);
+            case DEPLOY        -> handleDeploy(step, userId, taskId, projectId);
+            case DOMAIN_BIND   -> handleDomainBind(step, userId, taskId, projectId);
+            case INFRA_OPERATE -> handleInfraOperate(step, userId, taskId, projectId);
+            case CHAT          -> handleChat(step, aiProvider, taskId);
         };
     }
 
@@ -163,10 +197,16 @@ public class AgentPlanExecutor {
         return domainBindAgentService.execute(step, userId, taskId, projectId);
     }
 
-    private CodeResult handleChat(AgentStep step) {
-        log.info("[CHAT 에이전트] 대화 요청 수신");
+    private CodeResult handleInfraOperate(AgentStep step, Long userId, String taskId, Long projectId) {
+        log.info("[INFRA_OPERATE 에이전트] 인프라 운영 요청 수신 | userId={} projectId={}", userId, projectId);
+        log.info("  operation   : {}", step.parameters().getOrDefault("operation", ""));
         log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
-        // TODO: ChatAgentService.execute(step) 연결 예정
-        return null;
+        return infraOpsAgentService.execute(step, userId, taskId, projectId);
+    }
+
+    private CodeResult handleChat(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, String taskId) {
+        log.info("[CHAT 에이전트] 대화 요청 수신 | provider={} taskId={}", aiProvider, taskId);
+        log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
+        return chatAgentService.execute(step, aiProvider, taskId);
     }
 }

@@ -3,6 +3,7 @@ package com.example.dvely.deployment.application.command;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
+import com.example.dvely.change.application.service.ResultApprovalService;
 import com.example.dvely.common.exception.ForbiddenException;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.deployment.application.command.dto.DeployCommand;
@@ -19,12 +20,16 @@ import com.example.dvely.deployment.domain.value.PackageManager;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.model.Project;
+import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
+import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import java.time.Duration;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -48,21 +53,80 @@ public class DeploymentCommandService {
     private final GithubActionsPort githubActionsPort;
     private final GithubRepoPort githubRepoPort;
     private final DeploymentHistoryRepository deploymentHistoryRepository;
+    // Track Z (#56) D1/§5.4: needed so a direct deploy can no longer silently merge preview into
+    // main once the result-approval gate owns that project (see prepareRelease's mergeAllowed).
+    private final ProjectApprovalPolicyRepository projectApprovalPolicyRepository;
+    // Review follow-up (BLOCKING-1): source of truth for "has this project already gone through a
+    // RESULT-gate decision" (see #hasResultGateHistory) — needed to correct the "never released"
+    // merge exception in prepareRelease below, which must not also cover a project whose only
+    // history is a REJECTED result.
+    private final ResultApprovalService resultApprovalService;
 
     @Transactional
     public DeployResult deploy(Long ownerUserId, Long projectId, DeployCommand command) {
         Project project = resolveProject(ownerUserId, projectId);
+        return createAndQueueDeployment(ownerUserId, project, command, null);
+    }
+
+    /**
+     * Re-queues a failed deployment as a brand-new job rather than resetting the failed row in
+     * place (U6 design D3): reusing the same history would collide with its own
+     * {@code correlationId}/workflow-run identity and would erase the failed attempt from the
+     * audit trail. The new row links back via {@code retriedFromHistoryId} so the FE can render
+     * a retry chain, and otherwise flows through the exact same PENDING → worker-lease pipeline
+     * as a fresh {@link #deploy}.
+     *
+     * <p>No approval gate here (D5): {@code POST /deployments} itself never requires DEPLOYMENT
+     * approval for direct user action (that ApprovalType is only created by the agent planning
+     * path via AgentOrchestrator) — retry is the same kind of direct action, so the click itself
+     * is the approval.</p>
+     *
+     * <p><b>Accepted risk (review follow-up F5, design D3/§7 — deliberate, not an oversight):</b>
+     * there is no limit on how many times a given history can be retried, and no check for an
+     * already in-flight PENDING/IN_PROGRESS job on the same project before queuing another one.
+     * Design §7 explicitly scopes both out ("재시도 횟수 제한·rate limit", "진행 중 job 존재 시
+     * 차단") as MVP simplifications, and D3 argues the same asymmetry already exists for the
+     * plain {@code POST /projects/{id}/deployments} endpoint (which also queues unconditionally
+     * regardless of concurrent jobs) — making retry strict here while the primary deploy path
+     * isn't would be an inconsistent, surprising restriction rather than a safety improvement.
+     * If abuse or accidental repeated retries become a real problem, the fix belongs at this
+     * call site (e.g. a per-project in-flight check, or a retry-count/backoff column on
+     * {@code DeploymentHistory}) — not a broader change to the shared queuing pipeline.</p>
+     */
+    @Transactional
+    public DeployResult retryDeployment(Long ownerUserId, Long historyId) {
+        DeploymentHistory target = deploymentHistoryRepository.findById(historyId)
+                .orElseThrow(() -> new NotFoundException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));
+        Project project = resolveProject(ownerUserId, target.getProjectId());
+        if (target.getStatus() != DeployStatus.FAILED) {
+            throw new IllegalStateException("실패한 배포만 재시도할 수 있습니다. status=" + target.getStatus());
+        }
+
+        String requestedVersion = target.getDeployTargetType() == DeployTargetType.VERSION
+                ? target.getVersionLabel()
+                : null;
+        // taskId=null: unlike agent-triggered deploys, a retry is a direct user click, not
+        // something an Agent plan is tracking.
+        DeployCommand command = new DeployCommand(target.getDeployTargetType(), requestedVersion, null);
+        return createAndQueueDeployment(ownerUserId, project, command, target.getId());
+    }
+
+    private DeployResult createAndQueueDeployment(Long ownerUserId,
+                                                  Project project,
+                                                  DeployCommand command,
+                                                  Long retriedFromHistoryId) {
         DeploymentHistory history = deploymentHistoryRepository.save(new DeploymentHistory(
                 ownerUserId,
-                projectId,
+                project.getId(),
                 command.deployTargetType(),
                 command.versionName(),
-                command.taskId()
+                command.taskId(),
+                retriedFromHistoryId
         ));
         project.updateDeployment(DeployStatus.PENDING, project.getCurrentUrl(), project.getCurrentVersion());
         projectRepository.save(project);
-        log.info("배포 요청 저장: projectId={} historyId={} correlationId={}",
-                projectId, history.getId(), history.getCorrelationId());
+        log.info("배포 요청 저장: projectId={} historyId={} correlationId={} retriedFromHistoryId={}",
+                project.getId(), history.getId(), history.getCorrelationId(), retriedFromHistoryId);
         return toResult(history);
     }
 
@@ -90,7 +154,7 @@ public class DeploymentCommandService {
 
         ensureWorkflow(userToken, sourceRepo, project.getTemplateType());
 
-        ReleaseSelection release = prepareRelease(userToken, sourceRepo, history);
+        ReleaseSelection release = prepareRelease(userToken, sourceRepo, history, project);
         String deployBranch = resolveDeployBranch(
                 userToken,
                 deploymentRepo,
@@ -112,8 +176,7 @@ public class DeploymentCommandService {
         );
         history = deploymentHistoryRepository.save(history);
         if (isLatestProjectDeployment(history)) {
-            project.updateDeployment(DeployStatus.IN_PROGRESS, pagesUrl, release.versionLabel());
-            projectRepository.save(project);
+            updateProjectDeploymentState(project.getId(), DeployStatus.IN_PROGRESS, pagesUrl, release.versionLabel());
         }
 
         WorkflowRunMatch existingRun = githubActionsPort.findWorkflowRun(
@@ -161,6 +224,39 @@ public class DeploymentCommandService {
                 history.getId(), run.runId(), history.getCorrelationId(), history.getVersionLabel());
     }
 
+    /**
+     * I45 (#45) review follow-up F1: {@code execute()} is deliberately not
+     * {@code @Transactional} (design §0 case B — see {@code ProjectRepositoryAdapter}'s javadoc),
+     * so it originally reused the {@code Project} snapshot read at the very top of
+     * {@code execute()} for this save. Between that read and this write, this same method's own
+     * GitHub I/O runs — {@code ensureWorkflow} commits the workflow file, {@code prepareRelease}
+     * can merge a PR — both of which are pushes to the project's own repository that trigger
+     * {@code WebhookEventHandler}'s push handling against this exact project row. That made this
+     * a <em>self-inflicted</em> race: on a completely normal, uncontested deploy, the adapter's
+     * version guard would frequently catch the webhook's commit landing first and reject this
+     * save, burning one retry attempt (5s+ backoff) every time — not a rare concurrent-user edge
+     * case but a routine tax on the deploy pipeline's own success path.
+     * <p>
+     * Re-reading the project immediately before this write shrinks that race window from "the
+     * entire GitHub I/O phase of execute()" down to milliseconds. A concurrent version conflict
+     * is still possible in that narrow window (e.g. a true concurrent user edit) — that still
+     * throws {@link ObjectOptimisticLockingFailureException} up through {@code executeQueued}'s
+     * catch to {@link #handleExecutionFailure}, i.e. into the existing worker-retry machine
+     * exactly as design §2 intends, unaffected by this fix.
+     */
+    private void updateProjectDeploymentState(Long projectId, DeployStatus status, String url, String version) {
+        Optional<Project> fresh = projectRepository.findById(projectId);
+        if (fresh.isEmpty()) {
+            // Project was deleted concurrently — the deployment history itself is already saved
+            // and unaffected; there is simply nothing left to mirror this status onto.
+            log.warn("배포 상태 프로젝트 반영 스킵: 프로젝트를 찾을 수 없습니다. projectId={}", projectId);
+            return;
+        }
+        Project project = fresh.get();
+        project.updateDeployment(status, url, version);
+        projectRepository.save(project);
+    }
+
     private void handleExecutionFailure(Long historyId, Exception exception) {
         DeploymentHistory history = deploymentHistoryRepository.findById(historyId).orElse(null);
         if (history == null || history.getStatus() == DeployStatus.LIVE) {
@@ -172,14 +268,26 @@ public class DeploymentCommandService {
         history.retry(message, Duration.ofSeconds(Math.max(5, history.getAttempt() * 5L)));
         deploymentHistoryRepository.save(history);
         if (history.getStatus() == DeployStatus.FAILED && isLatestProjectDeployment(history)) {
-            projectRepository.findById(history.getProjectId()).ifPresent(project -> {
-                project.updateDeployment(
-                        DeployStatus.FAILED,
-                        history.getDeployedUrl(),
-                        history.getVersionLabel()
-                );
-                projectRepository.save(project);
-            });
+            try {
+                projectRepository.findById(history.getProjectId()).ifPresent(project -> {
+                    project.updateDeployment(
+                            DeployStatus.FAILED,
+                            history.getDeployedUrl(),
+                            history.getVersionLabel()
+                    );
+                    projectRepository.save(project);
+                });
+            } catch (ObjectOptimisticLockingFailureException lockException) {
+                // F2 (design §2 "로그 후 소실 허용"): the deployment history's retry/fail state
+                // was already saved above — that (not this best-effort project mirror) is the
+                // durable source of truth a later webhook/retry converges from. A version
+                // conflict here is not worth crashing this async worker over: caught, logged,
+                // and left for the next successful project save/webhook to catch the row up.
+                // The log.error(...) below (the actual failure cause) still runs either way —
+                // this catch exists precisely so it isn't skipped by an uncaught exception here.
+                log.warn("배포 실패 처리 중 프로젝트 상태 반영이 버전 경합으로 무시됨: historyId={} projectId={}",
+                        historyId, history.getProjectId(), lockException);
+            }
         }
         log.error("배포 worker 실행 실패: historyId={} attempt={}/{} status={}",
                 historyId, history.getAttempt(), history.getMaxAttempts(), history.getStatus(), exception);
@@ -193,7 +301,8 @@ public class DeploymentCommandService {
 
     private ReleaseSelection prepareRelease(String userToken,
                                             String sourceRepo,
-                                            DeploymentHistory history) {
+                                            DeploymentHistory history,
+                                            Project project) {
         if (history.getDeployTargetType() == DeployTargetType.VERSION) {
             String commitSha = githubRepoPort.resolveCommitSha(
                     userToken,
@@ -210,7 +319,42 @@ public class DeploymentCommandService {
         }
 
         Integer prNumber = null;
-        if (githubRepoPort.hasNewCommits(userToken, sourceRepo, MAIN_BRANCH, PREVIEW_BRANCH)) {
+        // Track Z (#56) D1/§5.4: once this project's policy requires RESULT approval, a direct
+        // deploy must not drag un-approved preview commits into main on its own — merging is the
+        // RESULT approval flow's job now (ResultApprovalService#reflect). The one exception is
+        // this project's very first release (currentVersion still null): it never had a chance to
+        // go through the gate — D9 only fires once a project is already BOUND, but a brand-new
+        // project only becomes BOUND *during* this very deploy — so without this exception main
+        // would never receive the initial content and Pages would publish nothing.
+        //
+        // Deliberately NOT keyed off whether the `main` branch exists on GitHub: every repository
+        // this app creates (GithubRepositoryPort#createRepository) is created with auto_init=true,
+        // so `main` already exists (with just a README) the instant the repo is created — branch
+        // existence alone cannot distinguish "never released" from "already established". See
+        // backend.md for the full writeup of why this deviates from the design draft's
+        // branchExists-based rule.
+        //
+        // Review follow-up (BLOCKING-1): `currentVersion == null` alone is NOT a safe proxy for
+        // "never went through the RESULT gate" — a project can be BOUND, never successfully
+        // deployed (currentVersion still null), and yet already have a REJECTED Change sitting in
+        // preview from a prior RESULT decision. Treating that project as "never released" would
+        // let this direct-deploy path silently merge exactly the content the user rejected. The
+        // "never gated" carve-out must therefore hold both facts at once: never released AND never
+        // decided by the gate (no REJECTED/MERGED Change row yet) — the latter is the shared
+        // judgment call centralized in ResultApprovalService#hasResultGateHistory so this project's
+        // gate-history fact is computed the same way everywhere it matters, not re-approximated
+        // here with a second, weaker signal.
+        //
+        // Left-to-right short-circuiting is deliberate and load-bearing here (kept as a single
+        // expression rather than a separate boolean variable): when the policy is OFF, or when
+        // the project has already been released once, hasResultGateHistory's DB lookup below is
+        // never even reached — preserving §8's "policy OFF/already-established project costs
+        // nothing new" invariant instead of paying for a gate-history query that can't change the
+        // outcome anyway.
+        boolean mergeAllowed = !resolvePolicy(project.getId()).isResultApprovalRequired()
+                || (project.getCurrentVersion() == null
+                        && !resultApprovalService.hasResultGateHistory(project.getId()));
+        if (mergeAllowed && githubRepoPort.hasNewCommits(userToken, sourceRepo, MAIN_BRANCH, PREVIEW_BRANCH)) {
             prNumber = githubRepoPort.createOrGetPullRequest(
                     userToken,
                     sourceRepo,
@@ -233,6 +377,11 @@ public class DeploymentCommandService {
                 prNumber
         );
         return new ReleaseSelection(versionLabel, metadata);
+    }
+
+    private ProjectApprovalPolicy resolvePolicy(Long projectId) {
+        return projectApprovalPolicyRepository.findByProjectId(projectId)
+                .orElseGet(() -> new ProjectApprovalPolicy(projectId));
     }
 
     private Project resolveProject(Long ownerUserId, Long projectId) {

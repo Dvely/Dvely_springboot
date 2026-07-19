@@ -8,6 +8,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
+import com.example.dvely.agent.application.dto.AgentSubmission;
+import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.service.AgentMessageService;
@@ -116,10 +118,13 @@ class ChatCommandServiceTest {
         when(chatMessageRepository.save(any(ChatMessage.class))).thenReturn(saved);
         when(agentMessageService.getConversationContext(21L)).thenReturn(context);
         when(decisionAgentService.decide(context, AiProvider.ANTHROPIC, 7L)).thenReturn(plan);
+        when(agentOrchestrator.submit(plan, 2L, 21L))
+                .thenReturn(new AgentSubmission("task-abc123", TaskStatus.QUEUED, List.of()));
 
         MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘");
 
         assertThat(result.messageId()).isEqualTo(31L);
+        assertThat(result.taskId()).isEqualTo("task-abc123");
         assertThat(conversation.getTitle()).isEqualTo("FAQ를 추가해줘");
         verify(conversationRepository).save(conversation);
         verify(agentOrchestrator).submit(plan, 2L, 21L);
@@ -236,8 +241,9 @@ class ChatCommandServiceTest {
         when(decisionAgentService.decide(context, AiProvider.ANTHROPIC, 7L))
                 .thenThrow(new IllegalStateException("LLM 연결 실패"));
 
-        chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘");
+        MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘");
 
+        assertThat(result.taskId()).isNull();
         verify(agentMessageService).appendAssistant(
                 21L,
                 "요청을 분석하지 못했습니다: LLM 연결 실패"

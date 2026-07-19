@@ -22,10 +22,9 @@ import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.Optional;
 
 @Slf4j
@@ -41,6 +40,9 @@ public class DeployAgentService {
     private final ProjectRepository      projectRepository;
     private final DeploymentFacade       deploymentFacade;
     private final InputWaitStore         inputWaitStore;
+    // Track Z (#56) D10: git-push mechanics extracted so ResultApprovalGate can push the same
+    // way without duplicating the git/credential sequence — see PreviewBranchPushService javadoc.
+    private final PreviewBranchPushService previewBranchPushService;
 
     public CodeResult execute(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[DeployAgent] 배포 시작 | userId={} taskId={} projectId={}", userId, taskId, projectId);
@@ -65,14 +67,14 @@ public class DeployAgentService {
                     // BOUND 프로젝트 존재 → 해당 저장소로 push
                     project = found.get();
                     log.info("[DeployAgent] 기존 프로젝트 저장소로 push: {}", project.getSourceRepository());
-                    pushSourceToGithub(containerId, userToken, username, project.getSourceRepository(), false, taskId);
+                    previewBranchPushService.push(containerId, userToken, username, project.getSourceRepository(), false, taskId);
                     sourceChanged = true;
                 } else {
                     // NOT_BOUND 또는 저장소 없음 → 신규 저장소 생성 후 push
                     log.info("[DeployAgent] projectId={} 저장소 미연결, 신규 저장소로 push", projectId);
                     String repoName     = resolveRepoName(step, userId, containerId, taskId);
                     String repoFullName = ensureGithubRepo(userId, username, repoName);
-                    pushSourceToGithub(containerId, userToken, username, repoFullName, true, taskId);
+                    previewBranchPushService.push(containerId, userToken, username, repoFullName, true, taskId);
                     sourceChanged = true;
                     project = findOrCreateProject(userId, repoName, repoFullName);
                 }
@@ -80,7 +82,7 @@ public class DeployAgentService {
                 String repoName     = resolveRepoName(step, userId, containerId, taskId);
                 String repoFullName = ensureGithubRepo(userId, username, repoName);
                 log.info("[DeployAgent] 신규 저장소 push: {}", repoFullName);
-                pushSourceToGithub(containerId, userToken, username, repoFullName, true, taskId);
+                previewBranchPushService.push(containerId, userToken, username, repoFullName, true, taskId);
                 sourceChanged = true;
                 project = findOrCreateProject(userId, repoName, repoFullName);
             }
@@ -106,14 +108,37 @@ public class DeployAgentService {
         }
 
         // AgentPlanExecutor는 필요한 승인이 모두 끝난 뒤에만 이 서비스를 호출한다.
-        DeployResult result = deploymentFacade.deploy(userId, project.getId(),
-                new DeployCommand(DeployTargetType.LATEST, null, taskId));
+        DeployResult result = deployWithSingleRetry(userId, project.getId(), taskId);
 
         String summary = sourceChanged
                 ? buildApprovedChangeSummary(project.getSourceRepository(), taskId, result.deploymentId())
                 : buildSummary(project.getSourceRepository(), result.deploymentId());
         log.info("[DeployAgent] 배포 요청 저장 | deploymentId={}", result.deploymentId());
         return new CodeResult(null, summary);
+    }
+
+    /**
+     * I45 (#45) review follow-up F3: this call runs from an async Agent task with no
+     * surrounding transaction, so — like {@link #bindAndSaveWithSingleRetry} above —
+     * {@code deploymentFacade.deploy()} can surface
+     * {@link ObjectOptimisticLockingFailureException} out of its own internal project save
+     * (see {@code DeploymentCommandService.createAndQueueDeployment}) if this project row was
+     * updated concurrently between when it was read here and when {@code deploy()} tries to
+     * write it. One inline retry: {@code deploy()} re-resolves the project fresh from the DB on
+     * every call ({@code DeploymentCommandService.resolveProject}), so simply calling it again
+     * is already a complete, safe retry — there is no partial state from the first attempt to
+     * reconcile (the history + project mutation both happen fully inside that one call, or not
+     * at all). A second failure propagates to the existing Agent-task failure path, same as
+     * {@link #bindAndSaveWithSingleRetry}.
+     */
+    private DeployResult deployWithSingleRetry(Long userId, Long projectId, String taskId) {
+        DeployCommand command = new DeployCommand(DeployTargetType.LATEST, null, taskId);
+        try {
+            return deploymentFacade.deploy(userId, projectId, command);
+        } catch (ObjectOptimisticLockingFailureException exception) {
+            log.warn("[DeployAgent] 배포 요청 저장 중 버전 경합 발생, 1회 재시도: projectId={}", projectId);
+            return deploymentFacade.deploy(userId, projectId, command);
+        }
     }
 
     // ── 저장소명 결정 ──────────────────────────────────────────────────────────
@@ -185,36 +210,6 @@ public class DeployAgentService {
         return saved;
     }
 
-    // ── Docker → GitHub 소스 푸시 ──────────────────────────────────────────────
-
-    private void pushSourceToGithub(String containerId, String userToken, String username,
-                                    String repoFullName, boolean isNew, String taskId) {
-        dockerService.exec(containerId, "apk add --no-cache git");
-        writeGitCredentials(containerId, username, userToken);
-        dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
-        dockerService.exec(containerId, "git config --global user.email 'agent@qeploy.com'");
-        dockerService.exec(containerId, "git config --global user.name 'Qeploy Agent'");
-
-        String remoteUrl = "https://github.com/" + repoFullName + ".git";
-        boolean hasGit = "yes".equals(
-                dockerService.exec(containerId, "[ -d /workspace/app/.git ] && echo yes || echo no").trim());
-
-        if (!hasGit) {
-            if (isNew) writeGitignore(containerId);
-            dockerService.exec(containerId, "cd /workspace/app && git init -b preview");
-            dockerService.exec(containerId, "cd /workspace/app && git remote add origin " + remoteUrl);
-        } else {
-            dockerService.exec(containerId, "cd /workspace/app && git remote set-url origin " + remoteUrl);
-            dockerService.exec(containerId, "cd /workspace/app && git checkout -B preview");
-        }
-
-        dockerService.exec(containerId, "cd /workspace/app && git add -A");
-        dockerService.exec(containerId,
-                "cd /workspace/app && git diff --cached --quiet || git commit -m 'feat: apply Qeploy Agent task "
-                        + taskId + "'");
-        dockerService.exec(containerId, "cd /workspace/app && git push -u origin preview");
-    }
-
     // ── NOT_BOUND 프로젝트 자동 바인딩 ────────────────────────────────────────────
 
     private Project autoBindRepository(Project project, Long userId) {
@@ -229,11 +224,7 @@ public class DeployAgentService {
             if (repo.isPresent()) {
                 RepositoryVisibility visibility = repo.get().privateRepository()
                         ? RepositoryVisibility.PRIVATE : RepositoryVisibility.PUBLIC;
-                project.bindRepository(candidateRepo, visibility);
-                project.updateRepositoryHealth(RepositoryHealthStatus.HEALTHY);
-                Project saved = projectRepository.save(project);
-                log.info("[DeployAgent] 자동 바인딩 완료: projectId={}, repo={}", saved.getId(), candidateRepo);
-                return saved;
+                return bindAndSaveWithSingleRetry(project, userId, candidateRepo, visibility);
             }
         }
 
@@ -243,21 +234,54 @@ public class DeployAgentService {
                 "GitHub 저장소 이름을 '" + candidateRepo + "'으로 생성해주세요.");
     }
 
+    /**
+     * I45 (#45): this is the only background write path onto {@code projects} that has no
+     * retry machine of its own — unlike webhook delivery (V21 queue) or the deployment worker
+     * (job lease + re-execute), an Agent task simply fails outright on an uncaught exception.
+     * Since this method runs with no surrounding transaction (an async agent task, not a
+     * {@code @Transactional} service method), {@code projectRepository.save} can throw
+     * {@link ObjectOptimisticLockingFailureException} the same way any other case-B write can
+     * (see {@code ProjectRepositoryAdapter#save} javadoc) if something else updated this project
+     * between when it was read and now.
+     *
+     * <p>One inline retry: reload the row, re-check the precondition against the fresh state
+     * (if it's already {@code BOUND} — possibly by another concurrent call reaching the exact
+     * same {@code candidateRepo} — there is nothing left to do), then reapply the binding and
+     * save once more. A second failure propagates uncaught to the existing Agent-task failure
+     * path (`AgentPlanExecutor`'s catch-all) rather than looping — this is deliberately not a
+     * general-purpose retry utility (design D5: reuse existing machines, add the smallest
+     * possible inline fix only where none exists).</p>
+     */
+    private Project bindAndSaveWithSingleRetry(Project project,
+                                               Long userId,
+                                               String candidateRepo,
+                                               RepositoryVisibility visibility) {
+        try {
+            return applyBindingAndSave(project, candidateRepo, visibility);
+        } catch (ObjectOptimisticLockingFailureException exception) {
+            log.warn("[DeployAgent] 자동 바인딩 저장 중 버전 경합 발생, 1회 재시도: projectId={}", project.getId());
+            Project reloaded = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(project.getId(), userId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "프로젝트(id=" + project.getId() + ") 재조회에 실패했습니다(동시 삭제 가능성).", exception));
+            if (reloaded.getRepositoryBindingStatus() == RepositoryBindingStatus.BOUND) {
+                // The precondition autoBindRepository exists to satisfy is already met — someone
+                // else bound a repository (possibly this exact candidateRepo) while we retried.
+                log.info("[DeployAgent] 재조회 결과 이미 BOUND 상태, 재적용 없이 반환: projectId={}", reloaded.getId());
+                return reloaded;
+            }
+            return applyBindingAndSave(reloaded, candidateRepo, visibility);
+        }
+    }
+
+    private Project applyBindingAndSave(Project project, String candidateRepo, RepositoryVisibility visibility) {
+        project.bindRepository(candidateRepo, visibility);
+        project.updateRepositoryHealth(RepositoryHealthStatus.HEALTHY);
+        Project saved = projectRepository.save(project);
+        log.info("[DeployAgent] 자동 바인딩 완료: projectId={}, repo={}", saved.getId(), candidateRepo);
+        return saved;
+    }
+
     // ── 유틸 ───────────────────────────────────────────────────────────────────
-
-    private void writeGitCredentials(String containerId, String username, String userToken) {
-        String cred = "https://" + username + ":" + userToken + "@github.com";
-        String b64  = Base64.getEncoder().encodeToString(cred.getBytes(StandardCharsets.UTF_8));
-        dockerService.exec(containerId,
-                "node -e \"require('fs').writeFileSync('/tmp/.git-credentials', Buffer.from('" + b64 + "', 'base64').toString('utf8'))\"");
-    }
-
-    private void writeGitignore(String containerId) {
-        String content = "node_modules/\ndist/\nbuild/\nout/\n.env\n.env.local\n";
-        String b64     = Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
-        dockerService.exec(containerId,
-                "node -e \"require('fs').writeFileSync('/workspace/app/.gitignore', Buffer.from('" + b64 + "', 'base64').toString('utf8'))\"");
-    }
 
     private String sanitize(String name) {
         return name.toLowerCase().replaceAll("[^a-z0-9-]", "-").replaceAll("-{2,}", "-").replaceAll("^-|-$", "");

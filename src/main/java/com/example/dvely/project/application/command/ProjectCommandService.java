@@ -80,6 +80,35 @@ public class ProjectCommandService {
         return toRepositoryResult(savedProject);
     }
 
+    /**
+     * Disconnects the GitHub repository binding from a project.
+     * <p>
+     * This is intentionally non-destructive (design D2/D3): the method only clears DB fields
+     * via {@link Project#unbindRepository()} and never calls {@link GithubRepositoryPort} —
+     * the GitHub repository, its workflows, and any published GitHub Pages site are left
+     * untouched. Derived state in other domains (webhook sync, deployment history, domain
+     * binding, in-flight agent tasks) is not inspected or cleaned up here; each naturally
+     * disconnects on its own once {@code sourceRepository} is null (see design D3), which
+     * keeps this service inside the project domain's own boundary. Because there is no
+     * external call, the single {@code save} below is the only side effect and the whole
+     * operation is atomic within the transaction.
+     * <p>
+     * Race with a concurrent webhook head-sync write (see
+     * {@code WebhookEventHandler}/{@code synchronizeRepositoryHead}): both are guarded now
+     * (Issue #45) by {@code Project}'s optimistic version — whichever {@code save} commits
+     * second sees a stale version and gets {@code ObjectOptimisticLockingFailureException}
+     * instead of silently discarding the other write. This is the "사용자 대면" policy (design
+     * I45 §2): the exception propagates out of this {@code @Transactional} method to
+     * {@code GlobalExceptionHandler} as 409, and the caller is expected to retry — no automatic
+     * re-apply here, since the user already saw the state their disconnect click was based on.
+     */
+    @Transactional
+    public void disconnectRepository(Long ownerUserId, Long projectId) {
+        Project project = getProject(ownerUserId, projectId);
+        project.unbindRepository();
+        projectRepository.save(project);
+    }
+
     @Transactional
     public ProjectDetailResult updateProject(Long ownerUserId, Long projectId, UpdateProjectCommand command) {
         Project project = getProject(ownerUserId, projectId);

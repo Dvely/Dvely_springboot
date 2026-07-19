@@ -13,9 +13,11 @@ import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectOverviewResult;
 import com.example.dvely.project.application.result.ProjectCreationResult;
 import com.example.dvely.project.application.result.ProjectRepositoryResult;
+import com.example.dvely.project.application.result.ProjectRepositorySettingsResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
 import com.example.dvely.project.application.result.RepositoryHealthResult;
 import com.example.dvely.project.application.service.ProjectCreationService;
+import com.example.dvely.project.application.service.ProjectRepositorySettingsService;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -27,6 +29,7 @@ public class ProjectFacade {
     private final ProjectCommandService projectCommandService;
     private final ProjectQueryService projectQueryService;
     private final ProjectCreationService projectCreationService;
+    private final ProjectRepositorySettingsService projectRepositorySettingsService;
 
     public ProjectCreationResult createProject(Long ownerUserId, CreateProjectCommand command) {
         return projectCreationService.create(ownerUserId, command);
@@ -72,5 +75,13 @@ public class ProjectFacade {
 
     public RepositoryHealthResult getRepositoryHealth(Long ownerUserId, Long projectId) {
         return projectQueryService.getRepositoryHealth(ownerUserId, projectId);
+    }
+
+    public ProjectRepositorySettingsResult getRepositorySettings(Long ownerUserId, Long projectId) {
+        return projectRepositorySettingsService.get(ownerUserId, projectId);
+    }
+
+    public void disconnectRepository(Long ownerUserId, Long projectId) {
+        projectCommandService.disconnectRepository(ownerUserId, projectId);
     }
 }

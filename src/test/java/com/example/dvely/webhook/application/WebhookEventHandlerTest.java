@@ -1,6 +1,7 @@
 package com.example.dvely.webhook.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 class WebhookEventHandlerTest {
 
@@ -211,6 +213,39 @@ class WebhookEventHandlerTest {
         verify(projectRepository).save(project);
     }
 
+    @Test
+    void projectSaveOptimisticLockingFailurePropagatesOutOfHandleForTheWebhookRetryQueueToCatch() {
+        // I45 (#45) design §2: WebhookEventHandler has no OOLFE handling of its own by design —
+        // handle() is @Transactional, so a version conflict here must roll back and propagate to
+        // WebhookService's catch(Exception), the existing webhook_deliveries retry queue (V21).
+        // Re-running handle() from scratch is itself a safe reload+reapply for this event type
+        // (synchronizeRepositoryHead's monotonic receivedAt guard makes it idempotent), so no new
+        // code belongs here — this test proves the propagation contract, not any new handling.
+        Project project = project();
+        when(projectRepository.findAllBySourceRepository("octo/repo")).thenReturn(List.of(project));
+        when(projectRepository.save(project)).thenThrow(
+                new ObjectOptimisticLockingFailureException(Project.class, project.getId()));
+
+        assertThatThrownBy(() -> handler.handle("push", bytes("""
+                {
+                  "ref": "refs/heads/main",
+                  "after": "push-sha",
+                  "deleted": false,
+                  "repository": {
+                    "full_name": "octo/repo",
+                    "default_branch": "main"
+                  },
+                  "head_commit": {
+                    "message": "feat: webhook sync",
+                    "timestamp": "2026-06-14T19:59:00+09:00",
+                    "author": {"username": "octo", "name": "Octo Cat"}
+                  },
+                  "pusher": {"name": "octo"}
+                }
+                """), receivedAt))
+                .isInstanceOf(ObjectOptimisticLockingFailureException.class);
+    }
+
     private byte[] workflowPayload(String headSha) {
         return bytes("""
                 {
@@ -285,7 +320,8 @@ class WebhookEventHandlerTest {
                 null,
                 null,
                 now,
-                now
+                now,
+                null
         );
     }
 

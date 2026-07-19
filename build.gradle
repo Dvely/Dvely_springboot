@@ -47,8 +47,13 @@ dependencies {
     implementation 'org.bouncycastle:bcpkix-jdk18on:1.78.1'
 
     // Docker Java SDK
-    implementation 'com.github.docker-java:docker-java-core:3.3.6'
-    implementation 'com.github.docker-java:docker-java-transport-okhttp:3.3.6'
+    // 3.7.1: 3.3.6's Capability enum can't deserialize the "CAP_"-prefixed capability names that
+    // modern Docker Engine (confirmed against 29.6.1 / API 1.55) returns in `inspect` responses
+    // once HostConfig.CapAdd/CapDrop is set (see DockerContainerService's preview isolation
+    // policy) — inspectContainerCmd().exec() throws for every such container on 3.3.6. 3.7.1 adds
+    // Capability.fromValue() (@JsonCreator) which strips the "CAP_" prefix before Enum.valueOf.
+    implementation 'com.github.docker-java:docker-java-core:3.7.1'
+    implementation 'com.github.docker-java:docker-java-transport-okhttp:3.7.1'
 
     // Cloud connection verification
     implementation 'software.amazon.awssdk:sts'

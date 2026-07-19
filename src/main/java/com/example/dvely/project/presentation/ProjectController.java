@@ -7,21 +7,32 @@ import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
 import com.example.dvely.project.application.facade.ProjectFacade;
 import com.example.dvely.project.application.result.ProjectChatSettingsResult;
 import com.example.dvely.project.application.service.ProjectChatSettingsService;
+import com.example.dvely.project.application.result.ProjectCostBudgetResult;
+import com.example.dvely.project.application.result.ProjectInfrastructureChangeResult;
+import com.example.dvely.project.application.result.ProjectInfrastructureConfigurationResult;
 import com.example.dvely.project.application.result.ProjectInfrastructureSettingsResult;
+import com.example.dvely.project.application.service.ProjectCostBudgetService;
+import com.example.dvely.project.application.service.ProjectInfrastructureConfigurationService;
 import com.example.dvely.project.application.service.ProjectInfrastructureSettingsService;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
 import com.example.dvely.project.presentation.dto.request.ConnectProjectRepositoryRequest;
 import com.example.dvely.project.presentation.dto.request.CreateProjectRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectRequest;
+import com.example.dvely.project.presentation.dto.request.UpdateProjectBudgetRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectChatSettingsRequest;
+import com.example.dvely.project.presentation.dto.request.UpdateProjectInfrastructureConfigurationRequest;
 import com.example.dvely.project.presentation.dto.request.UpdateProjectInfrastructureSettingsRequest;
 import com.example.dvely.project.presentation.dto.response.GithubRepositoryResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectActivityLogResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCommitResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectCostBudgetResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectInfrastructureChangeResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectInfrastructureConfigurationResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectOverviewResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectRepositoryResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectRepositorySettingsResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectChatSettingsResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectInfrastructureSettingsResponse;
 import com.example.dvely.project.presentation.dto.response.RepositoryHealthResponse;
@@ -56,6 +67,8 @@ public class ProjectController {
     private final ProjectMapper projectMapper;
     private final ProjectChatSettingsService projectChatSettingsService;
     private final ProjectInfrastructureSettingsService projectInfrastructureSettingsService;
+    private final ProjectInfrastructureConfigurationService projectInfrastructureConfigurationService;
+    private final ProjectCostBudgetService projectCostBudgetService;
 
     @Operation(
             summary = "프로젝트 생성",
@@ -92,6 +105,19 @@ public class ProjectController {
                 request.repositoryVisibility()
         ));
         return projectMapper.toProjectRepositoryResponse(result);
+    }
+
+    @Operation(
+            summary = "프로젝트 GitHub 저장소 연결 해제",
+            description = "프로젝트에서 GitHub 저장소 연결 정보를 제거합니다. GitHub 저장소·워크플로·Pages는 삭제되지 않으며, " +
+                          "배포 이력·도메인 연결 등 다른 도메인의 상태도 별도로 정리하지 않습니다(자연 단절). " +
+                          "해제 후 POST로 동일하거나 다른 저장소를 다시 연결할 수 있습니다."
+    )
+    @DeleteMapping("/{projectId}/repository")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void disconnectRepository(@Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+                                     @Parameter(description = "저장소 연결을 해제할 프로젝트 ID") @PathVariable Long projectId) {
+        projectFacade.disconnectRepository(ownerUserId, projectId);
     }
 
     @Operation(
@@ -212,7 +238,11 @@ public class ProjectController {
         return projectMapper.toRepositoryHealthResponse(projectFacade.getRepositoryHealth(ownerUserId, projectId));
     }
 
-    @Operation(summary = "프로젝트 Chat 승인 정책 조회")
+    @Operation(
+            summary = "프로젝트 Chat 승인 정책 조회",
+            description = "Agent가 CODE/DEPLOY/DOMAIN_BIND/INFRA_OPERATE 작업을 실행하기 전 사용자 승인을 요구할지 " +
+                          "여부를 4개 항목으로 조회합니다. 프로젝트 생성 시 모두 기본값으로 초기화되어 있습니다."
+    )
     @GetMapping("/{projectId}/settings/chat")
     public ProjectChatSettingsResponse getChatSettings(
             @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
@@ -221,7 +251,11 @@ public class ProjectController {
         return toChatSettingsResponse(projectChatSettingsService.get(ownerUserId, projectId));
     }
 
-    @Operation(summary = "프로젝트 Chat 승인 정책 수정")
+    @Operation(
+            summary = "프로젝트 Chat 승인 정책 수정",
+            description = "4개 항목 전체를 갱신합니다(전체 문서 PUT과 동일한 시맨틱 — 부분 수정 불가, 요청 DTO의 " +
+                          "모든 필드가 필수입니다)."
+    )
     @PatchMapping("/{projectId}/settings/chat")
     public ProjectChatSettingsResponse updateChatSettings(
             @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
@@ -234,11 +268,16 @@ public class ProjectController {
                 request.changeApprovalRequired(),
                 request.deploymentApprovalRequired(),
                 request.domainApprovalRequired(),
-                request.infraApprovalRequired()
+                request.infraApprovalRequired(),
+                request.resultApprovalRequired()
         ));
     }
 
-    @Operation(summary = "프로젝트 Infrastructure 설정 조회")
+    @Operation(
+            summary = "프로젝트 Infrastructure 설정 조회",
+            description = "프로젝트에 현재 선택된 클라우드 연결(BYOC)을 조회합니다. 아직 아무 연결도 선택하지 않았으면 " +
+                          "cloudConnectionId 이하 필드가 모두 null인 200 응답입니다."
+    )
     @GetMapping("/{projectId}/settings/infrastructure")
     public ProjectInfrastructureSettingsResponse getInfrastructureSettings(
             @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
@@ -264,7 +303,11 @@ public class ProjectController {
         ));
     }
 
-    @Operation(summary = "프로젝트 클라우드 연결 선택 해제")
+    @Operation(
+            summary = "프로젝트 클라우드 연결 선택 해제",
+            description = "프로젝트의 클라우드 연결 선택을 해제합니다(연결 자체는 삭제하지 않음). " +
+                          "이미 미선택 상태에서 호출해도 204입니다(멱등)."
+    )
     @DeleteMapping("/{projectId}/settings/infrastructure")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void clearInfrastructureSettings(
@@ -274,13 +317,130 @@ public class ProjectController {
         projectInfrastructureSettingsService.clear(ownerUserId, projectId);
     }
 
+    @Operation(
+            summary = "프로젝트 인프라 설정 조회",
+            description = "배포 아키텍처/컴퓨팅 티어/스토리지/네트워크 4개 설정과 승인 대기 중인 변경을 조회합니다. " +
+                          "CONNECTED 클라우드 연결이 선택되지 않은 프로젝트도 200으로 응답하며 configurable=false로 표시합니다."
+    )
+    @GetMapping("/{projectId}/settings/infrastructure/configuration")
+    public ProjectInfrastructureConfigurationResponse getInfrastructureConfiguration(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "설정을 조회할 프로젝트 ID") @PathVariable Long projectId
+    ) {
+        return toInfrastructureConfigurationResponse(
+                projectInfrastructureConfigurationService.get(ownerUserId, projectId));
+    }
+
+    @Operation(
+            summary = "프로젝트 인프라 설정 저장/변경",
+            description = "CONNECTED 클라우드 연결이 선택되어 있어야 합니다(아니면 409). " +
+                          "Chat 설정의 infraApprovalRequired가 true(기본값)면 즉시 적용되지 않고 INFRA_OPERATION 승인이 생성되며 " +
+                          "settings는 기존 값을 유지한 채 pendingChange로 대기 건이 반환됩니다. false면 즉시 적용됩니다. " +
+                          "현재 적용값과 완전히 동일한 요청은 이력·승인 생성 없이 현재 상태 그대로 반환됩니다(no-op). " +
+                          "승인 대기 중인 변경이 이미 있으면 409를 반환합니다(먼저 처리 필요)."
+    )
+    @PutMapping("/{projectId}/settings/infrastructure/configuration")
+    public ProjectInfrastructureConfigurationResponse updateInfrastructureConfiguration(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "설정을 저장할 프로젝트 ID") @PathVariable Long projectId,
+            @Valid @RequestBody UpdateProjectInfrastructureConfigurationRequest request
+    ) {
+        return toInfrastructureConfigurationResponse(projectInfrastructureConfigurationService.update(
+                ownerUserId,
+                projectId,
+                request.deploymentArchitecture(),
+                request.computeTier(),
+                request.storageType(),
+                request.networkAccess()
+        ));
+    }
+
+    @Operation(
+            summary = "프로젝트 인프라 설정 변경 이력 조회",
+            description = "limit 기본 50, 최대 200(초과 시 200으로 보정, 0·음수는 50으로 보정). 최신순(생성시각 desc). " +
+                          "PENDING_APPROVAL·REJECTED를 포함한 모든 상태를 반환합니다(감사 목적)."
+    )
+    @GetMapping("/{projectId}/settings/infrastructure/configuration/history")
+    public List<ProjectInfrastructureChangeResponse> getInfrastructureConfigurationHistory(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "이력을 조회할 프로젝트 ID") @PathVariable Long projectId,
+            @Parameter(description = "조회 개수. 기본 50, 최대 200") @RequestParam(required = false) Integer limit
+    ) {
+        return projectInfrastructureConfigurationService.getHistory(ownerUserId, projectId, limit).stream()
+                .map(this::toInfrastructureChangeResponse)
+                .toList();
+    }
+
+    @Operation(
+            summary = "프로젝트 비용 추정 및 예산 조회",
+            description = "저장된 인프라 구성 기준으로 정적 가격표(가정 기반 추정치이며 실시간 클라우드 요금이 아님)를 사용해 " +
+                          "월 예상 비용을 매 요청마다 온더플라이로 계산합니다(계산 결과는 저장하지 않음). " +
+                          "인프라가 구성되지 않았거나 CONNECTED 클라우드 연결이 선택되지 않은 프로젝트도 200으로 응답하며 " +
+                          "costAvailable=false와 함께 추정 필드는 null/빈 배열로 표시합니다."
+    )
+    @GetMapping("/{projectId}/settings/cost-budget")
+    public ProjectCostBudgetResponse getCostBudget(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "비용/예산을 조회할 프로젝트 ID") @PathVariable Long projectId
+    ) {
+        return toCostBudgetResponse(projectCostBudgetService.get(ownerUserId, projectId));
+    }
+
+    @Operation(
+            summary = "프로젝트 월 예산 설정",
+            description = "월 예산 금액을 저장합니다(upsert, 멱등). 통화는 USD만 지원하며, 인프라가 구성되지 않은 " +
+                          "프로젝트도 예산을 먼저 설정할 수 있습니다(design D5). 저장 직후 재계산된 비용/예산 상태를 " +
+                          "GET과 동일한 shape로 함께 반환해 FE가 경고 상태를 즉시 갱신할 수 있습니다."
+    )
+    @PutMapping("/{projectId}/settings/cost-budget")
+    public ProjectCostBudgetResponse updateCostBudget(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "예산을 설정할 프로젝트 ID") @PathVariable Long projectId,
+            @Valid @RequestBody UpdateProjectBudgetRequest request
+    ) {
+        return toCostBudgetResponse(projectCostBudgetService.update(
+                ownerUserId,
+                projectId,
+                request.monthlyBudgetAmount(),
+                request.currency()
+        ));
+    }
+
+    @Operation(
+            summary = "프로젝트 월 예산 해제",
+            description = "예산 설정을 제거합니다. 미설정 상태에서 호출해도 204입니다(infra settings의 clear와 동일한 멱등 시맨틱)."
+    )
+    @DeleteMapping("/{projectId}/settings/cost-budget")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void clearCostBudget(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "예산을 해제할 프로젝트 ID") @PathVariable Long projectId
+    ) {
+        projectCostBudgetService.clear(ownerUserId, projectId);
+    }
+
+    @Operation(
+            summary = "프로젝트 Repository 설정 조회",
+            description = "연결된 GitHub 저장소 정보와 기본 브랜치를 조회합니다. 저장소가 연결되지 않은 프로젝트도 " +
+                          "200과 connected=false로 응답합니다. defaultBranch는 매 요청마다 GitHub에서 라이브 조회하므로 " +
+                          "GitHub 왕복 지연(p95 약 500ms)이 추가되며, 조회에 실패하면 null로 degrade합니다."
+    )
+    @GetMapping("/{projectId}/settings/repository")
+    public ProjectRepositorySettingsResponse getRepositorySettings(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "설정을 조회할 프로젝트 ID") @PathVariable Long projectId
+    ) {
+        return projectMapper.toRepositorySettingsResponse(projectFacade.getRepositorySettings(ownerUserId, projectId));
+    }
+
     private ProjectChatSettingsResponse toChatSettingsResponse(ProjectChatSettingsResult result) {
         return new ProjectChatSettingsResponse(
                 result.projectId(),
                 result.changeApprovalRequired(),
                 result.deploymentApprovalRequired(),
                 result.domainApprovalRequired(),
-                result.infraApprovalRequired()
+                result.infraApprovalRequired(),
+                result.resultApprovalRequired()
         );
     }
 
@@ -296,6 +456,83 @@ public class ProjectController {
                 result.status(),
                 result.lastCheckedAt(),
                 result.updatedAt()
+        );
+    }
+
+    private ProjectInfrastructureConfigurationResponse toInfrastructureConfigurationResponse(
+            ProjectInfrastructureConfigurationResult result
+    ) {
+        ProjectInfrastructureConfigurationResponse.Settings settings = result.settings() == null
+                ? null
+                : new ProjectInfrastructureConfigurationResponse.Settings(
+                        result.settings().deploymentArchitecture(),
+                        result.settings().computeTier(),
+                        result.settings().storageType(),
+                        result.settings().networkAccess(),
+                        result.settings().updatedAt()
+                );
+        ProjectInfrastructureConfigurationResponse.PendingChange pendingChange = result.pendingChange() == null
+                ? null
+                : new ProjectInfrastructureConfigurationResponse.PendingChange(
+                        result.pendingChange().changeId(),
+                        result.pendingChange().approvalId(),
+                        result.pendingChange().action(),
+                        result.pendingChange().deploymentArchitecture(),
+                        result.pendingChange().computeTier(),
+                        result.pendingChange().storageType(),
+                        result.pendingChange().networkAccess(),
+                        result.pendingChange().createdAt()
+                );
+        return new ProjectInfrastructureConfigurationResponse(
+                result.projectId(),
+                result.configurable(),
+                settings,
+                pendingChange
+        );
+    }
+
+    private ProjectCostBudgetResponse toCostBudgetResponse(ProjectCostBudgetResult result) {
+        List<ProjectCostBudgetResponse.ResourceCostResponse> resourceCosts = result.resourceCosts().stream()
+                .map(item -> new ProjectCostBudgetResponse.ResourceCostResponse(
+                        item.resourceType(), item.description(), item.monthlyCost()))
+                .toList();
+        ProjectCostBudgetResponse.BudgetResponse budget = result.budget() == null
+                ? null
+                : new ProjectCostBudgetResponse.BudgetResponse(
+                        result.budget().monthlyBudgetAmount(),
+                        result.budget().currency(),
+                        result.budget().updatedAt()
+                );
+        return new ProjectCostBudgetResponse(
+                result.projectId(),
+                result.costAvailable(),
+                result.provider(),
+                result.currency(),
+                result.estimatedMonthlyCost(),
+                resourceCosts,
+                result.assumptions(),
+                result.priceTableVersion(),
+                budget,
+                result.budgetStatus(),
+                result.budgetUsagePercent()
+        );
+    }
+
+    private ProjectInfrastructureChangeResponse toInfrastructureChangeResponse(
+            ProjectInfrastructureChangeResult result
+    ) {
+        return new ProjectInfrastructureChangeResponse(
+                result.changeId(),
+                result.action(),
+                result.status(),
+                result.deploymentArchitecture(),
+                result.computeTier(),
+                result.storageType(),
+                result.networkAccess(),
+                result.approvalId(),
+                result.actorUserId(),
+                result.createdAt(),
+                result.decidedAt()
         );
     }
 }

@@ -105,6 +105,16 @@ public class AgentController {
             throw taskNotFound(taskId);
         }
         AgentTaskFailure failure = taskStore.getFailure(taskId, userId);
+        // #57 (QA report §5.6/H1/M3): pendingApprovalId reuses AgentOrchestrator's retry() gate
+        // verbatim (see its javadoc) so this read-side field can never drift from what /retry
+        // actually enforces — a still-PENDING approval (e.g. BuildFailureRecoveryService's
+        // "자동 수정 및 재build" CHANGE approval) both blocks /retry and is surfaced here for the
+        // task screen to link directly to, without a separate GET /approvals scan (M3).
+        Long pendingApprovalId = agentOrchestrator.findPendingApprovalId(taskId);
+        boolean retryable = failure != null
+                && task.status() == com.example.dvely.agent.application.dto.TaskStatus.FAILED
+                && failure.retryable()
+                && pendingApprovalId == null;
         return ResponseEntity.ok(new TaskStatusResponse(
                 task.taskId(),
                 task.status(),
@@ -116,9 +126,8 @@ public class AgentController {
                 failure == null ? null : failure.suggestedFix(),
                 failure == null ? 0 : failure.attempt(),
                 failure == null ? 0 : failure.maxAttempts(),
-                failure != null
-                        && task.status() == com.example.dvely.agent.application.dto.TaskStatus.FAILED
-                        && failure.retryable()
+                retryable,
+                pendingApprovalId
         ));
     }
 
@@ -206,7 +215,17 @@ public class AgentController {
         return ResponseEntity.noContent().build();
     }
 
-    @Operation(summary = "실패한 태스크 재시도", description = "저장된 plan과 현재 step부터 task를 다시 queue에 넣습니다.")
+    @Operation(
+            summary = "실패한 태스크 재시도",
+            description = "저장된 plan과 현재 step부터 task를 다시 queue에 넣습니다. " +
+                          "GET /tasks/{taskId} 응답의 pendingApprovalId가 non-null이면(#57) 이 호출은 " +
+                          "항상 409로 거부되니, 먼저 POST /approvals/{pendingApprovalId}/approve로 " +
+                          "그 승인을 처리하세요(승인 자체가 재실행을 트리거함). retryable:true일 때만 호출하세요."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "202", description = "재시도 큐에 등록 완료"),
+            @ApiResponse(responseCode = "409", description = "재시도 불가 — PENDING 승인이 남아있거나 attempt가 maxAttempts에 도달함")
+    })
     @PostMapping("/tasks/{taskId}/retry")
     public ResponseEntity<Void> retryTask(
             @AuthenticationPrincipal Long userId,

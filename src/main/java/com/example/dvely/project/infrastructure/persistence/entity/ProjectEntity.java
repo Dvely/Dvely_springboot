@@ -12,6 +12,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.time.LocalDateTime;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -93,8 +94,19 @@ public class ProjectEntity {
     @Column(name = "repository_version_synced_at")
     private LocalDateTime repositoryVersionSyncedAt;
 
+    @Column(name = "repository_connected_at")
+    private LocalDateTime repositoryConnectedAt;
+
     @Column(name = "is_deleted", nullable = false)
     private boolean deleted;
+
+    // I45: optimistic-lock counter. Hibernate manages this column entirely — it's set to 0 on
+    // insert and incremented (with a `WHERE version = ?` guard) on every UPDATE automatically.
+    // Never assign it from a domain Project in from()/updateFrom() (see those methods' comments)
+    // — doing so would let application code override Hibernate's own concurrency bookkeeping.
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
@@ -136,6 +148,10 @@ public class ProjectEntity {
         this.deleted = deleted;
     }
 
+    // Note: neither this factory nor updateFrom() below ever assigns `version` — see that
+    // field's comment. from() is only used for brand-new inserts (id == null); Hibernate writes
+    // 0 for a new row regardless of whatever the (always-null, for a not-yet-persisted domain
+    // Project) version happens to be.
     public static ProjectEntity from(Project project) {
         ProjectEntity entity = new ProjectEntity(
                 project.getOwnerUserId(),
@@ -161,6 +177,7 @@ public class ProjectEntity {
         entity.repositoryHeadSyncedAt = project.getRepositoryHeadSyncedAt();
         entity.repositoryVersion = project.getRepositoryVersion();
         entity.repositoryVersionSyncedAt = project.getRepositoryVersionSyncedAt();
+        entity.repositoryConnectedAt = project.getRepositoryConnectedAt();
         return entity;
     }
 
@@ -186,6 +203,7 @@ public class ProjectEntity {
         this.repositoryHeadSyncedAt = project.getRepositoryHeadSyncedAt();
         this.repositoryVersion = project.getRepositoryVersion();
         this.repositoryVersionSyncedAt = project.getRepositoryVersionSyncedAt();
+        this.repositoryConnectedAt = project.getRepositoryConnectedAt();
         this.deleted = project.isDeleted();
     }
 
@@ -213,9 +231,11 @@ public class ProjectEntity {
                 repositoryHeadSyncedAt,
                 repositoryVersion,
                 repositoryVersionSyncedAt,
+                repositoryConnectedAt,
                 deleted,
                 createdAt,
-                updatedAt
+                updatedAt,
+                version
         );
     }
 }

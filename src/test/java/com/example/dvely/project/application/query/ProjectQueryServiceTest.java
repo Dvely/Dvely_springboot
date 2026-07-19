@@ -107,6 +107,10 @@ class ProjectQueryServiceTest {
                         "preview-1",
                         "PREVIEW_READY",
                         "결제 화면 수정",
+                        null,
+                        null,
+                        null,
+                        null,
                         now.minusMinutes(4),
                         now.minusMinutes(2)
                 )));
@@ -240,7 +244,8 @@ class ProjectQueryServiceTest {
                 url,
                 status,
                 timestamp,
-                timestamp
+                timestamp,
+                null
         );
     }
 

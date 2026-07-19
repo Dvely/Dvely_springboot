@@ -3,9 +3,11 @@ package com.example.dvely.chat.application.query;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.chat.domain.model.ChatMessage;
 import com.example.dvely.chat.domain.model.Conversation;
 import com.example.dvely.chat.domain.repository.ChatMessageRepository;
 import com.example.dvely.chat.domain.repository.ConversationRepository;
+import com.example.dvely.chat.domain.value.ChatRole;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
@@ -64,6 +66,31 @@ class ChatQueryServiceTest {
             assertThat(result.retentionExpiresAt()).isEqualTo(deletedAt.plusDays(7));
             assertThat(result.remainingRetentionDays()).isEqualTo(6);
         });
+    }
+
+    @Test
+    void getMessagesLeavesTaskIdNullSinceHistoricalMessagesHaveNoTaskCorrelation() {
+        Conversation conversation = new Conversation(
+                21L,
+                2L,
+                7L,
+                false,
+                null,
+                LocalDateTime.now(),
+                LocalDateTime.now()
+        );
+        ChatMessage message = new ChatMessage(31L, 21L, ChatRole.ASSISTANT, "승인 정책에 따라 작업을 시작합니다.", 0, LocalDateTime.now());
+        when(conversationRepository.findByIdAndUserIdAndDeletedFalse(21L, 2L))
+                .thenReturn(Optional.of(conversation));
+        when(chatMessageRepository.findAllByConversationIdOrderByCreatedAtAsc(21L))
+                .thenReturn(List.of(message));
+
+        var results = service.getMessages(2L, 21L);
+
+        // Only the fresh MessageResult returned by ChatCommandService.sendMessage() carries a
+        // taskId (see ChatCommandServiceTest); a re-fetch of the same conversation's history
+        // must not fabricate one since ChatMessage does not persist a task correlation.
+        assertThat(results).singleElement().satisfies(result -> assertThat(result.taskId()).isNull());
     }
 
     @Test

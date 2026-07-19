@@ -10,6 +10,10 @@ public record ChangeResult(
         String previewSessionId,
         String status,
         String summary,
+        Long approvalId,
+        Integer prNumber,
+        String mergeCommitSha,
+        LocalDateTime mergedAt,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {

@@ -36,12 +36,14 @@ public class DeploymentHistory {
     private LocalDateTime leaseUntil;
     private final LocalDateTime triggeredAt;
     private LocalDateTime updatedAt;
+    private final Long retriedFromHistoryId;
 
     public DeploymentHistory(Long ownerUserId,
                              Long projectId,
                              DeployTargetType deployTargetType,
                              String requestedVersion,
-                             String taskId) {
+                             String taskId,
+                             Long retriedFromHistoryId) {
         this(
                 null,
                 Objects.requireNonNull(ownerUserId),
@@ -68,7 +70,8 @@ public class DeploymentHistory {
                 null,
                 null,
                 LocalDateTime.now(),
-                LocalDateTime.now()
+                LocalDateTime.now(),
+                retriedFromHistoryId
         );
     }
 
@@ -108,7 +111,8 @@ public class DeploymentHistory {
                 null,
                 null,
                 triggeredAt,
-                updatedAt
+                updatedAt,
+                null
         );
     }
 
@@ -137,7 +141,8 @@ public class DeploymentHistory {
                              String leaseOwner,
                              LocalDateTime leaseUntil,
                              LocalDateTime triggeredAt,
-                             LocalDateTime updatedAt) {
+                             LocalDateTime updatedAt,
+                             Long retriedFromHistoryId) {
         this.id = id;
         this.ownerUserId = ownerUserId;
         this.projectId = projectId;
@@ -164,6 +169,7 @@ public class DeploymentHistory {
         this.leaseUntil = leaseUntil;
         this.triggeredAt = triggeredAt;
         this.updatedAt = updatedAt;
+        this.retriedFromHistoryId = retriedFromHistoryId;
     }
 
     public void prepare(String versionLabel,
@@ -262,4 +268,5 @@ public class DeploymentHistory {
     public LocalDateTime getLeaseUntil()          { return leaseUntil; }
     public LocalDateTime getTriggeredAt()         { return triggeredAt; }
     public LocalDateTime getUpdatedAt()           { return updatedAt; }
+    public Long getRetriedFromHistoryId()         { return retriedFromHistoryId; }
 }

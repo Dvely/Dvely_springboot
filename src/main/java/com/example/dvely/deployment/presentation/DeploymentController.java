@@ -3,6 +3,7 @@ package com.example.dvely.deployment.presentation;
 import com.example.dvely.deployment.application.command.dto.DeployCommand;
 import com.example.dvely.deployment.application.facade.DeploymentFacade;
 import com.example.dvely.deployment.application.result.DeploymentCandidateResult;
+import com.example.dvely.deployment.application.result.DeploymentFailureAnalysisResult;
 import com.example.dvely.deployment.application.result.DeploymentHistoryResult;
 import com.example.dvely.deployment.application.result.DeploymentLogsResult;
 import com.example.dvely.deployment.application.result.DeploymentStatusResult;
@@ -11,6 +12,7 @@ import com.example.dvely.deployment.application.result.VersionDetailResult;
 import com.example.dvely.deployment.application.result.VersionResult;
 import com.example.dvely.deployment.presentation.dto.request.DeployRequest;
 import com.example.dvely.deployment.presentation.dto.response.DeploymentCandidateResponse;
+import com.example.dvely.deployment.presentation.dto.response.DeploymentFailureAnalysisResponse;
 import com.example.dvely.deployment.presentation.dto.response.DeploymentHistoryResponse;
 import com.example.dvely.deployment.presentation.dto.response.DeploymentLogsResponse;
 import com.example.dvely.deployment.presentation.dto.response.DeploymentStatusResponse;
@@ -145,6 +147,49 @@ public class DeploymentController {
     }
 
     @Operation(
+            summary = "배포 재시도",
+            description = "실패(FAILED)한 배포를 새 배포 이력으로 재큐잉합니다(기존 이력을 되돌리지 않음 — 실패 기록은 감사 목적으로 보존). " +
+                          "대상과 동일한 deployTargetType으로, VERSION이면 동일 버전으로 재시도합니다. " +
+                          "요청 본문은 없습니다. 대상이 FAILED가 아니면 409를 반환합니다."
+    )
+    @ResponseStatus(HttpStatus.CREATED)
+    @PostMapping("/api/v1/deployments/{deploymentId}/retry")
+    public DeployResponse retryDeployment(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @Parameter(description = "재시도할 배포 이력 ID") @PathVariable Long deploymentId
+    ) {
+        return toDeployResponse(deploymentFacade.retryDeployment(userId, deploymentId));
+    }
+
+    @Operation(
+            summary = "배포 실패 원인 분석 실행",
+            description = "실패(FAILED)한 배포의 GitHub Actions 로그를 수집해 원인을 분석합니다. " +
+                          "이미 저장된 분석이 있으면 LLM을 다시 호출하지 않고 그대로 반환합니다(멱등). " +
+                          "신규 분석은 로그 수집과 LLM 호출로 인해 응답까지 약 15~30초가 걸릴 수 있습니다. " +
+                          "대상이 FAILED가 아니면 409를 반환합니다."
+    )
+    @PostMapping("/api/v1/deployments/{deploymentId}/failure-analysis")
+    public DeploymentFailureAnalysisResponse analyzeFailure(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @Parameter(description = "분석할 배포 이력 ID") @PathVariable Long deploymentId
+    ) {
+        return toAnalysisResponse(deploymentFacade.analyzeFailure(userId, deploymentId));
+    }
+
+    @Operation(
+            summary = "배포 실패 원인 분석 조회",
+            description = "저장된 분석 결과만 반환합니다(부작용 없음, LLM/GitHub 호출 없음). " +
+                          "아직 분석을 실행한 적이 없으면 404를 반환하며, 이 경우 실행 API(POST)를 호출해야 합니다."
+    )
+    @GetMapping("/api/v1/deployments/{deploymentId}/failure-analysis")
+    public DeploymentFailureAnalysisResponse getFailureAnalysis(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
+            @Parameter(description = "조회할 배포 이력 ID") @PathVariable Long deploymentId
+    ) {
+        return toAnalysisResponse(deploymentFacade.getFailureAnalysis(userId, deploymentId));
+    }
+
+    @Operation(
             summary = "버전 상세 조회",
             description = "특정 버전의 상세 정보를 반환합니다. " +
                           "버전 목록에서 항목을 선택했을 때 merge 유저, PR 번호, 배포 URL 등 " +
@@ -167,7 +212,19 @@ public class DeploymentController {
                 result.deployedUrl(),
                 result.status(),
                 result.triggeredAt(),
-                result.updatedAt()
+                result.updatedAt(),
+                result.retriedFromHistoryId()
+        );
+    }
+
+    private DeploymentFailureAnalysisResponse toAnalysisResponse(DeploymentFailureAnalysisResult result) {
+        return new DeploymentFailureAnalysisResponse(
+                result.deploymentId(),
+                result.summary(),
+                result.logExcerpt(),
+                result.suggestedFix(),
+                result.analysisSource(),
+                result.analyzedAt()
         );
     }
 

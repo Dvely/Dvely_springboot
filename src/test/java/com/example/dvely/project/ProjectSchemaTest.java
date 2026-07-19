@@ -55,6 +55,8 @@ class ProjectSchemaTest {
         assertEquals(1, columnCount("webhook_deliveries", "delivery_id"));
         assertEquals(1, columnCount("webhook_deliveries", "next_attempt_at"));
         assertEquals(1, columnCount("webhook_deliveries", "lease_until"));
+        assertEquals(1, columnCount("projects", "repository_connected_at"));
+        assertEquals("YES", columnNullable("projects", "repository_connected_at"));
 
         String v13Applied = jdbcTemplate.queryForObject(
                 """
@@ -154,6 +156,17 @@ class ProjectSchemaTest {
         );
 
         assertTrue("1".equals(v21Applied) || "true".equalsIgnoreCase(v21Applied));
+
+        String v23Applied = jdbcTemplate.queryForObject(
+                """
+                        select coalesce(max(success), 0)
+                        from flyway_schema_history
+                        where version = '23'
+                        """,
+                String.class
+        );
+
+        assertTrue("1".equals(v23Applied) || "true".equalsIgnoreCase(v23Applied));
         assertEquals("CASCADE", foreignKeyDeleteRule("fk_chat_messages_session"));
         assertEquals("SET NULL", foreignKeyDeleteRule("fk_approvals_chat_session"));
         assertEquals("SET NULL", foreignKeyDeleteRule("fk_agent_runs_chat_session"));
@@ -184,6 +197,21 @@ class ProjectSchemaTest {
                           and column_name = ?
                         """,
                 Integer.class,
+                tableName,
+                columnName
+        );
+    }
+
+    private String columnNullable(String tableName, String columnName) {
+        return jdbcTemplate.queryForObject(
+                """
+                        select is_nullable
+                        from information_schema.columns
+                        where table_schema = database()
+                          and table_name = ?
+                          and column_name = ?
+                        """,
+                String.class,
                 tableName,
                 columnName
         );

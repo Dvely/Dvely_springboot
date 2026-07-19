@@ -88,7 +88,12 @@ public class CloudConnectionController {
         return toJobResponse(cloudConnectionFacade.requestVerification(ownerUserId, cloudConnectionId));
     }
 
-    @Operation(summary = "클라우드 연결 검증 Job 조회")
+    @Operation(
+            summary = "클라우드 연결 검증 Job 조회",
+            description = "재검증 요청(POST verification-jobs)으로 생성된 비동기 Job의 진행 상태를 조회합니다. " +
+                          "jobStatus가 PENDING/RUNNING이면 잠시 후 다시 폴링하고, SUCCEEDED/FAILED가 되면 " +
+                          "connectionStatus에 최종 판정 결과가 반영됩니다."
+    )
     @GetMapping("/api/v1/cloud-connection-verification-jobs/{jobId}")
     public CloudConnectionVerificationJobResponse getVerificationJob(
             @AuthenticationPrincipal Long ownerUserId,

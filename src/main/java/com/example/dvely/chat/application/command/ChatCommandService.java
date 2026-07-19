@@ -115,20 +115,23 @@ public class ChatCommandService {
             conversationRepository.save(conversation);
         }
 
+        // taskId stays null when the Decision Agent fails to classify the message (see catch
+        // below) — the caller (FE) uses its presence to know whether there is anything to poll.
+        String taskId = null;
         try {
             AgentPlan plan = decisionAgentService.decide(
                     agentMessageService.getConversationContext(conversationId),
                     AiProvider.ANTHROPIC,
                     conversation.getProjectId()
             );
-            agentOrchestrator.submit(plan, userId, conversationId);
+            taskId = agentOrchestrator.submit(plan, userId, conversationId).taskId();
         } catch (RuntimeException exception) {
             agentMessageService.appendAssistant(
                     conversationId,
                     "요청을 분석하지 못했습니다: " + safeMessage(exception)
             );
         }
-        return toMessageResult(message);
+        return toMessageResult(message, taskId);
     }
 
     private String safeMessage(RuntimeException exception) {
@@ -193,14 +196,15 @@ public class ChatCommandService {
         );
     }
 
-    private MessageResult toMessageResult(ChatMessage message) {
+    private MessageResult toMessageResult(ChatMessage message, String taskId) {
         return new MessageResult(
                 message.getId(),
                 message.getConversationId(),
                 message.getRole().toStorage(),
                 message.getContent(),
                 message.getTokenCount(),
-                message.getCreatedAt()
+                message.getCreatedAt(),
+                taskId
         );
     }
 }
