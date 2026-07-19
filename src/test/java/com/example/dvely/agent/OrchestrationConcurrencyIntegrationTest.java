@@ -7,7 +7,9 @@ import static org.junit.jupiter.api.Assertions.fail;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.AgentTaskEvent;
 import com.example.dvely.agent.application.dto.TaskStatus;
+import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
+import com.example.dvely.agent.application.service.BuildFailureRecoveryService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.application.command.ApprovalCommandService;
 import com.example.dvely.approval.domain.model.Approval;
@@ -17,6 +19,11 @@ import com.example.dvely.approval.domain.value.ApprovalType;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.value.GithubId;
+import com.example.dvely.project.domain.model.Project;
+import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
+import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
+import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.project.domain.value.RepositoryVisibility;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -64,6 +71,16 @@ class OrchestrationConcurrencyIntegrationTest {
     private UserRepository userRepository;
     @Autowired
     private JdbcTemplate jdbcTemplate;
+    // Issue #64 follow-up (HIGH-1, retry-toctou-review.md): real bean, not a mock — the whole
+    // point of the regression test below is proving the real BuildFailureRecoveryService now
+    // shares AgentOrchestrator#retry's task-row lock with a concurrent manual retry, which a
+    // mocked collaborator could not demonstrate.
+    @Autowired
+    private BuildFailureRecoveryService buildFailureRecoveryService;
+    @Autowired
+    private ProjectRepository projectRepository;
+    @Autowired
+    private ProjectApprovalPolicyRepository projectApprovalPolicyRepository;
 
     // ── ADR-Y1 (#55): lockTask's MANDATORY propagation contract ────────────────────────────────
 
@@ -432,6 +449,64 @@ class OrchestrationConcurrencyIntegrationTest {
         assertThat(reloadedApproval.getStatus()).isEqualTo(ApprovalStatus.APPROVED);
     }
 
+    // ── Issue #64 follow-up (HIGH-1, retry-toctou-review.md): BuildFailureRecoveryService's
+    // automatic-recovery retry must share the task-row lock with a concurrent manual retry ───────
+
+    @Test
+    void concurrentManualRetryAndAutomaticBuildFailureRecoveryOfTheSameTaskNeverDoubleRetries()
+            throws Exception {
+        // Reproduces the exact HIGH-1 finding: pre-fix, BuildFailureRecoveryService.handle()
+        // called taskStore.retry(...) directly (no taskStore.lockTask), a second, unguarded
+        // entry point into the same write #64 had only closed for AgentOrchestrator#retry's
+        // direct callers. Racing it against a concurrent agentOrchestrator.retry() call (the
+        // user's own manual POST /retry) reliably produced two RETRY_QUEUED audit events for a
+        // single real retry (measured 5/5 by review via a temporary probe). This test is that
+        // probe made permanent: BuildFailureRecoveryService now calls agentOrchestrator.retry()
+        // itself, so both callers funnel through the identical taskStore.lockTask(taskId) mutex
+        // and simply serialize instead of racing — exactly like the retry-vs-approve test above.
+        //
+        // Seeded RUNNING (not pre-seeded FAILED) so handle()'s own markFailed() call is the
+        // task's *only* RUNNING->FAILED transition, exactly mirroring the one real call site
+        // (AgentPlanExecutor's catch block). Pre-seeding FAILED and calling the full handle()
+        // concurrently would make handle() invoke markFailed() a *second* time on a task a
+        // concurrent retry() may have already moved to RETRY_WAIT in between — markFailed() has
+        // no such-transition guard (only a CANCELLED check) and no @Version, so that blind
+        // re-transition would reintroduce a *different*, unrelated race than the one this test
+        // targets. Starting from RUNNING sidesteps that entirely: before handle()'s markFailed()
+        // commits, any concurrent retry() attempt correctly no-ops (status != FAILED, no write
+        // at all) rather than racing a write.
+        Long userId = seedUser();
+        Long projectId = seedProjectWithChangeApprovalDisabled(userId);
+        String taskId = uniqueTaskId("retry-toctou-64-highfollowup");
+        seedRunningTaskForProject(taskId, userId, projectId);
+        CodeAgentExecutionException buildFailure = new CodeAgentExecutionException(
+                "빌드 실패", "log 일부", "의존성 설치 후 재빌드", new IllegalStateException("build"));
+
+        CountDownLatch startBarrier = new CountDownLatch(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Void>> futures = pool.invokeAll(List.of(
+                    raceTask(startBarrier, () -> agentOrchestrator.retry(taskId, userId)),
+                    raceTask(startBarrier, () -> buildFailureRecoveryService.handle(taskId, buildFailure))
+            ));
+            awaitAll(futures);
+        } finally {
+            pool.shutdown();
+        }
+
+        AgentTask finalTask = taskStore.get(taskId);
+        assertThat(finalTask.status()).isEqualTo(TaskStatus.RETRY_WAIT);
+        Integer attempt = jdbcTemplate.queryForObject(
+                "SELECT attempt FROM agent_runs WHERE task_id = ?", Integer.class, taskId);
+        // The HIGH-1 regression this test guards against: two racing entry points into
+        // TaskStore#retry must never both spend the retry budget / both log a retry — whichever
+        // of the two performs the real transition, the other's own fresh status re-check inside
+        // AgentOrchestrator#retry (taken under the same task-row lock) must observe it and
+        // cleanly no-op instead of stomping it.
+        assertThat(attempt).isEqualTo(1);
+        assertThat(countEventsOfType(taskId, userId, "RETRY_QUEUED")).isEqualTo(1);
+    }
+
     // ── ADR-Y3/Y4 (#55 MUST #6/#7): releaseClaim + heartbeat scoping, DB-backed ────────────────
 
     @Test
@@ -553,6 +628,37 @@ class OrchestrationConcurrencyIntegrationTest {
                 null, null, null, null, Instant.now()
         ));
         taskStore.savePlan(taskId, minimalPlan());
+    }
+
+    /** Seeds a task RUNNING (not FAILED) and bound to {@code projectId} — the state a task is
+     * genuinely in right before a CODE step throws {@link CodeAgentExecutionException} in
+     * production (see {@code AgentPlanExecutor}'s catch block), so {@code
+     * BuildFailureRecoveryService#handle}'s own {@code markFailed} call is this task's *only*
+     * RUNNING->FAILED transition — required by the HIGH-1 regression test above; see its javadoc
+     * for why pre-seeding FAILED directly would be a different, flawed test. {@code
+     * conversationId} is left {@code null} deliberately: {@code AgentMessageService#appendAssistant}
+     * no-ops on a null conversationId, so this test can assert purely on task/event state without
+     * also having to seed a real {@code Conversation}/{@code ChatMessage} fixture unrelated to
+     * what HIGH-1 is about. */
+    private void seedRunningTaskForProject(String taskId, Long userId, Long projectId) {
+        taskStore.save(new AgentTask(
+                taskId, userId, projectId, null, TaskStatus.RUNNING,
+                null, null, null, null, Instant.now()
+        ));
+    }
+
+    /** Seeds a real {@code Project} (FK target for {@code project_approval_policies}) plus a
+     * policy row with {@code changeApprovalRequired=false} — the "project policy doesn't require
+     * CHANGE approval" precondition {@code BuildFailureRecoveryService#handle}'s automatic-retry
+     * branch (as opposed to its create-a-CHANGE-approval branch) needs to be reached at all. */
+    private Long seedProjectWithChangeApprovalDisabled(Long ownerUserId) {
+        Project project = projectRepository.save(new Project(
+                ownerUserId, "highfollowup-project-" + System.nanoTime(), "blank", null, "fast",
+                RepositoryVisibility.PRIVATE
+        ));
+        projectApprovalPolicyRepository.save(
+                new ProjectApprovalPolicy(project.getId(), false, true, true, true));
+        return project.getId();
     }
 
     private com.example.dvely.agent.application.dto.AgentPlan minimalPlan() {
