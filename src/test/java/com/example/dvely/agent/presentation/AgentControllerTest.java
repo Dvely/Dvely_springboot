@@ -11,6 +11,7 @@ import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.dto.AgentSubmission;
 import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.dto.AgentTaskFailure;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.facade.AgentFacade;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
@@ -22,6 +23,7 @@ import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.agent.presentation.dto.DecisionRequest;
 import com.example.dvely.agent.presentation.dto.TaskInputRequest;
+import com.example.dvely.agent.presentation.dto.TaskStatusResponse;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import java.time.Instant;
@@ -101,6 +103,83 @@ class AgentControllerTest {
     void foreignUserCannotReadTaskStatus() {
         assertThatThrownBy(() -> controller.getTaskStatus(2L, "task-1"))
                 .isInstanceOf(NotFoundException.class);
+    }
+
+    // ── #57 (QA report §5.6/H1/M3): retryable/pendingApprovalId response assembly ──────────────
+
+    @Test
+    void getTaskStatusIsNotRetryableWhenAnApprovalIsStillPendingEvenWithAttemptsRemaining() {
+        // The QA-reported drift (H1): attempt(0) < maxAttempts(3) alone used to make this
+        // retryable:true, but a still-PENDING approval (e.g. BuildFailureRecoveryService's
+        // "자동 수정 및 재build" CHANGE approval) makes the real POST /retry 409 every time.
+        // retryable must fold in the exact same pending-approval check AgentOrchestrator.retry()
+        // enforces, and pendingApprovalId must surface that approval so the task screen can link
+        // straight to it (M3) instead of requiring a separate GET /approvals scan.
+        AgentTask failedTask = new AgentTask(
+                "task-1", 1L, 11L, 21L, TaskStatus.FAILED, null, null, "빌드 실패", null, Instant.now()
+        );
+        when(taskStore.getOwned("task-1", 1L)).thenReturn(failedTask);
+        when(taskStore.getFailure("task-1", 1L))
+                .thenReturn(new AgentTaskFailure("로그 일부", "수정안", 0, 3));
+        when(agentOrchestrator.findPendingApprovalId("task-1")).thenReturn(77L);
+
+        TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
+
+        assertThat(response.retryable()).isFalse();
+        assertThat(response.pendingApprovalId()).isEqualTo(77L);
+    }
+
+    @Test
+    void getTaskStatusIsRetryableWhenNoApprovalIsPendingAndAttemptsRemain() {
+        AgentTask failedTask = new AgentTask(
+                "task-1", 1L, 11L, 21L, TaskStatus.FAILED, null, null, "빌드 실패", null, Instant.now()
+        );
+        when(taskStore.getOwned("task-1", 1L)).thenReturn(failedTask);
+        when(taskStore.getFailure("task-1", 1L))
+                .thenReturn(new AgentTaskFailure("로그 일부", "수정안", 0, 3));
+        when(agentOrchestrator.findPendingApprovalId("task-1")).thenReturn(null);
+
+        TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
+
+        assertThat(response.retryable()).isTrue();
+        assertThat(response.pendingApprovalId()).isNull();
+    }
+
+    @Test
+    void getTaskStatusIsNeverRetryableOnceAttemptsAreExhaustedRegardlessOfApprovals() {
+        // No PENDING approval this time — must still stay false once attempt reaches maxAttempts,
+        // i.e. the new pendingApprovalId check is additive (AND), never a replacement for the
+        // existing attempt<maxAttempts guard.
+        AgentTask failedTask = new AgentTask(
+                "task-1", 1L, 11L, 21L, TaskStatus.FAILED, null, null, "빌드 실패", null, Instant.now()
+        );
+        when(taskStore.getOwned("task-1", 1L)).thenReturn(failedTask);
+        when(taskStore.getFailure("task-1", 1L))
+                .thenReturn(new AgentTaskFailure("로그 일부", "수정안", 3, 3));
+        when(agentOrchestrator.findPendingApprovalId("task-1")).thenReturn(null);
+
+        TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
+
+        assertThat(response.retryable()).isFalse();
+    }
+
+    @Test
+    void getTaskStatusExposesPendingApprovalIdEvenWhileWaitingForTheInitialPlanApproval() {
+        // pendingApprovalId is a general "what approval is this task blocked on" field (M3), not
+        // limited to the FAILED/build-recovery case — a WAITING_APPROVAL task blocked on its
+        // initial plan approval must link to it too, even though retryable correctly stays false
+        // (only a FAILED task is ever retryable, regardless of pendingApprovalId).
+        AgentTask waitingTask = new AgentTask(
+                "task-1", 1L, 11L, 21L, TaskStatus.WAITING_APPROVAL, null, null, null, null, Instant.now()
+        );
+        when(taskStore.getOwned("task-1", 1L)).thenReturn(waitingTask);
+        when(taskStore.getFailure("task-1", 1L)).thenReturn(null);
+        when(agentOrchestrator.findPendingApprovalId("task-1")).thenReturn(9L);
+
+        TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
+
+        assertThat(response.retryable()).isFalse();
+        assertThat(response.pendingApprovalId()).isEqualTo(9L);
     }
 
     @Test
