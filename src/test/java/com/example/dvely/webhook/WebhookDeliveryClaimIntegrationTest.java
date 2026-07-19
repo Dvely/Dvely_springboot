@@ -33,6 +33,15 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * cleanly, and that concurrent claims from two worker instances never double-dispatch the same
  * delivery.
  * <p>
+ * Review follow-up (webhook-fix-review.md §4, Medium): {@code claim()}'s hand-written
+ * {@code @Modifying} JPQL bulk UPDATE is not the only place that nulls {@code next_attempt_at} —
+ * {@code complete()}/{@code ignore()}/an exhausted-retry-budget {@code FAILED} transition all do
+ * the same via {@code WebhookDeliveryRepositoryAdapter#save}'s plain JPA merge (no
+ * {@code @DynamicUpdate} on the entity, so Hibernate's generated UPDATE covers every mapped column
+ * regardless of what actually changed). That is a structurally different SQL statement from
+ * claim()'s, so the three "── other null-write paths" tests below give it the same real-DB proof
+ * rather than assuming V29's column relaxation covers it by association.
+ * <p>
  * This class shares the real, always-on {@code WebhookDeliveryWorker} scheduled bean with the rest
  * of the suite (same convention as {@code OrchestrationConcurrencyIntegrationTest} tolerating
  * {@code AgentOrchestrator}'s own scheduler) rather than trying to suppress it — {@code
@@ -227,6 +236,88 @@ class WebhookDeliveryClaimIntegrationTest {
         assertThat(fetchRow(deliveryId).get("next_attempt_at")).isNull();
     }
 
+    // ── review follow-up (webhook-fix-review.md §4, Medium): complete()/ignore()/exhausted-FAILED
+    // also null out next_attempt_at, but persist through WebhookDeliveryRepositoryAdapter#save's
+    // plain JPA merge (WebhookDeliveryEntity has no @DynamicUpdate, so Hibernate's generated UPDATE
+    // covers every mapped column, next_attempt_at included) — a structurally different SQL path
+    // from claim()'s hand-written @Modifying JPQL bulk update above. V29 relaxes the column itself,
+    // so this is expected to already be safe, but the original bug was specifically an *unverified*
+    // null-write path, so each of these three terminal transitions gets its own real-DB proof
+    // rather than being assumed safe by association with claim()'s fix.
+    // <p>
+    // Each test seeds the row directly as PROCESSING (mirroring exactly what claim() itself would
+    // have left behind: next_attempt_at=null, a lease, attempt already incremented once) instead of
+    // calling claimPending() first — that keeps this test isolated to save()'s own UPDATE. Chaining
+    // through claimPending() would make the "does this fail pre-V29" proof below meaningless: claim()
+    // fails first on the very same column, so every one of these tests would "fail" for the already-
+    // proven reason above rather than for the separate save()-path reason this section exists to
+    // cover. ─────────────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void completingADeliverySuccessfullyPersistsTheNullNextAttemptAtThroughPlainJpaSave() {
+        String deliveryId = uniqueId("save-complete");
+        // A "push" to a branch/repo nothing else in this schema references: handle()'s case
+        // "push" always returns true (complete()) once handlePush() itself doesn't throw, and an
+        // unmatched repository full_name makes findAllBySourceRepository() return empty — real
+        // handler, zero side effects on other domains' data.
+        byte[] harmlessPushToDefaultBranch =
+                ("{\"repository\":{\"full_name\":\"it-70-save-complete/none\",\"default_branch\":\"main\"},"
+                        + "\"ref\":\"refs/heads/main\",\"after\":\"deadbeef\"}").getBytes(StandardCharsets.UTF_8);
+        seedClaimedDelivery(deliveryId, "push", harmlessPushToDefaultBranch, 5);
+
+        // processDelivery()'s success branch calls delivery.complete() (clearQueue(): next_attempt_at
+        // = null, same as claim()) then webhookDeliveryRepository.save(delivery) — the plain-JPA
+        // path this test exists to prove, distinct from claim()'s bulk-update query.
+        webhookService.processDelivery(deliveryId);
+
+        Map<String, Object> row = fetchRow(deliveryId);
+        assertThat(row.get("status")).isEqualTo(WebhookDeliveryStatus.COMPLETED.name());
+        assertThat(row.get("next_attempt_at")).isNull();
+        assertThat(row.get("lease_owner")).isNull();
+        assertThat(row.get("lease_until")).isNull();
+        assertThat(row.get("error_message")).isNull();
+        assertThat(row.get("processed_at")).isNotNull();
+    }
+
+    @Test
+    void ignoringAnUnsupportedEventTypePersistsTheNullNextAttemptAtThroughPlainJpaSave() {
+        String deliveryId = uniqueId("save-ignore");
+        // "issues" has no case in WebhookEventHandler#handle -> the default branch returns false
+        // without parsing anything beyond valid JSON -> processDelivery() calls delivery.ignore(),
+        // whose clearQueue() also nulls next_attempt_at.
+        seedClaimedDelivery(deliveryId, "issues", "{}".getBytes(StandardCharsets.UTF_8), 5);
+
+        webhookService.processDelivery(deliveryId);
+
+        Map<String, Object> row = fetchRow(deliveryId);
+        assertThat(row.get("status")).isEqualTo(WebhookDeliveryStatus.IGNORED.name());
+        assertThat(row.get("next_attempt_at")).isNull();
+        assertThat(row.get("lease_owner")).isNull();
+        assertThat(row.get("processed_at")).isNotNull();
+    }
+
+    @Test
+    void exhaustingTheRetryBudgetMarksFailedAndPersistsTheNullNextAttemptAtThroughPlainJpaSave() {
+        String deliveryId = uniqueId("save-failed");
+        // max_attempts=1 and this row already seeded with attempt=1 (seedClaimedDelivery mirrors a
+        // single completed claim() call) — the retry budget is already spent, so the next failure
+        // hits retry()'s attempt>=maxAttempts branch (status=FAILED, clearQueue()) immediately.
+        byte[] payloadMissingRef = "{\"repository\":{\"full_name\":\"it-70-save-failed/none\"}}"
+                .getBytes(StandardCharsets.UTF_8);
+        seedClaimedDelivery(deliveryId, "push", payloadMissingRef, 1);
+
+        webhookService.processDelivery(deliveryId);
+
+        Map<String, Object> row = fetchRow(deliveryId);
+        assertThat(row.get("status")).isEqualTo(WebhookDeliveryStatus.FAILED.name());
+        assertThat(row.get("next_attempt_at")).isNull();
+        assertThat(row.get("lease_owner")).isNull();
+        assertThat(row.get("lease_until")).isNull();
+        assertThat((String) row.get("error_message")).contains("ref");
+        assertThat(row.get("processed_at")).isNotNull();
+        assertThat(((Number) row.get("attempt")).intValue()).isEqualTo(1);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────
 
     private Callable<List<String>> raceClaim(CountDownLatch startBarrier, String workerId) {
@@ -251,18 +342,49 @@ class WebhookDeliveryClaimIntegrationTest {
 
     private void seedDelivery(String deliveryId, WebhookDeliveryStatus status, LocalDateTime nextAttemptAt,
                                String leaseOwner, LocalDateTime leaseUntil, String eventType, byte[] payload) {
+        seedDelivery(deliveryId, status, nextAttemptAt, leaseOwner, leaseUntil, eventType, payload, 5, 0);
+    }
+
+    private void seedDelivery(String deliveryId, WebhookDeliveryStatus status, LocalDateTime nextAttemptAt,
+                               String leaseOwner, LocalDateTime leaseUntil, String eventType, byte[] payload,
+                               int maxAttempts) {
+        seedDelivery(deliveryId, status, nextAttemptAt, leaseOwner, leaseUntil, eventType, payload, maxAttempts, 0);
+    }
+
+    private void seedDelivery(String deliveryId, WebhookDeliveryStatus status, LocalDateTime nextAttemptAt,
+                               String leaseOwner, LocalDateTime leaseUntil, String eventType, byte[] payload,
+                               int maxAttempts, int attempt) {
         jdbcTemplate.update(
                 """
                         insert into webhook_deliveries
                             (delivery_id, event_type, payload, status, attempt, max_attempts,
                              next_attempt_at, lease_owner, lease_until)
-                        values (?, ?, ?, ?, 0, 5, ?, ?, ?)
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                deliveryId, eventType, payload, status.name(),
+                deliveryId, eventType, payload, status.name(), attempt, maxAttempts,
                 nextAttemptAt == null ? null : Timestamp.valueOf(nextAttemptAt),
                 leaseOwner,
                 leaseUntil == null ? null : Timestamp.valueOf(leaseUntil)
         );
+    }
+
+    /**
+     * Seeds a row already PROCESSING with a live lease and {@code attempt=1} — the state a
+     * successful {@code claim()} call leaves behind, minus {@code next_attempt_at} itself — used
+     * by the complete()/ignore()/FAILED tests above to reach {@code WebhookService#processDelivery}'s
+     * terminal-transition branches directly, without going through {@code claimPending()} first
+     * (see that section's javadoc for why chaining through claim() would defeat the point).
+     * <p>
+     * Deliberately seeds a non-null placeholder for {@code next_attempt_at} rather than the null
+     * claim() itself would leave: this is a raw JDBC fixture insert, not the production code under
+     * test, and pinning it to null would make the insert itself fail against a pre-V29 (NOT NULL)
+     * column — that would fail this test for the wrong reason (this fixture's insert, not
+     * {@code WebhookDeliveryRepositoryAdapter#save}'s UPDATE). complete()/ignore()/retry() overwrite
+     * whatever value is here with null regardless, so the placeholder is otherwise inert.
+     */
+    private void seedClaimedDelivery(String deliveryId, String eventType, byte[] payload, int maxAttempts) {
+        seedDelivery(deliveryId, WebhookDeliveryStatus.PROCESSING, LocalDateTime.now().minusSeconds(1),
+                "worker-preclaimed", LocalDateTime.now().plusMinutes(2), eventType, payload, maxAttempts, 1);
     }
 
     /**
