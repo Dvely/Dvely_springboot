@@ -1,6 +1,9 @@
 package com.example.dvely.change.application.service;
 
 import com.example.dvely.approval.domain.model.Approval;
+import com.example.dvely.approval.domain.repository.ApprovalRepository;
+import com.example.dvely.approval.domain.value.ApprovalStatus;
+import com.example.dvely.approval.domain.value.ApprovalType;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -38,6 +41,7 @@ public class ResultApprovalService {
     private final UserRepository userRepository;
     private final AuthCommandService authCommandService;
     private final GithubRepoPort githubRepoPort;
+    private final ApprovalRepository approvalRepository;
 
     /**
      * @throws IllegalStateException (-> 409, E-RA-05) if no Change row exists for the approval's
@@ -96,25 +100,33 @@ public class ResultApprovalService {
     }
 
     /**
-     * Track Z (#56) review follow-up (BLOCKING-1): the single, shared answer to "has this
-     * project's RESULT gate already decided at least one Change" — i.e. is this project already
-     * under the result-approval gate's jurisdiction. A REJECTED Change means a user explicitly
-     * declined to bring some preview content onto main; a MERGED Change means the gate already
-     * merged at least once. Either fact means this project must never again be treated as "never
-     * gated yet".
+     * Track Z (#56) review follow-up (BLOCKING-1, extended by issue #62 B1): the single, shared
+     * answer to "is this project already under the RESULT gate's jurisdiction" — i.e. has the
+     * gate already decided at least one Change for it, *or* is it currently waiting on a decision.
+     * A REJECTED Change means a user explicitly declined to bring some preview content onto main;
+     * a MERGED Change means the gate already merged at least once; a PENDING RESULT approval means
+     * the gate has fired and a decision is in flight but not made yet. Any of these three facts
+     * means this project must never be treated as "never gated yet".
      * <p>
      * Consumed by {@code DeploymentCommandService#prepareRelease}'s {@code mergeAllowed} rule
      * (§5.4): that rule's "this project's very first release" carve-out (needed so a brand-new
      * project's initial content can still reach {@code main} even though D9 never had a chance to
-     * gate it) must not also cover a project that already went through — and specifically was
-     * REJECTED by — the RESULT gate. Without this check, a direct deploy could merge exactly the
-     * content a user had explicitly rejected, simply because the project happened to still show
-     * {@code currentVersion == null} (never successfully published).
+     * gate it) must not also cover a project that already went through — or is currently going
+     * through — the RESULT gate. Without the REJECTED/MERGED check, a direct deploy could merge
+     * exactly the content a user had explicitly rejected, simply because the project happened to
+     * still show {@code currentVersion == null} (never successfully published). Without the
+     * PENDING check added here, a direct deploy racing an in-flight RESULT approval on that same
+     * never-yet-released project could merge preview content the user has not decided on at all
+     * (issue #62 B1 — narrower than BLOCKING-1's "already-REJECTED" case, but the same class of
+     * bug: a not-yet-decided or already-declined Change reaching {@code main} through the side
+     * door).
      */
     @Transactional(readOnly = true)
     public boolean hasResultGateHistory(Long projectId) {
         return changeRepository.existsByProjectIdAndStatusIn(
-                projectId, List.of(ChangeStatus.REJECTED.name(), ChangeStatus.MERGED.name()));
+                projectId, List.of(ChangeStatus.REJECTED.name(), ChangeStatus.MERGED.name()))
+                || approvalRepository.existsByProjectIdAndTypeAndStatus(
+                        projectId, ApprovalType.RESULT, ApprovalStatus.PENDING);
     }
 
     private String resolveUserToken(Long ownerUserId) {

@@ -25,6 +25,12 @@ public interface SpringDataApprovalRepository extends JpaRepository<ApprovalEnti
 
     List<ApprovalEntity> findByProjectIdAndOwnerUserIdOrderByCreatedAtDesc(Long projectId, Long ownerUserId);
 
+    // Backs ApprovalRepository#existsByProjectIdAndTypeAndStatus. Reuses the existing
+    // idx_approvals_project_id index (V14) — MySQL scans by project_id then filters type/status
+    // in-place, which is fine given the small, bounded number of approvals per project; no new
+    // index/migration needed for this narrow existence check.
+    boolean existsByProjectIdAndTypeAndStatus(Long projectId, String type, String status);
+
     List<ApprovalEntity> findByTaskIdOrderByIdAsc(String taskId);
 
     // ADR-Y1 §1 step① — closed interface projection: Spring Data resolves this straight from the

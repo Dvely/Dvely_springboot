@@ -3,6 +3,7 @@ package com.example.dvely.approval.infrastructure.persistence.repository;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.repository.ApprovalRouting;
+import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
 import com.example.dvely.approval.infrastructure.persistence.entity.ApprovalEntity;
 import java.util.List;
@@ -45,6 +46,11 @@ public class ApprovalRepositoryAdapter implements ApprovalRepository {
                 .stream()
                 .map(ApprovalEntity::toDomain)
                 .toList();
+    }
+
+    @Override
+    public boolean existsByProjectIdAndTypeAndStatus(Long projectId, ApprovalType type, ApprovalStatus status) {
+        return springDataRepository.existsByProjectIdAndTypeAndStatus(projectId, type.name(), status.name());
     }
 
     @Override
