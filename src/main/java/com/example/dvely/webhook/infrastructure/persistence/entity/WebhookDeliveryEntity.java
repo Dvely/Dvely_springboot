@@ -39,7 +39,12 @@ public class WebhookDeliveryEntity {
     @Column(name = "max_attempts", nullable = false)
     private int maxAttempts;
 
-    @Column(name = "next_attempt_at")
+    // Nullable by design (V29, issue #70): only meaningful while the delivery is queued
+    // (PENDING/RETRY_WAIT). SpringDataWebhookDeliveryRepository#claim clears it to null the
+    // moment a delivery moves to PROCESSING, and WebhookDelivery#complete()/ignore() do the same
+    // on terminal states — a NOT NULL column (V21's original definition) made every claim() throw
+    // a constraint violation and permanently stalled the worker.
+    @Column(name = "next_attempt_at", nullable = true)
     private LocalDateTime nextAttemptAt;
 
     @Column(name = "lease_owner", length = 120)
