@@ -229,28 +229,79 @@ public class AgentOrchestrator {
         agentMessageService.appendAssistant(task.conversationId(), "지연된 승인 처리를 복구해 작업을 시작합니다.");
     }
 
+    /**
+     * Issue #64 fix: brought into ADR-Y1's task-bound-decision discipline (same lock hierarchy as
+     * approve/reject/cancel/RESULT/sweep — see {@link TaskStore#lockTask} javadoc) so its
+     * "no PENDING approval blocks retry" check and the retry action itself are now one atomic unit
+     * under a single task-row mutex hold, instead of the pre-#64 TOCTOU: a non-locking check
+     * ({@code findPendingApprovalId}) followed by {@code taskStore.retry(...)} in what was
+     * effectively a second, unsynchronized decision — a PENDING approval could be decided (or the
+     * task's status could change) in the gap between the two with nothing serializing against it.
+     * <p>
+     * Lock order is task row first (identical to every other task-bound decision), so this
+     * introduces no new deadlock class — it actually removes one: pre-#64, two concurrent direct
+     * {@code retry()} calls on the same task (e.g. a duplicate click) each ran {@code
+     * taskStore.retry(...)}'s non-locking read-then-write with nothing serializing them, which
+     * MySQL could only resolve by killing one transaction with a real deadlock
+     * ({@code CannotAcquireLockException}) — a raw 500-class failure instead of a clean refusal.
+     * See {@code OrchestrationConcurrencyIntegrationTest
+     * #concurrentDirectRetryCallsOnTheSameFailedTaskNeverDeadlockAndOnlyOneEverSucceeds} for the
+     * Red/Green proof (reliably deadlocks on the pre-#64 code, passes deterministically after this
+     * fix) and {@code
+     * #concurrentRetryAndApproveOfItsBlockingPendingApprovalNeverDoubleRetriesTheSameFailedTask}
+     * for the retry-vs-approve interleaving (exactly one of {retry(), the FAILED-branch retry
+     * inside approve()'s {@link #executeApproved}} ever performs the transition; the other
+     * correctly refuses — never both, never neither). Both rely on the same fact: a concurrent
+     * approve()/retry() on this taskId already takes the identical {@code taskStore.lockTask}
+     * first, so every pair of task-bound decisions now simply serializes on this row instead of
+     * racing.
+     * <p>
+     * Uses a *locking* read ({@code findByTaskIdOrderByIdAscForUpdate}), not the non-locking
+     * {@link #findPendingApprovalId} the read-only {@code GET /tasks/{id}} "retryable" hint still
+     * uses — under MySQL REPEATABLE READ a plain SELECT here could still observe a pre-lock
+     * snapshot even after waiting for and acquiring the task lock (design §1, the same reasoning
+     * {@code ApprovalCommandService.approve()}'s all-approved check and {@code cancelTaskCascade}'s
+     * sibling scan already rely on). {@code taskStore.retry(...)} below then runs inside this same
+     * transaction (default {@code REQUIRED} propagation — deliberately not {@code REQUIRES_NEW},
+     * so it joins rather than opens a second transaction that would not benefit from the lock this
+     * method just acquired) and performs its own fresh, non-locking status/attempt check — safe
+     * here specifically because it is that non-locking read, not the locking approvals scan above,
+     * that becomes this transaction's first non-locking read: it is taken while this transaction is
+     * already the row's sole lock holder, so no concurrent writer can be racing it.
+     */
+    @Transactional
     public boolean retry(String taskId, Long ownerUserId) {
-        return findPendingApprovalId(taskId) == null && taskStore.retry(taskId, ownerUserId);
+        // ADR-Y1 lock order: task row first, before any approvals read (mirrors
+        // approve/reject/cancel/sweep exactly — see class-level lock-hierarchy note above).
+        taskStore.lockTask(taskId);
+        boolean pendingApprovalBlocksRetry = approvalRepository.findByTaskIdOrderByIdAscForUpdate(taskId).stream()
+                .anyMatch(approval -> approval.getStatus() == ApprovalStatus.PENDING);
+        return !pendingApprovalBlocksRetry && taskStore.retry(taskId, ownerUserId);
     }
 
     /**
-     * Shared "is this task still blocked on an approval" lookup (#57, QA report §5.6/H1/M3).
-     * {@link #retry} above is the actual gate {@code POST /retry} enforces — before this fix,
-     * {@code AgentTaskFailure.retryable()} (the read side surfaced by {@code GET /tasks/{id}})
-     * computed eligibility from {@code attempt < maxAttempts} alone, with no knowledge of a
-     * still-PENDING approval such as {@code BuildFailureRecoveryService}'s "자동 수정 및 재build"
-     * CHANGE approval — so a FAILED task could read {@code retryable:true} and still 409 on
-     * {@code /retry}. Both call sites now go through this single method so the two can never
-     * silently drift apart again: the response-assembly layer (AgentController) calls this to
-     * compute {@code pendingApprovalId} and fold it into {@code retryable}, using the exact same
-     * definition {@link #retry} enforces.
+     * Read-only "is this task still blocked on an approval" hint (#57, QA report §5.6/H1/M3),
+     * surfaced by {@code GET /tasks/{id}} to fold into {@code retryable} and expose
+     * {@code pendingApprovalId} — before #57, {@code AgentTaskFailure.retryable()} computed
+     * eligibility from {@code attempt < maxAttempts} alone, with no knowledge of a still-PENDING
+     * approval such as {@code BuildFailureRecoveryService}'s "자동 수정 및 재build" CHANGE approval,
+     * so a FAILED task could read {@code retryable:true} and still 409 on {@code /retry}.
      * <p>
-     * Matches ANY {@link ApprovalStatus#PENDING} approval on the taskId regardless of {@link
-     * com.example.dvely.approval.domain.value.ApprovalType} — {@link #retry} has never
-     * distinguished by type (a still-open plan/DEPLOYMENT/DOMAIN_BINDING approval blocks retry
-     * exactly the same as a build-failure recovery CHANGE approval does), so this lookup doesn't
-     * either. Returns the oldest (id-ascending, LO-1) PENDING approval's id when more than one
-     * exists, or {@code null} when the task has no outstanding approval at all.
+     * Post-#64: {@link #retry} no longer calls this method — it needs a *locking* re-verification
+     * under the task-row lock it now holds (see its javadoc), while this method is intentionally
+     * non-locking (a plain {@code findByTaskIdOrderByIdAsc}) since it backs a read-only GET and
+     * taking no lock is exactly right for a display hint that never blocks on contention. Both
+     * still share the identical judgment — "any PENDING approval, any {@link
+     * com.example.dvely.approval.domain.value.ApprovalType}, blocks retry" — so the two can never
+     * silently drift apart on *what* counts as blocking, only on *how fresh* the read is
+     * (non-locking snapshot here vs. always-latest-committed inside {@link #retry}'s transaction).
+     * A narrow window where this hint reads stale (e.g. {@code retryable:true} for a moment after
+     * a PENDING approval was just created) is an acceptable trade for a GET endpoint — the action
+     * gate ({@link #retry}) is what actually enforces correctness, and it re-reads under lock
+     * regardless of what this hint last said.
+     * <p>
+     * Returns the oldest (id-ascending, LO-1) PENDING approval's id when more than one exists, or
+     * {@code null} when the task has no outstanding approval at all.
      */
     public Long findPendingApprovalId(String taskId) {
         return approvalRepository.findByTaskIdOrderByIdAsc(taskId).stream()

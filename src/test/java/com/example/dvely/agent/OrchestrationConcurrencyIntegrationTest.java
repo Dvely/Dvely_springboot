@@ -7,7 +7,9 @@ import static org.junit.jupiter.api.Assertions.fail;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.AgentTaskEvent;
 import com.example.dvely.agent.application.dto.TaskStatus;
+import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
+import com.example.dvely.agent.application.service.BuildFailureRecoveryService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.application.command.ApprovalCommandService;
 import com.example.dvely.approval.domain.model.Approval;
@@ -17,6 +19,11 @@ import com.example.dvely.approval.domain.value.ApprovalType;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.value.GithubId;
+import com.example.dvely.project.domain.model.Project;
+import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
+import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
+import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.project.domain.value.RepositoryVisibility;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -64,6 +71,16 @@ class OrchestrationConcurrencyIntegrationTest {
     private UserRepository userRepository;
     @Autowired
     private JdbcTemplate jdbcTemplate;
+    // Issue #64 follow-up (HIGH-1, retry-toctou-review.md): real bean, not a mock — the whole
+    // point of the regression test below is proving the real BuildFailureRecoveryService now
+    // shares AgentOrchestrator#retry's task-row lock with a concurrent manual retry, which a
+    // mocked collaborator could not demonstrate.
+    @Autowired
+    private BuildFailureRecoveryService buildFailureRecoveryService;
+    @Autowired
+    private ProjectRepository projectRepository;
+    @Autowired
+    private ProjectApprovalPolicyRepository projectApprovalPolicyRepository;
 
     // ── ADR-Y1 (#55): lockTask's MANDATORY propagation contract ────────────────────────────────
 
@@ -329,6 +346,167 @@ class OrchestrationConcurrencyIntegrationTest {
                 .hasMessageContaining("이미 처리된 승인입니다");
     }
 
+    // ── Issue #64: retry()'s TOCTOU brought into ADR-Y1's task-row-lock discipline ─────────────
+
+    @Test
+    void concurrentDirectRetryCallsOnTheSameFailedTaskNeverDeadlockAndOnlyOneEverSucceeds()
+            throws Exception {
+        // Red/Green proof this fix actually closes a real bug (not merely "looks safer"): with the
+        // pre-#64 code restored locally (agentOrchestrator.retry() calling straight into
+        // taskStore.retry() with no task-row lock beforehand), two concurrent direct retry() calls
+        // on the same FAILED task reliably (5/5 local runs) threw
+        // org.springframework.dao.CannotAcquireLockException ("Deadlock found when trying to get
+        // lock") from Hibernate's dirty-checking flush — both transactions ran taskStore.retry()'s
+        // non-locking read-then-write against the same row with nothing serializing them, so MySQL
+        // itself had to kill one via deadlock detection. That surfaced to the caller as a raw
+        // 500-class failure, not a clean 409 — worse than a mere double-retry. After bringing
+        // retry() into the task-row-lock funnel (this fix), the same scenario passes deterministically
+        // (8/8 local runs): the second call's taskStore.lockTask(taskId) simply waits for the first's
+        // transaction to commit instead of deadlocking, then observes the task already RETRY_WAIT and
+        // cleanly returns false — exactly the "one succeeds, the other cleanly refuses" contract a
+        // duplicate click / overlapping automatic-and-manual retry must have.
+        Long userId = seedUser();
+        String taskId = uniqueTaskId("retry-direct-collision");
+        seedFailedTask(taskId, userId);
+
+        CountDownLatch startBarrier = new CountDownLatch(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Void>> futures = pool.invokeAll(List.of(
+                    raceTask(startBarrier, () -> agentOrchestrator.retry(taskId, userId)),
+                    raceTask(startBarrier, () -> agentOrchestrator.retry(taskId, userId))
+            ));
+            awaitAll(futures);
+        } finally {
+            pool.shutdown();
+        }
+
+        AgentTask finalTask = taskStore.get(taskId);
+        assertThat(finalTask.status()).isEqualTo(TaskStatus.RETRY_WAIT);
+        Integer attempt = jdbcTemplate.queryForObject(
+                "SELECT attempt FROM agent_runs WHERE task_id = ?", Integer.class, taskId);
+        assertThat(attempt).isEqualTo(1);
+        assertThat(countEventsOfType(taskId, userId, "RETRY_QUEUED")).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentRetryAndApproveOfItsBlockingPendingApprovalNeverDoubleRetriesTheSameFailedTask()
+            throws Exception {
+        // Reproduces the "참고(범위 밖)" TOCTOU noted in y-hardening-review.md: pre-#64, retry()
+        // checked for a blocking PENDING approval with a non-locking read and then performed the
+        // retry in a second, unsynchronized call — nothing serialized that check against a
+        // concurrent decision on the exact same approval. Here the approval retry() must refuse on
+        // is the SAME one a concurrent approve() call is deciding, and approve()'s own FAILED-branch
+        // (AgentOrchestrator#executeApproved) performs an equivalent retry once every approval is
+        // APPROVED — so this is a genuine two-actor race for "who gets to move this FAILED task
+        // forward", not a contrived scenario.
+        //
+        // Post-#64, both agentOrchestrator.retry() and approvalCommandService.approve() funnel
+        // through the identical taskStore.lockTask(taskId) mutex before touching approvals, so
+        // whichever interleaving the scheduler picks, the two calls simply serialize on the task
+        // row instead of racing — the assertions below hold regardless of which one wins:
+        //   (a) retry() wins the lock first: it observes the approval still PENDING (approve()
+        //       is still blocked waiting for the same lock) and correctly refuses (false) without
+        //       ever calling taskStore.retry(); approve() then proceeds, approves it, sees
+        //       all-approved, and its own executeApproved(FAILED) branch performs the one real
+        //       retry.
+        //   (b) approve() wins the lock first: it fully approves + retries the task and commits;
+        //       retry() then proceeds, observes the approval now APPROVED (not PENDING) so it does
+        //       call taskStore.retry(...) — but that call's own fresh status check now sees
+        //       RETRY_WAIT (not FAILED) and correctly no-ops (false).
+        // Either way: the task is retried exactly once (attempt=1, one RETRY_QUEUED event), never
+        // zero times (stuck FAILED) and never twice (double-spent retry budget).
+        Long userId = seedUser();
+        String taskId = uniqueTaskId("retry-toctou-64");
+        seedFailedTask(taskId, userId);
+        Approval recoveryApproval = approvalRepository.save(new Approval(
+                userId, null, null, taskId, ApprovalType.CHANGE, "자동 수정 및 재build: 의존성 설치 후 재빌드"));
+
+        CountDownLatch startBarrier = new CountDownLatch(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Void>> futures = pool.invokeAll(List.of(
+                    raceTask(startBarrier, () -> agentOrchestrator.retry(taskId, userId)),
+                    raceTask(startBarrier, () -> approvalCommandService.approve(userId, recoveryApproval.getId()))
+            ));
+            awaitAll(futures);
+        } finally {
+            pool.shutdown();
+        }
+
+        AgentTask finalTask = taskStore.get(taskId);
+        assertThat(finalTask.status()).isEqualTo(TaskStatus.RETRY_WAIT);
+        Integer attempt = jdbcTemplate.queryForObject(
+                "SELECT attempt FROM agent_runs WHERE task_id = ?", Integer.class, taskId);
+        // The G7-style regression this test guards against: two racing actors must never both
+        // spend the retry budget on the same FAILED task.
+        assertThat(attempt).isEqualTo(1);
+        assertThat(countEventsOfType(taskId, userId, "RETRY_QUEUED")).isEqualTo(1);
+        Approval reloadedApproval = approvalRepository.findByTaskIdOrderByIdAsc(taskId).stream()
+                .filter(approval -> approval.getId().equals(recoveryApproval.getId()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(reloadedApproval.getStatus()).isEqualTo(ApprovalStatus.APPROVED);
+    }
+
+    // ── Issue #64 follow-up (HIGH-1, retry-toctou-review.md): BuildFailureRecoveryService's
+    // automatic-recovery retry must share the task-row lock with a concurrent manual retry ───────
+
+    @Test
+    void concurrentManualRetryAndAutomaticBuildFailureRecoveryOfTheSameTaskNeverDoubleRetries()
+            throws Exception {
+        // Reproduces the exact HIGH-1 finding: pre-fix, BuildFailureRecoveryService.handle()
+        // called taskStore.retry(...) directly (no taskStore.lockTask), a second, unguarded
+        // entry point into the same write #64 had only closed for AgentOrchestrator#retry's
+        // direct callers. Racing it against a concurrent agentOrchestrator.retry() call (the
+        // user's own manual POST /retry) reliably produced two RETRY_QUEUED audit events for a
+        // single real retry (measured 5/5 by review via a temporary probe). This test is that
+        // probe made permanent: BuildFailureRecoveryService now calls agentOrchestrator.retry()
+        // itself, so both callers funnel through the identical taskStore.lockTask(taskId) mutex
+        // and simply serialize instead of racing — exactly like the retry-vs-approve test above.
+        //
+        // Seeded RUNNING (not pre-seeded FAILED) so handle()'s own markFailed() call is the
+        // task's *only* RUNNING->FAILED transition, exactly mirroring the one real call site
+        // (AgentPlanExecutor's catch block). Pre-seeding FAILED and calling the full handle()
+        // concurrently would make handle() invoke markFailed() a *second* time on a task a
+        // concurrent retry() may have already moved to RETRY_WAIT in between — markFailed() has
+        // no such-transition guard (only a CANCELLED check) and no @Version, so that blind
+        // re-transition would reintroduce a *different*, unrelated race than the one this test
+        // targets. Starting from RUNNING sidesteps that entirely: before handle()'s markFailed()
+        // commits, any concurrent retry() attempt correctly no-ops (status != FAILED, no write
+        // at all) rather than racing a write.
+        Long userId = seedUser();
+        Long projectId = seedProjectWithChangeApprovalDisabled(userId);
+        String taskId = uniqueTaskId("retry-toctou-64-highfollowup");
+        seedRunningTaskForProject(taskId, userId, projectId);
+        CodeAgentExecutionException buildFailure = new CodeAgentExecutionException(
+                "빌드 실패", "log 일부", "의존성 설치 후 재빌드", new IllegalStateException("build"));
+
+        CountDownLatch startBarrier = new CountDownLatch(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Void>> futures = pool.invokeAll(List.of(
+                    raceTask(startBarrier, () -> agentOrchestrator.retry(taskId, userId)),
+                    raceTask(startBarrier, () -> buildFailureRecoveryService.handle(taskId, buildFailure))
+            ));
+            awaitAll(futures);
+        } finally {
+            pool.shutdown();
+        }
+
+        AgentTask finalTask = taskStore.get(taskId);
+        assertThat(finalTask.status()).isEqualTo(TaskStatus.RETRY_WAIT);
+        Integer attempt = jdbcTemplate.queryForObject(
+                "SELECT attempt FROM agent_runs WHERE task_id = ?", Integer.class, taskId);
+        // The HIGH-1 regression this test guards against: two racing entry points into
+        // TaskStore#retry must never both spend the retry budget / both log a retry — whichever
+        // of the two performs the real transition, the other's own fresh status re-check inside
+        // AgentOrchestrator#retry (taken under the same task-row lock) must observe it and
+        // cleanly no-op instead of stomping it.
+        assertThat(attempt).isEqualTo(1);
+        assertThat(countEventsOfType(taskId, userId, "RETRY_QUEUED")).isEqualTo(1);
+    }
+
     // ── ADR-Y3/Y4 (#55 MUST #6/#7): releaseClaim + heartbeat scoping, DB-backed ────────────────
 
     @Test
@@ -437,6 +615,50 @@ class OrchestrationConcurrencyIntegrationTest {
                 null, null, null, null, Instant.now()
         ));
         taskStore.savePlan(taskId, minimalPlan());
+    }
+
+    /** Seeds a task directly as FAILED with a fresh attempt budget (0 of the default 3 spent —
+     * see {@code AgentRunEntity}'s private constructor) — retryable per {@code TaskStore#retry}'s
+     * own {@code status==FAILED && attempt<maxAttempts} gate, mirroring the state a build failure
+     * (or any other markFailed caller) would leave the row in before a client or an approval
+     * decision retries it. */
+    private void seedFailedTask(String taskId, Long userId) {
+        taskStore.save(new AgentTask(
+                taskId, userId, null, null, TaskStatus.FAILED,
+                null, null, null, null, Instant.now()
+        ));
+        taskStore.savePlan(taskId, minimalPlan());
+    }
+
+    /** Seeds a task RUNNING (not FAILED) and bound to {@code projectId} — the state a task is
+     * genuinely in right before a CODE step throws {@link CodeAgentExecutionException} in
+     * production (see {@code AgentPlanExecutor}'s catch block), so {@code
+     * BuildFailureRecoveryService#handle}'s own {@code markFailed} call is this task's *only*
+     * RUNNING->FAILED transition — required by the HIGH-1 regression test above; see its javadoc
+     * for why pre-seeding FAILED directly would be a different, flawed test. {@code
+     * conversationId} is left {@code null} deliberately: {@code AgentMessageService#appendAssistant}
+     * no-ops on a null conversationId, so this test can assert purely on task/event state without
+     * also having to seed a real {@code Conversation}/{@code ChatMessage} fixture unrelated to
+     * what HIGH-1 is about. */
+    private void seedRunningTaskForProject(String taskId, Long userId, Long projectId) {
+        taskStore.save(new AgentTask(
+                taskId, userId, projectId, null, TaskStatus.RUNNING,
+                null, null, null, null, Instant.now()
+        ));
+    }
+
+    /** Seeds a real {@code Project} (FK target for {@code project_approval_policies}) plus a
+     * policy row with {@code changeApprovalRequired=false} — the "project policy doesn't require
+     * CHANGE approval" precondition {@code BuildFailureRecoveryService#handle}'s automatic-retry
+     * branch (as opposed to its create-a-CHANGE-approval branch) needs to be reached at all. */
+    private Long seedProjectWithChangeApprovalDisabled(Long ownerUserId) {
+        Project project = projectRepository.save(new Project(
+                ownerUserId, "highfollowup-project-" + System.nanoTime(), "blank", null, "fast",
+                RepositoryVisibility.PRIVATE
+        ));
+        projectApprovalPolicyRepository.save(
+                new ProjectApprovalPolicy(project.getId(), false, true, true, true));
+        return project.getId();
     }
 
     private com.example.dvely.agent.application.dto.AgentPlan minimalPlan() {

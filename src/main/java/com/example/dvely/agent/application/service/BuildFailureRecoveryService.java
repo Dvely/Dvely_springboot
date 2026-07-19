@@ -3,6 +3,7 @@ package com.example.dvely.agent.application.service;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.AgentTaskFailure;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
+import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
@@ -12,8 +13,10 @@ import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
 import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class BuildFailureRecoveryService {
@@ -22,6 +25,12 @@ public class BuildFailureRecoveryService {
     private final ApprovalRepository approvalRepository;
     private final ProjectApprovalPolicyRepository policyRepository;
     private final AgentMessageService agentMessageService;
+    // Issue #64 follow-up (HIGH-1, retry-toctou-review.md): the automatic-recovery retry below
+    // now goes through this instead of TaskStore directly, so it shares AgentOrchestrator#retry's
+    // task-row lock with every other retry() caller (user's manual POST /retry, approve()'s
+    // FAILED-branch) — see the field's use below for why a second, unguarded entry point into
+    // TaskStore#retry defeated #64's fix.
+    private final AgentOrchestrator agentOrchestrator;
 
     public void handle(String taskId, CodeAgentExecutionException exception) {
         taskStore.markFailed(
@@ -44,7 +53,29 @@ public class BuildFailureRecoveryService {
         }
 
         if (!requiresApproval(task.projectId())) {
-            taskStore.retry(taskId, task.ownerUserId());
+            // Review follow-up (HIGH-1): this used to call taskStore.retry(taskId, ...) directly
+            // — no taskStore.lockTask, so this automatic-recovery path and a concurrent manual
+            // retry (AgentController#retryTask -> AgentOrchestrator#retry, already guarded by
+            // #64) could both observe FAILED and both perform the transition: no exception, no
+            // deadlock, just a second RETRY_QUEUED audit event for a single real retry (measured
+            // 5/5 by review; attempt itself stayed correct only because TaskStore#retry has no
+            // @Version and both racers happened to compute the same target row values — a
+            // silent-corruption near-miss, not a guarantee). Calling the same guarded entry point
+            // every other caller uses serializes this on the identical task-row mutex, so the
+            // TOCTOU class #64 set out to remove is now actually closed for every caller, not
+            // just the manual one.
+            boolean retried = agentOrchestrator.retry(taskId, task.ownerUserId());
+            if (!retried) {
+                // Lost the task-row lock race to a concurrent actor (typically the user's own
+                // manual retry) that already performed the exact same transition first — the
+                // task is still moving forward correctly, just not via this call, so this is a
+                // correct, silent no-op rather than an error: appending a second "자동 재시도를
+                // 시작합니다" message here would misrepresent this call as having done something
+                // it did not.
+                log.info("[BuildFailureRecoveryService] 자동 재시도가 동시 요청에 선점되어 생략되었습니다. "
+                        + "taskId={}", taskId);
+                return;
+            }
             agentMessageService.appendAssistant(
                     task.conversationId(),
                     buildFailureMessage(exception, null, true)
