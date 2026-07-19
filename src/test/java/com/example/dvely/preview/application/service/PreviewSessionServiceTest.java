@@ -1,6 +1,7 @@
 package com.example.dvely.preview.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -92,6 +93,54 @@ class PreviewSessionServiceTest {
 
         assertThat(expired.getStatus()).isEqualTo(PreviewSessionStatus.EXPIRED.name());
         verify(dockerService).removeContainer("container-1");
+    }
+
+    // Issue #71 (High): after a CloudOps RESTART, the caller (InfraOpsAgentService) re-queries
+    // Docker's newly assigned ephemeral host port and must be able to persist it here so
+    // PreviewGatewayService's next proxy lookup reads the fresh port instead of the stale
+    // pre-restart one — that's the actual fix; this pins the persistence half of it in isolation
+    // from InfraOpsAgentService's own (mocked) regression test.
+    @Test
+    void updateHostPortPersistsNewPortAndReturnsRefreshedInfo() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository,
+                mock(DockerContainerService.class),
+                mock(TaskStore.class),
+                properties()
+        );
+        PreviewSessionEntity session = new PreviewSessionEntity(
+                "session-1", "token", 1L, 11L, 21L, "task-1",
+                "container-1", 32768, "https://preview.qeploy.test/session-1/",
+                LocalDateTime.now().plusMinutes(30)
+        );
+        when(repository.findById("session-1")).thenReturn(Optional.of(session));
+        when(repository.save(session)).thenReturn(session);
+
+        PreviewSessionInfo result = service.updateHostPort("session-1", 40001);
+
+        // The row mutates in place (rebindPort), and the returned info reflects the new port —
+        // publicUrl is untouched (it never encoded the old port to begin with).
+        assertThat(session.getHostPort()).isEqualTo(40001);
+        assertThat(result.hostPort()).isEqualTo(40001);
+        assertThat(result.publicUrl()).isEqualTo("https://preview.qeploy.test/session-1/");
+        verify(repository).save(session);
+    }
+
+    @Test
+    void updateHostPortThrowsWhenSessionMissing() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository,
+                mock(DockerContainerService.class),
+                mock(TaskStore.class),
+                properties()
+        );
+        when(repository.findById("missing")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.updateHostPort("missing", 40001))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("missing");
     }
 
     @Test

@@ -93,6 +93,22 @@ public class PreviewSessionEntity {
         this.expiresAt = expiresAt;
     }
 
+    /**
+     * Rebinds the tracked host port after a container restart (issue #71 — CloudOps RESTART).
+     * Docker reassigns a fresh ephemeral host port on every container start when the original
+     * binding was requested as `Ports.Binding.bindPort(0)` (see
+     * {@code DockerContainerService#createAndStartContainer}), and {@code restartContainer} is a
+     * stop+start under the hood — so the port captured at session-creation time goes stale the
+     * moment a restart completes. {@code publicUrl} itself is untouched by this: it only encodes
+     * {@code id}/{@code accessToken} (see the constructor below), never the port. It's this
+     * {@code hostPort} column that {@code PreviewGatewayService} reads on every proxied request,
+     * so leaving it stale here is exactly what turns a "restart succeeded" response into a 502 on
+     * the next gateway hit.
+     */
+    public void rebindPort(int hostPort) {
+        this.hostPort = hostPort;
+    }
+
     public void close(PreviewSessionStatus status) {
         this.status = status.name();
     }
