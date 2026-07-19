@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -36,6 +37,7 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 
 class AgentOrchestratorTest {
 
@@ -546,7 +548,11 @@ class AgentOrchestratorTest {
     // ── #57 (QA report §5.6/H1/M3): retry() / findPendingApprovalId() shared judgment ───────────
 
     @Test
-    void retryDelegatesToTaskStoreWhenNoApprovalIsPending() {
+    void retryLocksTheTaskRowFirstThenDelegatesToTaskStoreWhenNoApprovalIsPending() {
+        // Issue #64: retry() must now be a task-bound decision — task row locked FIRST (ADR-Y1
+        // order, same as approve/reject/cancel/sweep), then a *locking* re-verification of
+        // approvals, all inside one transaction. The mock stub below (locking-read method) proves
+        // retry() no longer uses the non-locking findByTaskIdOrderByIdAsc for its own action gate.
         TaskStore taskStore = mock(TaskStore.class);
         ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
         AgentOrchestrator orchestrator = new AgentOrchestrator(
@@ -557,20 +563,25 @@ class AgentOrchestratorTest {
                 approvalRepository,
                 mock(AgentMessageService.class)
         );
-        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of());
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of());
         when(taskStore.retry("task-1", 1L)).thenReturn(true);
 
         assertThat(orchestrator.retry("task-1", 1L)).isTrue();
-        verify(taskStore).retry("task-1", 1L);
+        InOrder order = inOrder(taskStore, approvalRepository);
+        order.verify(taskStore).lockTask("task-1");
+        order.verify(approvalRepository).findByTaskIdOrderByIdAscForUpdate("task-1");
+        order.verify(taskStore).retry("task-1", 1L);
     }
 
     @Test
-    void retryRefusesWithoutEvenAskingTaskStoreWhenAnApprovalIsStillPending() {
+    void retryLocksTheTaskRowButRefusesWithoutEvenAskingTaskStoreWhenAnApprovalIsStillPending() {
         // The QA-reported drift (H1) was exactly this: attempt<maxAttempts alone said "retryable"
         // while this method already refused whenever a PENDING approval — e.g.
         // BuildFailureRecoveryService's "자동 수정 및 재build" CHANGE approval — was still open.
-        // taskStore.retry must never even be consulted once a PENDING approval is found (retry()
-        // short-circuits on findPendingApprovalId, not on taskStore's own attempt/status check).
+        // taskStore.retry must never even be consulted once a PENDING approval is found. Unlike
+        // before #64, the task row IS still locked first (taskStore.lockTask) — that lock
+        // acquisition itself is what makes the "no PENDING approval" check below race-free against
+        // a concurrent approve/reject/cancel on the same taskId (see retry()'s javadoc).
         TaskStore taskStore = mock(TaskStore.class);
         ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
         AgentOrchestrator orchestrator = new AgentOrchestrator(
@@ -585,9 +596,10 @@ class AgentOrchestratorTest {
                 55L, 1L, 11L, 21L, "task-1", ApprovalType.CHANGE,
                 ApprovalStatus.PENDING, "자동 수정 및 재build: 의존성 설치 후 재빌드", LocalDateTime.now(), null
         );
-        when(approvalRepository.findByTaskIdOrderByIdAsc("task-1")).thenReturn(List.of(recoveryApproval));
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of(recoveryApproval));
 
         assertThat(orchestrator.retry("task-1", 1L)).isFalse();
+        verify(taskStore).lockTask("task-1");
         verify(taskStore, never()).retry(anyString(), anyLong());
     }
 
