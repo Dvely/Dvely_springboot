@@ -1,6 +1,8 @@
 package com.example.dvely.approval.domain.repository;
 
 import com.example.dvely.approval.domain.model.Approval;
+import com.example.dvely.approval.domain.value.ApprovalStatus;
+import com.example.dvely.approval.domain.value.ApprovalType;
 import java.util.List;
 import java.util.Optional;
 
@@ -45,4 +47,16 @@ public interface ApprovalRepository {
      * first already serializes every other decision-maker for the same taskId.
      */
     List<Approval> findByTaskIdOrderByIdAscForUpdate(String taskId);
+
+    /**
+     * Track Z (#56) review follow-up (B1 residual, issue #62): true iff this project currently
+     * has an approval of the given type/status combination — used by
+     * {@code ResultApprovalService#hasResultGateHistory} to detect a PENDING RESULT approval
+     * (a decision the gate is *actively* waiting on) in addition to the already-decided
+     * REJECTED/MERGED Change rows it already checks. Without this, a direct deploy racing a
+     * pending RESULT approval on the same never-yet-released project could merge preview content
+     * the user has not decided on yet (narrower cousin of BLOCKING-1: not-yet-decided rather than
+     * already-REJECTED content).
+     */
+    boolean existsByProjectIdAndTypeAndStatus(Long projectId, ApprovalType type, ApprovalStatus status);
 }

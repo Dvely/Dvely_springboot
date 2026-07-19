@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.approval.domain.model.Approval;
+import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
 import com.example.dvely.auth.application.command.AuthCommandService;
@@ -37,9 +38,11 @@ class ResultApprovalServiceTest {
     private final UserRepository userRepository = mock(UserRepository.class);
     private final AuthCommandService authCommandService = mock(AuthCommandService.class);
     private final GithubRepoPort githubRepoPort = mock(GithubRepoPort.class);
+    private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
 
     private final ResultApprovalService service = new ResultApprovalService(
-            changeRepository, projectRepository, userRepository, authCommandService, githubRepoPort
+            changeRepository, projectRepository, userRepository, authCommandService, githubRepoPort,
+            approvalRepository
     );
 
     @Test
@@ -189,8 +192,40 @@ class ResultApprovalServiceTest {
     void hasResultGateHistoryIsFalseWhenNoChangeHasEverBeenDecidedForTheProject() {
         when(changeRepository.existsByProjectIdAndStatusIn(11L, java.util.List.of(
                 ChangeStatus.REJECTED.name(), ChangeStatus.MERGED.name()))).thenReturn(false);
+        when(approvalRepository.existsByProjectIdAndTypeAndStatus(
+                11L, ApprovalType.RESULT, ApprovalStatus.PENDING)).thenReturn(false);
 
         assertThat(service.hasResultGateHistory(11L)).isFalse();
+    }
+
+    // ── Issue #62 B1 (RESULT-gate review residual): a PENDING RESULT approval must count as
+    // gate history too — a decision in flight is not "never gated", even though no Change row
+    // has been REJECTED/MERGED yet. This is what closes the PENDING-vs-direct-deploy race the
+    // BLOCKING-1 fix's REJECTED/MERGED-only check still left open. ─────────────────────────────
+
+    @Test
+    void hasResultGateHistoryIsTrueWhenAPendingResultApprovalExistsEvenWithNoDecidedChangeYet() {
+        when(changeRepository.existsByProjectIdAndStatusIn(11L, java.util.List.of(
+                ChangeStatus.REJECTED.name(), ChangeStatus.MERGED.name()))).thenReturn(false);
+        when(approvalRepository.existsByProjectIdAndTypeAndStatus(
+                11L, ApprovalType.RESULT, ApprovalStatus.PENDING)).thenReturn(true);
+
+        assertThat(service.hasResultGateHistory(11L)).isTrue();
+    }
+
+    @Test
+    void hasResultGateHistorySkipsThePendingApprovalLookupWhenDecidedChangeHistoryAlreadyAnswersTrue() {
+        // Short-circuit: once a REJECTED/MERGED Change already settles the question, there is no
+        // need for a second round trip to the approvals table — asserting zero interactions here
+        // both documents the intended evaluation order and guards against a future edit
+        // accidentally turning this into two always-executed queries per call.
+        when(changeRepository.existsByProjectIdAndStatusIn(11L, java.util.List.of(
+                ChangeStatus.REJECTED.name(), ChangeStatus.MERGED.name()))).thenReturn(true);
+
+        assertThat(service.hasResultGateHistory(11L)).isTrue();
+
+        verify(approvalRepository, never())
+                .existsByProjectIdAndTypeAndStatus(any(), any(), any());
     }
 
     private ChangeEntity changeEntity() {
