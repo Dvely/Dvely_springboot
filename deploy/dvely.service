@@ -1,0 +1,46 @@
+[Unit]
+Description=Dvely (qeploy) Spring Boot application
+Documentation=https://github.com/Dvely/Dvely_springboot
+# 앱이 MySQL과 Docker 데몬에 붙으므로 둘 다 기다린다.
+# 다만 Docker는 Wants로 둔다. DockerContainerService는 생성자에서 클라이언트 객체만 만들고
+# 실제 연결은 첫 사용 시점까지 미루므로, Docker가 없어도 서버는 기동한다.
+# Requires로 묶으면 Docker 장애가 곧 앱 장애가 되어 이 성질이 사라진다.
+After=network-online.target mysql.service docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+User=dvely
+Group=dvely
+WorkingDirectory=/opt/dvely
+
+# 시크릿과 DB 접속 정보. dvely.env.example 참고.
+# 이 파일은 root:dvely 소유, 권한 0640 으로 두어 다른 계정이 읽지 못하게 한다.
+EnvironmentFile=/etc/dvely/dvely.env
+Environment=SPRING_PROFILES_ACTIVE=prod
+
+# 컨테이너/EC2 메모리에 맞춰 힙을 잡는다. -Xmx를 고정하지 않는 편이 인스턴스 교체에 유연하다.
+ExecStart=/usr/bin/java -XX:MaxRAMPercentage=75.0 -jar /opt/dvely/app.jar
+
+# Spring Boot는 SIGTERM 종료 시 143으로 끝난다. 실패로 세지 않는다.
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5
+# graceful shutdown 여유. 초과하면 SIGKILL.
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dvely
+
+# --- 샌드박스 ---
+# 앱이 쓰는 /tmp 경로는 전부 Docker 컨테이너 내부라 PrivateTmp가 안전하다.
+# 단 /var/run/docker.sock 접근이 필요하므로 dvely 계정을 docker 그룹에 넣어야 한다.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/dvely
+
+[Install]
+WantedBy=multi-user.target
