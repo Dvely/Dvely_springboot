@@ -103,6 +103,11 @@ qeploy:
       poll-interval-ms: ${QEPLOY_WEBHOOK_WORKER_POLL_INTERVAL_MS:1000}
   chat:
     trash-cleanup-interval-ms: ${QEPLOY_CHAT_TRASH_CLEANUP_INTERVAL_MS:3600000}
+  audit:
+    # ADR-A7 (design ad-audit-log-design.md §8, issue #74): retention has no PRD basis — this is
+    # a proposed default the team confirmed (180 days), not a requirement derived from product docs.
+    retention-days: ${QEPLOY_AUDIT_RETENTION_DAYS:180}
+    retention-sweep-interval-ms: ${QEPLOY_AUDIT_RETENTION_SWEEP_INTERVAL_MS:3600000}
 
 # Cloudflare DNS - managed subdomain automation
 cloudflare:
