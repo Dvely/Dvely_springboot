@@ -1,5 +1,10 @@
 package com.example.dvely.domainbinding.application.command;
 
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -39,6 +44,7 @@ public class DomainBindingCommandService {
     private final DnsLookupPort dnsLookupPort;
     private final DomainHostingAdapterRegistry hostingAdapterRegistry;
     private final CloudflareProperties cloudflareProperties;
+    private final AuditRecorder auditRecorder;
 
     @Transactional
     public DomainBindingResult bindDomain(Long ownerUserId, Long projectId, BindDomainCommand command) {
@@ -46,13 +52,34 @@ public class DomainBindingCommandService {
         DomainHostingAdapter adapter = hostingAdapterRegistry.resolve(command.hostingTarget());
         User user = resolveUser(ownerUserId);
         DomainHostingAdapter.Context context = toHostingContext(user, project);
+        DomainBindingResult result;
         if (command.type() == DomainType.MANAGED_SUBDOMAIN) {
-            return bindManagedSubdomain(project, command, adapter, context);
+            result = bindManagedSubdomain(project, command, adapter, context);
+        } else if (command.type() == DomainType.CUSTOM_DOMAIN) {
+            result = bindCustomDomain(project, command, adapter, context);
+        } else {
+            throw new IllegalArgumentException("구매형 도메인 연결은 아직 외부 registrar 연동 후 지원됩니다.");
         }
-        if (command.type() == DomainType.CUSTOM_DOMAIN) {
-            return bindCustomDomain(project, command, adapter, context);
-        }
-        throw new IllegalArgumentException("구매형 도메인 연결은 아직 외부 registrar 연동 후 지원됩니다.");
+        // H10 (design §4): recorded once the row is durably saved (bindManagedSubdomain/
+        // bindCustomDomain's own save already happened by the time result is returned here) —
+        // consolidated at this single call site rather than duplicated in both private methods,
+        // since both converge on exactly the same audit shape. A failure inside either private
+        // method (adapter.bind()/DNS calls) throws before reaching this line, so only an actually
+        // successful bind is ever recorded.
+        auditRecorder.record(new AuditEvent(
+                AuditAction.DOMAIN_BOUND,
+                AuditOutcome.SUCCEEDED,
+                command.taskId() != null ? AuditActorType.AGENT : AuditActorType.USER,
+                ownerUserId,
+                projectId,
+                "DOMAIN_BINDING",
+                String.valueOf(result.domainId()),
+                command.taskId(),
+                null,
+                "type=" + command.type() + ", hostname=" + result.hostname() + ", hostingTarget=" + command.hostingTarget(),
+                null
+        ));
+        return result;
     }
 
     @Transactional
@@ -81,8 +108,19 @@ public class DomainBindingCommandService {
         return toResult(domainBindingRepository.save(domain));
     }
 
+    /** HTTP path — no Agent task (see {@link #deleteDomain(Long, Long, String)}). */
     @Transactional
     public void deleteDomain(Long ownerUserId, Long domainId) {
+        deleteDomain(ownerUserId, domainId, null);
+    }
+
+    /**
+     * @param taskId nullable — non-null only when the Agent-driven delete path (design H11,
+     *               ADR-A8) called this; a direct HTTP call always passes null via the 2-arg
+     *               overload above.
+     */
+    @Transactional
+    public void deleteDomain(Long ownerUserId, Long domainId, String taskId) {
         DomainBinding domain = resolveDomainOwnedBy(domainId, ownerUserId);
         Project project = resolveProject(ownerUserId, domain.getProjectId());
         User user = resolveUser(ownerUserId);
@@ -92,6 +130,23 @@ public class DomainBindingCommandService {
             cloudflareDnsPort.deleteRecord(domain.getHostname(), domain.getCloudflareRecordId());
         }
         domainBindingRepository.deleteById(domain.getId());
+        // H11 (design §4): the row is hard-deleted above — this audit row becomes the only
+        // surviving trace of the binding ever having existed (design §2.2 "DOMAIN 카테고리의 실질
+        // 가치"), so hostname is captured in detail rather than relying on a resource that will
+        // no longer exist to look up.
+        auditRecorder.record(new AuditEvent(
+                AuditAction.DOMAIN_DELETED,
+                AuditOutcome.SUCCEEDED,
+                taskId != null ? AuditActorType.AGENT : AuditActorType.USER,
+                ownerUserId,
+                domain.getProjectId(),
+                "DOMAIN_BINDING",
+                String.valueOf(domain.getId()),
+                taskId,
+                null,
+                "hostname=" + domain.getHostname(),
+                null
+        ));
     }
 
     private DomainBindingResult bindManagedSubdomain(Project project,

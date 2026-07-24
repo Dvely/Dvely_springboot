@@ -41,7 +41,13 @@ public class DomainBindingFacade {
         return commandService.checkVerification(ownerUserId, domainId);
     }
 
+    /** HTTP path — no Agent task, so no taskId (see {@link #deleteDomain(Long, Long, String)}). */
     public void deleteDomain(Long ownerUserId, Long domainId) {
-        commandService.deleteDomain(ownerUserId, domainId);
+        commandService.deleteDomain(ownerUserId, domainId, null);
+    }
+
+    /** Agent path (design H11) — {@code taskId} lets the audit hook attribute AGENT, not USER. */
+    public void deleteDomain(Long ownerUserId, Long domainId, String taskId) {
+        commandService.deleteDomain(ownerUserId, domainId, taskId);
     }
 }

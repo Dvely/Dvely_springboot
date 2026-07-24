@@ -3,6 +3,11 @@ package com.example.dvely.project.application.service;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.project.application.result.ProjectInfrastructureChangeResult;
@@ -49,6 +54,7 @@ public class ProjectInfrastructureConfigurationService {
     private final ProjectInfrastructureSettingChangeRepository changeRepository;
     private final ProjectApprovalPolicyRepository policyRepository;
     private final ApprovalRepository approvalRepository;
+    private final AuditRecorder auditRecorder;
 
     @Transactional(readOnly = true)
     public ProjectInfrastructureConfigurationResult get(Long ownerUserId, Long projectId) {
@@ -98,9 +104,23 @@ public class ProjectInfrastructureConfigurationService {
                     .orElseGet(() -> new ProjectInfrastructureSetting(projectId, requested));
             setting.apply(requested);
             settingRepository.save(setting);
-            changeRepository.save(
+            ProjectInfrastructureSettingChange change = changeRepository.save(
                     ProjectInfrastructureSettingChange.applied(projectId, action, requested, ownerUserId));
             log.info("Infrastructure configuration applied immediately. projectId={}, action={}", projectId, action);
+            // H13 (design §4): immediate-apply path — no approval involved, so approvalId stays null.
+            auditRecorder.record(new AuditEvent(
+                    AuditAction.INFRA_CONFIG_APPLIED,
+                    AuditOutcome.SUCCEEDED,
+                    AuditActorType.USER,
+                    ownerUserId,
+                    projectId,
+                    "INFRA_CONFIG_CHANGE",
+                    String.valueOf(change.getId()),
+                    null,
+                    null,
+                    requested.summaryText(),
+                    null
+            ));
             return toResult(projectId, true);
         }
 
@@ -110,11 +130,26 @@ public class ProjectInfrastructureConfigurationService {
         Approval approval = approvalRepository.save(Approval.standalone(
                 ownerUserId, projectId, ApprovalType.INFRA_OPERATION, summaryFor(action, requested)
         ));
-        changeRepository.save(ProjectInfrastructureSettingChange.pendingApproval(
+        ProjectInfrastructureSettingChange change = changeRepository.save(ProjectInfrastructureSettingChange.pendingApproval(
                 projectId, action, requested, approval.getId(), ownerUserId
         ));
         log.info("Standalone infrastructure approval created. projectId={}, approvalId={}, action={}",
                 projectId, approval.getId(), action);
+        // H13 (design §4): approval-required path — approvalId set so the eventual
+        // INFRA_CONFIG_APPLIED/REJECTED row (H14) can be correlated back to this request.
+        auditRecorder.record(new AuditEvent(
+                AuditAction.INFRA_CONFIG_CHANGE_REQUESTED,
+                AuditOutcome.SUCCEEDED,
+                AuditActorType.USER,
+                ownerUserId,
+                projectId,
+                "INFRA_CONFIG_CHANGE",
+                String.valueOf(change.getId()),
+                null,
+                approval.getId(),
+                requested.summaryText(),
+                null
+        ));
         return toResult(projectId, true);
     }
 

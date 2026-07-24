@@ -12,6 +12,9 @@ import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -39,10 +42,11 @@ class ResultApprovalServiceTest {
     private final AuthCommandService authCommandService = mock(AuthCommandService.class);
     private final GithubRepoPort githubRepoPort = mock(GithubRepoPort.class);
     private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+    private final AuditRecorder auditRecorder = mock(AuditRecorder.class);
 
     private final ResultApprovalService service = new ResultApprovalService(
             changeRepository, projectRepository, userRepository, authCommandService, githubRepoPort,
-            approvalRepository
+            approvalRepository, auditRecorder
     );
 
     @Test
@@ -69,6 +73,20 @@ class ResultApprovalServiceTest {
         assertThat(change.getMergeCommitSha()).isEqualTo("merged-sha-123");
         assertThat(change.getMergedAt()).isNotNull();
         verify(changeRepository).save(change);
+        // H6 (design §4): real merge path — recorded with the approval's correlation ids.
+        org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        AuditEvent recorded = auditCaptor.getValue();
+        assertThat(recorded.action()).isEqualTo(AuditAction.RESULT_MERGED);
+        assertThat(recorded.actorUserId()).isEqualTo(1L);
+        assertThat(recorded.projectId()).isEqualTo(11L);
+        // change.getId() stays null on this unsaved-fixture ChangeEntity (no real DB identity
+        // generation in this unit test) — String.valueOf(...) of that is what production code
+        // computes too, so this proves the hook reads change.getId(), not a hardcoded id.
+        assertThat(recorded.resourceId()).isEqualTo(String.valueOf(change.getId()));
+        assertThat(recorded.taskId()).isEqualTo("task-1");
+        assertThat(recorded.approvalId()).isEqualTo(9L);
+        assertThat(recorded.detail()).contains("77").contains("merged-sha-123");
     }
 
     @Test
@@ -92,6 +110,8 @@ class ResultApprovalServiceTest {
         assertThat(change.getStatus()).isEqualTo(ChangeStatus.MERGED.name());
         verify(githubRepoPort, never()).createOrGetPullRequest(any(), any(), any(), any(), any());
         verify(githubRepoPort, never()).mergePullRequest(any(), any(), org.mockito.ArgumentMatchers.anyInt());
+        // H6: the idempotent no-diff path is not a new external effect — must not double-record.
+        verify(auditRecorder, never()).record(any());
     }
 
     @Test

@@ -3,6 +3,11 @@ package com.example.dvely.project.application.service;
 import com.example.dvely.approval.application.port.out.StandaloneApprovalHandler;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.project.domain.model.ProjectInfrastructureSetting;
@@ -36,6 +41,7 @@ public class InfrastructureChangeApprovalHandler implements StandaloneApprovalHa
     private final ProjectInfrastructureSettingChangeRepository changeRepository;
     private final ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
+    private final AuditRecorder auditRecorder;
 
     @Override
     public boolean supports(ApprovalType type) {
@@ -65,6 +71,21 @@ public class InfrastructureChangeApprovalHandler implements StandaloneApprovalHa
         changeRepository.save(change);
         log.info("Infrastructure configuration applied via approval. projectId={}, changeId={}, approvalId={}",
                 change.getProjectId(), change.getId(), approval.getId());
+        // H14 (design §4): approver is the actor (design ADR-A8) — this runs in a standalone
+        // approve tx with no task lock involved (taskId is null for INFRA_OPERATION approvals).
+        auditRecorder.record(new AuditEvent(
+                AuditAction.INFRA_CONFIG_APPLIED,
+                AuditOutcome.SUCCEEDED,
+                AuditActorType.USER,
+                approval.getOwnerUserId(),
+                change.getProjectId(),
+                "INFRA_CONFIG_CHANGE",
+                String.valueOf(change.getId()),
+                null,
+                approval.getId(),
+                change.getConfiguration().summaryText(),
+                null
+        ));
     }
 
     @Override
@@ -74,6 +95,19 @@ public class InfrastructureChangeApprovalHandler implements StandaloneApprovalHa
         changeRepository.save(change);
         log.info("Infrastructure configuration change rejected. projectId={}, changeId={}, approvalId={}",
                 change.getProjectId(), change.getId(), approval.getId());
+        auditRecorder.record(new AuditEvent(
+                AuditAction.INFRA_CONFIG_REJECTED,
+                AuditOutcome.SUCCEEDED,
+                AuditActorType.USER,
+                approval.getOwnerUserId(),
+                change.getProjectId(),
+                "INFRA_CONFIG_CHANGE",
+                String.valueOf(change.getId()),
+                null,
+                approval.getId(),
+                null,
+                null
+        ));
     }
 
     private ProjectInfrastructureSettingChange findPending(Long approvalId) {

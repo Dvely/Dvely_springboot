@@ -1,5 +1,10 @@
 package com.example.dvely.project.application.command;
 
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.chat.application.command.ChatCommandService;
 import com.example.dvely.project.application.command.dto.ConnectProjectRepositoryCommand;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
@@ -29,6 +34,7 @@ public class ProjectCommandService {
     private final GithubRepositoryPort githubRepositoryPort;
     private final UserProfilePort userProfilePort;
     private final ChatCommandService chatCommandService;
+    private final AuditRecorder auditRecorder;
 
     @Transactional
     public ProjectDetailResult createProject(Long ownerUserId, CreateProjectCommand command) {
@@ -77,6 +83,23 @@ public class ProjectCommandService {
         project.updateRepositoryHealth(RepositoryHealthStatus.HEALTHY);
 
         Project savedProject = projectRepository.save(project);
+        // H1 (design §4): "create" mode actually created a new GitHub repository (a GITHUB-scope
+        // write distinct from "connected an existing one") — recorded after save, once binding is
+        // durable, matching the "record after external effect + state confirmed" rule (design §4
+        // intro).
+        auditRecorder.record(new AuditEvent(
+                "create".equals(repositoryMode) ? AuditAction.REPOSITORY_CREATED : AuditAction.REPOSITORY_CONNECTED,
+                AuditOutcome.SUCCEEDED,
+                AuditActorType.USER,
+                ownerUserId,
+                savedProject.getId(),
+                "REPOSITORY",
+                repositoryFullName,
+                null,
+                null,
+                "mode=" + repositoryMode + ", visibility=" + visibility,
+                null
+        ));
         return toRepositoryResult(savedProject);
     }
 
@@ -105,8 +128,24 @@ public class ProjectCommandService {
     @Transactional
     public void disconnectRepository(Long ownerUserId, Long projectId) {
         Project project = getProject(ownerUserId, projectId);
+        // H2 (design §4): read before unbindRepository() clears it — the audit row's resource_id
+        // must name the repository that *was* connected, not the null it becomes afterward.
+        String disconnectedRepository = project.getSourceRepository();
         project.unbindRepository();
-        projectRepository.save(project);
+        Project savedProject = projectRepository.save(project);
+        auditRecorder.record(new AuditEvent(
+                AuditAction.REPOSITORY_DISCONNECTED,
+                AuditOutcome.SUCCEEDED,
+                AuditActorType.USER,
+                ownerUserId,
+                savedProject.getId(),
+                "REPOSITORY",
+                disconnectedRepository,
+                null,
+                null,
+                null,
+                null
+        ));
     }
 
     @Transactional
@@ -141,7 +180,26 @@ public class ProjectCommandService {
             throw new IllegalStateException("프로젝트에 연결된 저장소가 없습니다.");
         }
 
-        githubRepositoryPort.deleteRepository(ownerUserId, project.getSourceRepository());
+        String deletedRepository = project.getSourceRepository();
+        githubRepositoryPort.deleteRepository(ownerUserId, deletedRepository);
+        // H3 (design §4): recorded right after the real, irreversible GitHub deletion succeeds —
+        // deliberately before the DB cleanup below finishes, so this record's REQUIRES_NEW commit
+        // survives even if something after this line fails and rolls the outer transaction back
+        // (the deletion itself already happened and cannot be undone by a DB rollback — design §4
+        // H3 note / ADR-A2 "committed vs. requested" semantics).
+        auditRecorder.record(new AuditEvent(
+                AuditAction.REPOSITORY_DELETED,
+                AuditOutcome.SUCCEEDED,
+                AuditActorType.USER,
+                ownerUserId,
+                project.getId(),
+                "REPOSITORY",
+                deletedRepository,
+                null,
+                null,
+                null,
+                null
+        ));
         chatCommandService.deleteConversationsForProject(ownerUserId, project.getId());
         projectDomainService.delete(project);
         projectRepository.save(project);

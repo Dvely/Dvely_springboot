@@ -10,6 +10,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -57,6 +60,7 @@ class DeploymentCommandServiceTest {
     @Mock private DeploymentHistoryRepository deploymentHistoryRepository;
     @Mock private ProjectApprovalPolicyRepository policyRepository;
     @Mock private ResultApprovalService resultApprovalService;
+    @Mock private AuditRecorder auditRecorder;
 
     private DeploymentCommandService service;
 
@@ -71,7 +75,8 @@ class DeploymentCommandServiceTest {
                 githubRepoPort,
                 deploymentHistoryRepository,
                 policyRepository,
-                resultApprovalService
+                resultApprovalService,
+                auditRecorder
         );
     }
 
@@ -97,6 +102,37 @@ class DeploymentCommandServiceTest {
         assertThat(result.pagesUrl()).isNull();
         assertThat(project.getDeployStatus()).isEqualTo(DeployStatus.PENDING);
         verifyNoInteractions(userRepository, githubPagesPort, githubActionsPort, githubRepoPort);
+        // H7 (design §4): no taskId on this command -> USER, fresh request (no
+        // retriedFromHistoryId) -> DEPLOYMENT_REQUESTED, not RETRY_REQUESTED.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().action()).isEqualTo(AuditAction.DEPLOYMENT_REQUESTED);
+        assertThat(auditCaptor.getValue().actorType()).isEqualTo(com.example.dvely.audit.domain.value.AuditActorType.USER);
+        assertThat(auditCaptor.getValue().resourceId()).isEqualTo("51");
+    }
+
+    @Test
+    void deploy_recorderThrowing_doesNotUndoTheAlreadyPersistedHistoryAndProjectState() {
+        // H7 is one of the hooks called out (design §11) for the "recorder throws does not break
+        // the caller's own operation" property. AuditRecorder itself never throws in production
+        // (see AuditRecorderIntegrationTest) — this mock only probes that the hook runs after,
+        // not before, the persistence this method exists to do.
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> persisted(invocation.getArgument(0), 51L));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        org.mockito.Mockito.doThrow(new RuntimeException("boom")).when(auditRecorder).record(any());
+
+        assertThatThrownBy(() -> service.deploy(1L, 11L, new DeployCommand(DeployTargetType.LATEST, null)))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("boom");
+
+        verify(deploymentHistoryRepository).save(any(DeploymentHistory.class));
+        verify(projectRepository).save(project);
+        assertThat(project.getDeployStatus()).isEqualTo(DeployStatus.PENDING);
     }
 
     @Test
@@ -127,6 +163,11 @@ class DeploymentCommandServiceTest {
         assertThat(created.getCorrelationId()).isNotEqualTo(failed.getCorrelationId());
         assertThat(created.getTaskId()).isNull();
         verifyNoInteractions(userRepository, githubPagesPort, githubActionsPort, githubRepoPort);
+        // H7: retriedFromHistoryId != null -> DEPLOYMENT_RETRY_REQUESTED, detail carries the link.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().action()).isEqualTo(AuditAction.DEPLOYMENT_RETRY_REQUESTED);
+        assertThat(auditCaptor.getValue().detail()).contains("retriedFromHistoryId=51");
     }
 
     @Test
@@ -599,6 +640,41 @@ class DeploymentCommandServiceTest {
         assertThat(exhaustedHistory.getStatus()).isEqualTo(DeployStatus.FAILED);
         verify(deploymentHistoryRepository).save(exhaustedHistory);
         verify(projectRepository).save(notBound);
+        // H9 (design §4): terminal FAILED (attempt budget exhausted) is the one case this hook
+        // records — SYSTEM actor, attributed to the deployment's owner.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        AuditEvent recorded = auditCaptor.getValue();
+        assertThat(recorded.action()).isEqualTo(AuditAction.DEPLOYMENT_FAILED);
+        assertThat(recorded.actorType()).isEqualTo(com.example.dvely.audit.domain.value.AuditActorType.SYSTEM);
+        assertThat(recorded.actorUserId()).isEqualTo(1L);
+        assertThat(recorded.resourceId()).isEqualTo("51");
+    }
+
+    @Test
+    void executeQueued_doesNotRecordAuditWhenRetryBudgetIsNotYetExhausted() {
+        // H9: a non-terminal retry (attempt still below maxAttempts) leaves status PENDING, not
+        // FAILED — design §3.2 excludes non-terminal failures (the worker's own retry loop already
+        // tracks them; recording here would just be retry noise).
+        Project notBound = new Project(
+                11L, 1L, "my-project", ProjectStatus.ACTIVE, "vue", null, "fast",
+                DeployStatus.LIVE, "https://octo.github.io/repo/", "v6", null, null,
+                RepositoryVisibility.PUBLIC, RepositoryBindingStatus.NOT_BOUND, RepositoryHealthStatus.HEALTHY,
+                false, LocalDateTime.now(), LocalDateTime.now()
+        );
+        DeploymentHistory retryableHistory = new DeploymentHistory(
+                51L, 1L, 11L, DeployTargetType.LATEST, null, null, DeployStatus.IN_PROGRESS, null,
+                "correlation-51", null, null, null, null, null, null, null, null, "task-51", null,
+                1, 3, null, "worker-1", LocalDateTime.now().plusMinutes(2), LocalDateTime.now(), LocalDateTime.now(), null
+        );
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(retryableHistory));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.executeQueued(51L);
+
+        assertThat(retryableHistory.getStatus()).isEqualTo(DeployStatus.PENDING);
+        verifyNoInteractions(auditRecorder);
     }
 
     private DeploymentHistory persisted(DeploymentHistory source, Long id) {

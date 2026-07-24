@@ -11,6 +11,9 @@ import static org.mockito.Mockito.when;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
@@ -52,6 +55,9 @@ class InfrastructureChangeApprovalHandlerTest {
     @Mock
     private CloudConnectionRepository cloudConnectionRepository;
 
+    @Mock
+    private AuditRecorder auditRecorder;
+
     private InfrastructureChangeApprovalHandler handler;
 
     private final InfrastructureConfiguration configuration = new InfrastructureConfiguration(
@@ -61,7 +67,8 @@ class InfrastructureChangeApprovalHandlerTest {
     @BeforeEach
     void setUp() {
         handler = new InfrastructureChangeApprovalHandler(
-                settingRepository, changeRepository, cloudConnectionSettingRepository, cloudConnectionRepository
+                settingRepository, changeRepository, cloudConnectionSettingRepository, cloudConnectionRepository,
+                auditRecorder
         );
     }
 
@@ -94,6 +101,14 @@ class InfrastructureChangeApprovalHandlerTest {
         assertThat(settingCaptor.getValue().getConfiguration()).isEqualTo(configuration);
         assertThat(pending.getStatus().name()).isEqualTo("APPLIED");
         verify(changeRepository).save(pending);
+        // H14 (design §4): approver is the actor, approvalId correlates back to this decision.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        AuditEvent recorded = auditCaptor.getValue();
+        assertThat(recorded.action()).isEqualTo(AuditAction.INFRA_CONFIG_APPLIED);
+        assertThat(recorded.actorUserId()).isEqualTo(7L);
+        assertThat(recorded.approvalId()).isEqualTo(34L);
+        assertThat(recorded.resourceId()).isEqualTo(String.valueOf(pending.getId()));
     }
 
     @Test
@@ -144,6 +159,7 @@ class InfrastructureChangeApprovalHandlerTest {
         assertThat(pending.getStatus()).isEqualTo(InfrastructureChangeStatus.PENDING_APPROVAL);
         verify(settingRepository, never()).save(any());
         verify(changeRepository, never()).save(any());
+        verify(auditRecorder, never()).record(any());
     }
 
     @Test
@@ -180,6 +196,11 @@ class InfrastructureChangeApprovalHandlerTest {
         verify(changeRepository).save(pending);
         verify(settingRepository, never()).findByProjectId(any());
         verify(settingRepository, never()).save(any());
+        // H14 (design §4): rejection is also recorded, correlated to the same approval.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().action()).isEqualTo(AuditAction.INFRA_CONFIG_REJECTED);
+        assertThat(auditCaptor.getValue().approvalId()).isEqualTo(34L);
     }
 
     @Test

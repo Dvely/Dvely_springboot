@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -16,6 +17,9 @@ import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -52,6 +56,7 @@ class DeployAgentServiceTest {
         AuthCommandService authCommandService = mock(AuthCommandService.class);
         ProjectRepository projectRepository = mock(ProjectRepository.class);
         DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
+        AuditRecorder auditRecorder = mock(AuditRecorder.class);
         DeployAgentService service = new DeployAgentService(
                 dockerService,
                 previewSessionService,
@@ -61,7 +66,8 @@ class DeployAgentServiceTest {
                 projectRepository,
                 deploymentFacade,
                 mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService)
+                new PreviewBranchPushService(dockerService),
+                auditRecorder
         );
         Project project = boundProject();
         when(previewSessionService.findByTaskId("task123"))
@@ -117,6 +123,64 @@ class DeployAgentServiceTest {
                 11L,
                 new DeployCommand(DeployTargetType.LATEST, null, "task123")
         );
+        // H4 (design §4): this branch pushes to an *already-BOUND* project — no repository was
+        // created, so only PREVIEW_BRANCH_PUSHED is recorded, never REPOSITORY_CREATED.
+        org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().action()).isEqualTo(AuditAction.PREVIEW_BRANCH_PUSHED);
+        assertThat(auditCaptor.getValue().resourceId()).isEqualTo("octo/repo");
+        assertThat(auditCaptor.getValue().taskId()).isEqualTo("task123");
+    }
+
+    // ── H4 (design ad-audit-log-design.md §4): repository-creation branch also records REPOSITORY_CREATED ──
+
+    @Test
+    void recordsRepositoryCreatedAndPreviewBranchPushedWhenANewRepositoryIsCreated() {
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
+        GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
+        UserRepository userRepository = mock(UserRepository.class);
+        AuthCommandService authCommandService = mock(AuthCommandService.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
+        AuditRecorder auditRecorder = mock(AuditRecorder.class);
+        DeployAgentService service = new DeployAgentService(
+                dockerService, previewSessionService, githubRepositoryPort, userRepository,
+                authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
+                new PreviewBranchPushService(dockerService), auditRecorder
+        );
+        when(previewSessionService.findByTaskId("task123"))
+                .thenReturn(Optional.of(new PreviewSessionInfo(
+                        "session-1", 1L, null, 21L, "task123", "container-1", 3000,
+                        "https://preview.qeploy.com/session-1/", LocalDateTime.now().plusMinutes(30)
+                )));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(dockerService.exec("container-1", "[ -d /workspace/app/.git ] && echo yes || echo no"))
+                .thenReturn("no");
+        when(githubRepositoryPort.repositoryExists(1L, "octo/new-repo")).thenReturn(false);
+        when(githubRepositoryPort.createRepository(1L, "new-repo", RepositoryVisibility.PUBLIC))
+                .thenReturn("octo/new-repo");
+        when(projectRepository.findFirstByOwnerUserIdAndSourceRepositoryIgnoreCaseAndDeletedFalseOrderByUpdatedAtDesc(1L, "octo/new-repo"))
+                .thenReturn(Optional.empty());
+        when(projectRepository.save(any(Project.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(deploymentFacade.deploy(eq(1L), isNull(), any(DeployCommand.class))).thenReturn(
+                new DeployResult(51L, null, "LATEST", null, "PENDING", null, LocalDateTime.now())
+        );
+
+        service.execute(
+                new AgentStep(AgentType.DEPLOY, Map.of("repoName", "new-repo")),
+                1L,
+                "task123",
+                null
+        );
+
+        org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder, times(2)).record(auditCaptor.capture());
+        assertThat(auditCaptor.getAllValues())
+                .extracting(AuditEvent::action)
+                .containsExactly(AuditAction.REPOSITORY_CREATED, AuditAction.PREVIEW_BRANCH_PUSHED);
+        assertThat(auditCaptor.getAllValues())
+                .allSatisfy(event -> assertThat(event.resourceId()).isEqualTo("octo/new-repo"));
     }
 
     // ── I45 (#45): autoBindRepository's single inline retry on ObjectOptimisticLockingFailureException ──
@@ -133,7 +197,8 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService)
+                new PreviewBranchPushService(dockerService),
+                mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
         Project reloaded = notBoundProject();
@@ -174,7 +239,8 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService)
+                new PreviewBranchPushService(dockerService),
+                mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
@@ -215,7 +281,8 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService)
+                new PreviewBranchPushService(dockerService),
+                mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
         Project reloaded = notBoundProject();
@@ -257,7 +324,8 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService)
+                new PreviewBranchPushService(dockerService),
+                mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
@@ -294,7 +362,8 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService)
+                new PreviewBranchPushService(dockerService),
+                mock(AuditRecorder.class)
         );
         Project project = boundProject();
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
@@ -325,7 +394,8 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService)
+                new PreviewBranchPushService(dockerService),
+                mock(AuditRecorder.class)
         );
         Project project = boundProject();
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());

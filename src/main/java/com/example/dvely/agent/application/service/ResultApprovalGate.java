@@ -6,6 +6,11 @@ import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.domain.model.Approval;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.value.ApprovalType;
 import com.example.dvely.auth.application.command.AuthCommandService;
@@ -47,6 +52,7 @@ public class ResultApprovalGate {
     private final TaskStore taskStore;
     private final ApprovalRepository approvalRepository;
     private final AgentMessageService agentMessageService;
+    private final AuditRecorder auditRecorder;
 
     /**
      * @param stepIndex zero-based index, within {@code plan.steps()}, of the CODE step that just
@@ -98,6 +104,21 @@ public class ResultApprovalGate {
         }
 
         pushPreviewBranch(taskId, userId, project);
+        // H5 (design §4): the gate's own push is a real GitHub write too (design F5) — recorded
+        // right after it succeeds, before any of the state transitions below.
+        auditRecorder.record(new AuditEvent(
+                AuditAction.PREVIEW_BRANCH_PUSHED,
+                AuditOutcome.SUCCEEDED,
+                AuditActorType.AGENT,
+                userId,
+                projectId,
+                "REPOSITORY",
+                project.getSourceRepository(),
+                taskId,
+                null,
+                null,
+                null
+        ));
 
         // §5.2 ordering: completeStep only after the push above has actually succeeded, so a push
         // failure (network/token — caught by AgentPlanExecutor's outer catch-all, which marks the

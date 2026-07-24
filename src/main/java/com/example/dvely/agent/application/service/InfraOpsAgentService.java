@@ -7,6 +7,11 @@ import com.example.dvely.agent.infrastructure.docker.ContainerResourceUsage;
 import com.example.dvely.agent.infrastructure.docker.ContainerRuntimeStatus;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.deployment.application.query.DeploymentQueryService;
 import com.example.dvely.deployment.application.result.DeploymentFailureAnalysisResult;
@@ -79,6 +84,7 @@ public class InfraOpsAgentService {
     // policy through AgentStep/AgentPlan, which would leak an approval-layer concept into the
     // plan DTO shared by every agent type.
     private final ProjectApprovalPolicyRepository policyRepository;
+    private final AuditRecorder auditRecorder;
 
     public CodeResult execute(AgentStep step, Long userId, String taskId, Long projectId) {
         String rawOperation = step.parameters().get("operation");
@@ -113,7 +119,7 @@ public class InfraOpsAgentService {
             // approval already completed (same contract DeployAgentService relies on) — this
             // method does not itself gate on approval, it re-derives whether the policy was OFF
             // purely to decide the response's warning prefix (design §3.4).
-            case RESTART -> restart(projectId, userId, policyWasOff(projectId, operation));
+            case RESTART -> restart(projectId, userId, taskId, policyWasOff(projectId, operation));
             case RESOURCE_SCALING, AUTOSCALING_CHANGE, RESOURCE_CLEANUP -> unsupported(operation);
         };
         log.info("[InfraOpsAgent] 인프라 운영 작업 완료 | operation={} projectId={}", operation, projectId);
@@ -311,7 +317,7 @@ public class InfraOpsAgentService {
 
     // ── 3.4 RESTART — the only mutating operation; target is always the DB-resolved ACTIVE session ──
 
-    private String restart(Long projectId, Long userId, boolean policyWasOff) {
+    private String restart(Long projectId, Long userId, String taskId, boolean policyWasOff) {
         Optional<PreviewSessionInfo> session = findActiveSession(projectId, userId);
         String body;
         if (session.isEmpty()) {
@@ -321,26 +327,46 @@ public class InfraOpsAgentService {
                     + "(재배포는 '배포해줘'로 요청), 클라우드 서버는 아직 프로비저닝 전입니다.";
         } else {
             String containerId = session.get().containerId();
-            // Propagates uncaught on Docker NotFound (container removed out-of-band between the
-            // findActiveSession read above and this call) — the design's error table (§4.2) calls
-            // that a genuine failure, not a guidance case, since the DB said ACTIVE moments ago.
-            dockerService.restartContainer(containerId);
-            log.info("[InfraOpsAgent] preview 컨테이너 재시작 완료 | containerId={} projectId={}", containerId, projectId);
-            // Issue #71 (High, QA v2 §5): Docker reassigns a fresh ephemeral host port on every
-            // container start — including the stop+start restartContainer() just did — when the
-            // port was bound dynamically (Ports.Binding.bindPort(0), see
-            // DockerContainerService#createAndStartContainer). The preview session row's
-            // hostPort was captured at creation time and is now stale; PreviewGatewayService
-            // resolves its proxy target from that column on every request, so leaving it
-            // unrefreshed here is exactly what turned a "재시작했습니다 / 정상 실행 중" response into a
-            // 502 on the next gateway hit. Deliberately left uncaught (unlike the status re-check
-            // below): if we can't learn or persist the real port, this restart is not actually
-            // usable, and reporting "정상 실행 중" against a container whose reachable port we don't
-            // know would repeat the exact bug this fixes — task FAILED is the honest outcome.
-            int newHostPort = dockerService.getMappedPort(containerId);
-            PreviewSessionInfo refreshed = previewSessionService.updateHostPort(session.get().sessionId(), newHostPort);
-            log.info("[InfraOpsAgent] preview 포트 재바인딩 완료 | containerId={} projectId={} newHostPort={}",
-                    containerId, projectId, newHostPort);
+            String sessionId = session.get().sessionId();
+            PreviewSessionInfo refreshed;
+            try {
+                // Propagates uncaught on Docker NotFound (container removed out-of-band between the
+                // findActiveSession read above and this call) — the design's error table (§4.2) calls
+                // that a genuine failure, not a guidance case, since the DB said ACTIVE moments ago.
+                dockerService.restartContainer(containerId);
+                log.info("[InfraOpsAgent] preview 컨테이너 재시작 완료 | containerId={} projectId={}", containerId, projectId);
+                // Issue #71 (High, QA v2 §5): Docker reassigns a fresh ephemeral host port on every
+                // container start — including the stop+start restartContainer() just did — when the
+                // port was bound dynamically (Ports.Binding.bindPort(0), see
+                // DockerContainerService#createAndStartContainer). The preview session row's
+                // hostPort was captured at creation time and is now stale; PreviewGatewayService
+                // resolves its proxy target from that column on every request, so leaving it
+                // unrefreshed here is exactly what turned a "재시작했습니다 / 정상 실행 중" response into a
+                // 502 on the next gateway hit. Deliberately left uncaught (unlike the status re-check
+                // below): if we can't learn or persist the real port, this restart is not actually
+                // usable, and reporting "정상 실행 중" against a container whose reachable port we don't
+                // know would repeat the exact bug this fixes — task FAILED is the honest outcome.
+                int newHostPort = dockerService.getMappedPort(containerId);
+                refreshed = previewSessionService.updateHostPort(sessionId, newHostPort);
+                log.info("[InfraOpsAgent] preview 포트 재바인딩 완료 | containerId={} projectId={} newHostPort={}",
+                        containerId, projectId, newHostPort);
+            } catch (RuntimeException exception) {
+                // H12 (design §4): the one hook in this unit that also records failure — Docker
+                // restart is inherently a two-phase operation (container restarted + port rebound),
+                // and issue #71 was exactly a partial-completion incident (restarted, but the stale
+                // port never got fixed). A failure here is itself a meaningful state transition to
+                // surface to the project owner, not just a task-level error.
+                auditRecorder.record(new AuditEvent(
+                        AuditAction.PREVIEW_RESTARTED, AuditOutcome.FAILED, AuditActorType.AGENT,
+                        userId, projectId, "PREVIEW_SESSION", sessionId, taskId, null, null,
+                        exception.getMessage()
+                ));
+                throw exception;
+            }
+            auditRecorder.record(new AuditEvent(
+                    AuditAction.PREVIEW_RESTARTED, AuditOutcome.SUCCEEDED, AuditActorType.AGENT,
+                    userId, projectId, "PREVIEW_SESSION", sessionId, taskId, null, null, null
+            ));
             // Review Medium (x-cloudops-review.md): restartContainer() above already succeeded and
             // mutated real state. getContainerStatus only catches NotFoundException internally, so
             // any other Docker hiccup on this immediately-following re-check would otherwise turn

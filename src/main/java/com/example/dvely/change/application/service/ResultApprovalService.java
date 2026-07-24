@@ -4,6 +4,11 @@ import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -42,6 +47,7 @@ public class ResultApprovalService {
     private final AuthCommandService authCommandService;
     private final GithubRepoPort githubRepoPort;
     private final ApprovalRepository approvalRepository;
+    private final AuditRecorder auditRecorder;
 
     /**
      * @throws IllegalStateException (-> 409, E-RA-05) if no Change row exists for the approval's
@@ -82,6 +88,27 @@ public class ResultApprovalService {
         }
         change.markMerged(approval.getId(), prNumber, mergeCommitSha);
         changeRepository.save(change);
+        if (prNumber != null) {
+            // H6 (design §4): only the real-merge path — the idempotent no-diff branch above
+            // (prNumber stays null) is a no-op re-affirmation of an already-merged/empty-diff
+            // state, not a new external effect, so it is deliberately not recorded (no duplicate
+            // audit rows on a retried/no-op approve). Runs while this transaction still holds the
+            // task lock (design F9/§5.2 AL-2) — REQUIRES_NEW adds one INSERT round-trip (~1ms)
+            // to that hold time, negligible against RESULT approve's own p95.
+            auditRecorder.record(new AuditEvent(
+                    AuditAction.RESULT_MERGED,
+                    AuditOutcome.SUCCEEDED,
+                    AuditActorType.USER,
+                    approval.getOwnerUserId(),
+                    approval.getProjectId(),
+                    "CHANGE",
+                    String.valueOf(change.getId()),
+                    approval.getTaskId(),
+                    approval.getId(),
+                    "prNumber=" + prNumber + ", sha=" + mergeCommitSha,
+                    null
+            ));
+        }
         return new ReflectResult(prNumber, mergeCommitSha);
     }
 

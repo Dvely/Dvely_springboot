@@ -8,6 +8,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -72,6 +76,9 @@ class DomainBindingCommandServiceTest {
     @Mock
     private DomainHostingAdapter hostingAdapter;
 
+    @Mock
+    private AuditRecorder auditRecorder;
+
     private DomainBindingCommandService commandService;
 
     @BeforeEach
@@ -116,6 +123,116 @@ class DomainBindingCommandServiceTest {
         verify(cloudflareDnsPort).createCnameRecord("my-project.qeploy.com", "octo.github.io");
         verify(hostingAdapter).bind(any(), org.mockito.ArgumentMatchers.eq("my-project.qeploy.com"));
         verify(deploymentHistoryRepository, never()).findByProjectIdOrderByTriggeredAtDesc(11L);
+        // H10 (design §4): no taskId on this command -> USER actor.
+        org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        AuditEvent recorded = auditCaptor.getValue();
+        assertThat(recorded.action()).isEqualTo(AuditAction.DOMAIN_BOUND);
+        assertThat(recorded.actorType()).isEqualTo(AuditActorType.USER);
+        assertThat(recorded.detail()).contains("my-project.qeploy.com");
+    }
+
+    @Test
+    void bindDomain_withTaskIdRecordsAgentActor() {
+        Project project = boundProject("https://octo.github.io/repo/");
+        User user = activeUser();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+        when(domainBindingRepository.existsByHostnameIgnoreCase("agent-project.qeploy.com")).thenReturn(false);
+        when(hostingAdapter.resolveDnsTarget(any())).thenReturn("octo.github.io");
+        when(cloudflareDnsPort.createCnameRecord("agent-project.qeploy.com", "octo.github.io"))
+                .thenReturn("cf-record-2");
+        when(domainBindingRepository.save(any(DomainBinding.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        commandService.bindDomain(
+                1L,
+                11L,
+                new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "agent-project", null, null,
+                        DomainHostingTarget.GITHUB_PAGES, "task-77")
+        );
+
+        org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().actorType()).isEqualTo(AuditActorType.AGENT);
+        assertThat(auditCaptor.getValue().taskId()).isEqualTo("task-77");
+    }
+
+    @Test
+    void bindDomain_recorderThrowing_doesNotUndoTheAlreadySavedDomainBinding() {
+        // H10 is one of the hooks called out (design §11) for the "recorder throws does not break
+        // the caller's own operation" property — see the H3/H7 tests' javadoc for why this is a
+        // hook-placement probe, not a claim that AuditRecorder itself ever throws in production.
+        Project project = boundProject("https://octo.github.io/repo/");
+        User user = activeUser();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+        when(domainBindingRepository.existsByHostnameIgnoreCase("my-project.qeploy.com")).thenReturn(false);
+        when(hostingAdapter.resolveDnsTarget(any())).thenReturn("octo.github.io");
+        when(cloudflareDnsPort.createCnameRecord("my-project.qeploy.com", "octo.github.io"))
+                .thenReturn("cf-record-1");
+        when(domainBindingRepository.save(any(DomainBinding.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        org.mockito.Mockito.doThrow(new RuntimeException("boom")).when(auditRecorder).record(any());
+
+        assertThatThrownBy(() -> commandService.bindDomain(
+                1L, 11L, new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "my-project", null, null)))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("boom");
+
+        verify(domainBindingRepository).save(any(DomainBinding.class));
+    }
+
+    @Test
+    void deleteDomain_hardDeletesRowAndRecordsAuditWithHostnameInDetail() {
+        Project project = boundProject("https://octo.github.io/repo/");
+        User user = activeUser();
+        DomainBinding domain = new DomainBinding(
+                31L, 11L, DomainType.MANAGED_SUBDOMAIN, DomainHostingTarget.GITHUB_PAGES,
+                "my-project.qeploy.com", DomainStatus.CONNECTED,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME,
+                "octo.github.io", "record-1", true, CertificateStatus.ACTIVE, null,
+                LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now()
+        );
+        when(domainBindingRepository.findById(31L)).thenReturn(Optional.of(domain));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+
+        commandService.deleteDomain(1L, 31L, "task-88");
+
+        verify(cloudflareDnsPort).deleteRecord("my-project.qeploy.com", "record-1");
+        verify(domainBindingRepository).deleteById(31L);
+        org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        AuditEvent recorded = auditCaptor.getValue();
+        assertThat(recorded.action()).isEqualTo(AuditAction.DOMAIN_DELETED);
+        assertThat(recorded.actorType()).isEqualTo(AuditActorType.AGENT);
+        assertThat(recorded.taskId()).isEqualTo("task-88");
+        assertThat(recorded.resourceId()).isEqualTo("31");
+        assertThat(recorded.detail()).contains("my-project.qeploy.com");
+    }
+
+    @Test
+    void deleteDomain_twoArgOverloadRecordsUserActor() {
+        Project project = boundProject("https://octo.github.io/repo/");
+        User user = activeUser();
+        DomainBinding domain = new DomainBinding(
+                31L, 11L, DomainType.MANAGED_SUBDOMAIN, DomainHostingTarget.GITHUB_PAGES,
+                "my-project.qeploy.com", DomainStatus.CONNECTED,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME,
+                "octo.github.io", "record-1", true, CertificateStatus.ACTIVE, null,
+                LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now()
+        );
+        when(domainBindingRepository.findById(31L)).thenReturn(Optional.of(domain));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+
+        commandService.deleteDomain(1L, 31L);
+
+        org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().actorType()).isEqualTo(AuditActorType.USER);
+        assertThat(auditCaptor.getValue().taskId()).isNull();
     }
 
     @Test
@@ -204,7 +321,8 @@ class DomainBindingCommandServiceTest {
                 cloudflareDnsPort,
                 dnsLookupPort,
                 hostingAdapterRegistry,
-                cloudflareProperties
+                cloudflareProperties,
+                auditRecorder
         );
     }
 
