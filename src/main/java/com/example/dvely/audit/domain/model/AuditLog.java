@@ -47,20 +47,26 @@ public class AuditLog {
     private final String errorSummary;
     private final LocalDateTime createdAt;
 
-    /** Restore-from-storage constructor — values are trusted as already-valid/already-truncated. */
-    public AuditLog(Long id,
-                    AuditAction action,
-                    AuditOutcome outcome,
-                    AuditActorType actorType,
-                    Long actorUserId,
-                    Long projectId,
-                    String resourceType,
-                    String resourceId,
-                    String taskId,
-                    Long approvalId,
-                    String detail,
-                    String errorSummary,
-                    LocalDateTime createdAt) {
+    // Review follow-up (Low-3, ad-audit-review.md): this constructor bypasses from()'s redaction/
+    // truncation entirely ("values are trusted as already-valid/already-truncated") — kept
+    // private, with intent-revealing access only through restore() below, so nothing outside this
+    // class can construct an AuditLog without going through either from() (new rows) or restore()
+    // (rehydrating an already-written row). A public constructor here would have let a future
+    // caller accidentally build a row that skips both invariants (design's "구조로 강제, 신뢰가
+    // 아닌" principle — same reasoning as AuditLogWriter's §5.1 leaf guarantee).
+    private AuditLog(Long id,
+                     AuditAction action,
+                     AuditOutcome outcome,
+                     AuditActorType actorType,
+                     Long actorUserId,
+                     Long projectId,
+                     String resourceType,
+                     String resourceId,
+                     String taskId,
+                     Long approvalId,
+                     String detail,
+                     String errorSummary,
+                     LocalDateTime createdAt) {
         this.id = id;
         this.action = Objects.requireNonNull(action, "action must not be null");
         this.category = action.category();
@@ -99,6 +105,33 @@ public class AuditLog {
                 truncate(event.detail(), DETAIL_MAX_LENGTH),
                 truncate(SecretRedactor.redact(event.errorSummary()), ERROR_SUMMARY_MAX_LENGTH),
                 null
+        );
+    }
+
+    /**
+     * Rehydrates an {@code AuditLog} already read back from {@code audit_logs} (design §2.1) —
+     * used by {@code AuditLogEntity#toDomain}. Deliberately named/exposed separately from
+     * {@link #from(AuditEvent)} (Low-3 follow-up): every field here is trusted as already
+     * satisfying the column constraints and §7 redaction policy because it was persisted by
+     * {@code from()} in the first place, so no truncation/redaction is reapplied — doing so again
+     * would be redundant at best and silently mask a schema/entity drift at worst.
+     */
+    public static AuditLog restore(Long id,
+                                   AuditAction action,
+                                   AuditOutcome outcome,
+                                   AuditActorType actorType,
+                                   Long actorUserId,
+                                   Long projectId,
+                                   String resourceType,
+                                   String resourceId,
+                                   String taskId,
+                                   Long approvalId,
+                                   String detail,
+                                   String errorSummary,
+                                   LocalDateTime createdAt) {
+        return new AuditLog(
+                id, action, outcome, actorType, actorUserId, projectId,
+                resourceType, resourceId, taskId, approvalId, detail, errorSummary, createdAt
         );
     }
 

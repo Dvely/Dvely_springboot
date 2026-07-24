@@ -115,7 +115,7 @@ class AuditLogQueryServiceTest {
     }
 
     private AuditLog sampleLog() {
-        return new AuditLog(
+        return AuditLog.restore(
                 1L,
                 AuditAction.DEPLOYMENT_REQUESTED,
                 AuditOutcome.SUCCEEDED,

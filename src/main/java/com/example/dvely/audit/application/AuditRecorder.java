@@ -1,5 +1,6 @@
 package com.example.dvely.audit.application;
 
+import com.example.dvely.common.security.SecretRedactor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -36,11 +37,21 @@ public class AuditRecorder {
             // §5.3 "유실 창", accepted). The fixed "AUDIT_FALLBACK" prefix exists so operators can
             // alert on this exact string; its appearance at all is the signal, since audit writes
             // are expected to succeed essentially always.
+            //
+            // Review follow-up (Medium-1, ad-audit-review.md): errorSummary was missing from this
+            // format string entirely — for a FAILED-outcome event (H9/H8/H12), that field is
+            // exactly the failure reason this fallback line exists to preserve. Unlike the write
+            // path in AuditLog#from (which redacts before persisting to audit_logs), event.errorSummary()
+            // here is still the caller's raw, un-redacted value — logging it as-is would open a
+            // new secret-leak path into the application log that this feature's own §7 policy
+            // exists to close. Redact it the same way (SecretRedactor.redact) before it ever
+            // reaches this log line.
             log.error("AUDIT_FALLBACK action={} outcome={} actorType={} actorUserId={} projectId={} "
-                            + "resourceType={} resourceId={} taskId={} approvalId={} detail={}",
+                            + "resourceType={} resourceId={} taskId={} approvalId={} detail={} errorSummary={}",
                     event.action(), event.outcome(), event.actorType(), event.actorUserId(),
                     event.projectId(), event.resourceType(), event.resourceId(),
-                    event.taskId(), event.approvalId(), event.detail(), exception);
+                    event.taskId(), event.approvalId(), event.detail(),
+                    SecretRedactor.redact(event.errorSummary()), exception);
         }
     }
 }

@@ -147,9 +147,10 @@ public class WebhookEventHandler {
             }
         }
         deploymentHistoryRepository.save(history);
-        // H8 (design §4): the 112행 guard above already returns early for a re-delivered webhook
-        // against an already-terminal (LIVE/FAILED) history, so this line is naturally only
-        // reached once per history — no idempotency check needed here beyond that existing guard.
+        // H8 (design §4): the already-terminal-status guard earlier in this method (returns early
+        // when history.getStatus() is already LIVE or FAILED) already handles a re-delivered
+        // webhook against an already-terminal history, so this line is naturally only reached once
+        // per history — no idempotency check needed here beyond that existing guard.
         // actor SYSTEM (the direct cause is the webhook, not a user action), attributed to the
         // deployment's owner for traceability (design ADR-A8/H8 note).
         auditRecorder.record(new AuditEvent(

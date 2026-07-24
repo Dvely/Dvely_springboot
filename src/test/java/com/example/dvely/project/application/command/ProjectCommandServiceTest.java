@@ -334,8 +334,9 @@ class ProjectCommandServiceTest {
     void deleteProject_recorderThrowing_doesNotPreventGithubRepositoryDeletion() {
         // H3 is one of the hooks the design explicitly calls out (§11) for the "recorder throws
         // does not break the caller's own operation" property — AuditRecorder itself never
-        // propagates (see AuditRecorderTest), but this pins that ProjectCommandService also does
-        // not add its own try/catch that could mask a future regression there.
+        // propagates (see AuditRecorderIntegrationTest#recordNeverThrowsEvenWhenTheUnderlyingWriteFails),
+        // but this pins that ProjectCommandService also does not add its own try/catch that could
+        // mask a future regression there.
         Project project = boundProject();
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
         // No projectRepository.save() stub here (unlike the happy-path test above): the audit
@@ -351,7 +352,8 @@ class ProjectCommandServiceTest {
 
         // The GitHub deletion itself must already have gone through before the (mocked, in real
         // life never-throwing) recorder call — this assertion documents that ordering rather than
-        // asserting AuditRecorder's own contract (that belongs to AuditRecorderTest).
+        // asserting AuditRecorder's own contract (that belongs to
+        // AuditRecorderIntegrationTest#recordNeverThrowsEvenWhenTheUnderlyingWriteFails).
         verify(githubRepositoryPort).deleteRepository(1L, "octo/repo");
     }
 

@@ -69,9 +69,14 @@ class AuditLogTest {
                 .isInstanceOf(NullPointerException.class);
     }
 
+    // Review follow-up (Low-3, ad-audit-review.md): the underlying constructor is now private —
+    // AuditLog.restore(...) (used by AuditLogEntity#toDomain to rehydrate a persisted row) is the
+    // only way to reach it from outside this class, so these guard checks are exercised through
+    // that factory instead of a constructor call.
+
     @Test
-    void constructorRejectsNullAction() {
-        assertThatThrownBy(() -> new AuditLog(
+    void restoreRejectsNullAction() {
+        assertThatThrownBy(() -> AuditLog.restore(
                 null, null, AuditOutcome.SUCCEEDED, AuditActorType.USER, 1L, 1L,
                 null, null, null, null, null, null, null))
                 .isInstanceOf(NullPointerException.class)
@@ -79,8 +84,8 @@ class AuditLogTest {
     }
 
     @Test
-    void constructorRejectsNullOutcome() {
-        assertThatThrownBy(() -> new AuditLog(
+    void restoreRejectsNullOutcome() {
+        assertThatThrownBy(() -> AuditLog.restore(
                 null, AuditAction.DEPLOYMENT_REQUESTED, null, AuditActorType.USER, 1L, 1L,
                 null, null, null, null, null, null, null))
                 .isInstanceOf(NullPointerException.class)
@@ -88,8 +93,8 @@ class AuditLogTest {
     }
 
     @Test
-    void constructorRejectsNullActorType() {
-        assertThatThrownBy(() -> new AuditLog(
+    void restoreRejectsNullActorType() {
+        assertThatThrownBy(() -> AuditLog.restore(
                 null, AuditAction.DEPLOYMENT_REQUESTED, AuditOutcome.SUCCEEDED, null, 1L, 1L,
                 null, null, null, null, null, null, null))
                 .isInstanceOf(NullPointerException.class)

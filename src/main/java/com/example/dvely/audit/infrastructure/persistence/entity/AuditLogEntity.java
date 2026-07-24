@@ -125,7 +125,7 @@ public class AuditLogEntity {
     }
 
     public AuditLog toDomain() {
-        return new AuditLog(
+        return AuditLog.restore(
                 id,
                 AuditAction.valueOf(action),
                 AuditOutcome.valueOf(outcome),
