@@ -3,6 +3,11 @@ package com.example.dvely.agent.application.service;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.exception.AgentInputRequiredException;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.auth.application.command.AuthCommandService;
@@ -43,6 +48,7 @@ public class DeployAgentService {
     // Track Z (#56) D10: git-push mechanics extracted so ResultApprovalGate can push the same
     // way without duplicating the git/credential sequence — see PreviewBranchPushService javadoc.
     private final PreviewBranchPushService previewBranchPushService;
+    private final AuditRecorder auditRecorder;
 
     public CodeResult execute(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[DeployAgent] 배포 시작 | userId={} taskId={} projectId={}", userId, taskId, projectId);
@@ -50,6 +56,10 @@ public class DeployAgentService {
         Optional<PreviewSessionInfo> containerOpt = previewSessionService.findByTaskId(taskId);
         Project project;
         boolean sourceChanged = false;
+        // H4 (design §4): set only in the branches that actually call ensureGithubRepo() below —
+        // the "push to an already-BOUND project" branch never creates a repository, so it must
+        // stay false there even though it also sets sourceChanged.
+        boolean repoCreated = false;
 
         if (containerOpt.isPresent()) {
             // CODE 스텝이 선행된 경우 — 컨테이너의 코드를 GitHub에 push 후 배포
@@ -73,18 +83,20 @@ public class DeployAgentService {
                     // NOT_BOUND 또는 저장소 없음 → 신규 저장소 생성 후 push
                     log.info("[DeployAgent] projectId={} 저장소 미연결, 신규 저장소로 push", projectId);
                     String repoName     = resolveRepoName(step, userId, containerId, taskId);
-                    String repoFullName = ensureGithubRepo(userId, username, repoName);
-                    previewBranchPushService.push(containerId, userToken, username, repoFullName, true, taskId);
+                    RepoResolution resolution = ensureGithubRepo(userId, username, repoName);
+                    previewBranchPushService.push(containerId, userToken, username, resolution.fullName(), true, taskId);
                     sourceChanged = true;
-                    project = findOrCreateProject(userId, repoName, repoFullName);
+                    repoCreated = resolution.created();
+                    project = findOrCreateProject(userId, repoName, resolution.fullName());
                 }
             } else {
                 String repoName     = resolveRepoName(step, userId, containerId, taskId);
-                String repoFullName = ensureGithubRepo(userId, username, repoName);
-                log.info("[DeployAgent] 신규 저장소 push: {}", repoFullName);
-                previewBranchPushService.push(containerId, userToken, username, repoFullName, true, taskId);
+                RepoResolution resolution = ensureGithubRepo(userId, username, repoName);
+                log.info("[DeployAgent] 신규 저장소 push: {}", resolution.fullName());
+                previewBranchPushService.push(containerId, userToken, username, resolution.fullName(), true, taskId);
                 sourceChanged = true;
-                project = findOrCreateProject(userId, repoName, repoFullName);
+                repoCreated = resolution.created();
+                project = findOrCreateProject(userId, repoName, resolution.fullName());
             }
 
         } else if (projectId != null) {
@@ -105,6 +117,22 @@ public class DeployAgentService {
         if (sourceChanged) {
             log.info("[DeployAgent] 승인된 변경을 preview 브랜치에 반영 | repository={} taskId={}",
                     project.getSourceRepository(), taskId);
+            // H4 (design §4): recorded once project is confirmed (state confirmed, matching the
+            // §4 intro rule), consolidated here rather than duplicated in each of the three push
+            // branches above — all three set sourceChanged=true right after their own push call,
+            // so this single spot fires exactly once per branch with the same semantics.
+            if (repoCreated) {
+                auditRecorder.record(new AuditEvent(
+                        AuditAction.REPOSITORY_CREATED, AuditOutcome.SUCCEEDED, AuditActorType.AGENT,
+                        userId, project.getId(), "REPOSITORY", project.getSourceRepository(),
+                        taskId, null, null, null
+                ));
+            }
+            auditRecorder.record(new AuditEvent(
+                    AuditAction.PREVIEW_BRANCH_PUSHED, AuditOutcome.SUCCEEDED, AuditActorType.AGENT,
+                    userId, project.getId(), "REPOSITORY", project.getSourceRepository(),
+                    taskId, null, null, null
+            ));
         }
 
         // AgentPlanExecutor는 필요한 승인이 모두 끝난 뒤에만 이 서비스를 호출한다.
@@ -184,14 +212,20 @@ public class DeployAgentService {
 
     // ── GitHub 저장소 확인/생성 ─────────────────────────────────────────────────
 
-    private String ensureGithubRepo(Long userId, String username, String repoName) {
+    private RepoResolution ensureGithubRepo(Long userId, String username, String repoName) {
         String fullName = username + "/" + repoName;
         if (!githubRepositoryPort.repositoryExists(userId, fullName)) {
             log.info("[DeployAgent] 신규 저장소 생성: {}", fullName);
-            return githubRepositoryPort.createRepository(userId, repoName, RepositoryVisibility.PUBLIC);
+            return new RepoResolution(githubRepositoryPort.createRepository(userId, repoName, RepositoryVisibility.PUBLIC), true);
         }
         log.info("[DeployAgent] 기존 저장소 재사용: {}", fullName);
-        return fullName;
+        return new RepoResolution(fullName, false);
+    }
+
+    // H4 (design §4): lets execute() record REPOSITORY_CREATED only when a repository was
+    // actually created here, not merely reused — a single boolean return would force the caller
+    // to re-derive "was this created" from a plain String result.
+    private record RepoResolution(String fullName, boolean created) {
     }
 
     // ── Project 엔티티 조회/생성 ────────────────────────────────────────────────

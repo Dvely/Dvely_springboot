@@ -9,6 +9,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.chat.application.command.ChatCommandService;
 import com.example.dvely.project.application.command.dto.ConnectProjectRepositoryCommand;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
@@ -50,6 +53,9 @@ class ProjectCommandServiceTest {
     @Mock
     private ChatCommandService chatCommandService;
 
+    @Mock
+    private AuditRecorder auditRecorder;
+
     private ProjectCommandService projectCommandService;
 
     @BeforeEach
@@ -59,7 +65,8 @@ class ProjectCommandServiceTest {
                 new ProjectDomainService(),
                 githubRepositoryPort,
                 userProfilePort,
-                chatCommandService
+                chatCommandService,
+                auditRecorder
         );
     }
 
@@ -148,6 +155,13 @@ class ProjectCommandServiceTest {
 
         verify(githubRepositoryPort).preparePreviewBranch(1L, "octo/repo");
         verify(githubRepositoryPort, never()).createRepository(eq(1L), any(), any());
+        // H1 (design §4): "existing" mode connects an already-existing repository —
+        // REPOSITORY_CONNECTED, not REPOSITORY_CREATED.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().action()).isEqualTo(AuditAction.REPOSITORY_CONNECTED);
+        assertThat(auditCaptor.getValue().resourceId()).isEqualTo("octo/repo");
+        assertThat(auditCaptor.getValue().projectId()).isEqualTo(11L);
     }
 
     @Test
@@ -172,6 +186,11 @@ class ProjectCommandServiceTest {
         assertThat(project.getRepositoryConnectedAt()).isNotNull();
 
         verify(githubRepositoryPort).preparePreviewBranch(1L, "octo/new-repo");
+        // H1: "create" mode actually created a new repository — REPOSITORY_CREATED.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().action()).isEqualTo(AuditAction.REPOSITORY_CREATED);
+        assertThat(auditCaptor.getValue().resourceId()).isEqualTo("octo/new-repo");
     }
 
     @Test
@@ -187,7 +206,7 @@ class ProjectCommandServiceTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("이미 GitHub 저장소가 연결된 프로젝트입니다");
 
-        verifyNoInteractions(githubRepositoryPort, userProfilePort);
+        verifyNoInteractions(githubRepositoryPort, userProfilePort, auditRecorder);
     }
 
     @Test
@@ -230,6 +249,12 @@ class ProjectCommandServiceTest {
         assertThat(saved.getCurrentVersion()).isEqualTo("v3");
 
         verifyNoInteractions(githubRepositoryPort);
+        // H2 (design §4): resource_id must be the repository that *was* connected — read before
+        // unbindRepository() clears it, not the null it becomes afterward.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().action()).isEqualTo(AuditAction.REPOSITORY_DISCONNECTED);
+        assertThat(auditCaptor.getValue().resourceId()).isEqualTo("octo/repo");
     }
 
     @Test
@@ -242,7 +267,7 @@ class ProjectCommandServiceTest {
                 .hasMessageContaining("프로젝트에 연결된 저장소가 없습니다");
 
         verify(projectRepository, never()).save(any());
-        verifyNoInteractions(githubRepositoryPort);
+        verifyNoInteractions(githubRepositoryPort, auditRecorder);
     }
 
     @Test
@@ -253,7 +278,7 @@ class ProjectCommandServiceTest {
                 .isInstanceOf(ProjectNotFoundException.class);
 
         verify(projectRepository, never()).save(any());
-        verifyNoInteractions(githubRepositoryPort);
+        verifyNoInteractions(githubRepositoryPort, auditRecorder);
     }
 
     @Test
@@ -286,6 +311,48 @@ class ProjectCommandServiceTest {
         assertThat(result.repositoryFullName()).isEqualTo("octo/new-repo");
         assertThat(result.bindingStatus()).isEqualTo("BOUND");
         verify(githubRepositoryPort).preparePreviewBranch(1L, "octo/new-repo");
+    }
+
+    @Test
+    void deleteProject_withRepositoryMode_deletesGithubRepositoryAndRecordsAudit() {
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(projectRepository.save(any(Project.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        projectCommandService.deleteProject(1L, 11L, com.example.dvely.project.application.command.dto.ProjectDeleteMode.PROJECT_AND_REPOSITORY);
+
+        verify(githubRepositoryPort).deleteRepository(1L, "octo/repo");
+        // H3 (design §4): recorded right after the real GitHub deletion succeeds.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().action()).isEqualTo(AuditAction.REPOSITORY_DELETED);
+        assertThat(auditCaptor.getValue().resourceId()).isEqualTo("octo/repo");
+        assertThat(auditCaptor.getValue().projectId()).isEqualTo(11L);
+    }
+
+    @Test
+    void deleteProject_recorderThrowing_doesNotPreventGithubRepositoryDeletion() {
+        // H3 is one of the hooks the design explicitly calls out (§11) for the "recorder throws
+        // does not break the caller's own operation" property — AuditRecorder itself never
+        // propagates (see AuditRecorderTest), but this pins that ProjectCommandService also does
+        // not add its own try/catch that could mask a future regression there.
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        // No projectRepository.save() stub here (unlike the happy-path test above): the audit
+        // hook runs before that save (see ProjectCommandService#deleteProjectAndRepository), so
+        // once the mocked recorder throws, execution never reaches it — stubbing it anyway would
+        // be an unused stub under Mockito's strict-stubbing default.
+        org.mockito.Mockito.doThrow(new RuntimeException("boom")).when(auditRecorder).record(any());
+
+        assertThatThrownBy(() -> projectCommandService.deleteProject(
+                1L, 11L, com.example.dvely.project.application.command.dto.ProjectDeleteMode.PROJECT_AND_REPOSITORY))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("boom");
+
+        // The GitHub deletion itself must already have gone through before the (mocked, in real
+        // life never-throwing) recorder call — this assertion documents that ordering rather than
+        // asserting AuditRecorder's own contract (that belongs to AuditRecorderTest).
+        verify(githubRepositoryPort).deleteRepository(1L, "octo/repo");
     }
 
     private Project emptyProject() {

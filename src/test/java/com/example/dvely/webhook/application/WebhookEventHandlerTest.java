@@ -5,8 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.value.GithubId;
@@ -36,6 +41,7 @@ class WebhookEventHandlerTest {
     private UserRepository userRepository;
     private DeploymentHistoryRepository historyRepository;
     private ChangeService changeService;
+    private AuditRecorder auditRecorder;
     private WebhookEventHandler handler;
     private LocalDateTime receivedAt;
 
@@ -45,12 +51,14 @@ class WebhookEventHandlerTest {
         userRepository = mock(UserRepository.class);
         historyRepository = mock(DeploymentHistoryRepository.class);
         changeService = mock(ChangeService.class);
+        auditRecorder = mock(AuditRecorder.class);
         handler = new WebhookEventHandler(
                 new ObjectMapper(),
                 projectRepository,
                 userRepository,
                 historyRepository,
-                changeService
+                changeService,
+                auditRecorder
         );
         receivedAt = LocalDateTime.of(2026, 6, 14, 20, 0);
     }
@@ -70,6 +78,60 @@ class WebhookEventHandlerTest {
         verify(historyRepository).save(history);
         verify(projectRepository).save(project);
         verify(changeService).markDeployed("task-51");
+        // H8 (design §4): success conclusion -> DEPLOYMENT_SUCCEEDED, SYSTEM actor attributed to
+        // the deployment's owner.
+        org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        AuditEvent recorded = auditCaptor.getValue();
+        assertThat(recorded.action()).isEqualTo(AuditAction.DEPLOYMENT_SUCCEEDED);
+        assertThat(recorded.outcome()).isEqualTo(AuditOutcome.SUCCEEDED);
+        assertThat(recorded.actorUserId()).isEqualTo(1L);
+        assertThat(recorded.resourceId()).isEqualTo("51");
+    }
+
+    @Test
+    void workflowRunFailureConclusionRecordsDeploymentFailedAudit() {
+        DeploymentHistory history = history("workflow-sha");
+        Project project = project();
+        when(historyRepository.findByWorkflowRunId(901L)).thenReturn(Optional.of(history));
+        when(historyRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
+
+        handler.handle("workflow_run", bytes("""
+                {
+                  "repository": {"full_name": "octo/repo"},
+                  "workflow_run": {
+                    "id": 901,
+                    "name": "Qeploy Deploy to GitHub Pages",
+                    "display_title": "Qeploy deployment correlation-51",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "head_sha": "workflow-sha"
+                  }
+                }
+                """), receivedAt);
+
+        assertThat(history.getStatus()).isEqualTo(DeployStatus.FAILED);
+        org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        AuditEvent recorded = auditCaptor.getValue();
+        assertThat(recorded.action()).isEqualTo(AuditAction.DEPLOYMENT_FAILED);
+        assertThat(recorded.outcome()).isEqualTo(AuditOutcome.FAILED);
+        assertThat(recorded.errorSummary()).contains("failure");
+    }
+
+    @Test
+    void workflowRunRedeliveryAgainstAnAlreadyTerminalHistoryDoesNotRecordAuditAgain() {
+        // H8 idempotency: the 112행 guard returns early for a re-delivered webhook once the
+        // history is already LIVE/FAILED — this proves that guard also protects against a
+        // duplicate audit row, not just a duplicate DB write.
+        DeploymentHistory alreadyLive = history("workflow-sha");
+        alreadyLive.complete();
+        when(historyRepository.findByWorkflowRunId(901L)).thenReturn(Optional.of(alreadyLive));
+
+        handler.handle("workflow_run", workflowPayload("workflow-sha"), receivedAt);
+
+        verifyNoInteractions(auditRecorder);
     }
 
     @Test
@@ -83,6 +145,7 @@ class WebhookEventHandlerTest {
         assertThat(history.getStatus()).isEqualTo(DeployStatus.IN_PROGRESS);
         verify(historyRepository, never()).save(history);
         verify(changeService, never()).markDeployed("task-51");
+        verifyNoInteractions(auditRecorder);
     }
 
     @Test

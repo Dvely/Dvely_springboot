@@ -19,6 +19,10 @@ import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.docker.ContainerResourceUsage;
 import com.example.dvely.agent.infrastructure.docker.ContainerRuntimeStatus;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
@@ -68,6 +72,7 @@ class InfraOpsAgentServiceTest {
     private final ProjectInfrastructureSettingRepository infrastructureSettingRepository =
             mock(ProjectInfrastructureSettingRepository.class);
     private final ProjectApprovalPolicyRepository policyRepository = mock(ProjectApprovalPolicyRepository.class);
+    private final AuditRecorder auditRecorder = mock(AuditRecorder.class);
 
     private final InfraOpsAgentService service = new InfraOpsAgentService(
             projectRepository,
@@ -78,7 +83,8 @@ class InfraOpsAgentServiceTest {
             cloudConnectionSettingRepository,
             cloudConnectionRepository,
             infrastructureSettingRepository,
-            policyRepository
+            policyRepository,
+            auditRecorder
     );
 
     // ── 공통 전처리 ─────────────────────────────────────────────────────────────
@@ -338,6 +344,14 @@ class InfraOpsAgentServiceTest {
         verify(dockerService).restartContainer("container-1");
         assertThat(result.summary()).contains("재시작했습니다").contains(refreshed.publicUrl());
         assertThat(result.summary()).doesNotContain("승인 정책이 꺼져 있어");
+        // H12 (design §4): SUCCEEDED recorded once restart + port rebind both complete.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        AuditEvent recorded = auditCaptor.getValue();
+        assertThat(recorded.action()).isEqualTo(AuditAction.PREVIEW_RESTARTED);
+        assertThat(recorded.outcome()).isEqualTo(AuditOutcome.SUCCEEDED);
+        assertThat(recorded.resourceId()).isEqualTo("session-1");
+        assertThat(recorded.taskId()).isEqualTo(TASK_ID);
     }
 
     // Issue #71 (High): RESTART must re-query the container's newly (re)assigned ephemeral host
@@ -394,6 +408,14 @@ class InfraOpsAgentServiceTest {
         verify(dockerService).restartContainer("container-1");
         verify(previewSessionService, never()).updateHostPort(any(), anyInt());
         verify(dockerService, never()).getContainerStatus(any());
+        // H12 (design §4): the one hook that also records failure — a partial restart (container
+        // restarted, port rebind failed) is exactly the issue #71 shape.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        AuditEvent recorded = auditCaptor.getValue();
+        assertThat(recorded.action()).isEqualTo(AuditAction.PREVIEW_RESTARTED);
+        assertThat(recorded.outcome()).isEqualTo(AuditOutcome.FAILED);
+        assertThat(recorded.errorSummary()).contains("포트 바인딩");
     }
 
     @Test
@@ -420,6 +442,11 @@ class InfraOpsAgentServiceTest {
                 .contains("재시작했습니다")
                 .contains(refreshed.publicUrl())
                 .contains("확인 불가(재시작 자체는 완료됨)");
+        // H12: the post-restart status re-check is cosmetic only — its failure must not turn an
+        // already-successful restart+rebind into a FAILED audit row.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().outcome()).isEqualTo(AuditOutcome.SUCCEEDED);
     }
 
     @Test
@@ -434,6 +461,8 @@ class InfraOpsAgentServiceTest {
 
         verify(dockerService, never()).restartContainer(any());
         assertThat(result.summary()).contains("재시작할 실행 중인 서버가 없습니다");
+        // No session -> no restart attempt -> nothing to audit (design D8 "정상 케이스").
+        verifyNoInteractions(auditRecorder);
     }
 
     @Test

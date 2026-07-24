@@ -1,5 +1,10 @@
 package com.example.dvely.deployment.application.command;
 
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -61,6 +66,7 @@ public class DeploymentCommandService {
     // merge exception in prepareRelease below, which must not also cover a project whose only
     // history is a REJECTED result.
     private final ResultApprovalService resultApprovalService;
+    private final AuditRecorder auditRecorder;
 
     @Transactional
     public DeployResult deploy(Long ownerUserId, Long projectId, DeployCommand command) {
@@ -127,6 +133,25 @@ public class DeploymentCommandService {
         projectRepository.save(project);
         log.info("배포 요청 저장: projectId={} historyId={} correlationId={} retriedFromHistoryId={}",
                 project.getId(), history.getId(), history.getCorrelationId(), retriedFromHistoryId);
+        // H7 (design §4): taskId present means an Agent plan queued this (design ADR-A8); a plain
+        // POST /deployments or /retry click has no taskId and is USER. retriedFromHistoryId≠null
+        // distinguishes a retry from a fresh request without needing a second hook.
+        auditRecorder.record(new AuditEvent(
+                retriedFromHistoryId != null ? AuditAction.DEPLOYMENT_RETRY_REQUESTED : AuditAction.DEPLOYMENT_REQUESTED,
+                AuditOutcome.SUCCEEDED,
+                command.taskId() != null ? AuditActorType.AGENT : AuditActorType.USER,
+                ownerUserId,
+                project.getId(),
+                "DEPLOYMENT",
+                String.valueOf(history.getId()),
+                command.taskId(),
+                null,
+                "target=" + command.deployTargetType()
+                        + ", version=" + command.versionName()
+                        + ", correlationId=" + history.getCorrelationId()
+                        + (retriedFromHistoryId != null ? ", retriedFromHistoryId=" + retriedFromHistoryId : ""),
+                null
+        ));
         return toResult(history);
     }
 
@@ -267,6 +292,28 @@ public class DeploymentCommandService {
                 : exception.getMessage();
         history.retry(message, Duration.ofSeconds(Math.max(5, history.getAttempt() * 5L)));
         deploymentHistoryRepository.save(history);
+        if (history.getStatus() == DeployStatus.FAILED) {
+            // H9 (design §4): only the terminal transition (attempt budget exhausted) is
+            // recorded — the RETRY_WAIT branch above (history.getStatus() != FAILED here) is a
+            // non-terminal, retryable state the worker itself already tracks (design §3.2 "비터미널
+            // 실패는 기록하지 않는다"). Deliberately outside the isLatestProjectDeployment guard
+            // below: that guard only decides whether to also mirror onto `projects` (a UI
+            // convenience for the currently-displayed deployment), which is orthogonal to whether
+            // *this* history's own terminal failure happened.
+            auditRecorder.record(new AuditEvent(
+                    AuditAction.DEPLOYMENT_FAILED,
+                    AuditOutcome.FAILED,
+                    AuditActorType.SYSTEM,
+                    history.getOwnerUserId(),
+                    history.getProjectId(),
+                    "DEPLOYMENT",
+                    String.valueOf(history.getId()),
+                    null,
+                    null,
+                    null,
+                    message
+            ));
+        }
         if (history.getStatus() == DeployStatus.FAILED && isLatestProjectDeployment(history)) {
             try {
                 projectRepository.findById(history.getProjectId()).ifPresent(project -> {

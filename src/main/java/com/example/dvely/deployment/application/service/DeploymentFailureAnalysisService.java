@@ -9,6 +9,7 @@ import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.common.security.SecretRedactor;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort;
 import com.example.dvely.deployment.application.result.DeploymentFailureAnalysisResult;
 import com.example.dvely.deployment.domain.model.DeploymentFailureAnalysis;
@@ -63,21 +64,6 @@ public class DeploymentFailureAnalysisService {
     private static final int CONTEXT_LINES = 3;
     private static final Pattern ERROR_LINE_PATTERN = Pattern.compile(
             "##\\[error\\]|\\berror\\b|npm ERR!|exception|failed", Pattern.CASE_INSENSITIVE);
-
-    // Review follow-up F2: minimal secret redaction applied to the excerpt before it is sent to
-    // the LLM or persisted. This is deliberately a small, high-confidence allowlist of common
-    // token shapes (GitHub PATs, AWS access key ids, Slack tokens, JWT-like base64 blobs, and
-    // generic "Bearer <token>" headers) rather than an attempt at exhaustive secret detection —
-    // build logs can leak arbitrary custom secrets this can't catch, but redacting the common,
-    // reliably-shaped ones meaningfully reduces what ends up in an LLM request body and the DB.
-    private static final Pattern SECRET_PATTERN = Pattern.compile(
-            "(?:ghp_|gho_|ghs_|github_pat_)[A-Za-z0-9_]{10,}"
-                    + "|(?:AKIA|ASIA)[A-Z0-9]{12,}"
-                    + "|xox[baprs]-[A-Za-z0-9-]{10,}"
-                    + "|eyJ[A-Za-z0-9._-]{20,}"
-                    + "|(?i:bearer\\s+\\S{16,})"
-    );
-    private static final String REDACTED = "***REDACTED***";
 
     // Review follow-up F4: ClaudeClient itself has no read timeout (agent/** — out of scope to
     // change here, see class javadoc on the fallback), so without a caller-side cutoff a stuck
@@ -324,12 +310,17 @@ public class DeploymentFailureAnalysisService {
         return text.length() <= maxLength ? text : text.substring(0, maxLength);
     }
 
-    /** F2: replace common token shapes with a fixed placeholder — see {@link #SECRET_PATTERN}. */
+    /**
+     * F2: replace common token shapes with a fixed placeholder. Delegates to the shared
+     * {@link SecretRedactor} (design ad-audit-log-design.md ADR-A9) rather than keeping a private
+     * copy of the pattern — the audit domain applies the exact same redaction to its
+     * {@code error_summary} column, and a security-critical regex should have exactly one
+     * definition. Behavior is unchanged from before this delegation (same pattern, same
+     * replacement token) — see {@code DeploymentFailureAnalysisServiceTest}'s redaction cases and
+     * {@code SecretRedactorTest} for the shared coverage.
+     */
     private static String redact(String text) {
-        if (text == null || text.isEmpty()) {
-            return text;
-        }
-        return SECRET_PATTERN.matcher(text).replaceAll(REDACTED);
+        return SecretRedactor.redact(text);
     }
 
     // ── LLM 호출 + 룰 기반 fallback (design §3.3) ────────────────────────────

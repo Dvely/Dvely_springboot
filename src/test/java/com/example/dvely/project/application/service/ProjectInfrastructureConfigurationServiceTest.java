@@ -10,12 +10,16 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
@@ -75,6 +79,9 @@ class ProjectInfrastructureConfigurationServiceTest {
     @Mock
     private ApprovalRepository approvalRepository;
 
+    @Mock
+    private AuditRecorder auditRecorder;
+
     private ProjectInfrastructureConfigurationService service;
 
     private final InfrastructureConfiguration requested = new InfrastructureConfiguration(
@@ -90,7 +97,8 @@ class ProjectInfrastructureConfigurationServiceTest {
                 settingRepository,
                 changeRepository,
                 policyRepository,
-                approvalRepository
+                approvalRepository,
+                auditRecorder
         );
         // lenient(): both defaults are overridden or simply never reached by some tests (e.g.
         // the "other user" 404 test replaces the ownership stub; getHistory() never reaches the
@@ -241,6 +249,8 @@ class ProjectInfrastructureConfigurationServiceTest {
         verify(settingRepository, never()).save(any());
         verify(approvalRepository, never()).save(any());
         verify(changeRepository, never()).save(any());
+        // D10 no-op: no state actually changed, so nothing belongs in the audit trail either.
+        verifyNoInteractions(auditRecorder);
     }
 
     // ---- PUT: policy branches ----
@@ -270,6 +280,13 @@ class ProjectInfrastructureConfigurationServiceTest {
         assertThat(savedChange.getApprovalId()).isNull();
 
         verify(approvalRepository, never()).save(any());
+        // H13 (design §4): immediate-apply path — no approval, so approvalId stays null here too.
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        AuditEvent recorded = auditCaptor.getValue();
+        assertThat(recorded.action()).isEqualTo(AuditAction.INFRA_CONFIG_APPLIED);
+        assertThat(recorded.approvalId()).isNull();
+        assertThat(recorded.detail()).isEqualTo(requested.summaryText());
     }
 
     @Test
@@ -347,6 +364,15 @@ class ProjectInfrastructureConfigurationServiceTest {
         assertThat(result.pendingChange().deploymentArchitecture()).isEqualTo("CONTAINER");
         assertThat(result.settings()).isNotNull();
         assertThat(result.settings().deploymentArchitecture()).isEqualTo("SERVER");
+
+        // H13 (design §4): approval-required path — approvalId correlates to the just-created
+        // Approval (99L), resourceId to the just-persisted change (55L per the save() stub above).
+        ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        AuditEvent recorded = auditCaptor.getValue();
+        assertThat(recorded.action()).isEqualTo(AuditAction.INFRA_CONFIG_CHANGE_REQUESTED);
+        assertThat(recorded.approvalId()).isEqualTo(99L);
+        assertThat(recorded.resourceId()).isEqualTo("55");
     }
 
     @Test

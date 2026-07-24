@@ -33,7 +33,7 @@ public class DomainBindAgentService {
         }
 
         if ("DELETE".equalsIgnoreCase(step.parameters().getOrDefault("operation", ""))) {
-            return deleteDomain(step, userId);
+            return deleteDomain(step, userId, taskId);
         }
 
         String domain = step.parameters().getOrDefault("domain", "").trim();
@@ -41,7 +41,7 @@ public class DomainBindAgentService {
             domain = askUserForDomain(userId, taskId);
         }
 
-        BindDomainCommand command = buildCommand(step, domain);
+        BindDomainCommand command = buildCommand(step, domain, taskId);
         log.info("[DomainBindAgent] 도메인 연결 요청 | domain={} type={}", domain, command.type());
 
         DomainBindingResult result = domainBindingFacade.bindDomain(userId, projectId, command);
@@ -51,7 +51,7 @@ public class DomainBindAgentService {
         return new CodeResult(null, summary);
     }
 
-    private CodeResult deleteDomain(AgentStep step, Long userId) {
+    private CodeResult deleteDomain(AgentStep step, Long userId, String taskId) {
         String domainIdValue = step.parameters().getOrDefault("domainId", "").trim();
         if (domainIdValue.isEmpty()) {
             throw new IllegalArgumentException("삭제할 domainId가 필요합니다.");
@@ -62,7 +62,10 @@ public class DomainBindAgentService {
         } catch (NumberFormatException exception) {
             throw new IllegalArgumentException("올바르지 않은 domainId입니다: " + domainIdValue, exception);
         }
-        domainBindingFacade.deleteDomain(userId, domainId);
+        // H11 (design §4): this is the Agent-driven delete path, so it always has a real taskId —
+        // pass it through the new overload so DomainBindingCommandService can attribute
+        // AuditActorType.AGENT instead of USER (design ADR-A8).
+        domainBindingFacade.deleteDomain(userId, domainId, taskId);
         String hostname = step.parameters().getOrDefault("domain", "").trim();
         return new CodeResult(
                 null,
@@ -74,7 +77,7 @@ public class DomainBindAgentService {
 
     // ── 도메인 타입 판별 및 커맨드 생성 ────────────────────────────────────────
 
-    private BindDomainCommand buildCommand(AgentStep step, String domain) {
+    private BindDomainCommand buildCommand(AgentStep step, String domain, String taskId) {
         DomainType type = parseEnum(
                 step.parameters().get("domainType"),
                 DomainType.class,
@@ -91,8 +94,8 @@ public class DomainBindAgentService {
                 DomainHostingTarget.GITHUB_PAGES
         );
         return type == DomainType.MANAGED_SUBDOMAIN
-                ? new BindDomainCommand(type, domain, null, method, hostingTarget)
-                : new BindDomainCommand(type, null, domain, method, hostingTarget);
+                ? new BindDomainCommand(type, domain, null, method, hostingTarget, taskId)
+                : new BindDomainCommand(type, null, domain, method, hostingTarget, taskId);
     }
 
     private <T extends Enum<T>> T parseEnum(String value, Class<T> type, T defaultValue) {

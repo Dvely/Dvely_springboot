@@ -59,6 +59,9 @@ class DomainBindAgentServiceTest {
         assertThat(commandCaptor.getValue().type()).isEqualTo(DomainType.CUSTOM_DOMAIN);
         assertThat(commandCaptor.getValue().hostingTarget()).isEqualTo(DomainHostingTarget.GITHUB_PAGES);
         assertThat(commandCaptor.getValue().verificationMethod()).isEqualTo(VerificationMethod.A);
+        // H10/ADR-A8 (design §4): the Agent path must always carry its real taskId through to
+        // BindDomainCommand so DomainBindingCommandService's audit hook can attribute AGENT.
+        assertThat(commandCaptor.getValue().taskId()).isEqualTo("task-1");
         assertThat(execution.summary()).contains("GITHUB_PAGES", "PENDING");
     }
 
@@ -73,7 +76,8 @@ class DomainBindAgentServiceTest {
 
         var execution = service.execute(step, 1L, "task-delete", 11L);
 
-        verify(domainBindingFacade).deleteDomain(1L, 31L);
+        // H11 (design §4): the Agent path calls the 3-arg overload so taskId reaches the audit hook.
+        verify(domainBindingFacade).deleteDomain(1L, 31L, "task-delete");
         assertThat(execution.summary()).contains("www.example.com", "해제");
     }
 

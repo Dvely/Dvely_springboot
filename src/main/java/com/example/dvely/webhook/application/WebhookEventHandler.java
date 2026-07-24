@@ -1,5 +1,10 @@
 package com.example.dvely.webhook.application;
 
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.value.GithubId;
@@ -37,6 +42,7 @@ public class WebhookEventHandler {
     private final UserRepository userRepository;
     private final DeploymentHistoryRepository deploymentHistoryRepository;
     private final ChangeService changeService;
+    private final AuditRecorder auditRecorder;
 
     @Transactional
     public boolean handle(String eventType, byte[] payload, LocalDateTime receivedAt) {
@@ -141,6 +147,24 @@ public class WebhookEventHandler {
             }
         }
         deploymentHistoryRepository.save(history);
+        // H8 (design §4): the 112행 guard above already returns early for a re-delivered webhook
+        // against an already-terminal (LIVE/FAILED) history, so this line is naturally only
+        // reached once per history — no idempotency check needed here beyond that existing guard.
+        // actor SYSTEM (the direct cause is the webhook, not a user action), attributed to the
+        // deployment's owner for traceability (design ADR-A8/H8 note).
+        auditRecorder.record(new AuditEvent(
+                history.getStatus() == DeployStatus.LIVE ? AuditAction.DEPLOYMENT_SUCCEEDED : AuditAction.DEPLOYMENT_FAILED,
+                history.getStatus() == DeployStatus.LIVE ? AuditOutcome.SUCCEEDED : AuditOutcome.FAILED,
+                AuditActorType.SYSTEM,
+                history.getOwnerUserId(),
+                history.getProjectId(),
+                "DEPLOYMENT",
+                String.valueOf(history.getId()),
+                null,
+                null,
+                null,
+                history.getStatus() == DeployStatus.FAILED ? history.getErrorMessage() : null
+        ));
     }
 
     private void handlePush(JsonNode root, LocalDateTime receivedAt) {

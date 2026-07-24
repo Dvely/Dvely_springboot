@@ -22,6 +22,9 @@ import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -57,10 +60,12 @@ class ResultApprovalGateTest {
     private final TaskStore taskStore = mock(TaskStore.class);
     private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
     private final AgentMessageService agentMessageService = mock(AgentMessageService.class);
+    private final AuditRecorder auditRecorder = mock(AuditRecorder.class);
 
     private final ResultApprovalGate gate = new ResultApprovalGate(
             projectRepository, policyRepository, previewSessionService, previewBranchPushService,
-            userRepository, authCommandService, taskStore, approvalRepository, agentMessageService
+            userRepository, authCommandService, taskStore, approvalRepository, agentMessageService,
+            auditRecorder
     );
 
     @Test
@@ -82,6 +87,12 @@ class ResultApprovalGateTest {
         order.verify(taskStore).markWaitingResultApproval(eq("task-1"), anyString());
         order.verify(approvalRepository).save(any(Approval.class));
         verify(agentMessageService).appendAssistant(eq(21L), anyString());
+        // H5 (design §4): the gate's own preview push is a real GitHub write too.
+        org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
+        verify(auditRecorder).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().action()).isEqualTo(AuditAction.PREVIEW_BRANCH_PUSHED);
+        assertThat(auditCaptor.getValue().resourceId()).isEqualTo("octo/repo");
+        assertThat(auditCaptor.getValue().taskId()).isEqualTo("task-1");
     }
 
     @Test
@@ -221,6 +232,8 @@ class ResultApprovalGateTest {
         verify(taskStore, never()).markStepCompleted(anyString(), org.mockito.ArgumentMatchers.anyInt());
         verify(taskStore, never()).markWaitingResultApproval(anyString(), anyString());
         verifyNoInteractions(approvalRepository);
+        // H5: the push itself threw, so the audit hook placed right after it must never run.
+        verifyNoInteractions(auditRecorder);
     }
 
     @Test
