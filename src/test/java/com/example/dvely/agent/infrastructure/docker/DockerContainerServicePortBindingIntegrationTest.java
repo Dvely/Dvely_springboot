@@ -104,6 +104,7 @@ class DockerContainerServicePortBindingIntegrationTest {
         containerId = service.createAndStartContainer(
                 999_001L, "it-session-restart-" + System.nanoTime(), 1L, 1L,
                 "it-task-restart-" + System.nanoTime());
+        int portBeforeRestart = service.getMappedPort(containerId);
 
         service.restartContainer(containerId);
 
@@ -114,6 +115,11 @@ class DockerContainerServicePortBindingIntegrationTest {
         int mappedPort = service.getMappedPort(containerId);
         assertThat(mappedPort).isEqualTo(Integer.parseInt(bindings[0].getHostPortSpec()));
         assertThat(mappedPort).isPositive();
+        // Without this the test would keep its name ("AfterReallocation") while never actually
+        // proving a reallocation happened — it would stay green even if the daemon started
+        // returning the same port every restart, i.e. even if the scenario this test claims to
+        // cover stopped occurring at all.
+        assertThat(mappedPort).isNotEqualTo(portBeforeRestart);
     }
 
     private Ports.Binding[] inspectPortBindings(String containerId) {
