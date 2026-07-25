@@ -47,6 +47,12 @@ public class DockerContainerService {
     private static final String IMAGE          = "node:20-alpine";
     private static final int    CONTAINER_PORT = 3000;
     private static final long   EXEC_TIMEOUT_MIN = 10L;
+    // Host-side bind address for the preview container's published port (Issue #76, BI-081/G1).
+    // Kept as a plain constant rather than a configuration property, matching the
+    // IMAGE/CONTAINER_PORT style above and the BI-194 isolation constants further below: a real
+    // need to tune it hasn't appeared. Loopback-only is a deliberate security boundary, not an
+    // incidental default — see the comment at the bind call below.
+    private static final String HOST_BIND_IP = "127.0.0.1";
     private static final String AGENT_LABEL = "qeploy.agent";
     private static final String USER_ID_LABEL = "qeploy.userId";
     private static final String PREVIEW_SESSION_ID_LABEL = "qeploy.previewSessionId";
@@ -100,7 +106,23 @@ public class DockerContainerService {
 
         ExposedPort exposedPort = ExposedPort.tcp(CONTAINER_PORT);
         Ports portBindings = new Ports();
-        portBindings.bind(exposedPort, Ports.Binding.bindPort(0));
+        // Bind to loopback only, with a dynamic (0 = daemon-assigned) host port (Issue #76,
+        // BI-081/G1 — see audit .agent-team/01-reverse/preview-exposure-audit.md §2.1 F1-F4).
+        // `Ports.Binding.bindPort(int)` leaves HostIp unset, which Docker resolves to 0.0.0.0 —
+        // i.e. every network interface, reachable from outside the host. The container behind
+        // this port runs an unauthenticated static file server (`npx serve`, no session/token
+        // check of its own), so an unset HostIp was a full bypass of the gateway's accessToken
+        // check (PreviewGatewayService) and Spring Security entirely. `PreviewGatewayService`
+        // already only ever proxies to `127.0.0.1:hostPort`, so it never needed the port reachable
+        // from any other interface — this binding just stops promising more than that.
+        // PRD §14.2's "internal-network-only access" principle is what this enforces at the
+        // Docker layer instead of leaving it to host-firewall configuration (which the repo has
+        // no way to guarantee, per the audit's G5).
+        // NOTE for future readers: this hard-codes "the gateway and the Docker daemon are on the
+        // same host". If preview containers ever move to a remote/multi-host Docker daemon, this
+        // loopback bind must be revisited together with the gateway's proxy target — otherwise
+        // the gateway simply can't reach the container at all.
+        portBindings.bind(exposedPort, Ports.Binding.bindIpAndPort(HOST_BIND_IP, 0));
 
         Map<String, String> labels = new HashMap<>();
         labels.put(AGENT_LABEL, "true");
@@ -439,6 +461,17 @@ public class DockerContainerService {
                 .exec();
     }
 
+    /**
+     * Reads back the daemon-assigned host port for {@link #CONTAINER_PORT} (used after both
+     * initial start and {@link #restartContainer}, which reallocates it — Issue #71/#76). Only
+     * the port is parsed, not {@code HostIp}: before the loopback fix this array could hold two
+     * entries (0.0.0.0 and ::, since an unset HostIp binds every interface); with the loopback
+     * bind in {@link #createAndStartContainer} it holds exactly one ({@code 127.0.0.1}). Either
+     * way {@code bindings[0]} is the port we need, so this method is intentionally unaware of
+     * which host address produced it — that's `createAndStartContainer`'s decision, not this
+     * getter's (verified against a real container in
+     * DockerContainerServicePortBindingIntegrationTest).
+     */
     public int getMappedPort(String containerId) {
         InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
         Ports.Binding[] bindings = inspect.getNetworkSettings() == null

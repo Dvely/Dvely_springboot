@@ -173,6 +173,35 @@ class DockerContainerServiceTest {
         assertThat(hostConfig.getNetworkMode()).isEqualTo("qeploy-preview");
     }
 
+    // Issue #76 (BI-081/G1): the host port binding itself must carry HostIp=127.0.0.1, not just
+    // "some port binding exists" — an unset HostIp (the pre-fix Ports.Binding.bindPort(0)) is
+    // exactly the bug this guards against, and would pass a looser "a binding was added" check.
+    // A real-Docker assertion that the *daemon* actually enforces this loopback bind lives in
+    // DockerContainerServicePortBindingIntegrationTest; this test only proves the request we send
+    // asks for it.
+    @Test
+    void createAndStartContainerBindsHostPortToLoopbackOnly() {
+        mockNetworkAlreadyExists(true);
+        CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
+        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
+        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
+        when(createCommand.exec()).thenReturn(createResponse);
+        when(createResponse.getId()).thenReturn("container-1");
+        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+
+        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+
+        ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
+        verify(createCommand).withHostConfig(hostConfigCaptor.capture());
+        Ports.Binding[] bindings = hostConfigCaptor.getValue().getPortBindings()
+                .getBindings()
+                .get(ExposedPort.tcp(3000));
+        assertThat(bindings).hasSize(1);
+        assertThat(bindings[0].getHostIp()).isEqualTo("127.0.0.1");
+        // Port stays dynamic (daemon-assigned) — only HostIp changed, not the "which port" policy.
+        assertThat(bindings[0].getHostPortSpec()).isEqualTo("0");
+    }
+
     @Test
     void createAndStartContainerSkipsNetworkCreationWhenNetworkAlreadyExists() {
         mockNetworkAlreadyExists(true);
