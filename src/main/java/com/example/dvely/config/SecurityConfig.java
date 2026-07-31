@@ -56,6 +56,8 @@ public class SecurityConfig {
                         ).permitAll()
                         // Spring Boot 에러 핸들링 경로 (404 등이 정상 동작하려면 필요)
                         .requestMatchers("/error").permitAll()
+                        // 배포 워크플로의 기동 확인용. show-details: never 라 상태값만 나간다.
+                        .requestMatchers("/actuator/health").permitAll()
                         // 나머지는 JWT 인증 필요
                         .anyRequest().authenticated()
                 )
