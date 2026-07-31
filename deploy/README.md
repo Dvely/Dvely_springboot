@@ -1,6 +1,6 @@
 # EC2 배포 설정
 
-`.github/workflows/deploy-ec2.yml`은 `v*` 태그를 푸시할 때만 실행되며, 아래 환경이 EC2에 이미 갖춰져 있다고 가정한다. 최초 1회만 수동으로 준비하면 이후 배포는 태그 푸시로 끝난다.
+`.github/workflows/deploy-ec2.yml`은 **main에 커밋이 올라올 때마다**(= PR 병합 시) 실행되며, 아래 환경이 EC2에 이미 갖춰져 있다고 가정한다. 최초 1회만 수동으로 준비하면 이후 배포는 병합만으로 끝난다.
 
 ## 1. 서비스 계정과 디렉터리
 
@@ -80,10 +80,13 @@ sudo usermod -aG systemd-journal ubuntu
 
 ## 배포 방법
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
+main으로 PR을 병합하면 끝이다. 별도 조작은 없다.
+
+코드 변경 없이 다시 배포해야 할 때(롤백 후 재배포 등)는 Actions 탭에서 **Deploy to EC2 →
+Run workflow**로 수동 실행한다.
+
+`push: branches: [main]` 이므로 main에 직접 푸시해도 배포가 돈다. main을 보호 브랜치로
+걸어 PR로만 들어오게 해 두는 것을 전제한다.
 
 ## 롤백
 
@@ -97,10 +100,16 @@ sudo systemctl restart dvely
 ## 주의
 
 - 워크플로는 테스트를 돌리지 않는다(`-x test`). `@SpringBootTest` 3종이 실제 MySQL과
-  gitignore된 `application-local.yml`을 요구하기 때문이다. 태그를 밀기 전에 로컬에서
-  `./gradlew test`를 돌리는 것을 전제로 한다.
-- `application.yaml`의 `baseline-version: 5` 때문에 **빈 DB에서는 V1~V5가 실행되지 않는다.**
-  새 DB로 붙일 때는 `schema.sql`로 기준 스키마를 먼저 만들거나 baseline을 조정해야 한다.
+  gitignore된 `application-local.yml`을 요구하기 때문이다. **병합이 곧 배포이므로 검증되지
+  않은 커밋이 그대로 프로덕션에 올라간다.** 병합 전 CI(또는 로컬 `./gradlew test`)로
+  거르는 것을 전제로 한다.
+- `application.yaml`의 `baseline-version: 5`는 **테이블은 이미 있는데
+  `flyway_schema_history`가 없는 스키마**에 붙었을 때만 동작한다. 그 경우 V5로 baseline이
+  잡혀 V1~V5가 건너뛰어지므로, 그 다섯 개가 만드는 테이블이 없으면 `ddl-auto: validate`에서
+  기동이 실패한다. 완전히 빈 스키마라면 baseline 없이 V1부터 전부 실행되므로 그냥 두면 된다.
+- `application.yaml`의 `spring.flyway` / `spring.jpa` 블록 위에 최상위 키를 끼워 넣지 말 것.
+  들여쓰기상 그 키의 자식이 되어 설정이 통째로 무시되는데, 바인딩 실패가 조용해서 앱은
+  그대로 뜬다. 실제로 한 번 발생했다(#60 → #66 이후 수정).
 - 배포 후 기동 확인은 `http://127.0.0.1:8080/actuator/health`를 폴링한다. 포트가 워크플로에
   하드코딩돼 있으므로 `SERVER_PORT`로 포트를 바꾸면 워크플로도 같이 고쳐야 한다. 안 그러면
   헬스체크가 엉뚱한 포트를 보고 배포가 실패로 끝난다.

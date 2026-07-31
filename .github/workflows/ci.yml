@@ -1,0 +1,109 @@
+name: CI
+
+# main 병합이 곧 EC2 배포이므로(deploy-ec2.yml) 검증은 병합 전에 끝나야 한다.
+# 이 워크플로가 PR에서 실패하면 병합을 막는 것이 전제다 — GitHub 저장소 설정에서
+# main 보호 규칙에 "Build and test"를 required status check로 걸어야 실제로 막힌다.
+# 워크플로 파일만으로는 강제되지 않는다.
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+# PR에 커밋을 연달아 밀면 앞선 실행은 취소한다. 배포와 달리 중간 상태가 남지 않는다.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # @SpringBootTest 19종이 실제 MySQL을 요구한다. H2로는 대체할 수 없다 —
+    # *SchemaTest 들이 information_schema를 직접 조회해 Flyway가 만든 테이블/컬럼을
+    # 단언하고, ddl-auto=validate 도 실제 마이그레이션 결과를 검증 대상으로 삼는다.
+    services:
+      mysql:
+        image: mysql:9
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: dvely
+          MYSQL_USER: dvely
+          MYSQL_PASSWORD: dvely
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+
+    env:
+      # local 프로파일은 gitignore된 application-local.yml을 요구한다.
+      # dev 프로파일은 datasource를 전부 환경변수에서 읽으므로 CI에서 그대로 쓸 수 있다.
+      SPRING_PROFILES_ACTIVE: dev
+
+      # allowPublicKeyRetrieval: MySQL 9의 기본 인증 플러그인(caching_sha2_password)이
+      # 평문 연결에서 서버 공개키를 요구한다. 빠뜨리면 첫 접속부터 인증 실패로 끝난다.
+      DB_URL: jdbc:mysql://127.0.0.1:3306/dvely?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul
+      DB_USERNAME: dvely
+      DB_PASSWORD: dvely
+
+      # 아래는 전부 더미다. 실제 값이 필요한 게 아니라, application.yaml의 플레이스홀더에
+      # 기본값이 없어서 비어 있으면 컨텍스트 로딩 자체가 실패하기 때문에 채운다.
+      # 테스트는 GitHub/AI API를 실제로 호출하지 않는다.
+      #
+      # ENCRYPT_SECRET은 AesEncryptor가 SHA-256으로 해싱해 쓰므로 길이 제약이 없다.
+      # JWT_SECRET은 다르다. jjwt의 Keys.hmacShaKeyFor()가 HS256에 256비트 미만 키를
+      # 받으면 WeakKeyException을 던지므로 32바이트 이상이어야 한다.
+      ENCRYPT_SECRET: ci-dummy-encrypt-secret
+      JWT_SECRET: ci-dummy-jwt-secret-that-is-at-least-32-bytes-long-for-hs256
+      GITHUB_OAUTH_CLIENT_ID: ci-dummy
+      GITHUB_OAUTH_CLIENT_SECRET: ci-dummy
+      GITHUB_OAUTH_REDIRECT_URI: http://localhost:8080/api/v1/auth/github/callback
+      GITHUB_APP_ID: '1'
+      GITHUB_APP_CLIENT_ID: ci-dummy
+      GITHUB_APP_CLIENT_SECRET: ci-dummy
+      GITHUB_APP_INSTALLATION_REDIRECT_URI: http://localhost:8080/api/v1/auth/github/app/callback
+      # GithubAppClient는 값이 "-----BEGIN"으로 시작하지 않으면 파일 경로로 읽는다.
+      # 지연 로딩이라 더미 문자열로도 컨텍스트는 뜨지만, 키를 실제로 파싱하는 경로가
+      # 테스트에 섞여 들어와도 깨지지 않도록 진짜 RSA 키를 만들어 둔다.
+      GITHUB_APP_PRIVATE_KEY: ${{ github.workspace }}/ci-github-app.pem
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Generate dummy GitHub App private key
+        run: openssl genrsa -out "${{ github.workspace }}/ci-github-app.pem" 2048
+
+      - name: Build and test
+        run: ./gradlew build --no-daemon
+
+      # 실패했을 때 어느 테스트가 왜 깨졌는지 보려면 HTML 리포트가 필요하다.
+      # 로그만으로는 @SpringBootTest 컨텍스트 로딩 실패의 원인 예외를 찾기 어렵다.
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: |
+            build/reports/tests/test
+            build/test-results/test
+          retention-days: 7
+          if-no-files-found: ignore
