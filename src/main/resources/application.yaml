@@ -4,6 +4,28 @@ spring:
   application:
     name: qeploy
 
+  # 주의: 아래 두 블록은 반드시 `spring:` 바로 아래 2칸 들여쓰기를 유지해야 한다.
+  # 사이에 최상위 키(예: springdoc:)를 끼워 넣으면 그 키의 자식으로 딸려 들어가
+  # spring.flyway / spring.jpa 가 통째로 사라진다. 바인딩 실패는 조용히 지나가므로
+  # 앱은 그대로 뜨고, 기본값으로 동작하다 프로덕션 첫 기동에서야 드러난다.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # 테이블은 있는데 flyway_schema_history 가 없는 스키마에 붙었을 때만 동작한다.
+    # 빈 스키마에서는 baseline 없이 V1부터 전부 실행된다.
+    baseline-on-migrate: true
+    baseline-version: 5
+
+  jpa:
+    database: mysql # 사용할 데이터베이스 유형 지정 (MySQL)
+    database-platform: org.hibernate.dialect.MySQLDialect # Hibernate에서 사용할 MySQL 방언(dialect) 설정
+    show-sql: true # 실행된 SQL 쿼리를 콘솔에 출력할지 여부 설정
+    hibernate:
+      ddl-auto: validate # Flyway migration 기준 스키마와 Entity 매핑 일치 여부만 검증
+    properties:
+      hibernate:
+        format_sql: true # 출력되는 SQL 쿼리를 보기 좋게 포맷팅
+
 # Swagger UI readability options (SwaggerConfig.java owns the OpenAPI bean/GroupedOpenApi
 # definitions; these are UI-only display preferences, no effect on the API contract itself).
 springdoc:
@@ -24,22 +46,6 @@ springdoc:
     # Persists the authorized Bearer token and any "Try it out" filter text across page reloads,
     # so re-testing a flow doesn't require re-pasting the JWT every time.
     persist-authorization: true
-
-  flyway:
-    enabled: true
-    locations: classpath:db/migration
-    baseline-on-migrate: true
-    baseline-version: 5
-
-  jpa:
-    database: mysql # 사용할 데이터베이스 유형 지정 (MySQL)
-    database-platform: org.hibernate.dialect.MySQLDialect # Hibernate에서 사용할 MySQL 방언(dialect) 설정
-    show-sql: true # 실행된 SQL 쿼리를 콘솔에 출력할지 여부 설정
-    hibernate:
-      ddl-auto: validate # Flyway migration 기준 스키마와 Entity 매핑 일치 여부만 검증
-    properties:
-      hibernate:
-        format_sql: true # 출력되는 SQL 쿼리를 보기 좋게 포맷팅
 
 # 배포 워크플로가 기동 확인에 쓴다. health 외에는 노출하지 않는다.
 management:
