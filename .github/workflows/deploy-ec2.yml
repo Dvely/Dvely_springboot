@@ -6,7 +6,7 @@ on:
   push:
     tags:
       - 'v*'
-
+  workflow_dispatch:
 # 태그를 연달아 밀어도 배포가 겹치지 않게 직렬화한다.
 # 배포 도중 취소하면 EC2가 어중간한 상태로 남으므로 cancel-in-progress는 끈다.
 concurrency:
