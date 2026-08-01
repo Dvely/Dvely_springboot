@@ -71,6 +71,10 @@ github:
     installation-redirect-uri: ${GITHUB_APP_INSTALLATION_REDIRECT_URI}
     client-id: ${GITHUB_APP_CLIENT_ID}
     client-secret: ${GITHUB_APP_CLIENT_SECRET}
+    # GitHub App 설정의 Webhook secret과 같은 값을 넣는다. GitHub이 이 값으로 payload를
+    # HMAC-SHA256 서명해 X-Hub-Signature-256에 실어 보내고, WebhookService가 같은 값으로
+    # 재계산해 대조한다. 이 키가 없으면 webhookSecret()이 null이라 서명 검증에서 NPE가 난다.
+    webhook-secret: ${GITHUB_WEBHOOK_SECRET}
 
 # 서비스용 JWT (클라이언트에게 발급)
 jwt:

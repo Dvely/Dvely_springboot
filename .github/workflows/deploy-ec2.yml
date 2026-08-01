@@ -13,8 +13,6 @@ on:
 
 # 병합이 연달아 일어나도 배포가 겹치지 않게 직렬화한다.
 # 배포 도중 취소하면 EC2가 어중간한 상태로 남으므로 cancel-in-progress는 끈다.
-# 앞선 배포가 도는 중에 두 건이 더 쌓이면 GitHub이 중간 건을 버리고 마지막 것만 남기는데,
-# 어차피 main의 최신 커밋이 올라가므로 결과는 같다.
 concurrency:
   group: deploy-ec2
   cancel-in-progress: false
@@ -23,9 +21,12 @@ permissions:
   contents: read
 
 env:
-  # 배포 대상 경로(/opt/dvely)는 EC2의 dvely-deploy 래퍼가 소유한다.
-  # 여기에 중복해 두면 양쪽이 어긋날 수 있다.
-  APP_NAME: dvely
+  # 앱은 pm2가 ubuntu 계정으로 돌린다. 이 경로들은 전부 ubuntu 소유라
+  # 배포 전 과정에 sudo가 한 번도 필요하지 않다.
+  APP_DIR: /var/www/dvely/backend
+  STAGING_DIR: /var/www/dvely/staging
+  PM2_APP: dvely-backend
+  HEALTH_URL: http://127.0.0.1:8080/actuator/health
 
 jobs:
   deploy:
@@ -45,10 +46,8 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # 테스트는 돌리지 않는다. @SpringBootTest 3종(DvelyApplicationTests,
-      # ProjectSchemaTest, CloudConnectionSchemaTest)이 실제 MySQL과 Flyway 마이그레이션,
-      # 그리고 gitignore된 application-local.yml의 시크릿을 요구하기 때문이다.
-      # CI에서 검증하려면 MySQL 서비스 컨테이너와 시크릿 주입을 먼저 붙여야 한다.
+      # 테스트는 ci.yml이 PR 단계에서 MySQL을 붙여 돌린다. 여기서 다시 돌리지 않는 이유는
+      # 중복이라서가 아니라, 배포 시점에 실패해봐야 이미 main에 들어온 뒤라 늦기 때문이다.
       - name: Build bootJar
         run: ./gradlew clean bootJar -x test --no-daemon
 
@@ -61,13 +60,11 @@ jobs:
             exit 1
           fi
           cp "$jar" build/libs/app.jar
-          # EC2의 래퍼가 설치 직전에 대조한다. 경로가 아니라 파일명만 담아야 staging
+          # EC2가 설치 직전에 대조한다. 경로가 아니라 파일명만 담아야 staging
           # 디렉터리에서 그대로 `sha256sum -c` 가 통한다.
           (cd build/libs && sha256sum app.jar > app.jar.sha256)
           echo "배포 대상: $jar ($(du -h "$jar" | cut -f1))"
 
-      # staging 디렉터리는 EC2에 root:${EC2_USER} 0770 으로 미리 만들어 둔다.
-      # /tmp 처럼 아무나 만들 수 있는 위치에 두면 디렉터리를 선점당해 jar가 바꿔치기된다.
       - name: Upload jar to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -76,48 +73,81 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           port: ${{ secrets.EC2_SSH_PORT || 22 }}
           source: build/libs/app.jar,build/libs/app.jar.sha256
-          target: /var/lib/${{ env.APP_NAME }}/staging
+          target: /var/www/dvely/staging
           strip_components: 2
 
-      - name: Swap jar and restart service
+      - name: Swap jar and restart pm2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: ${{ secrets.EC2_SSH_PORT || 22 }}
-          envs: APP_NAME,RELEASE_SHA
+          envs: APP_DIR,STAGING_DIR,PM2_APP,HEALTH_URL,RELEASE_SHA
           script_stop: true
           script: |
             set -euo pipefail
 
-            # jar 교체와 재시작은 인자를 받지 않는 래퍼가 root로 수행한다.
-            # install/cp 에 직접 sudo를 주면 인자 제한이 없어 무제한 root 권한이 된다.
-            sudo /usr/local/sbin/dvely-deploy
+            # 업로드된 jar가 빌드 산출물 그대로인지 대조한다.
+            cd "${STAGING_DIR}"
+            if ! sha256sum -c --status app.jar.sha256; then
+              echo "::error::jar 체크섬이 일치하지 않습니다. 배포를 중단합니다."
+              exit 1
+            fi
+            if [ ! -s app.jar ]; then
+              echo "::error::배포할 jar가 비어 있습니다."
+              exit 1
+            fi
 
-            # Type=simple이라 systemd는 프로세스가 뜨는 즉시 active로 본다.
-            # Flyway validate 실패나 빈 생성 오류는 그보다 늦게 터지므로
-            # is-active만으로는 "배포 성공, 앱은 사망"을 걸러내지 못한다.
+            # 롤백할 수 있도록 직전 jar를 남긴다.
+            if [ -f "${APP_DIR}/app.jar" ]; then
+              cp "${APP_DIR}/app.jar" "${APP_DIR}/app.jar.prev"
+            fi
+
+            # cp가 아니라 mv를 쓴다. cp는 기존 파일을 그 자리에서 잘라내며 덮어쓰는데,
+            # 그 파일은 지금 돌고 있는 JVM이 열어둔 채 nested jar 엔트리를 계속 읽는
+            # 대상이다. mv는 rename이라 새 inode가 걸리고, 옛 inode는 기존 프로세스가
+            # 놓을 때까지 그대로 살아 있어 재시작 직전까지 안전하다.
+            mv -f app.jar "${APP_DIR}/app.jar"
+            rm -f app.jar.sha256
+
+            # 재시작 전 PID를 잡아둔다. 아래 health 폴링에서 "옛 프로세스가 응답한 것을
+            # 새 버전이 뜬 걸로 착각"하는 것을 막는 데 쓴다.
+            old_pid=$(pm2 pid "${PM2_APP}" 2>/dev/null || echo 0)
+
+            # restart가 아니라 startOrRestart + --update-env 인 이유:
+            # `pm2 restart <이름>`은 프로세스 생성 당시 저장해둔 env를 그대로 재사용해
+            # ecosystem.config.js를 고쳐도 반영되지 않는다. 시크릿을 추가해놓고 배포했는데
+            # 여전히 비어 있는 사고가 여기서 난다. 파일을 인자로 주고 --update-env를 붙여야
+            # 매 배포마다 현재 설정이 실제로 적용된다.
+            cd "${APP_DIR}"
+            pm2 startOrRestart ecosystem.config.js --update-env
+
+            # 재부팅 시 되살아나는 스냅샷(~/.pm2/dump.pm2)도 같이 갱신한다.
+            # 빠뜨리면 리부팅 후 옛 env로 되돌아간다.
+            pm2 save --force
+
+            # pm2는 크래시하면 자동 재시작하므로 "떠 있음"만으로는 정상 판단이 안 된다.
+            # Flyway validate 실패나 빈 생성 오류는 기동 한참 뒤에 터지기 때문에,
             # 실제로 HTTP 요청을 받을 수 있을 때까지 health를 폴링한다.
             healthy=0
             for _ in $(seq 1 45); do
-              if curl -fsS -o /dev/null "http://127.0.0.1:8080/actuator/health"; then
+              new_pid=$(pm2 pid "${PM2_APP}" 2>/dev/null || echo 0)
+              # PID가 아직 안 바뀌었다면 옛 프로세스가 응답 중일 수 있으므로 통과시키지 않는다.
+              if [ "${new_pid}" != "${old_pid}" ] && [ "${new_pid}" != "0" ] \
+                 && curl -fsS -o /dev/null "${HEALTH_URL}"; then
                 healthy=1
-                break
-              fi
-              # 프로세스가 이미 죽었다면 더 기다릴 이유가 없다.
-              if ! systemctl is-active --quiet "${APP_NAME}"; then
                 break
               fi
               sleep 2
             done
 
             if [ "$healthy" -ne 1 ]; then
-              echo "::error::${APP_NAME}가 90초 안에 health 응답을 내지 못했습니다. 최근 로그:"
-              journalctl -u "${APP_NAME}" -n 50 --no-pager || true
+              echo "::error::${PM2_APP}가 90초 안에 health 응답을 내지 못했습니다. 최근 로그:"
+              pm2 logs "${PM2_APP}" --lines 80 --nostream || true
               exit 1
             fi
-            echo "${RELEASE_SHA} 배포 완료"
+            echo "${RELEASE_SHA} 배포 완료 (pid ${new_pid})"
         env:
           # 커밋 메시지나 브랜치명은 원격 셸로 넘기지 않는다. 이 값들은 사용자가 임의로
           # 정할 수 있어 따옴표나 명령 치환이 섞여 들어갈 수 있다. sha는 16진수뿐이라 안전하다.

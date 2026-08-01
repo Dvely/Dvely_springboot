@@ -76,6 +76,7 @@ jobs:
       # 지연 로딩이라 더미 문자열로도 컨텍스트는 뜨지만, 키를 실제로 파싱하는 경로가
       # 테스트에 섞여 들어와도 깨지지 않도록 진짜 RSA 키를 만들어 둔다.
       GITHUB_APP_PRIVATE_KEY: ${{ github.workspace }}/ci-github-app.pem
+      GITHUB_WEBHOOK_SECRET: ci-dummy-webhook-secret
 
     steps:
       - uses: actions/checkout@v4

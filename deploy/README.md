@@ -1,73 +1,56 @@
 # EC2 배포 설정
 
-`.github/workflows/deploy-ec2.yml`은 **main에 커밋이 올라올 때마다**(= PR 병합 시) 실행되며, 아래 환경이 EC2에 이미 갖춰져 있다고 가정한다. 최초 1회만 수동으로 준비하면 이후 배포는 병합만으로 끝난다.
+`.github/workflows/deploy-ec2.yml`은 **main에 커밋이 올라올 때마다**(= PR 병합 시) 실행되며, 앱은 EC2에서 **pm2**가 `ubuntu` 계정으로 돌린다. 최초 1회만 준비하면 이후 배포는 병합만으로 끝난다.
 
-## 1. 서비스 계정과 디렉터리
+배포가 하는 일은 셋뿐이다. **jar를 올리고, 바꿔치고, pm2를 재시작한다.** `ecosystem.config.js`는 건드리지 않으므로 시크릿이 CI를 경유하지 않고 서버에만 남는다.
+
+## 왜 sudo가 없나
+
+`/var/www/dvely` 이하가 전부 `ubuntu` 소유이고 pm2도 `ubuntu`로 돌기 때문에, 배포 전 과정에 root 권한이 한 번도 필요하지 않다. 배포 계정에 sudo를 주지 않는 것 자체가 가장 확실한 방어라서, 래퍼 스크립트나 `sudoers` 규칙 같은 장치도 필요 없다.
+
+다만 그 대가로 **앱이 `ubuntu` 계정으로 돈다.** 이 계정은 NOPASSWD sudo를 가지고 있어서, 앱이 원격 코드 실행에 뚫리면 그대로 root로 이어진다. 앱 전용 비특권 계정으로 분리하려면 pm2를 그 계정으로 돌리거나 systemd 유닛으로 옮겨야 한다. 지금 구성은 그 위험을 알고 받아들인 것이다.
+
+## 1. 디렉터리
 
 ```bash
-sudo useradd --system --shell /usr/sbin/nologin --home-dir /opt/dvely dvely
-sudo usermod -aG docker dvely          # 앱이 /var/run/docker.sock 을 쓴다
-sudo mkdir -p /opt/dvely /etc/dvely
-sudo chown dvely:dvely /opt/dvely
-
-# 워크플로가 jar를 올려두는 곳. 반드시 root 소유여야 한다.
-# /tmp 아래에 두면 권한 낮은 로컬 계정이 디렉터리를 미리 만들어 소유권을 가로챈 뒤
-# jar를 바꿔치기하거나 심볼릭 링크를 심을 수 있고, 그걸 root로 도는 래퍼가 그대로 읽는다.
-sudo mkdir -p /var/lib/dvely/staging
-sudo chown root:ubuntu /var/lib/dvely/staging   # ubuntu = EC2_USER
-sudo chmod 0770 /var/lib/dvely/staging
+sudo mkdir -p /var/www/dvely/backend /var/www/dvely/staging
+sudo chown -R ubuntu:ubuntu /var/www/dvely
 ```
 
-`docker` 그룹 추가를 빠뜨려도 앱은 정상 기동한다. `DockerContainerService`가 첫 사용
-시점까지 연결을 미루기 때문이다. 대신 CODE 에이전트가 컨테이너를 띄우려는 순간 실패하므로,
-기동 로그만 보고 정상이라 판단하기 쉽다.
+`staging`은 워크플로가 jar를 올려두는 곳이다. 체크섬 대조를 통과한 뒤에만 `backend/app.jar`로 옮긴다.
 
 ## 2. 환경변수와 GitHub App 키
 
 ```bash
-sudo install -m 0640 -o root -g dvely dvely.env.example /etc/dvely/dvely.env
-sudo vi /etc/dvely/dvely.env                       # 값 채우기
-sudo install -m 0640 -o root -g dvely github-app.pem /etc/dvely/github-app.pem
+cp ecosystem.config.js.example /var/www/dvely/backend/ecosystem.config.js
+vi /var/www/dvely/backend/ecosystem.config.js        # 값 채우기
+chmod 600 /var/www/dvely/backend/ecosystem.config.js # 시크릿이 들어가므로 필수
+
+install -m 0600 github-app.pem /var/www/dvely/backend/github-app.pem
 ```
 
-PEM은 여러 줄이라 env 파일에 못 넣는다. `GithubAppClient`는 값이 `-----BEGIN`으로
-시작하지 않으면 파일 경로로 읽으므로 경로만 넘긴다.
+`chmod 600`을 빠뜨리지 말 것. pm2 기본 생성 권한은 `0664`라서 서버의 다른 계정이 시크릿을 그대로 읽을 수 있다.
 
-## 3. systemd 유닛 등록
+PEM은 여러 줄이라 JS 문자열에 넣기 번거롭다. `GithubAppClient`는 값이 `-----BEGIN`으로 시작하지 않으면 파일 경로로 읽으므로 경로만 넘긴다.
+
+## 3. pm2 등록과 부팅 자동시작
 
 ```bash
-sudo install -m 0644 dvely.service /etc/systemd/system/dvely.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now dvely
-systemctl status dvely
+cd /var/www/dvely/backend
+pm2 startOrRestart ecosystem.config.js --update-env
+pm2 save
+pm2 startup    # 출력되는 sudo 명령을 한 번 실행하면 재부팅 시 자동 기동
 ```
 
-## 4. 배포 계정의 sudo 권한
-
-워크플로는 SSH로 붙어 jar를 교체하고 서비스를 재시작한다. 이 두 동작만 root로 수행하도록
-인자 없는 래퍼 스크립트를 설치하고, 그 스크립트 하나만 sudo로 허용한다.
+## 4. Docker (CODE 에이전트용)
 
 ```bash
-sudo install -m 0755 -o root -g root dvely-deploy.sh /usr/local/sbin/dvely-deploy
+sudo apt-get install -y docker.io
+sudo systemctl enable --now docker
+sudo usermod -aG docker ubuntu   # 앱이 /var/run/docker.sock 을 쓴다
 ```
 
-```
-# /etc/sudoers.d/dvely-deploy  (visudo -f 로 편집할 것)
-ubuntu ALL=(root) NOPASSWD: /usr/local/sbin/dvely-deploy
-```
-
-`install`이나 `cp`를 직접 NOPASSWD로 허용하면 안 된다. sudoers는 인자를 제한하지 않으므로
-`sudo install -m 4755 /tmp/sh /usr/local/bin/rootsh` 같은 호출이 통해 사실상 무제한 root
-권한이 된다. 래퍼는 인자를 받지 않아 그 여지가 없다.
-
-`is-active`와 `journalctl`은 sudo 없이 실행한다. 다만 배포 계정이 서비스 로그를 읽으려면
-저널 접근 권한이 필요하다.
-
-```bash
-sudo usermod -aG systemd-journal ubuntu
-```
-
-이걸 빠뜨리면 배포는 되지만, 실패했을 때 워크플로 로그에 원인이 안 찍힌다.
+빠뜨려도 앱은 정상 기동한다. `DockerContainerService`가 첫 사용 시점까지 연결을 미루기 때문이다. 대신 CODE 에이전트가 컨테이너를 띄우려는 순간 실패하므로, 기동 로그만 보고 정상이라 판단하기 쉽다.
 
 ## 5. GitHub Secrets
 
@@ -78,40 +61,42 @@ sudo usermod -aG systemd-journal ubuntu
 | `EC2_SSH_KEY` | 예 | 개인키 전문 |
 | `EC2_SSH_PORT` | 아니오 | 기본 22 |
 
+`EC2_SSH_KEY`는 **웹 UI에 붙여넣지 말 것.** 줄바꿈이 뭉개져 PEM 블록이 깨지면 `ssh: no key found`로 실패한다. CLI로 파일을 그대로 넘기면 이 문제가 없다.
+
+```bash
+gh secret set EC2_SSH_KEY < ~/.ssh/dvely-key.pem
+```
+
+퍼블릭 IP는 Elastic IP를 붙이지 않으면 인스턴스를 중지·시작할 때마다 바뀐다. `EC2_HOST`가 낡으면 `dial tcp ...:22: i/o timeout`으로 실패한다.
+
 ## 배포 방법
 
 main으로 PR을 병합하면 끝이다. 별도 조작은 없다.
 
-코드 변경 없이 다시 배포해야 할 때(롤백 후 재배포 등)는 Actions 탭에서 **Deploy to EC2 →
-Run workflow**로 수동 실행한다.
+코드 변경 없이 다시 배포해야 할 때(롤백 후 재배포 등)는 Actions 탭에서 **Deploy to EC2 → Run workflow**로 수동 실행한다.
 
-`push: branches: [main]` 이므로 main에 직접 푸시해도 배포가 돈다. main을 보호 브랜치로
-걸어 PR로만 들어오게 해 두는 것을 전제한다.
+`push: branches: [main]` 이므로 main에 직접 푸시해도 배포가 돈다. main을 보호 브랜치로 걸어 PR로만 들어오게 해 두는 것을 전제한다.
 
 ## 롤백
 
-직전 jar가 `/opt/dvely/app.jar.prev`로 남는다.
+직전 jar가 `/var/www/dvely/backend/app.jar.prev`로 남는다.
 
 ```bash
-sudo cp /opt/dvely/app.jar.prev /opt/dvely/app.jar
-sudo systemctl restart dvely
+cd /var/www/dvely/backend
+cp app.jar.prev app.jar
+pm2 startOrRestart ecosystem.config.js --update-env
 ```
 
 ## 주의
 
-- 워크플로는 테스트를 돌리지 않는다(`-x test`). `@SpringBootTest` 3종이 실제 MySQL과
-  gitignore된 `application-local.yml`을 요구하기 때문이다. **병합이 곧 배포이므로 검증되지
-  않은 커밋이 그대로 프로덕션에 올라간다.** 병합 전 CI(또는 로컬 `./gradlew test`)로
-  거르는 것을 전제로 한다.
-- `application.yaml`의 `baseline-version: 5`는 **테이블은 이미 있는데
-  `flyway_schema_history`가 없는 스키마**에 붙었을 때만 동작한다. 그 경우 V5로 baseline이
-  잡혀 V1~V5가 건너뛰어지므로, 그 다섯 개가 만드는 테이블이 없으면 `ddl-auto: validate`에서
-  기동이 실패한다. 완전히 빈 스키마라면 baseline 없이 V1부터 전부 실행되므로 그냥 두면 된다.
-- `application.yaml`의 `spring.flyway` / `spring.jpa` 블록 위에 최상위 키를 끼워 넣지 말 것.
-  들여쓰기상 그 키의 자식이 되어 설정이 통째로 무시되는데, 바인딩 실패가 조용해서 앱은
-  그대로 뜬다. 실제로 한 번 발생했다(#60 → #66 이후 수정).
-- 배포 후 기동 확인은 `http://127.0.0.1:8080/actuator/health`를 폴링한다. 포트가 워크플로에
-  하드코딩돼 있으므로 `SERVER_PORT`로 포트를 바꾸면 워크플로도 같이 고쳐야 한다. 안 그러면
-  헬스체크가 엉뚱한 포트를 보고 배포가 실패로 끝난다.
-- `/actuator/health`는 인증 없이 열려 있다(`show-details: never`라 상태값만 응답). 8080을
-  인터넷에 직접 노출하지 말고 리버스 프록시나 보안그룹으로 막는 것을 전제한다.
+- **`pm2 restart dvely-backend` 로는 env가 갱신되지 않는다.** pm2는 프로세스 생성 당시의 env를 저장해두고 재사용하므로, `ecosystem.config.js`를 고쳐도 반영되지 않는다. 반드시 파일을 인자로 주고 `--update-env`를 붙여야 한다. 이어서 `pm2 save`까지 해야 재부팅 후에도 유지된다 — 안 하면 `~/.pm2/dump.pm2`의 옛 env로 되돌아간다.
+- 워크플로는 테스트를 돌리지 않는다(`-x test`). 검증은 `ci.yml`이 PR 단계에서 MySQL을 붙여 수행한다. **main 보호 규칙에 `Build and test`를 required status check로 걸어야** 실제로 병합이 막힌다. 워크플로 파일만으로는 강제되지 않는다.
+- 시크릿이 비어 있어도 **앱은 정상 기동한다.** 이 값들은 `@Value` 지연 주입이라 기동 시점에 검증되지 않고, 해석 못 한 `${GITHUB_OAUTH_CLIENT_ID}` 같은 문자열이 그대로 OAuth URL에 실려 나간다. 배포 후 아래로 실제 값이 들어갔는지 확인할 것.
+  ```bash
+  curl -s http://127.0.0.1:8080/api/v1/auth/github/url
+  # client_id=${GITHUB_OAUTH_CLIENT_ID} 처럼 나오면 env가 안 들어간 것이다
+  ```
+- `application.yaml`의 `baseline-version: 5`는 **테이블은 이미 있는데 `flyway_schema_history`가 없는 스키마**에 붙었을 때만 동작한다. 그 경우 V5로 baseline이 잡혀 V1~V5가 건너뛰어지므로, 그 다섯 개가 만드는 테이블이 없으면 `ddl-auto: validate`에서 기동이 실패한다. 완전히 빈 스키마라면 baseline 없이 V1부터 전부 실행되므로 그냥 두면 된다.
+- `application.yaml`의 `spring.flyway` / `spring.jpa` 블록 위에 최상위 키를 끼워 넣지 말 것. 들여쓰기상 그 키의 자식이 되어 설정이 통째로 무시되는데, 바인딩 실패가 조용해서 앱은 그대로 뜬다. 실제로 한 번 발생했다(#60 → #79에서 수정).
+- 배포 후 기동 확인은 `http://127.0.0.1:8080/actuator/health`를 폴링한다. 포트가 워크플로에 하드코딩돼 있으므로 `SERVER_PORT`로 포트를 바꾸면 워크플로도 같이 고쳐야 한다.
+- `/actuator/health`는 인증 없이 열려 있다(`show-details: never`라 상태값만 응답). 8080을 인터넷에 직접 노출하지 말고 리버스 프록시나 보안그룹으로 막는 것을 전제한다.
