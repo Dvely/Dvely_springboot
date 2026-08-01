@@ -403,7 +403,7 @@ Accept: text/event-stream
 
 ③ GET /api/v1/agent/tasks/a1b2c3d4e5f6   (수 초 간격 폴링)
 → status: QUEUED → RUNNING → DONE
-   DONE 시: { "status": "DONE", "previewUrl": "https://api.qeploy.com/api/v1/previews/101/abcdef.../", "summary": "..." }
+   DONE 시: { "status": "DONE", "previewUrl": "https://qeploy.com/api/v1/previews/101/abcdef.../", "summary": "..." }
 ```
 
 ```
@@ -449,7 +449,7 @@ CODE 단계는 GitHub 저장소 연결과 무관하게 동작합니다(Docker �
 ② GET /api/v1/agent/tasks/e5f6a1b2c3d4   (§3.6 폴링)
 → status: QUEUED → RUNNING → WAITING_RESULT_APPROVAL
 { "taskId": "e5f6a1b2c3d4", "status": "WAITING_RESULT_APPROVAL",
-  "previewUrl": "https://api.qeploy.com/api/v1/previews/205/token.../", "summary": "버튼 색을 파란색으로 변경",
+  "previewUrl": "https://qeploy.com/api/v1/previews/205/token.../", "summary": "버튼 색을 파란색으로 변경",
   "retryable": false, "pendingApprovalId": 52 }
 ```
 `WAITING_RESULT_APPROVAL`은 plan의 마지막 CODE step이 끝나 변경 사항이 이미 `preview` 브랜치에 push된 뒤 진입하는 상태입니다(컨테이너가 이후 만료돼도 반영 여부와 무관). 이 시점 `pendingApprovalId`(52)가 새로 생성된 RESULT 승인의 ID입니다 — `WAITING_RESULT_APPROVAL` 상태에서는 PENDING 승인이 정확히 이 1건뿐이므로 항상 신뢰할 수 있습니다.

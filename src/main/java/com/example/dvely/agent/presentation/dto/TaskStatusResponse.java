@@ -26,7 +26,7 @@ public record TaskStatusResponse(
                 example = "DONE")
         TaskStatus status,
 
-        @Schema(description = "토큰 기반 프리뷰 gateway URL. CODE 스텝 완료 시에만 설정됨", example = "https://api.qeploy.com/api/v1/previews/101/token/", nullable = true)
+        @Schema(description = "토큰 기반 프리뷰 gateway URL. CODE 스텝 완료 시에만 설정됨", example = "https://qeploy.com/api/v1/previews/101/token/", nullable = true)
         String previewUrl,
 
         @Schema(description = "작업 완료 요약. 배포 URL, 도메인 연결 결과 등 포함", nullable = true)
