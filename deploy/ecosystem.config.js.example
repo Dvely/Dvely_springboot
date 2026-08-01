@@ -1,0 +1,84 @@
+// /var/www/dvely/backend/ecosystem.config.js 로 복사해 값을 채운다.
+//
+//   cp ecosystem.config.js.example /var/www/dvely/backend/ecosystem.config.js
+//   chmod 600 /var/www/dvely/backend/ecosystem.config.js   # 시크릿이 들어가므로 필수
+//
+// 이 파일은 pm2가 앱을 띄울 때 주는 환경변수를 담는다. 배포 워크플로는 jar만 바꾸고
+// 이 파일은 건드리지 않으므로, 시크릿이 CI를 경유하지 않고 서버에만 남는다.
+//
+// ⚠️ 값을 고친 뒤에는 반드시 `pm2 startOrRestart ecosystem.config.js --update-env` 로
+//    재시작해야 한다. `pm2 restart dvely-backend` 는 프로세스 생성 당시의 env를 그대로
+//    재사용해서, 이 파일을 아무리 고쳐도 반영되지 않는다.
+//    이어서 `pm2 save` 까지 해야 재부팅 후에도 새 값이 유지된다.
+
+module.exports = {
+  apps: [
+    {
+      name: 'dvely-backend',
+      script: '/usr/bin/java',
+      // 힙 옵션은 일부러 지정하지 않는다. JVM 기본값(물리 RAM의 25%)이 이 인스턴스에서
+      // 이미 충분했고(실측 RSS 410MB), 같은 서버에 MySQL과 preview용 Docker 컨테이너가
+      // 함께 올라가므로 앱이 램을 넉넉히 잡아가면 그쪽이 먼저 밀린다.
+      // 메모리를 늘려야 하면 -XX:MaxRAMPercentage 를 추가하되 인스턴스 크기부터 확인할 것.
+      args: '-jar /var/www/dvely/backend/app.jar',
+      cwd: '/var/www/dvely/backend',
+      interpreter: 'none', // script가 Node가 아니라 java 바이너리이므로 인터프리터를 끈다
+      autorestart: true,
+      max_restarts: 10,
+      // Spring Boot는 SIGTERM 뒤 graceful shutdown에 시간이 걸린다. 기본 1.6초로는
+      // 종료가 끝나기 전에 SIGKILL이 날아가 커넥션이 끊긴 채로 죽는다.
+      kill_timeout: 30000,
+
+      env: {
+        SPRING_PROFILES_ACTIVE: 'prod',
+
+        // --- 필수: 없으면 기능이 조용히 죽는다 ---
+        //
+        // 이 값들은 @Value 지연 주입이라 비어 있어도 앱은 그냥 뜬다. 대신 해석되지 않은
+        // "${GITHUB_OAUTH_CLIENT_ID}" 같은 문자열이 그대로 흘러나가 OAuth URL에 실린다.
+        // 기동 로그만 보고 정상이라 판단하기 쉬우니 반드시 채울 것.
+
+        DB_URL: 'jdbc:mysql://127.0.0.1:3306/dvely?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=UTF-8',
+        DB_USERNAME: 'dvely',
+        DB_PASSWORD: '',
+
+        // 클라우드 자격증명·OAuth 토큰 암복호화 키 (AES-256-GCM).
+        // ⚠️ 한 번 정하면 바꾸지 말 것. 바꾸면 그 전에 저장된 암호문을 복호화할 수 없다.
+        ENCRYPT_SECRET: '',
+
+        // 서비스 JWT 서명 키 (HS256). 32바이트 이상이어야 한다 —
+        // 짧으면 jjwt가 WeakKeyException으로 거부한다.
+        JWT_SECRET: '',
+
+        // GitHub OAuth App — 로그인용
+        GITHUB_OAUTH_CLIENT_ID: '',
+        GITHUB_OAUTH_CLIENT_SECRET: '',
+        GITHUB_OAUTH_REDIRECT_URI: 'https://api.qeploy.com/api/v1/auth/github/callback',
+
+        // GitHub App — 레포 접근용
+        GITHUB_APP_ID: '',
+        GITHUB_APP_CLIENT_ID: '',
+        GITHUB_APP_CLIENT_SECRET: '',
+        GITHUB_APP_INSTALLATION_REDIRECT_URI: 'https://api.qeploy.com/api/v1/auth/github/app/callback',
+        // PEM 전문은 여러 줄이라 여기 넣기 번거롭다. GithubAppClient는 값이 "-----BEGIN"으로
+        // 시작하지 않으면 파일 경로로 읽으므로 경로를 준다.
+        //   install -m 0600 github-app.pem /var/www/dvely/backend/github-app.pem
+        GITHUB_APP_PRIVATE_KEY: '/var/www/dvely/backend/github-app.pem',
+        // GitHub이 발급해주는 값이 아니라 직접 정해 양쪽에 넣는 공유 비밀이다.
+        // `openssl rand -hex 32` 로 만들어 GitHub App 설정의 Webhook secret 필드와
+        // 여기에 똑같이 넣는다. 다르면 모든 웹훅이 "서명 불일치"로 거부된다.
+        GITHUB_WEBHOOK_SECRET: '',
+
+        // --- 선택: 비우면 코드의 기본값을 쓴다 ---
+
+        // 둘 중 쓰는 provider의 키만 채우면 된다.
+        QEPLOY_AI_ANTHROPIC_API_KEY: '',
+        QEPLOY_AI_OPENAI_API_KEY: '',
+
+        // 프론트엔드 오리진. 비우면 CORS가 모두 차단되므로 사실상 필요하다.
+        QEPLOY_CORS_ALLOWED_ORIGINS: 'https://qeploy.com',
+        FRONTEND_REDIRECT_URL: 'https://qeploy.com',
+      },
+    },
+  ],
+};
