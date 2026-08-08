@@ -53,13 +53,13 @@ module.exports = {
         // GitHub OAuth App — 로그인용
         GITHUB_OAUTH_CLIENT_ID: '',
         GITHUB_OAUTH_CLIENT_SECRET: '',
-        GITHUB_OAUTH_REDIRECT_URI: 'https://api.qeploy.com/api/v1/auth/github/callback',
+        GITHUB_OAUTH_REDIRECT_URI: 'https://qeploy.com/api/v1/auth/github/callback',
 
         // GitHub App — 레포 접근용
         GITHUB_APP_ID: '',
         GITHUB_APP_CLIENT_ID: '',
         GITHUB_APP_CLIENT_SECRET: '',
-        GITHUB_APP_INSTALLATION_REDIRECT_URI: 'https://api.qeploy.com/api/v1/auth/github/app/callback',
+        GITHUB_APP_INSTALLATION_REDIRECT_URI: 'https://qeploy.com/api/v1/auth/github/app/callback',
         // PEM 전문은 여러 줄이라 여기 넣기 번거롭다. GithubAppClient는 값이 "-----BEGIN"으로
         // 시작하지 않으면 파일 경로로 읽으므로 경로를 준다.
         //   install -m 0600 github-app.pem /var/www/dvely/backend/github-app.pem

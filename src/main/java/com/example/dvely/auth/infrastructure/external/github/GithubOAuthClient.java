@@ -29,7 +29,12 @@ public class GithubOAuthClient implements GithubOAuthPort {
                 .queryParam("client_id", properties.oauth().clientId())
                 .queryParam("scope", properties.oauth().scope())
                 .queryParam("state", state)
+                // encode()가 없으면 값이 날것 그대로 이어 붙는다. scope는 "user:email read:user"
+                // 처럼 공백이 구분자라, 인코딩하지 않으면 쿼리 문자열에 raw 공백이 들어가
+                // RFC 3986 위반 URL이 된다. 브라우저는 알아서 보정하지만 URL 파서를 쓰는
+                // HTTP 클라이언트는 거부한다.
                 .build()
+                .encode()
                 .toUriString();
     }
 

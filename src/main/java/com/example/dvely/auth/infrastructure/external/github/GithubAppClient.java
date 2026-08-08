@@ -69,7 +69,10 @@ public class GithubAppClient implements GithubAppPort {
         return UriComponentsBuilder
                 .fromUriString(GITHUB_BASE_URL + "/apps/" + getAppSlug() + "/installations/new")
                 .queryParam("state", state)
+                // state는 서비스 JWT라 '.'만 들어가지만, 값의 형식이 바뀌어도 안전하도록
+                // 인코딩을 거친다. GithubOAuthClient.getAuthorizeUrl 과 같은 이유다.
                 .build()
+                .encode()
                 .toUriString();
     }
 
@@ -80,6 +83,7 @@ public class GithubAppClient implements GithubAppPort {
                 .queryParam("client_id", properties.app().clientId())
                 .queryParam("state", state)
                 .build()
+                .encode()
                 .toUriString();
     }
 
