@@ -2,6 +2,8 @@ package com.example.dvely.agent.application.facade;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verify;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
@@ -10,9 +12,12 @@ import com.example.dvely.agent.application.dto.AgentSubmission;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.result.AgentSubmitResult;
+import com.example.dvely.agent.application.service.AiModelOptionsResolver;
 import com.example.dvely.agent.application.service.DecisionAgentService;
 import com.example.dvely.agent.domain.value.AgentType;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
+import com.example.dvely.agent.infrastructure.config.AiProperties;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -34,7 +39,7 @@ class AgentFacadeTest {
 
     @BeforeEach
     void setUp() {
-        agentFacade = new AgentFacade(decisionAgentService, agentOrchestrator);
+        agentFacade = new AgentFacade(decisionAgentService, agentOrchestrator, new AiModelOptionsResolver(new AiProperties()));
     }
 
     @Test
@@ -51,7 +56,8 @@ class AgentFacadeTest {
                 List.of(101L)
         );
         when(agentOrchestrator.resolveProjectId(1L, null, 21L)).thenReturn(11L);
-        when(decisionAgentService.decide("수정해줘", AiProvider.OPENAI, 11L)).thenReturn(plan);
+        when(decisionAgentService.decide(eq("수정해줘"), eq(AiProvider.OPENAI), eq(11L), any(AiModelOptions.class)))
+                .thenReturn(plan);
         when(agentOrchestrator.submit(plan, 1L, 21L)).thenReturn(submission);
 
         AgentSubmitResult result = agentFacade.submit(
@@ -65,7 +71,7 @@ class AgentFacadeTest {
         assertThat(result.plan()).isEqualTo(plan);
         assertThat(result.submission()).isEqualTo(submission);
         verify(agentOrchestrator).resolveProjectId(1L, null, 21L);
-        verify(decisionAgentService).decide("수정해줘", AiProvider.OPENAI, 11L);
+        verify(decisionAgentService).decide(eq("수정해줘"), eq(AiProvider.OPENAI), eq(11L), any(AiModelOptions.class));
         verify(agentOrchestrator).submit(plan, 1L, 21L);
     }
 }

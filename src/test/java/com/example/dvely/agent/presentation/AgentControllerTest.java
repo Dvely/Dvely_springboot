@@ -84,18 +84,18 @@ class AgentControllerTest {
                 TaskStatus.WAITING_APPROVAL,
                 List.of(101L)
         );
-        when(agentFacade.submit(1L, 11L, 21L, "수정해줘", AiProvider.OPENAI))
+        when(agentFacade.submit(1L, 11L, 21L, "수정해줘", AiProvider.OPENAI, null, null))
                 .thenReturn(new AgentSubmitResult(plan, submission));
 
         var response = controller.decide(
                 1L,
-                new DecisionRequest("수정해줘", AiProvider.OPENAI, 11L, 21L)
+                new DecisionRequest("수정해줘", AiProvider.OPENAI, 11L, 21L, null, null)
         );
 
         assertThat(response.taskId()).isEqualTo("task-2");
         assertThat(response.status()).isEqualTo("WAITING_APPROVAL");
         assertThat(response.approvalIds()).containsExactly(101L);
-        verify(agentFacade).submit(1L, 11L, 21L, "수정해줘", AiProvider.OPENAI);
+        verify(agentFacade).submit(1L, 11L, 21L, "수정해줘", AiProvider.OPENAI, null, null);
         verifyNoInteractions(agentOrchestrator);
     }
 

@@ -59,7 +59,7 @@ class ChatAgentServiceTest {
         when(taskStore.get("task-1")).thenReturn(task);
         when(agentMessageService.getConversationContext(21L)).thenReturn(history);
         when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenReturn("휴지통 보관 기간은 7일입니다.");
+        when(llmPort.complete(any(), anyList(), any())).thenReturn("휴지통 보관 기간은 7일입니다.");
 
         var result = service.execute(step, AiProvider.ANTHROPIC, "task-1");
 
@@ -67,7 +67,7 @@ class ChatAgentServiceTest {
         assertThat(result.summary()).isEqualTo("휴지통 보관 기간은 7일입니다.");
 
         ArgumentCaptor<List<LlmMessage>> messagesCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llmPort).complete(any(), messagesCaptor.capture());
+        verify(llmPort).complete(any(), messagesCaptor.capture(), any());
         // Both the redundant original user turn and the leading ack it left behind are dropped —
         // the model only sees Decision Agent's rewritten instruction (single, user-first turn).
         assertThat(messagesCaptor.getValue())
@@ -95,12 +95,12 @@ class ChatAgentServiceTest {
         when(taskStore.get("task-2")).thenReturn(task);
         when(agentMessageService.getConversationContext(21L)).thenReturn(history);
         when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenReturn("휴지통 보관 기간은 7일입니다.");
+        when(llmPort.complete(any(), anyList(), any())).thenReturn("휴지통 보관 기간은 7일입니다.");
 
         service.execute(step, AiProvider.ANTHROPIC, "task-2");
 
         ArgumentCaptor<List<LlmMessage>> messagesCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llmPort).complete(any(), messagesCaptor.capture());
+        verify(llmPort).complete(any(), messagesCaptor.capture(), any());
         assertThat(messagesCaptor.getValue()).containsExactly(
                 earlierUser,
                 earlierAssistant,
@@ -118,7 +118,7 @@ class ChatAgentServiceTest {
         );
         when(taskStore.get("task-2")).thenReturn(task);
         when(llmRouter.route(AiProvider.OPENAI)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenReturn("네, 잘 지내고 있어요!");
+        when(llmPort.complete(any(), anyList(), any())).thenReturn("네, 잘 지내고 있어요!");
 
         var result = service.execute(step, AiProvider.OPENAI, "task-2");
 
@@ -126,7 +126,7 @@ class ChatAgentServiceTest {
         verify(agentMessageService, never()).getConversationContext(any());
 
         ArgumentCaptor<List<LlmMessage>> messagesCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llmPort).complete(any(), messagesCaptor.capture());
+        verify(llmPort).complete(any(), messagesCaptor.capture(), any());
         assertThat(messagesCaptor.getValue()).containsExactly(new LlmMessage("user", "안녕 잘 지내?"));
     }
 
@@ -142,7 +142,7 @@ class ChatAgentServiceTest {
         );
         when(taskStore.get("task-3")).thenReturn(task);
         when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenThrow(new IllegalStateException("Claude API 응답이 비어있습니다"));
+        when(llmPort.complete(any(), anyList(), any())).thenThrow(new IllegalStateException("Claude API 응답이 비어있습니다"));
 
         org.junit.jupiter.api.Assertions.assertThrows(
                 IllegalStateException.class,

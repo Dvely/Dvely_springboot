@@ -3,6 +3,7 @@ package com.example.dvely.agent.infrastructure.llm;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -30,6 +31,15 @@ public class OpenAiToolClient {
             String systemPrompt,
             List<Map<String, Object>> messages,
             List<ToolDefinition> tools) {
+        return completeWithTools(systemPrompt, messages, tools, AiModelOptions.defaults());
+    }
+
+    @SuppressWarnings("unchecked")
+    public LlmToolResponse completeWithTools(
+            String systemPrompt,
+            List<Map<String, Object>> messages,
+            List<ToolDefinition> tools,
+            AiModelOptions modelOptions) {
 
         List<Map<String, Object>> toolsPayload = tools.stream()
                 .map(t -> Map.of(
@@ -46,17 +56,20 @@ public class OpenAiToolClient {
         apiMessages.add(Map.of("role", "system", "content", systemPrompt));
         apiMessages.addAll(messages);
 
+        LlmProviderErrors.requireApiKey(OpenAiClient.PROVIDER_NAME, aiProperties.getOpenai().getApiKey());
+
         Map<String, Object> body = new HashMap<>();
-        body.put("model",    aiProperties.getOpenai().getModel());
+        body.put("model",    modelOptions.modelOr(aiProperties.getOpenai().getModel()));
         body.put("messages", apiMessages);
         body.put("tools",    toolsPayload);
+        LlmRequestOptions.applyOpenAi(body, modelOptions);
 
-        String raw = restClient()
+        String raw = LlmProviderErrors.translate(OpenAiClient.PROVIDER_NAME, () -> restClient()
                 .post()
                 .uri(API_URL)
                 .body(body)
                 .retrieve()
-                .body(String.class);
+                .body(String.class));
 
         log.debug("OpenAI Tool API 응답 수신");
         return parse(raw);

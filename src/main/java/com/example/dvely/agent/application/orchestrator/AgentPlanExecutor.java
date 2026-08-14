@@ -15,9 +15,11 @@ import com.example.dvely.agent.application.service.InfraOpsAgentService;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.application.service.ResultApprovalGate;
 import com.example.dvely.agent.domain.value.AgentType;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
+import com.example.dvely.common.exception.LlmProviderException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -70,7 +72,7 @@ public class AgentPlanExecutor {
                 }
                 AgentStep step = withSuggestedFix(plan.steps().get(i), taskId, userId);
                 log.info("--- Step [{}/{}] agentType={} ---", i + 1, plan.steps().size(), step.agentType());
-                CodeResult result = dispatch(step, plan.aiProvider(), userId, taskId, plan.projectId());
+                CodeResult result = dispatch(step, plan.aiProvider(), plan.modelOptions(), userId, taskId, plan.projectId());
                 if (taskStore.isCancelled(taskId)) {
                     log.info("=== AgentPlan step 완료 후 취소 확인: taskId={} ===", taskId);
                     return;
@@ -121,6 +123,22 @@ public class AgentPlanExecutor {
             }
             buildFailureRecoveryService.handle(taskId, exception);
             log.warn("=== AgentPlan build 실패 및 복구 대기: taskId={} ===", taskId);
+        } catch (LlmProviderException exception) {
+            // Separated from the catch-all below only for the chat reply: the provider message is
+            // already a complete, actionable sentence ("... 크레딧이 부족해 ... 다른 AI 제공자를
+            // 선택하거나 결제 상태를 확인해주세요"), and prefixing it with "작업 중 오류가
+            // 발생했습니다" would bury the one instruction the user can act on.
+            if (taskStore.isCancelled(taskId)) {
+                return;
+            }
+            taskStore.markFailed(taskId, exception.getMessage());
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    exception.getMessage()
+            );
+            log.error("=== AgentPlan AI 제공자 실패: taskId={} provider={} reason={} ===",
+                    taskId, exception.providerName(), exception.reason());
         } catch (Exception e) {
             if (taskStore.isCancelled(taskId)) {
                 log.info("=== AgentPlan 취소됨: taskId={} ===", taskId);
@@ -162,25 +180,31 @@ public class AgentPlanExecutor {
                 : exception.getMessage();
     }
 
-    private CodeResult dispatch(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, Long userId, String taskId, Long projectId) {
+    private CodeResult dispatch(AgentStep step,
+                                com.example.dvely.agent.domain.value.AiProvider aiProvider,
+                                AiModelOptions modelOptions,
+                                Long userId,
+                                String taskId,
+                                Long projectId) {
         return switch (step.agentType()) {
-            case CODE          -> handleCode(step, aiProvider, userId, projectId, taskId);
+            case CODE          -> handleCode(step, aiProvider, modelOptions, userId, projectId, taskId);
             case DEPLOY        -> handleDeploy(step, userId, taskId, projectId);
             case DOMAIN_BIND   -> handleDomainBind(step, userId, taskId, projectId);
             case INFRA_OPERATE -> handleInfraOperate(step, userId, taskId, projectId);
-            case CHAT          -> handleChat(step, aiProvider, taskId);
+            case CHAT          -> handleChat(step, aiProvider, modelOptions, taskId);
         };
     }
 
     private CodeResult handleCode(AgentStep step,
                                   com.example.dvely.agent.domain.value.AiProvider aiProvider,
+                                  AiModelOptions modelOptions,
                                   Long userId,
                                   Long projectId,
                                   String taskId) {
         log.info("[CODE 에이전트] 코드 작업 시작 | userId={} provider={} projectId={}", userId, aiProvider, projectId);
         log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
         log.info("  targetFile  : {}", step.parameters().getOrDefault("targetFile", ""));
-        return codeAgentService.execute(step, aiProvider, userId, projectId, taskId);
+        return codeAgentService.execute(step, aiProvider, userId, projectId, taskId, modelOptions);
     }
 
     private CodeResult handleDeploy(AgentStep step, Long userId, String taskId, Long projectId) {
@@ -204,9 +228,9 @@ public class AgentPlanExecutor {
         return infraOpsAgentService.execute(step, userId, taskId, projectId);
     }
 
-    private CodeResult handleChat(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, String taskId) {
+    private CodeResult handleChat(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, AiModelOptions modelOptions, String taskId) {
         log.info("[CHAT 에이전트] 대화 요청 수신 | provider={} taskId={}", aiProvider, taskId);
         log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
-        return chatAgentService.execute(step, aiProvider, taskId);
+        return chatAgentService.execute(step, aiProvider, taskId, modelOptions);
     }
 }

@@ -6,12 +6,14 @@ import com.example.dvely.agent.application.exception.CodeAgentExecutionException
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
 import com.example.dvely.agent.infrastructure.llm.OpenAiToolClient;
 import com.example.dvely.auth.application.command.AuthCommandService;
+import com.example.dvely.common.exception.LlmProviderException;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.project.domain.model.Project;
@@ -146,6 +148,15 @@ public class CodeAgentService {
                               Long userId,
                               Long projectId,
                               String taskId) {
+        return execute(step, provider, userId, projectId, taskId, AiModelOptions.defaults());
+    }
+
+    public CodeResult execute(AgentStep step,
+                              AiProvider provider,
+                              Long userId,
+                              Long projectId,
+                              String taskId,
+                              AiModelOptions modelOptions) {
         String instruction = step.parameters().getOrDefault("instruction", "");
         log.info("[CodeAgent] 실행 시작 | userId={} provider={} projectId={} instruction={}", userId, provider, projectId, instruction);
 
@@ -159,14 +170,22 @@ public class CodeAgentService {
 
         try {
             String summary = (provider == AiProvider.OPENAI)
-                    ? runOpenAiLoop(instruction, containerId)
-                    : runClaudeLoop(instruction, containerId);
+                    ? runOpenAiLoop(instruction, containerId, modelOptions)
+                    : runClaudeLoop(instruction, containerId, modelOptions);
 
             startPreviewServer(containerId);
 
             String previewUrl = previewSession.publicUrl();
             log.info("[CodeAgent] 완료 | previewUrl={}", previewUrl);
             return new CodeResult(previewUrl, summary);
+        } catch (LlmProviderException e) {
+            // Not a build failure, so it must not go through the branch below: an exhausted credit
+            // balance analyzed as a build log produces "프로젝트 빌드가 완료되지 않았습니다" — a
+            // verdict on the user's project for a problem in the provider account — and then burns
+            // the task's retry budget on a call that cannot start succeeding between attempts.
+            log.error("[CodeAgent] AI 제공자 호출 실패 | userId={} provider={} reason={}",
+                    userId, e.providerName(), e.reason());
+            throw e;
         } catch (AgentIterationLimitException e) {
             // Deliberately not routed through BuildFailureAnalyzer like the branch below: nothing
             // here says the *build* failed — the run simply did not reach the end of its work — so
@@ -203,7 +222,7 @@ public class CodeAgentService {
     public record CodeResult(String previewUrl, String summary) {}
 
     // ── Claude 루프 ──────────────────────────────────────────────────────────
-    private String runClaudeLoop(String instruction, String containerId) {
+    private String runClaudeLoop(String instruction, String containerId, AiModelOptions modelOptions) {
         int maxIterations = maxIterations();
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", instruction));
@@ -211,7 +230,7 @@ public class CodeAgentService {
 
         for (int i = 0; i < maxIterations; i++) {
             log.info("[CodeAgent/Claude] LLM 호출 (round {}/{})", i + 1, maxIterations);
-            LlmToolResponse response = claudeToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS);
+            LlmToolResponse response = claudeToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS, modelOptions);
 
             messages.add(Map.of("role", "assistant", "content", response.contentBlocks()));
 
@@ -245,7 +264,7 @@ public class CodeAgentService {
     }
 
     // ── OpenAI 루프 ──────────────────────────────────────────────────────────
-    private String runOpenAiLoop(String instruction, String containerId) {
+    private String runOpenAiLoop(String instruction, String containerId, AiModelOptions modelOptions) {
         int maxIterations = maxIterations();
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", instruction));
@@ -253,7 +272,7 @@ public class CodeAgentService {
 
         for (int i = 0; i < maxIterations; i++) {
             log.info("[CodeAgent/OpenAI] LLM 호출 (round {}/{})", i + 1, maxIterations);
-            LlmToolResponse response = openAiToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS);
+            LlmToolResponse response = openAiToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS, modelOptions);
 
             messages.add(response.contentBlocks().get(0));
 
@@ -493,6 +512,22 @@ public class CodeAgentService {
         log.info("[CodeAgent] 프리뷰 서버 시작 | buildDir={} | log={}", buildDir, serveLog);
     }
 
+    /**
+     * Resolves the directory to serve as the preview.
+     *
+     * <p>The known output directories are checked first; the index.html search below them exists
+     * for projects that have no build step at all (a plain static site), and for build output
+     * under a directory this list does not name. That search used to accept the first index.html
+     * it found anywhere under /workspace, which for a Vite or CRA project is the <em>source</em>
+     * entry point — so a run whose build never happened or failed still resolved to a directory,
+     * started a preview over unbuilt sources, and reported success. That was the second half of
+     * the frontend's report: a task marked complete whose preview does not work.</p>
+     *
+     * <p>What separates the two is a sibling package.json: a project root has one next to its
+     * index.html, a build output directory does not. Skipping those roots means a missing build
+     * now reaches the caller as a failure, where the build log drives {@link BuildFailureAnalyzer}
+     * and the retry — which is what should have happened all along.</p>
+     */
     private String detectBuildOutputDir(String containerId) {
         for (String candidate : List.of(
                 "/workspace/app/dist",
@@ -505,15 +540,40 @@ public class CodeAgentService {
                 return candidate;
             }
         }
-        // 폴백: index.html 위치로 추론
-        String found = dockerService.exec(containerId,
-                "find /workspace -name 'index.html' -not -path '*/node_modules/*' -not -path '*/public/*' 2>/dev/null | head -1");
-        if (!found.isBlank()) {
-            String dir = found.trim().replace("/index.html", "");
-            log.info("[CodeAgent] index.html 기반 빌드 경로 감지: {}", dir);
-            return dir;
+        for (String candidate : findIndexHtmlDirectories(containerId)) {
+            if (isProjectSourceRoot(containerId, candidate)) {
+                log.info("[CodeAgent] 프로젝트 소스 루트이므로 빌드 결과물에서 제외: {}", candidate);
+                continue;
+            }
+            log.info("[CodeAgent] index.html 기반 빌드 경로 감지: {}", candidate);
+            return candidate;
         }
-        throw new IllegalStateException("빌드 결과 디렉터리를 찾지 못했습니다.");
+        throw new IllegalStateException(
+                "빌드 결과 디렉터리를 찾지 못했습니다. build가 실행되지 않았거나 실패했습니다.");
+    }
+
+    /**
+     * Directories holding an index.html, nearest-first. {@code public/} is excluded because CRA
+     * keeps its source template there; node_modules because a dependency's own index.html is never
+     * this project's output. More than one candidate is read so that a skipped source root does not
+     * exhaust the search — a Vite project has its source index.html and its dist/index.html both.
+     */
+    private List<String> findIndexHtmlDirectories(String containerId) {
+        String found = dockerService.exec(containerId,
+                "find /workspace -name 'index.html' -not -path '*/node_modules/*' "
+                        + "-not -path '*/public/*' 2>/dev/null | head -5");
+        return found.lines()
+                .map(String::trim)
+                .filter(line -> line.endsWith("/index.html"))
+                .map(line -> line.substring(0, line.lastIndexOf('/')))
+                .distinct()
+                .toList();
+    }
+
+    private boolean isProjectSourceRoot(String containerId, String directory) {
+        String result = dockerService.exec(containerId,
+                "[ -f " + directory + "/package.json ] && echo exists || echo missing");
+        return "exists".equals(result.trim());
     }
 
     private void logToolCallResult(ToolCall tc, String result) {
