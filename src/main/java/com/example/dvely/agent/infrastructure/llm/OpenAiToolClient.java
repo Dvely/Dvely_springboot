@@ -46,17 +46,19 @@ public class OpenAiToolClient {
         apiMessages.add(Map.of("role", "system", "content", systemPrompt));
         apiMessages.addAll(messages);
 
+        LlmProviderErrors.requireApiKey(OpenAiClient.PROVIDER_NAME, aiProperties.getOpenai().getApiKey());
+
         Map<String, Object> body = new HashMap<>();
         body.put("model",    aiProperties.getOpenai().getModel());
         body.put("messages", apiMessages);
         body.put("tools",    toolsPayload);
 
-        String raw = restClient()
+        String raw = LlmProviderErrors.translate(OpenAiClient.PROVIDER_NAME, () -> restClient()
                 .post()
                 .uri(API_URL)
                 .body(body)
                 .retrieve()
-                .body(String.class);
+                .body(String.class));
 
         log.debug("OpenAI Tool API 응답 수신");
         return parse(raw);

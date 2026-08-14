@@ -18,6 +18,7 @@ import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
+import com.example.dvely.common.exception.LlmProviderException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -121,6 +122,22 @@ public class AgentPlanExecutor {
             }
             buildFailureRecoveryService.handle(taskId, exception);
             log.warn("=== AgentPlan build 실패 및 복구 대기: taskId={} ===", taskId);
+        } catch (LlmProviderException exception) {
+            // Separated from the catch-all below only for the chat reply: the provider message is
+            // already a complete, actionable sentence ("... 크레딧이 부족해 ... 다른 AI 제공자를
+            // 선택하거나 결제 상태를 확인해주세요"), and prefixing it with "작업 중 오류가
+            // 발생했습니다" would bury the one instruction the user can act on.
+            if (taskStore.isCancelled(taskId)) {
+                return;
+            }
+            taskStore.markFailed(taskId, exception.getMessage());
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    exception.getMessage()
+            );
+            log.error("=== AgentPlan AI 제공자 실패: taskId={} provider={} reason={} ===",
+                    taskId, exception.providerName(), exception.reason());
         } catch (Exception e) {
             if (taskStore.isCancelled(taskId)) {
                 log.info("=== AgentPlan 취소됨: taskId={} ===", taskId);

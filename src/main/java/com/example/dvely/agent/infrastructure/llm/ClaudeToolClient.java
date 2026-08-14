@@ -46,6 +46,8 @@ public class ClaudeToolClient {
                 ))
                 .toList();
 
+        LlmProviderErrors.requireApiKey(ClaudeClient.PROVIDER_NAME, aiProperties.getAnthropic().getApiKey());
+
         Map<String, Object> body = new HashMap<>();
         body.put("model",      aiProperties.getAnthropic().getModel());
         body.put("max_tokens", MAX_TOKENS);
@@ -53,12 +55,12 @@ public class ClaudeToolClient {
         body.put("tools",      toolsPayload);
         body.put("messages",   messages);
 
-        String raw = restClient()
+        String raw = LlmProviderErrors.translate(ClaudeClient.PROVIDER_NAME, () -> restClient()
                 .post()
                 .uri(API_URL)
                 .body(body)
                 .retrieve()
-                .body(String.class);
+                .body(String.class));
 
         log.debug("Claude Tool API 응답 수신");
         return parse(raw);

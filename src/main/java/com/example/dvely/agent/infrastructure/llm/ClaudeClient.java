@@ -21,11 +21,14 @@ public class ClaudeClient implements LlmPort {
     private static final String API_URL      = "https://api.anthropic.com/v1/messages";
     private static final String API_VERSION  = "2023-06-01";
     private static final int    MAX_TOKENS   = 1024;
+    static final String PROVIDER_NAME = "Anthropic";
 
     private final AiProperties aiProperties;
 
     @Override
     public String complete(String systemPrompt, List<LlmMessage> messages) {
+        LlmProviderErrors.requireApiKey(PROVIDER_NAME, aiProperties.getAnthropic().getApiKey());
+
         List<Map<String, String>> apiMessages = messages.stream()
                 .map(m -> Map.of("role", m.role(), "content", m.content()))
                 .toList();
@@ -37,12 +40,12 @@ public class ClaudeClient implements LlmPort {
                 "messages",   apiMessages
         );
 
-        ClaudeResponse response = restClient()
+        ClaudeResponse response = LlmProviderErrors.translate(PROVIDER_NAME, () -> restClient()
                 .post()
                 .uri(API_URL)
                 .body(body)
                 .retrieve()
-                .body(ClaudeResponse.class);
+                .body(ClaudeResponse.class));
 
         if (response == null || response.content() == null || response.content().isEmpty()) {
             throw new IllegalStateException("Claude API 응답이 비어있습니다");

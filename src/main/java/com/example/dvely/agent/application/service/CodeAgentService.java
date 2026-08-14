@@ -12,6 +12,7 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
 import com.example.dvely.agent.infrastructure.llm.OpenAiToolClient;
 import com.example.dvely.auth.application.command.AuthCommandService;
+import com.example.dvely.common.exception.LlmProviderException;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.project.domain.model.Project;
@@ -167,6 +168,14 @@ public class CodeAgentService {
             String previewUrl = previewSession.publicUrl();
             log.info("[CodeAgent] 완료 | previewUrl={}", previewUrl);
             return new CodeResult(previewUrl, summary);
+        } catch (LlmProviderException e) {
+            // Not a build failure, so it must not go through the branch below: an exhausted credit
+            // balance analyzed as a build log produces "프로젝트 빌드가 완료되지 않았습니다" — a
+            // verdict on the user's project for a problem in the provider account — and then burns
+            // the task's retry budget on a call that cannot start succeeding between attempts.
+            log.error("[CodeAgent] AI 제공자 호출 실패 | userId={} provider={} reason={}",
+                    userId, e.providerName(), e.reason());
+            throw e;
         } catch (AgentIterationLimitException e) {
             // Deliberately not routed through BuildFailureAnalyzer like the branch below: nothing
             // here says the *build* failed — the run simply did not reach the end of its work — so
