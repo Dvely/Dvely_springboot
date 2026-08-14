@@ -388,7 +388,7 @@ Accept: text/event-stream
 |---|---|---|---|---|
 | GET | `/api/v1/projects/{projectId}/preview-session` | **프로젝트의 현재 프리뷰 조회(진입 시 호출)** | Bearer | 200 `ProjectPreviewSession` / **204**(띄워진 프리뷰 없음) / 404(프로젝트 없음) |
 | POST | `/api/v1/projects/{projectId}/preview-session` | **프리뷰 띄우기(버튼)** — preview 브랜치 현재 상태를 clone→빌드→서빙 | Bearer | 200(이미 떠 있는 세션에 붙음) / **202**(준비 시작·진행 중) / 409(저장소 미연결) / **503**(서버의 Docker 실행 환경 문제 — 재시도가 아니라 운영자 조치 필요) / 404 |
-| GET | `/api/v1/previews/{sessionId}/{accessToken}/**` | Docker 프리뷰 컨테이너로 리버스 프록시(HTML/JS/CSS 등 원본 그대로) | URL 내장 1회성 토큰(JWT 아님) | 프리뷰 앱 응답 그대로(`@RawApiResponse`). 세션 없음/토큰 불일치 시 404 |
+| GET | `/api/v1/previews/{sessionId}/{accessToken}/**` | Docker 프리뷰 컨테이너로 리버스 프록시(HTML/JS/CSS 등 원본 그대로) | URL 내장 1회성 토큰(JWT 아님) | 프리뷰 앱 응답 그대로(`@RawApiResponse`) + CSP `sandbox` 헤더. 세션 없음/토큰 불일치 시 404 |
 | DELETE | `/api/v1/preview-sessions/{sessionId}` | 세션 종료 + 컨테이너 정리 | Bearer | 204(404: 없음/타 유저 소유) |
 | GET | `/api/v1/preview-sessions/{sessionId}/status` | 컨테이너 실행 여부·리소스 사용량 조회(p95 ~1.5초 — 폴링은 5초 이상 권장) | Bearer | `{ sessionId, projectId, taskId, sessionStatus(ACTIVE\|PROVISIONING\|CLOSED\|EXPIRED\|FAILED), containerRunning, oomKilled, exitCode, startedAt, expiresAt, resources{ memoryUsageBytes, memoryLimitBytes, memoryUsagePercent, cpuPercent } }`(resources는 미실행/조회 3초 초과 시 null) |
 | GET | `/api/v1/preview-sessions/{sessionId}/logs` | 컨테이너 stdout/stderr 텍스트 조회(영속화 안 됨) | Bearer | `{ sessionId, containerRunning, logText }`(query: `tail`(기본 200, [1,2000] 클램프), `sinceSeconds`) |
@@ -404,6 +404,11 @@ Accept: text/event-stream
 두 종류 모두 같은 게이트웨이로 서빙되고 같은 TTL(기본 30분, `qeploy.preview.ttl`)로 회수되며, 프리뷰를 보는 동안에는 접근할 때마다 만료가 연장됩니다.
 
 `previewUrl`의 오리진은 서버 설정(`qeploy.preview.gateway-base-url`, 운영은 `https://qeploy.com`)에서 옵니다 — 받은 주소를 그대로 열면 되고, FE에서 직접 조립하지 마세요.
+
+**프리뷰 문서는 격리된 컨텍스트에서 실행됩니다.** 게이트웨이가 모든 프록시 응답에 `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups allow-modals; frame-ancestors 'self'`를 붙입니다(Issue #102). 프리뷰 URL이 서비스와 같은 오리진이라 격리가 없으면 프리뷰로 서빙되는 코드가 부모 창의 `localStorage`(서비스 JWT)에 접근할 수 있기 때문입니다. FE 입장에서 달라지는 점은 두 가지입니다.
+
+- iframe에 `sandbox` 속성을 따로 걸 필요가 없습니다(걸어도 무해합니다).
+- 프리뷰 **앱 자신의** `localStorage`·쿠키는 동작하지 않습니다(불투명 오리진). 미리보기 대상 앱이 로그인 상태 저장 같은 기능을 쓰면 그 부분만 보이지 않습니다.
 
 **FE 권장 흐름**
 
