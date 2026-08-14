@@ -19,6 +19,9 @@ import org.hibernate.annotations.UpdateTimestamp;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class PreviewSessionEntity {
 
+    // failure_reason 컬럼 길이(V31)와 같은 값. 초과분은 markFailed 에서 잘라낸다.
+    private static final int MAX_FAILURE_REASON_LENGTH = 500;
+
     @Id
     @Column(name = "preview_session_id", length = 36)
     private String id;
@@ -35,7 +38,9 @@ public class PreviewSessionEntity {
     @Column(name = "chat_session_id")
     private Long conversationId;
 
-    @Column(name = "task_id", nullable = false, length = 64)
+    // NULL 은 "작업이 만든 세션이 아님" — 프로젝트 진입/버튼으로 띄운 프로젝트 단위 프리뷰다
+    // (V31). 값이 있으면 여전히 실재하는 agent_runs 행이어야 한다(FK 유지).
+    @Column(name = "task_id", length = 64)
     private String taskId;
 
     @Column(name = "container_id", nullable = false, length = 128)
@@ -46,6 +51,9 @@ public class PreviewSessionEntity {
 
     @Column(name = "status", nullable = false, length = 20)
     private String status;
+
+    @Column(name = "failure_reason", length = 500)
+    private String failureReason;
 
     @Column(name = "public_url", nullable = false, length = 1000)
     private String publicUrl;
@@ -74,6 +82,26 @@ public class PreviewSessionEntity {
                                 int hostPort,
                                 String publicUrl,
                                 LocalDateTime expiresAt) {
+        this(id, accessToken, ownerUserId, projectId, conversationId, taskId, containerId,
+                hostPort, publicUrl, expiresAt, PreviewSessionStatus.ACTIVE);
+    }
+
+    /**
+     * 시작 상태를 지정해 만드는 생성자. 프로젝트 단위 프리뷰는 컨테이너만 뜬 채 워크스페이스 준비가
+     * 남아 있는 시점에 행을 남기므로 {@link PreviewSessionStatus#PROVISIONING}으로 시작한다 —
+     * 그 사이 게이트웨이가 이 세션을 열어주면 아직 아무것도 서빙하지 않는 포트로 프록시하게 된다.
+     */
+    public PreviewSessionEntity(String id,
+                                String accessToken,
+                                Long ownerUserId,
+                                Long projectId,
+                                Long conversationId,
+                                String taskId,
+                                String containerId,
+                                int hostPort,
+                                String publicUrl,
+                                LocalDateTime expiresAt,
+                                PreviewSessionStatus status) {
         this.id = id;
         this.accessToken = accessToken;
         this.ownerUserId = ownerUserId;
@@ -82,7 +110,7 @@ public class PreviewSessionEntity {
         this.taskId = taskId;
         this.containerId = containerId;
         this.hostPort = hostPort;
-        this.status = PreviewSessionStatus.ACTIVE.name();
+        this.status = status.name();
         this.publicUrl = publicUrl;
         this.expiresAt = expiresAt;
         this.lastAccessedAt = LocalDateTime.now();
@@ -111,6 +139,29 @@ public class PreviewSessionEntity {
 
     public void close(PreviewSessionStatus status) {
         this.status = status.name();
+    }
+
+    /**
+     * 프로비저닝이 끝나 서빙 가능해진 시점의 전이. 만료 시각을 이때부터 다시 세는 것이 핵심이다 —
+     * 생성 시점 기준으로 두면 install/build 에 쓴 몇 분이 사용자가 프리뷰를 볼 수 있는 시간에서
+     * 그대로 깎여 나간다.
+     */
+    public void activate(LocalDateTime expiresAt) {
+        this.status = PreviewSessionStatus.ACTIVE.name();
+        this.failureReason = null;
+        touch(expiresAt);
+    }
+
+    /**
+     * 프로비저닝 실패. 사유는 컬럼 길이(500)에 맞춰 잘라 담는다 — 여기 들어오는 값은 빌드 로그
+     * 꼬리처럼 길이가 정해져 있지 않은 텍스트라, 자르지 않으면 저장 자체가 실패해 실패 사유가
+     * 통째로 사라진다.
+     */
+    public void markFailed(String reason) {
+        this.status = PreviewSessionStatus.FAILED.name();
+        this.failureReason = reason == null || reason.length() <= MAX_FAILURE_REASON_LENGTH
+                ? reason
+                : reason.substring(0, MAX_FAILURE_REASON_LENGTH);
     }
 
     public PreviewSessionInfo toInfo() {

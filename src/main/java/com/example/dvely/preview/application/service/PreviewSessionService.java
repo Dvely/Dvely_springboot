@@ -149,14 +149,32 @@ public class PreviewSessionService {
         return sessions.size();
     }
 
+    /**
+     * TTL 을 넘긴 세션의 컨테이너를 회수한다.
+     *
+     * <p>PROVISIONING 도 함께 본다: 프로젝트 단위 프리뷰는 clone/install/build 를 비동기로 돌기
+     * 때문에, 그 도중 앱이 재시작되면 ACTIVE 로도 FAILED 로도 가지 못한 행이 컨테이너를 붙든 채
+     * 남는다. 만료 시각이 지나도록 준비가 끝나지 않았다는 것은 그 준비가 더 이상 진행되고 있지
+     * 않다는 뜻이므로(TTL 30분 &gt; 정상 프로비저닝 시간), EXPIRED 가 아니라 FAILED 로 닫아
+     * "왜 안 떴는지"를 FE 가 그대로 보여줄 수 있게 한다.</p>
+     */
     @Scheduled(fixedDelayString = "${qeploy.preview.cleanup-interval-ms:60000}")
     @Transactional
     public void cleanupExpired() {
-        repository.findByStatusAndExpiresAtBefore(
-                        PreviewSessionStatus.ACTIVE.name(),
+        repository.findByStatusInAndExpiresAtBefore(
+                        List.of(PreviewSessionStatus.ACTIVE.name(), PreviewSessionStatus.PROVISIONING.name()),
                         LocalDateTime.now()
                 )
-                .forEach(session -> expire(session, PreviewSessionStatus.EXPIRED));
+                .forEach(session -> {
+                    if (PreviewSessionStatus.PROVISIONING.name().equals(session.getStatus())) {
+                        session.markFailed("프리뷰 준비가 제한 시간 안에 끝나지 않았습니다. 다시 시도해주세요.");
+                        repository.save(session);
+                        dockerService.removeContainer(session.getContainerId());
+                        log.warn("[PreviewSession] 준비 미완료로 정리: sessionId={}", session.getId());
+                        return;
+                    }
+                    expire(session, PreviewSessionStatus.EXPIRED);
+                });
     }
 
     private PreviewSessionEntity touch(PreviewSessionEntity session) {

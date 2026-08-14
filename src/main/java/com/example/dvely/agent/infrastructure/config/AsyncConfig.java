@@ -53,6 +53,21 @@ public class AsyncConfig {
         return executor;
     }
 
+    // 프로젝트 단위 프리뷰 프로비저닝(clone → npm install → build → serve). 한 건이 수 분 동안
+    // 스레드를 붙들고, 그 동안 1 GiB/1 vCPU 컨테이너가 하나씩 물려 있으므로 동시 실행 수를 낮게
+    // 잡는다 — 큐가 차서 대기하는 것이, 호스트가 컨테이너에 눌려 이미 떠 있는 프리뷰까지 느려지는
+    // 것보다 낫다.
+    @Bean("previewExecutor")
+    public Executor previewExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(3);
+        executor.setQueueCapacity(20);
+        executor.setThreadNamePrefix("preview-");
+        executor.initialize();
+        return executor;
+    }
+
     @Bean("cloudConnectionExecutor")
     public Executor cloudConnectionExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
