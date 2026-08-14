@@ -1,0 +1,103 @@
+name: Ops - Restart pm2 daemon
+
+# usermod -aG docker 이후에도 pm2 데몬이 옛 자격증명을 들고 있으면 그 아래 재시작된
+# 앱도 docker 그룹 없이 뜬다(deploy/README.md §4, 2026-08-15 운영 실사례). 배포
+# 워크플로의 `pm2 startOrRestart`는 데몬을 그대로 두므로 이 문제를 못 고친다 — 데몬째
+# 재기동해야 하고, 서버에 SSH로 못 들어가는 상황을 위해 그 조치를 수동 실행으로 제공한다.
+on:
+  workflow_dispatch:
+
+# 배포 도중 데몬을 죽이면 어중간한 상태로 남으므로 배포와 같은 그룹으로 직렬화한다.
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: /var/www/dvely/backend
+  PM2_APP: dvely-backend
+  HEALTH_URL: http://127.0.0.1:8080/actuator/health
+
+jobs:
+  restart:
+    name: Restart pm2 daemon on EC2
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Restart pm2 daemon over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_SSH_PORT || 22 }}
+          envs: APP_DIR,PM2_APP,HEALTH_URL
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            # 이 워크플로는 "이미 등록된 그룹을 적용"하는 것까지만 한다. 그룹 자체가
+            # 없으면 usermod부터 필요한 다른 문제이므로 여기서 멈춘다.
+            if ! id -nG "$(whoami)" | tr ' ' '\n' | grep -qx docker; then
+              echo "::error::$(whoami) 계정이 docker 그룹에 없습니다. deploy/README.md §4의 usermod부터 실행해야 합니다."
+              exit 1
+            fi
+
+            old_pid=$(pm2 pid "${PM2_APP}" 2>/dev/null || echo 0)
+
+            # pm2 startup이 등록돼 있으면 systemd 재시작 한 줄로 끝난다(README 권장 경로).
+            # systemd는 서비스를 새로 띄울 때 그룹 DB를 다시 읽으므로 docker 그룹이 실린다.
+            # 등록돼 있지 않으면, 이 SSH 세션 자체가 새 로그인이라 갱신된 그룹을 이미 들고
+            # 있으므로 여기서 데몬을 죽이고 다시 띄우면 된다.
+            unit="pm2-$(whoami).service"
+            if systemctl list-unit-files "${unit}" 2>/dev/null | grep -q "${unit}"; then
+              echo "systemd 유닛(${unit})으로 데몬을 재기동합니다."
+              sudo systemctl restart "pm2-$(whoami)"
+            else
+              echo "systemd 유닛이 없어 현재 로그인 세션에서 데몬을 다시 띄웁니다."
+              pm2 kill
+              cd "${APP_DIR}"
+              pm2 startOrRestart ecosystem.config.js --update-env
+              pm2 save --force
+            fi
+
+            # 배포 워크플로와 같은 기준: 실제 HTTP 응답까지 확인해야 정상이다.
+            healthy=0
+            for _ in $(seq 1 60); do
+              new_pid=$(pm2 pid "${PM2_APP}" 2>/dev/null || echo 0)
+              if [ "${new_pid}" != "${old_pid}" ] && [ "${new_pid}" != "0" ] \
+                 && curl -fsS -o /dev/null "${HEALTH_URL}"; then
+                healthy=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "${healthy}" -ne 1 ]; then
+              echo "::error::${PM2_APP}가 120초 안에 health 응답을 내지 못했습니다. 최근 로그:"
+              pm2 logs "${PM2_APP}" --lines 80 --nostream || true
+              exit 1
+            fi
+
+            # 재기동의 목적 자체가 Docker 연결이므로, 앱이 기동 직후 남기는
+            # [PreviewEnv] 핑 결과까지 확인해야 성공이다.
+            verdict=""
+            for _ in $(seq 1 15); do
+              verdict=$(pm2 logs "${PM2_APP}" --lines 300 --nostream 2>/dev/null | grep '\[PreviewEnv\]' | tail -1 || true)
+              if [ -n "${verdict}" ]; then
+                break
+              fi
+              sleep 2
+            done
+            echo "PreviewEnv 판정: ${verdict:-'(로그 없음)'}"
+            case "${verdict}" in
+              *"Docker 연결 정상"*)
+                echo "pm2 데몬 재기동 완료 (pid ${new_pid}) — Docker 연결 정상."
+                ;;
+              *)
+                echo "::error::재기동 후에도 Docker 연결이 확인되지 않았습니다. 위 PreviewEnv 로그를 확인하세요."
+                exit 1
+                ;;
+            esac
