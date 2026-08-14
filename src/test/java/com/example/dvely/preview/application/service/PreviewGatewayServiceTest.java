@@ -85,6 +85,19 @@ class PreviewGatewayServiceTest {
                 .contains("sandbox");
     }
 
+    /**
+     * sandbox 로 불투명 오리진이 된 문서의 module script 는 Origin: null 의 CORS 요청으로
+     * 온다(Issue #108). 이 헤더가 빠지면 Vite 류 빌드의 메인 번들이 차단되어 프리뷰가 백지가 된다.
+     */
+    @Test
+    void allowsCorsLoadsFromTheOpaqueOriginTheSandboxCreates() {
+        ResponseEntity<byte[]> html = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+        ResponseEntity<byte[]> asset = service.proxy(session(), "/api/v1/previews/s/t/", "app.js", null);
+
+        assertThat(html.getHeaders().getAccessControlAllowOrigin()).isEqualTo("*");
+        assertThat(asset.getHeaders().getAccessControlAllowOrigin()).isEqualTo("*");
+    }
+
     private PreviewSessionInfo session() {
         return new PreviewSessionInfo(
                 "session-1", 1L, 11L, null, null, "container-1",

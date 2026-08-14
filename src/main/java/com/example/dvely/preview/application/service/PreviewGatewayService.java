@@ -74,6 +74,11 @@ public class PreviewGatewayService {
                     // HTML뿐 아니라 모든 프록시 응답에 붙인다. 프리뷰 앱이 자기 JS/워커를 어떤
                     // Content-Type으로 내보내든 실행 컨텍스트는 동일하게 격리돼야 한다.
                     .header(CONTENT_SECURITY_POLICY, SANDBOX_POLICY)
+                    // 위 sandbox로 프리뷰 문서가 불투명 오리진이 되면서 Vite류 module script는
+                    // Origin: null 의 CORS 요청으로 온다(Issue #108). 자격은 URL의 회전
+                    // accessToken이지 쿠키가 아니므로 '*'로 연다 — 'null' 오리진은 누구나
+                    // sandbox iframe으로 만들 수 있어 좁혀도 효과가 없다.
+                    .header(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, "*")
                     .body(body);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
