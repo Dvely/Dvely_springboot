@@ -59,6 +59,31 @@ sudo usermod -aG docker ubuntu   # 앱이 /var/run/docker.sock 을 쓴다
 [PreviewEnv] Docker 데몬에 연결하지 못했습니다. ...                          # 조치 필요
 ```
 
+### 그룹 추가만으로는 적용되지 않는다
+
+`usermod -aG docker` 는 **이미 떠 있는 프로세스에 적용되지 않는다.** `pm2 restart` 도 소용없다 —
+pm2 **데몬**이 옛 자격증명을 그대로 들고 있어서, 그 아래 재시작된 앱도 docker 그룹 없이 뜬다.
+데몬까지 새로 띄워야 한다.
+
+```bash
+sudo systemctl restart pm2-ubuntu      # 3번에서 pm2 startup 을 등록했다면 이 한 줄로 끝난다
+
+# 등록하지 않았다면: 그룹은 새 로그인부터 적용되므로 반드시 재접속한 뒤
+id -nG | tr ' ' '\n' | grep docker     # docker 가 보여야 한다
+pm2 kill
+cd /var/www/dvely/backend && pm2 startOrRestart ecosystem.config.js --update-env && pm2 save
+```
+
+빠뜨리면 설치는 끝났는데도 앱만 계속 실패하고, 프리뷰 API 는 그 원인을 그대로 싣는다
+(2026-08-15 운영 서버 실사례).
+
+```
+503  프리뷰 컨테이너를 시작하지 못했습니다. 서버의 Docker 실행 환경을 확인해주세요.
+     (원인: Permission denied)
+```
+
+`Permission denied` 는 "Docker 가 없다" 가 아니라 "이 절차가 아직 적용되지 않았다" 는 뜻이다.
+
 ## 5. GitHub Secrets
 
 | 이름 | 필수 | 설명 |
