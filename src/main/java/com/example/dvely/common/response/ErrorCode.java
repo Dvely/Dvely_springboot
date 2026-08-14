@@ -27,7 +27,11 @@ public enum ErrorCode {
     // 구분할 수 있어야 한다.
     AI_PROVIDER_UNAVAILABLE(503, "AI_PROVIDER_UNAVAILABLE", "선택한 AI 제공자를 사용할 수 없습니다"),
     AI_PROVIDER_RATE_LIMITED(429, "AI_PROVIDER_RATE_LIMITED", "AI 제공자 요청량 한도를 초과했습니다"),
-    AI_PROVIDER_ERROR(502, "AI_PROVIDER_ERROR", "AI 제공자 호출에 실패했습니다");
+    AI_PROVIDER_ERROR(502, "AI_PROVIDER_ERROR", "AI 제공자 호출에 실패했습니다"),
+
+    // 프리뷰 실행 환경(Docker). AI 제공자 코드들과 같은 이유로 4xx가 아니다 — 요청은 정상이고
+    // 서버 쪽 실행 환경이 원인이며, 클라이언트가 할 수 있는 일은 재시도 또는 운영자 문의뿐이다.
+    PREVIEW_ENVIRONMENT_UNAVAILABLE(503, "PREVIEW_ENVIRONMENT_UNAVAILABLE", "프리뷰 실행 환경을 사용할 수 없습니다");
 
     private final int status;
     private final String code;
