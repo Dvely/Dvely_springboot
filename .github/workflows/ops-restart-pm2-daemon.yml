@@ -1,9 +1,9 @@
 name: Ops - Restart pm2 daemon
 
-# usermod -aG docker 이후에도 pm2 데몬이 옛 자격증명을 들고 있으면 그 아래 재시작된
-# 앱도 docker 그룹 없이 뜬다(deploy/README.md §4, 2026-08-15 운영 실사례). 배포
-# 워크플로의 `pm2 startOrRestart`는 데몬을 그대로 두므로 이 문제를 못 고친다 — 데몬째
-# 재기동해야 하고, 서버에 SSH로 못 들어가는 상황을 위해 그 조치를 수동 실행으로 제공한다.
+# 프리뷰가 Docker 권한 문제로 503을 내는 서버 상태를 SSH 없이 복구한다
+# (deploy/README.md §4). 2026-08-15 실측: ubuntu 계정이 docker 그룹에 아예 없었다 —
+# 그룹 등록(usermod)부터 pm2 데몬 재기동까지 §4 전체를 멱등하게 적용해야 한다.
+# 배포 워크플로의 `pm2 startOrRestart`는 데몬을 그대로 두므로 이 문제를 못 고친다.
 on:
   workflow_dispatch:
 
@@ -22,12 +22,12 @@ env:
 
 jobs:
   restart:
-    name: Restart pm2 daemon on EC2
+    name: Apply docker group and restart pm2 daemon on EC2
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - name: Restart pm2 daemon over SSH
+      - name: Apply docker group and restart pm2 daemon over SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -39,32 +39,44 @@ jobs:
           script: |
             set -euo pipefail
 
-            # 이 워크플로는 "이미 등록된 그룹을 적용"하는 것까지만 한다. 그룹 자체가
-            # 없으면 usermod부터 필요한 다른 문제이므로 여기서 멈춘다.
+            # ---- 현재 상태 진단(로그용) ----------------------------------------
+            echo "== 진단 =="
+            echo "docker 바이너리: $(command -v docker || echo '없음')"
+            echo "docker 서비스:  $(systemctl is-active docker 2>/dev/null || echo '없음/정지')"
+            echo "docker 그룹:    $(getent group docker || echo '없음')"
+            echo "현재 세션 그룹: $(id -nG)"
+
+            # ---- deploy/README.md §4 적용(멱등) --------------------------------
+            # sudo는 전부 -n: NOPASSWD가 아니면 조용히 멈추는 대신 즉시 실패시킨다.
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "docker가 없어 설치합니다(deploy/README.md §4)."
+              sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+              sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io
+            fi
+            sudo -n systemctl enable --now docker
+
             if ! id -nG "$(whoami)" | tr ' ' '\n' | grep -qx docker; then
-              echo "::error::$(whoami) 계정이 docker 그룹에 없습니다. deploy/README.md §4의 usermod부터 실행해야 합니다."
-              exit 1
+              echo "$(whoami) 계정을 docker 그룹에 추가합니다."
+              sudo -n usermod -aG docker "$(whoami)"
             fi
 
+            # ---- pm2 데몬 재기동 ------------------------------------------------
             old_pid=$(pm2 pid "${PM2_APP}" 2>/dev/null || echo 0)
 
-            # pm2 startup이 등록돼 있으면 systemd 재시작 한 줄로 끝난다(README 권장 경로).
-            # systemd는 서비스를 새로 띄울 때 그룹 DB를 다시 읽으므로 docker 그룹이 실린다.
-            # 등록돼 있지 않으면, 이 SSH 세션 자체가 새 로그인이라 갱신된 그룹을 이미 들고
-            # 있으므로 여기서 데몬을 죽이고 다시 띄우면 된다.
+            # systemd 유닛이 있으면 그 경로가 정본이다 — systemd는 서비스를 새로
+            # 띄울 때 그룹 DB를 다시 읽으므로 방금 추가한 그룹이 실린다.
+            # 없으면 sudo -i로 "새 로그인"을 만들어 갱신된 그룹으로 데몬을 다시 띄운다
+            # (이 SSH 세션 자체는 usermod 이전 로그인이라 그룹이 옛 것일 수 있다).
             unit="pm2-$(whoami).service"
             if systemctl list-unit-files "${unit}" 2>/dev/null | grep -q "${unit}"; then
               echo "systemd 유닛(${unit})으로 데몬을 재기동합니다."
-              sudo systemctl restart "pm2-$(whoami)"
+              sudo -n systemctl restart "pm2-$(whoami)"
             else
-              echo "systemd 유닛이 없어 현재 로그인 세션에서 데몬을 다시 띄웁니다."
-              pm2 kill
-              cd "${APP_DIR}"
-              pm2 startOrRestart ecosystem.config.js --update-env
-              pm2 save --force
+              echo "systemd 유닛이 없어 새 로그인 셸에서 데몬을 다시 띄웁니다."
+              sudo -n -i -u "$(whoami)" bash -c "pm2 kill >/dev/null 2>&1 || true; cd '${APP_DIR}' && pm2 startOrRestart ecosystem.config.js --update-env && pm2 save --force"
             fi
 
-            # 배포 워크플로와 같은 기준: 실제 HTTP 응답까지 확인해야 정상이다.
+            # ---- 검증 1: 배포 워크플로와 같은 기준의 health 폴링 ----------------
             healthy=0
             for _ in $(seq 1 60); do
               new_pid=$(pm2 pid "${PM2_APP}" 2>/dev/null || echo 0)
@@ -81,8 +93,8 @@ jobs:
               exit 1
             fi
 
-            # 재기동의 목적 자체가 Docker 연결이므로, 앱이 기동 직후 남기는
-            # [PreviewEnv] 핑 결과까지 확인해야 성공이다.
+            # ---- 검증 2: 재기동의 목적 자체가 Docker 연결이므로, 앱이 기동 직후
+            # 남기는 [PreviewEnv] 핑 결과까지 확인해야 성공이다 -------------------
             verdict=""
             for _ in $(seq 1 15); do
               verdict=$(pm2 logs "${PM2_APP}" --lines 300 --nostream 2>/dev/null | grep '\[PreviewEnv\]' | tail -1 || true)
@@ -94,10 +106,10 @@ jobs:
             echo "PreviewEnv 판정: ${verdict:-'(로그 없음)'}"
             case "${verdict}" in
               *"Docker 연결 정상"*)
-                echo "pm2 데몬 재기동 완료 (pid ${new_pid}) — Docker 연결 정상."
+                echo "조치 완료 (pid ${new_pid}) — Docker 연결 정상."
                 ;;
               *)
-                echo "::error::재기동 후에도 Docker 연결이 확인되지 않았습니다. 위 PreviewEnv 로그를 확인하세요."
+                echo "::error::조치 후에도 Docker 연결이 확인되지 않았습니다. 위 PreviewEnv 로그를 확인하세요."
                 exit 1
                 ;;
             esac
