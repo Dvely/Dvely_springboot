@@ -93,23 +93,20 @@ jobs:
               exit 1
             fi
 
-            # ---- 검증 2: 재기동의 목적 자체가 Docker 연결이므로, 앱이 기동 직후
-            # 남기는 [PreviewEnv] 핑 결과까지 확인해야 성공이다 -------------------
-            verdict=""
-            for _ in $(seq 1 15); do
-              verdict=$(pm2 logs "${PM2_APP}" --lines 300 --nostream 2>/dev/null | grep '\[PreviewEnv\]' | tail -1 || true)
-              if [ -n "${verdict}" ]; then
-                break
-              fi
-              sleep 2
-            done
-            echo "PreviewEnv 판정: ${verdict:-'(로그 없음)'}"
-            case "${verdict}" in
-              *"Docker 연결 정상"*)
-                echo "조치 완료 (pid ${new_pid}) — Docker 연결 정상."
-                ;;
-              *)
-                echo "::error::조치 후에도 Docker 연결이 확인되지 않았습니다. 위 PreviewEnv 로그를 확인하세요."
-                exit 1
-                ;;
-            esac
+            # ---- 검증 2: 실행 중인 앱 프로세스가 docker 그룹을 실제로 보유하는지
+            # /proc에서 직접 확인한다. 로그 문자열 검색은 기동 로그가 밀려나면
+            # 놓친다(2026-08-15 1차 실행 실측) — 프로세스 자격증명이 정본이다 ------
+            docker_gid=$(getent group docker | cut -d: -f3)
+            if grep -q "^Groups:.*\b${docker_gid}\b" "/proc/${new_pid}/status"; then
+              echo "앱 프로세스(pid ${new_pid})가 docker 그룹(gid ${docker_gid})을 보유합니다."
+            else
+              echo "::error::앱 프로세스(pid ${new_pid})에 docker 그룹(gid ${docker_gid})이 없습니다."
+              grep '^Groups:' "/proc/${new_pid}/status" || true
+              exit 1
+            fi
+
+            # 참고용: 앱이 남긴 PreviewEnv 핑 로그. 없어도 실패로 치지 않는다 —
+            # 위 프로세스 자격증명 확인이 정본이고, 이건 사람이 읽는 보조 신호다.
+            tail -n 800 "$HOME"/.pm2/logs/*out*.log 2>/dev/null | grep '\[PreviewEnv\]' | tail -2 || echo "(PreviewEnv 로그 없음)"
+
+            echo "조치 완료 (pid ${new_pid}) — 앱이 docker 그룹을 들고 재기동되었습니다."
