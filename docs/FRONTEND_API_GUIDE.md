@@ -2,7 +2,7 @@
 
 이 문서는 프론트엔드 개발자가 Swagger UI와 함께 참고하는 통합 작업 문서입니다. 컨트롤러·DTO·설계서(`.agent-team/04-architecture/`)의 실제 계약만을 근거로 작성했으며, 추측/날조된 필드나 동작은 없습니다. 필드 하나하나의 상세 스키마(타입, `nullable`, `example`)는 Swagger UI(`/swagger-ui/index.html`)가 항상 최신 소스이므로, 이 문서는 **"무엇을 언제 왜 호출하는가"**에 집중하고 세부 스키마는 Swagger로 위임합니다.
 
-- **컨트롤러 수**: 14개 · **공개 엔드포인트 수**: 90개 (Swagger 그룹 11개 + 프로젝트 그룹에 포함된 Approval/Change 하위 리소스)
+- **컨트롤러 수**: 15개 · **공개 엔드포인트 수**: 92개 (Swagger 그룹 11개 + 프로젝트 그룹에 포함된 Approval/Change 하위 리소스)
 - **작성 기준 커밋**: main `eb0ec2d` (U0~U7 · I45 · Cost(#58) · CloudOps(#59) · 결과 승인 2단계(#56) · pendingApprovalId/retryable 재정의(#57) · retry TOCTOU 제거(#64) · 결과 게이트 이력 판정 보강(#62) 머지 완료)
 
 ---
@@ -207,7 +207,7 @@ Accept: text/event-stream
 
 ---
 
-## 4. 도메인별 엔드포인트 카탈로그 (전수 90개)
+## 4. 도메인별 엔드포인트 카탈로그 (전수 92개)
 
 각 표의 "요청"·"응답" 열은 핵심 필드만 나열합니다. 전체 필드/타입/예시 값은 Swagger UI에서 확인하세요.
 
@@ -382,16 +382,49 @@ Accept: text/event-stream
 
 `CloudConnectionStatus` 전체 값: `VALIDATED · VERIFYING · CHECKING · CONNECTED · PERMISSION_MISSING · BILLING_DISABLED · REGION_UNSUPPORTED · INVALID_CREDENTIAL · UNKNOWN_ERROR`.
 
-### 4.10 Preview — `com.example.dvely.preview.presentation` (4개 논리 엔드포인트, 프록시가 경로 패턴 2개를 가져 Swagger에는 5개로 집계)
+### 4.10 Preview — `com.example.dvely.preview.presentation` (6개 논리 엔드포인트, 프록시가 경로 패턴 2개를 가져 Swagger에는 7개로 집계)
 
 | 메서드 | 경로 | 용도 | 인증 | 응답 |
 |---|---|---|---|---|
+| GET | `/api/v1/projects/{projectId}/preview-session` | **프로젝트의 현재 프리뷰 조회(진입 시 호출)** | Bearer | 200 `ProjectPreviewSession` / **204**(띄워진 프리뷰 없음) / 404(프로젝트 없음) |
+| POST | `/api/v1/projects/{projectId}/preview-session` | **프리뷰 띄우기(버튼)** — preview 브랜치 현재 상태를 clone→빌드→서빙 | Bearer | 200(이미 떠 있는 세션에 붙음) / **202**(준비 시작·진행 중) / 409(저장소 미연결) / 404 |
 | GET | `/api/v1/previews/{sessionId}/{accessToken}/**` | Docker 프리뷰 컨테이너로 리버스 프록시(HTML/JS/CSS 등 원본 그대로) | URL 내장 1회성 토큰(JWT 아님) | 프리뷰 앱 응답 그대로(`@RawApiResponse`). 세션 없음/토큰 불일치 시 404 |
 | DELETE | `/api/v1/preview-sessions/{sessionId}` | 세션 종료 + 컨테이너 정리 | Bearer | 204(404: 없음/타 유저 소유) |
-| GET | `/api/v1/preview-sessions/{sessionId}/status` | 컨테이너 실행 여부·리소스 사용량 조회(p95 ~1.5초 — 폴링은 5초 이상 권장) | Bearer | `{ sessionId, projectId, taskId, sessionStatus(ACTIVE\|CLOSED\|EXPIRED), containerRunning, oomKilled, exitCode, startedAt, expiresAt, resources{ memoryUsageBytes, memoryLimitBytes, memoryUsagePercent, cpuPercent } }`(resources는 미실행/조회 3초 초과 시 null) |
+| GET | `/api/v1/preview-sessions/{sessionId}/status` | 컨테이너 실행 여부·리소스 사용량 조회(p95 ~1.5초 — 폴링은 5초 이상 권장) | Bearer | `{ sessionId, projectId, taskId, sessionStatus(ACTIVE\|PROVISIONING\|CLOSED\|EXPIRED\|FAILED), containerRunning, oomKilled, exitCode, startedAt, expiresAt, resources{ memoryUsageBytes, memoryLimitBytes, memoryUsagePercent, cpuPercent } }`(resources는 미실행/조회 3초 초과 시 null) |
 | GET | `/api/v1/preview-sessions/{sessionId}/logs` | 컨테이너 stdout/stderr 텍스트 조회(영속화 안 됨) | Bearer | `{ sessionId, containerRunning, logText }`(query: `tail`(기본 200, [1,2000] 클램프), `sinceSeconds`) |
 
-프리뷰 세션은 별도 생성 API가 없습니다 — Agent CODE 스텝이 내부적으로 생성하며, `previewUrl`은 `GET /api/v1/agent/tasks/{taskId}` 응답에서 얻습니다.
+`ProjectPreviewSession` = `{ sessionId, projectId, taskId, status(ACTIVE|PROVISIONING|FAILED), previewUrl, expiresAt, failureReason }`
+— `previewUrl`은 **`status=ACTIVE`일 때만** 값이 있습니다(준비 전 주소는 게이트웨이가 404로 막습니다). `taskId`가 `null`이면 프로젝트 단위로 띄운 "현재 상태" 프리뷰, 값이 있으면 그 Agent 작업이 만든 프리뷰입니다.
+
+#### 프리뷰가 만들어지는 두 경로
+
+1. **작업 결과 프리뷰**(기존): Agent CODE 스텝이 내부적으로 생성하며, `previewUrl`은 `GET /api/v1/agent/tasks/{taskId}` 응답에서 얻습니다. 별도 생성 API는 없습니다.
+2. **현재 상태 프리뷰**(신규): 작업 지시 없이 `POST /api/v1/projects/{id}/preview-session`으로 띄웁니다. `preview` 브랜치를 그대로 clone → (build 스크립트가 있으면) 빌드 → 서빙하므로, 저장소를 막 연결한 직후에도 배포 전에 현재 화면을 볼 수 있습니다.
+
+두 종류 모두 같은 게이트웨이로 서빙되고 같은 TTL(기본 30분, `qeploy.preview.ttl`)로 회수되며, 프리뷰를 보는 동안에는 접근할 때마다 만료가 연장됩니다.
+
+**FE 권장 흐름**
+
+```
+① 프로젝트 진입
+   GET /api/v1/projects/{id}/preview-session
+     → 200 status=ACTIVE       : previewUrl을 iframe/새 탭으로 바로 표시
+     → 200 status=PROVISIONING : 준비 중 표시 후 ③으로 폴링
+     → 200 status=FAILED       : failureReason 표시 + "다시 시도" 버튼(②)
+     → 204                     : "프리뷰 띄우기" 버튼 표시(②)
+
+② 버튼 클릭
+   POST /api/v1/projects/{id}/preview-session
+     → 200 : 이미 떠 있던 세션에 붙음 — previewUrl 즉시 사용
+     → 202 : 준비 시작(status=PROVISIONING, previewUrl=null) → ③
+     → 409 : GitHub 저장소 미연결 — 저장소 연결 화면으로 유도
+
+③ 폴링(5초 이상 권장)
+   GET /api/v1/projects/{id}/preview-session  (또는 /preview-sessions/{sessionId}/status)
+     → status=ACTIVE 가 되면 previewUrl 표시. npm install·build를 포함해 보통 수십 초~수 분.
+```
+
+세션 행은 남아 있는데 컨테이너만 사라진 경우(데몬 재시작 등), 조회 API가 그 세션을 정리하고 204로 응답합니다 — 죽은 URL이 iframe에 걸리는 일은 없습니다. 요청이 겹쳐도(버튼 더블클릭) 프로젝트당 컨테이너는 하나만 남습니다.
 
 ### 4.11 Webhook — `com.example.dvely.webhook.presentation` (1)
 
