@@ -119,6 +119,18 @@ sudo apt-get install -y docker.io
 sudo systemctl enable --now docker
 # ubuntu 가 sudo 없이 docker 를 쓸 수 있어야 pm2 로 뜬 앱이 컨테이너를 만든다.
 sudo usermod -aG docker ubuntu
+
+# ⚠️ 여기서 pm2 데몬을 반드시 죽인다.
+#
+# pm2 가 띄우는 프로세스는 "pm2 명령을 실행한 셸"이 아니라 이미 떠 있는 God 데몬의
+# 자격증명을 물려받는다. 위 usermod 이전에 God 데몬이 한 번이라도 떴다면(앞 단계의
+# `pm2 -v` 만으로도 뜬다) 그 데몬은 docker 그룹이 없는 상태로 고정되고, 이후 배포에서
+# `pm2 startOrRestart` 를 아무리 새 SSH 세션에서 돌려도 자식 프로세스에 docker 그룹이
+# 붙지 않는다. 증상은 앱은 정상 기동하는데 에이전트 실행만
+#   "Failed create socket with path /var/run/docker.sock"
+# 으로 실패하는 것이라, 원인을 찾기 어렵다. 실제로 그렇게 한 번 당했다.
+sudo pkill -f 'PM2 v' 2>/dev/null || true
+pm2 kill >/dev/null 2>&1 || true
 # 첫 에이전트 실행이 이미지 pull 로 수 분 걸리는 것을 막는다.
 sudo docker pull node:20-alpine
 
