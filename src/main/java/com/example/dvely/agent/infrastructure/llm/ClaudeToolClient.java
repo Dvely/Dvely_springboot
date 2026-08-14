@@ -22,7 +22,12 @@ public class ClaudeToolClient {
 
     private static final String API_URL     = "https://api.anthropic.com/v1/messages";
     private static final String API_VERSION = "2023-06-01";
-    private static final int    MAX_TOKENS  = 4096;
+    // Output budget per round. 4096 was not enough to emit one real source file in a single
+    // write_file call, so generation stopped mid-arguments (stop_reason=max_tokens) on ordinary
+    // components — CodeAgentService refuses to run a call cut off that way, which costs the round.
+    // Sized to fit a typical component write with headroom; it is a ceiling, not an allocation, so
+    // rounds that emit less are unaffected.
+    private static final int    MAX_TOKENS  = 8192;
 
     private final AiProperties aiProperties;
     private final ObjectMapper objectMapper = new ObjectMapper();

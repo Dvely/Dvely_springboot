@@ -77,12 +77,10 @@ public class OpenAiToolClient {
             if (rawToolCalls != null) {
                 for (Map<String, Object> tc : rawToolCalls) {
                     Map<String, Object> function = (Map<String, Object>) tc.get("function");
-                    Map<String, Object> input    = objectMapper.readValue(
-                            (String) function.get("arguments"), Map.class);
                     toolCalls.add(new ToolCall(
                             (String) tc.get("id"),
                             (String) function.get("name"),
-                            input
+                            parseArguments((String) function.get("arguments"))
                     ));
                 }
             }
@@ -93,6 +91,28 @@ public class OpenAiToolClient {
         } catch (Exception e) {
             log.error("OpenAI Tool 응답 파싱 실패: {}", raw, e);
             throw new RuntimeException("OpenAI Tool API 응답 파싱 실패", e);
+        }
+    }
+
+    /**
+     * A tool call's {@code arguments} is a JSON string the model produced, so it can be incomplete
+     * — most often when generation stopped at the output limit mid-arguments
+     * ({@code finish_reason=length}). That used to abort the whole parse and fail the task with
+     * "OpenAI Tool API 응답 파싱 실패", losing every round of work already done in the container.
+     * Degrading to empty arguments keeps the response usable: CodeAgentService answers the call
+     * with a "missing argument" tool result and the model retries it, and for the truncation case
+     * it skips the call outright on {@code finish_reason}.
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseArguments(String arguments) {
+        if (arguments == null || arguments.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(arguments, Map.class);
+        } catch (Exception e) {
+            log.warn("OpenAI tool 인자 JSON 파싱 실패, 빈 인자로 처리: {}", e.getMessage());
+            return Map.of();
         }
     }
 

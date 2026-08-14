@@ -1,11 +1,13 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
+import com.example.dvely.agent.application.exception.AgentIterationLimitException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
 import com.example.dvely.agent.domain.value.AiProvider;
+import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
 import com.example.dvely.agent.infrastructure.llm.OpenAiToolClient;
@@ -32,7 +34,29 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class CodeAgentService {
 
-    private static final int MAX_ITERATIONS = 20;
+    // A single container command's output — `npm install`, `npm create vite`, a failing build —
+    // routinely runs to tens of thousands of characters, and every tool result stays in `messages`
+    // and is re-sent on every subsequent round. Left untrimmed, the transcript grows fast enough
+    // that a run spends its whole round budget re-reading its own logs: latency and cost climb per
+    // round, and the model loses the earlier instructions it needs to actually finish. Head and
+    // tail are what carry signal (the command that ran, and the error it ended on), so the middle
+    // is what gets dropped. The untruncated output still reaches BuildFailureAnalyzer — that reads
+    // /tmp/qeploy-build.log from the container, not this transcript.
+    private static final int MAX_TOOL_RESULT_CHARS  = 8_000;
+    private static final int TOOL_RESULT_HEAD_CHARS = 2_000;
+
+    // Stop reasons meaning "the model ran out of output budget mid-generation" — Anthropic's
+    // max_tokens and OpenAI's length. The final tool call of such a response can be cut off
+    // mid-arguments, so it must not be executed (see truncatedToolCallIndex).
+    private static final String CLAUDE_TRUNCATED_STOP_REASON = "max_tokens";
+    private static final String OPENAI_TRUNCATED_STOP_REASON = "length";
+
+    private static final String TRUNCATED_TOOL_CALL_MESSAGE =
+            "[qeploy] 직전 tool 호출이 모델 출력 한도에 걸려 잘렸으므로 실행하지 않았습니다. "
+                    + "파일을 더 작은 단위로 나눠 다시 호출하세요.";
+
+    // How many recent tool calls to keep as the failure's log excerpt when the round budget runs out.
+    private static final int PROGRESS_TRACE_TAIL = 12;
 
     private final ClaudeToolClient       claudeToolClient;
     private final OpenAiToolClient       openAiToolClient;
@@ -42,6 +66,7 @@ public class CodeAgentService {
     private final AuthCommandService     authCommandService;
     private final ProjectRepository      projectRepository;
     private final BuildFailureAnalyzer   buildFailureAnalyzer;
+    private final AiProperties           aiProperties;
 
     private static final String SYSTEM_PROMPT = """
             You are an expert full-stack developer working inside a Docker container (node:20-alpine).
@@ -142,6 +167,21 @@ public class CodeAgentService {
             String previewUrl = previewSession.publicUrl();
             log.info("[CodeAgent] 완료 | previewUrl={}", previewUrl);
             return new CodeResult(previewUrl, summary);
+        } catch (AgentIterationLimitException e) {
+            // Deliberately not routed through BuildFailureAnalyzer like the branch below: nothing
+            // here says the *build* failed — the run simply did not reach the end of its work — so
+            // analyzing a build log would attach a diagnosis the run never produced. The
+            // suggestedFix matters beyond its wording: AgentPlanExecutor#withSuggestedFix appends
+            // it to the instruction on retry, and the retry reuses this same container, so it is
+            // what turns the retry into "continue" instead of "start over".
+            log.warn("[CodeAgent] 반복 한도 도달로 미완료 | userId={} containerId={} maxIterations={}",
+                    userId, containerId, e.maxIterations(), e);
+            throw new CodeAgentExecutionException(
+                    "요청한 작업이 한 번의 실행 안에 끝나지 않았습니다(LLM 반복 " + e.maxIterations() + "회 한도 도달).",
+                    e.progressLog(),
+                    "이미 생성된 파일은 그대로 두고 아직 끝내지 못한 작업만 이어서 진행한 뒤, 마지막에 build를 실행합니다.",
+                    e
+            );
         } catch (Exception e) {
             log.error("[CodeAgent] 실패 | userId={} containerId={}", userId, containerId, e);
             String buildLog = dockerService.exec(
@@ -164,11 +204,13 @@ public class CodeAgentService {
 
     // ── Claude 루프 ──────────────────────────────────────────────────────────
     private String runClaudeLoop(String instruction, String containerId) {
+        int maxIterations = maxIterations();
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", instruction));
+        List<String> trace = new ArrayList<>();
 
-        for (int i = 0; i < MAX_ITERATIONS; i++) {
-            log.info("[CodeAgent/Claude] LLM 호출 (round {})", i + 1);
+        for (int i = 0; i < maxIterations; i++) {
+            log.info("[CodeAgent/Claude] LLM 호출 (round {}/{})", i + 1, maxIterations);
             LlmToolResponse response = claudeToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS);
 
             messages.add(Map.of("role", "assistant", "content", response.contentBlocks()));
@@ -178,10 +220,18 @@ public class CodeAgentService {
                 return extractFinalText(response.contentBlocks());
             }
 
+            List<ToolCall> toolCalls = response.toolCalls();
+            int truncatedIndex = truncatedToolCallIndex(response, CLAUDE_TRUNCATED_STOP_REASON);
             List<Map<String, Object>> toolResults = new ArrayList<>();
-            for (ToolCall tc : response.toolCalls()) {
-                String result = executeTool(tc, containerId);
+            for (int t = 0; t < toolCalls.size(); t++) {
+                ToolCall tc = toolCalls.get(t);
+                // Every tool_use block still needs a matching tool_result or the next request is
+                // rejected, so a truncated call is answered with an explanation rather than skipped.
+                String result = t == truncatedIndex
+                        ? TRUNCATED_TOOL_CALL_MESSAGE
+                        : truncateForModel(executeTool(tc, containerId));
                 logToolCallResult(tc, result);
+                trace.add(traceEntry(i + 1, tc));
                 toolResults.add(Map.of(
                         "type",        "tool_result",
                         "tool_use_id", tc.id(),
@@ -190,17 +240,19 @@ public class CodeAgentService {
             }
             messages.add(Map.of("role", "user", "content", toolResults));
         }
-        log.warn("[CodeAgent/Claude] 최대 반복 횟수({}) 도달", MAX_ITERATIONS);
-        return "최대 반복 횟수 도달로 작업이 종료되었습니다.";
+        log.warn("[CodeAgent/Claude] 최대 반복 횟수({}) 도달", maxIterations);
+        throw new AgentIterationLimitException(maxIterations, recentTrace(trace));
     }
 
     // ── OpenAI 루프 ──────────────────────────────────────────────────────────
     private String runOpenAiLoop(String instruction, String containerId) {
+        int maxIterations = maxIterations();
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", instruction));
+        List<String> trace = new ArrayList<>();
 
-        for (int i = 0; i < MAX_ITERATIONS; i++) {
-            log.info("[CodeAgent/OpenAI] LLM 호출 (round {})", i + 1);
+        for (int i = 0; i < maxIterations; i++) {
+            log.info("[CodeAgent/OpenAI] LLM 호출 (round {}/{})", i + 1, maxIterations);
             LlmToolResponse response = openAiToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS);
 
             messages.add(response.contentBlocks().get(0));
@@ -210,9 +262,15 @@ public class CodeAgentService {
                 return (String) response.contentBlocks().get(0).getOrDefault("content", "");
             }
 
-            for (ToolCall tc : response.toolCalls()) {
-                String result = executeTool(tc, containerId);
+            List<ToolCall> toolCalls = response.toolCalls();
+            int truncatedIndex = truncatedToolCallIndex(response, OPENAI_TRUNCATED_STOP_REASON);
+            for (int t = 0; t < toolCalls.size(); t++) {
+                ToolCall tc = toolCalls.get(t);
+                String result = t == truncatedIndex
+                        ? TRUNCATED_TOOL_CALL_MESSAGE
+                        : truncateForModel(executeTool(tc, containerId));
                 logToolCallResult(tc, result);
+                trace.add(traceEntry(i + 1, tc));
                 messages.add(Map.of(
                         "role",         "tool",
                         "tool_call_id", tc.id(),
@@ -220,8 +278,54 @@ public class CodeAgentService {
                 ));
             }
         }
-        log.warn("[CodeAgent/OpenAI] 최대 반복 횟수({}) 도달", MAX_ITERATIONS);
-        return "최대 반복 횟수 도달로 작업이 종료되었습니다.";
+        log.warn("[CodeAgent/OpenAI] 최대 반복 횟수({}) 도달", maxIterations);
+        throw new AgentIterationLimitException(maxIterations, recentTrace(trace));
+    }
+
+    private int maxIterations() {
+        return aiProperties.getCodeAgent().getMaxIterations();
+    }
+
+    /**
+     * Index of the one tool call in this response that may have been cut off mid-generation, or -1
+     * if none was. Only the last block can be partial: everything before it was already emitted in
+     * full before the output budget ran out. Executing a truncated call is worse than not running
+     * it — a {@code write_file} whose content stopped halfway writes a broken source file that the
+     * model then has to discover and repair, spending rounds on damage this loop caused.
+     */
+    private int truncatedToolCallIndex(LlmToolResponse response, String truncatedStopReason) {
+        return truncatedStopReason.equals(response.stopReason())
+                ? response.toolCalls().size() - 1
+                : -1;
+    }
+
+    private String truncateForModel(String result) {
+        if (result == null) {
+            return "";
+        }
+        if (result.length() <= MAX_TOOL_RESULT_CHARS) {
+            return result;
+        }
+        int omitted = result.length() - MAX_TOOL_RESULT_CHARS;
+        return result.substring(0, TOOL_RESULT_HEAD_CHARS)
+                + "\n...[qeploy: 출력 " + result.length() + "자 중 가운데 " + omitted + "자 생략]...\n"
+                + result.substring(result.length() - (MAX_TOOL_RESULT_CHARS - TOOL_RESULT_HEAD_CHARS));
+    }
+
+    private String traceEntry(int round, ToolCall tc) {
+        String input = String.valueOf(tc.input());
+        return "round " + round + ": " + tc.name() + " "
+                + (input.length() > 120 ? input.substring(0, 120) + "..." : input);
+    }
+
+    private String recentTrace(List<String> trace) {
+        if (trace.isEmpty()) {
+            return "실행된 tool 호출이 없습니다.";
+        }
+        List<String> recent = trace.size() <= PROGRESS_TRACE_TAIL
+                ? trace
+                : trace.subList(trace.size() - PROGRESS_TRACE_TAIL, trace.size());
+        return String.join("\n", recent);
     }
 
     @SuppressWarnings("unchecked")
@@ -234,15 +338,47 @@ public class CodeAgentService {
     }
 
     // ── Tool 실행 ─────────────────────────────────────────────────────────────
+    /**
+     * Arguments are validated before use rather than cast straight out of the map: a tool call can
+     * arrive with a missing or non-string argument (a model mistake, or a call the provider parsed
+     * out of a response that stopped mid-arguments). Casting blindly turned that into an NPE that
+     * propagated out of the loop and failed the whole task with an unrelated message, when the
+     * recoverable answer is to tell the model what was missing and let it call again.
+     */
     private String executeTool(ToolCall tc, String containerId) {
+        Map<String, Object> input = tc.input() == null ? Map.of() : tc.input();
         return switch (tc.name()) {
-            case "execute_command" -> executeCommand(containerId, (String) tc.input().get("command"));
-            case "write_file"      -> writeFile(containerId,
-                                            (String) tc.input().get("path"),
-                                            (String) tc.input().get("content"));
-            case "read_file"       -> dockerService.exec(containerId, "cat " + tc.input().get("path"));
-            default                -> "알 수 없는 tool: " + tc.name();
+            case "execute_command" -> {
+                String command = stringArg(input, "command");
+                yield command == null
+                        ? missingArgument("execute_command", "command")
+                        : executeCommand(containerId, command);
+            }
+            case "write_file" -> {
+                String path = stringArg(input, "path");
+                // An empty file is a legitimate write, so content is only checked for presence.
+                Object content = input.get("content");
+                yield path == null || !(content instanceof String text)
+                        ? missingArgument("write_file", "path 또는 content")
+                        : writeFile(containerId, path, text);
+            }
+            case "read_file" -> {
+                String path = stringArg(input, "path");
+                yield path == null
+                        ? missingArgument("read_file", "path")
+                        : dockerService.exec(containerId, "cat " + path);
+            }
+            default -> "알 수 없는 tool: " + tc.name();
         };
+    }
+
+    private String stringArg(Map<String, Object> input, String key) {
+        return input.get(key) instanceof String value && !value.isBlank() ? value : null;
+    }
+
+    private String missingArgument(String toolName, String argumentName) {
+        return "[qeploy] " + toolName + " 호출에 " + argumentName
+                + " 인자가 없어 실행하지 못했습니다. 인자를 채워 다시 호출하세요.";
     }
 
     private String executeCommand(String containerId, String command) {

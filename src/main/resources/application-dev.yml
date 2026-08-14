@@ -28,3 +28,7 @@ qeploy:
     openai:
       api-key: ${QEPLOY_AI_OPENAI_API_KEY:${OPENAI_API_KEY:}}
       model: ${QEPLOY_AI_OPENAI_MODEL:gpt-4o}
+    code-agent:
+      # CODE 스텝 1회 실행에서 허용하는 LLM 왕복 횟수. 소진되면 성공이 아니라 실패로 처리되고
+      # 같은 컨테이너에서 이어서 재시도된다(AgentIterationLimitException).
+      max-iterations: ${QEPLOY_AI_CODE_AGENT_MAX_ITERATIONS:40}
