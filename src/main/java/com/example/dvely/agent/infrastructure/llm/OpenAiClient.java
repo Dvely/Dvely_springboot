@@ -20,11 +20,14 @@ import java.util.Map;
 public class OpenAiClient implements LlmPort {
 
     private static final String API_URL = "https://api.openai.com/v1/chat/completions";
+    static final String PROVIDER_NAME = "OpenAI";
 
     private final AiProperties aiProperties;
 
     @Override
     public String complete(String systemPrompt, List<LlmMessage> messages) {
+        LlmProviderErrors.requireApiKey(PROVIDER_NAME, aiProperties.getOpenai().getApiKey());
+
         List<Map<String, String>> apiMessages = new ArrayList<>();
         apiMessages.add(Map.of("role", "system", "content", systemPrompt));
         messages.forEach(m -> apiMessages.add(Map.of("role", m.role(), "content", m.content())));
@@ -34,12 +37,12 @@ public class OpenAiClient implements LlmPort {
                 "messages", apiMessages
         );
 
-        OpenAiResponse response = restClient()
+        OpenAiResponse response = LlmProviderErrors.translate(PROVIDER_NAME, () -> restClient()
                 .post()
                 .uri(API_URL)
                 .body(body)
                 .retrieve()
-                .body(OpenAiResponse.class);
+                .body(OpenAiResponse.class));
 
         if (response == null || response.choices() == null || response.choices().isEmpty()) {
             throw new IllegalStateException("OpenAI API 응답이 비어있습니다");
