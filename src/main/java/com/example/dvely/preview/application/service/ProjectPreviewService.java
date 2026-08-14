@@ -2,8 +2,10 @@ package com.example.dvely.preview.application.service;
 
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.common.exception.PreviewEnvironmentUnavailableException;
 import com.example.dvely.preview.application.result.ProjectPreviewSessionResult;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
+import com.example.dvely.preview.infrastructure.config.PreviewGatewayUrlResolver;
 import com.example.dvely.preview.infrastructure.config.PreviewProperties;
 import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity;
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
@@ -57,6 +59,7 @@ public class ProjectPreviewService {
     private final ProjectRepository projectRepository;
     private final DockerContainerService dockerService;
     private final PreviewProperties properties;
+    private final PreviewGatewayUrlResolver gatewayUrlResolver;
     private final ProjectPreviewProvisioner provisioner;
 
     /**
@@ -112,8 +115,20 @@ public class ProjectPreviewService {
         String accessToken = UUID.randomUUID().toString().replace("-", "");
         // conversationId/taskId 가 없는 것이 이 세션의 정의다 — 대화나 작업이 아니라 프로젝트에
         // 매달린 세션이다.
-        String containerId = dockerService.createAndStartContainer(
-                ownerUserId, sessionId, projectId, null, null);
+        String containerId;
+        int hostPort;
+        try {
+            containerId = dockerService.createAndStartContainer(ownerUserId, sessionId, projectId, null, null);
+            hostPort = dockerService.getMappedPort(containerId);
+        } catch (RuntimeException exception) {
+            // Docker 가 없거나 앱 계정이 소켓에 접근하지 못하는 서버에서는 이 첫 호출이 처음으로
+            // 실패한다(그 전까지는 연결을 만들지 않으므로 기동 로그는 깨끗하다). 그대로 흘리면
+            // catch-all 500 "서버 내부 오류"가 되어 원인이 사라진다.
+            throw new PreviewEnvironmentUnavailableException(
+                    "프리뷰 컨테이너를 시작하지 못했습니다. 서버의 Docker 실행 환경을 확인해주세요. (원인: "
+                            + rootMessage(exception) + ")",
+                    exception);
+        }
         PreviewSessionEntity created = repository.save(new PreviewSessionEntity(
                 sessionId,
                 accessToken,
@@ -122,8 +137,8 @@ public class ProjectPreviewService {
                 null,
                 null,
                 containerId,
-                dockerService.getMappedPort(containerId),
-                publicUrl(sessionId, accessToken),
+                hostPort,
+                gatewayUrlResolver.publicUrl(sessionId, accessToken),
                 nextExpiry(),
                 PreviewSessionStatus.PROVISIONING
         ));
@@ -221,10 +236,17 @@ public class ProjectPreviewService {
         return LocalDateTime.now().plus(properties.getTtl());
     }
 
-    private String publicUrl(String sessionId, String accessToken) {
-        String base = properties.getGatewayBaseUrl();
-        String normalized = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
-        return normalized + "/api/v1/previews/" + sessionId + "/" + accessToken + "/";
+    /** 원인 예외의 가장 안쪽 메시지 — 응답에 실을 것이라 한 줄로 줄인다. */
+    private String rootMessage(Throwable throwable) {
+        Throwable root = throwable;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        String message = root.getMessage() == null || root.getMessage().isBlank()
+                ? root.getClass().getSimpleName()
+                : root.getMessage();
+        String single = message.replaceAll("\s+", " ").trim();
+        return single.length() <= 200 ? single : single.substring(0, 200) + "...";
     }
 
     /** @param started 새로 준비를 시작했거나 준비 중이면 true, 이미 서빙 중인 세션에 붙었으면 false */

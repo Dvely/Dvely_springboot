@@ -224,6 +224,24 @@ public class DockerContainerService {
         }
     }
 
+    /**
+     * 데몬에 실제로 닿는지 한 번 확인한다.
+     *
+     * <p>이 클래스는 첫 컨테이너 요청 전까지 데몬에 연결하지 않으므로(생성자는 클라이언트 객체만
+     * 만든다), Docker 가 없는 서버에서도 앱은 아무 경고 없이 기동한다 — 그리고 사용자가 프리뷰를
+     * 누르는 순간에야 처음 실패한다({@code deploy/README.md} §4). 기동 직후 이 핑 한 번으로 그
+     * 침묵을 없앤다.</p>
+     */
+    public boolean ping() {
+        try {
+            dockerClient.pingCmd().exec();
+            return true;
+        } catch (Exception exception) {
+            log.debug("Docker ping 실패", exception);
+            return false;
+        }
+    }
+
     public boolean isContainerRunning(String containerId) {
         try {
             InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();

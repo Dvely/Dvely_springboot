@@ -50,7 +50,14 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker ubuntu   # 앱이 /var/run/docker.sock 을 쓴다
 ```
 
-빠뜨려도 앱은 정상 기동한다. `DockerContainerService`가 첫 사용 시점까지 연결을 미루기 때문이다. 대신 CODE 에이전트가 컨테이너를 띄우려는 순간 실패하므로, 기동 로그만 보고 정상이라 판단하기 쉽다.
+빠뜨려도 앱은 정상 기동한다. `DockerContainerService`가 첫 사용 시점까지 연결을 미루기 때문이다. 대신 CODE 에이전트나 프로젝트 프리뷰가 컨테이너를 띄우려는 순간 실패한다.
+
+그 침묵을 없애려고 기동 직후 데몬에 핑을 한 번 넣는다(`PreviewEnvironmentHealthLogger`). 연결되지 않으면 위 설치 명령과 함께 경고가 남고, 프리뷰 API는 500이 아니라 **503 `PREVIEW_ENVIRONMENT_UNAVAILABLE`**로 원인을 적어 응답한다.
+
+```
+[PreviewEnv] Docker 연결 정상 · 프리뷰 기준 오리진 = https://qeploy.com     # 정상
+[PreviewEnv] Docker 데몬에 연결하지 못했습니다. ...                          # 조치 필요
+```
 
 ## 5. GitHub Secrets
 

@@ -173,6 +173,16 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(errorCode, e.getMessage()));
     }
 
+    // 503 - 프리뷰 실행 환경(Docker) 접근 실패
+    // 여기서 갈라내지 않으면 아래 catch-all이 "서버 내부 오류가 발생했습니다" 500으로 삼켜, FE도
+    // 운영자도 서버에 직접 붙기 전까지는 Docker 미설치/소켓 권한 문제라는 것을 알 수 없다.
+    @ExceptionHandler(PreviewEnvironmentUnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handlePreviewEnvironment(PreviewEnvironmentUnavailableException e) {
+        log.error("Preview environment unavailable: {}", e.getMessage(), e);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.error(ErrorCode.PREVIEW_ENVIRONMENT_UNAVAILABLE, e.getMessage()));
+    }
+
     // 500 - 예상치 못한 오류
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleException(Exception e) {
