@@ -72,7 +72,9 @@ public class AgentController {
                 request.projectId(),
                 request.conversationId(),
                 request.content(),
-                request.aiProvider()
+                request.aiProvider(),
+                request.model(),
+                request.thinking()
         );
         AgentSubmission submission = result.submission();
         return new DecisionResponse(

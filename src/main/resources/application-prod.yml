@@ -29,6 +29,19 @@ qeploy:
     anthropic:
       api-key: ${QEPLOY_AI_ANTHROPIC_API_KEY:${ANTHROPIC_API_KEY:}}
       model: ${QEPLOY_AI_ANTHROPIC_MODEL:claude-opus-4-5-20251101}
+      # 요청(DecisionRequest.model)이 지정할 수 있는 추가 모델. 비우면 위 model만 허용된다 —
+      # 넓히는 것은 비용 결정이므로 기본값은 최소 권한이다.
+      allowed-models: ${QEPLOY_AI_ANTHROPIC_ALLOWED_MODELS:}
+      # thinking(사고 깊이)을 지원하는 모델. 목록 밖 모델에 thinking을 요청하면 400으로 거절한다.
+      thinking-models: ${QEPLOY_AI_ANTHROPIC_THINKING_MODELS:claude-opus-4-5-20251101}
     openai:
       api-key: ${QEPLOY_AI_OPENAI_API_KEY:${OPENAI_API_KEY:}}
       model: ${QEPLOY_AI_OPENAI_MODEL:gpt-4o}
+      allowed-models: ${QEPLOY_AI_OPENAI_ALLOWED_MODELS:}
+      # gpt-4o는 reasoning_effort를 받지 않으므로 기본값은 비어 있다. o-시리즈 등 추론 모델을
+      # allowed-models에 추가할 때 함께 등록한다.
+      thinking-models: ${QEPLOY_AI_OPENAI_THINKING_MODELS:}
+    code-agent:
+      # CODE 스텝 1회 실행에서 허용하는 LLM 왕복 횟수. 소진되면 성공이 아니라 실패로 처리되고
+      # 같은 컨테이너에서 이어서 재시도된다(AgentIterationLimitException).
+      max-iterations: ${QEPLOY_AI_CODE_AGENT_MAX_ITERATIONS:40}

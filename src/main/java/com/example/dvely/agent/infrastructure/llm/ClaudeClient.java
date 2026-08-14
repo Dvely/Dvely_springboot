@@ -2,6 +2,7 @@ package com.example.dvely.agent.infrastructure.llm;
 
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.port.out.LlmPort;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -10,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -21,34 +23,36 @@ public class ClaudeClient implements LlmPort {
     private static final String API_URL      = "https://api.anthropic.com/v1/messages";
     private static final String API_VERSION  = "2023-06-01";
     private static final int    MAX_TOKENS   = 1024;
+    static final String PROVIDER_NAME = "Anthropic";
 
     private final AiProperties aiProperties;
 
     @Override
-    public String complete(String systemPrompt, List<LlmMessage> messages) {
+    public String complete(String systemPrompt, List<LlmMessage> messages, AiModelOptions modelOptions) {
+        LlmProviderErrors.requireApiKey(PROVIDER_NAME, aiProperties.getAnthropic().getApiKey());
+
         List<Map<String, String>> apiMessages = messages.stream()
                 .map(m -> Map.of("role", m.role(), "content", m.content()))
                 .toList();
 
-        Map<String, Object> body = Map.of(
-                "model",      aiProperties.getAnthropic().getModel(),
-                "max_tokens", MAX_TOKENS,
-                "system",     systemPrompt,
-                "messages",   apiMessages
-        );
+        Map<String, Object> body = new HashMap<>();
+        body.put("model",    modelOptions.modelOr(aiProperties.getAnthropic().getModel()));
+        body.put("system",   systemPrompt);
+        body.put("messages", apiMessages);
+        LlmRequestOptions.applyAnthropic(body, modelOptions, MAX_TOKENS);
 
-        ClaudeResponse response = restClient()
+        ClaudeResponse response = LlmProviderErrors.translate(PROVIDER_NAME, () -> restClient()
                 .post()
                 .uri(API_URL)
                 .body(body)
                 .retrieve()
-                .body(ClaudeResponse.class);
+                .body(ClaudeResponse.class));
 
         if (response == null || response.content() == null || response.content().isEmpty()) {
             throw new IllegalStateException("Claude API 응답이 비어있습니다");
         }
 
-        log.debug("Claude 응답 수신: model={}", aiProperties.getAnthropic().getModel());
+        log.debug("Claude 응답 수신: model={}", body.get("model"));
         return response.content().get(0).text();
     }
 

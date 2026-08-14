@@ -1,7 +1,9 @@
 package com.example.dvely.agent.application.orchestrator;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,6 +25,7 @@ import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
+import com.example.dvely.common.exception.LlmProviderException;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -37,7 +40,7 @@ class AgentPlanExecutorTest {
         AgentMessageService messageService = mock(AgentMessageService.class);
         AgentPlanExecutor executor = executor(codeService, taskStore, messageService);
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
-        when(codeService.execute(step, AiProvider.OPENAI, 1L, 11L, "task-1"))
+        when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
                 .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
 
         executor.execute(
@@ -72,7 +75,7 @@ class AgentPlanExecutorTest {
                 registry
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
-        when(codeService.execute(step, AiProvider.OPENAI, 1L, 11L, "task-1"))
+        when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
                 .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
 
         executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L), "task-1", 1L);
@@ -103,7 +106,7 @@ class AgentPlanExecutorTest {
                 registry
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
-        when(codeService.execute(any(), any(), any(), any(), any()))
+        when(codeService.execute(any(), any(), any(), any(), any(), any()))
                 .thenThrow(new IllegalStateException("외부 API 실패"));
 
         executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L), "task-1", 1L);
@@ -136,7 +139,7 @@ class AgentPlanExecutorTest {
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
-        when(codeService.execute(step, AiProvider.OPENAI, 1L, 11L, "task-1"))
+        when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
                 .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
         // The gate itself is responsible for markStepCompleted when it fires (see
         // ResultApprovalGate javadoc) — this test only asserts the executor's side: record the
@@ -173,7 +176,7 @@ class AgentPlanExecutorTest {
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
-        when(codeService.execute(step, AiProvider.OPENAI, 1L, 11L, "task-1"))
+        when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
                 .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
         when(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(false);
 
@@ -190,7 +193,7 @@ class AgentPlanExecutorTest {
         AgentMessageService messageService = mock(AgentMessageService.class);
         AgentPlanExecutor executor = executor(mock(CodeAgentService.class), chatService, taskStore, messageService);
         AgentStep step = new AgentStep(AgentType.CHAT, Map.of("instruction", "휴지통 정책이 뭐야?"));
-        when(chatService.execute(step, AiProvider.ANTHROPIC, "task-1"))
+        when(chatService.execute(eq(step), eq(AiProvider.ANTHROPIC), eq("task-1"), any()))
                 .thenReturn(new CodeAgentService.CodeResult(null, "휴지통 보관 기간은 7일입니다."));
 
         executor.execute(
@@ -211,7 +214,7 @@ class AgentPlanExecutorTest {
         AgentMessageService messageService = mock(AgentMessageService.class);
         AgentPlanExecutor executor = executor(codeService, taskStore, messageService);
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
-        when(codeService.execute(any(), any(), any(), any(), any()))
+        when(codeService.execute(any(), any(), any(), any(), any(), any()))
                 .thenThrow(new IllegalStateException("외부 API 실패"));
 
         executor.execute(
@@ -287,6 +290,44 @@ class AgentPlanExecutorTest {
 
         verify(taskStore).markDone("task-1", null, "서버/서비스 상태\n- 배포: 배포 이력 없음");
         verify(messageService).appendAssistant(21L, "서버/서비스 상태\n- 배포: 배포 이력 없음");
+    }
+
+    @Test
+    void reportsAnAiProviderFailureWithTheProvidersOwnMessageAndWithoutBuildRecovery() {
+        // A provider-side failure (no credit, rejected key, outage) is not a build failure: routing
+        // it through BuildFailureRecoveryService would tell the user their project failed to build
+        // and then spend the retry budget on a call that cannot start succeeding in between.
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        BuildFailureRecoveryService recoveryService = mock(BuildFailureRecoveryService.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                taskStore,
+                messageService,
+                recoveryService,
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class),
+                mock(AgentExecutionRegistry.class)
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        LlmProviderException failure = new LlmProviderException(
+                "OpenAI", LlmProviderException.Reason.QUOTA_EXCEEDED, null
+        );
+        when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any())).thenThrow(failure);
+
+        executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L), "task-1", 1L);
+
+        verify(taskStore).markFailed("task-1", failure.getMessage());
+        // Posted verbatim — the message already tells the user to switch providers or check
+        // billing, and a "작업 중 오류가 발생했습니다: " prefix would bury that.
+        verify(messageService).appendAssistant(21L, failure.getMessage());
+        verify(recoveryService, never()).handle(any(), any());
+        verify(taskStore, never()).markDone(any(), any(), any());
     }
 
     private AgentPlanExecutor executor(CodeAgentService codeService,

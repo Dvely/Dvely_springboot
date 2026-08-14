@@ -3,6 +3,7 @@ package com.example.dvely.agent.infrastructure.llm;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -22,7 +23,12 @@ public class ClaudeToolClient {
 
     private static final String API_URL     = "https://api.anthropic.com/v1/messages";
     private static final String API_VERSION = "2023-06-01";
-    private static final int    MAX_TOKENS  = 4096;
+    // Output budget per round. 4096 was not enough to emit one real source file in a single
+    // write_file call, so generation stopped mid-arguments (stop_reason=max_tokens) on ordinary
+    // components — CodeAgentService refuses to run a call cut off that way, which costs the round.
+    // Sized to fit a typical component write with headroom; it is a ceiling, not an allocation, so
+    // rounds that emit less are unaffected.
+    private static final int    MAX_TOKENS  = 8192;
 
     private final AiProperties aiProperties;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -32,6 +38,15 @@ public class ClaudeToolClient {
             String systemPrompt,
             List<Map<String, Object>> messages,
             List<ToolDefinition> tools) {
+        return completeWithTools(systemPrompt, messages, tools, AiModelOptions.defaults());
+    }
+
+    @SuppressWarnings("unchecked")
+    public LlmToolResponse completeWithTools(
+            String systemPrompt,
+            List<Map<String, Object>> messages,
+            List<ToolDefinition> tools,
+            AiModelOptions modelOptions) {
 
         List<Map<String, Object>> toolsPayload = tools.stream()
                 .map(t -> Map.of(
@@ -41,19 +56,21 @@ public class ClaudeToolClient {
                 ))
                 .toList();
 
-        Map<String, Object> body = new HashMap<>();
-        body.put("model",      aiProperties.getAnthropic().getModel());
-        body.put("max_tokens", MAX_TOKENS);
-        body.put("system",     systemPrompt);
-        body.put("tools",      toolsPayload);
-        body.put("messages",   messages);
+        LlmProviderErrors.requireApiKey(ClaudeClient.PROVIDER_NAME, aiProperties.getAnthropic().getApiKey());
 
-        String raw = restClient()
+        Map<String, Object> body = new HashMap<>();
+        body.put("model",    modelOptions.modelOr(aiProperties.getAnthropic().getModel()));
+        body.put("system",   systemPrompt);
+        body.put("tools",    toolsPayload);
+        body.put("messages", messages);
+        LlmRequestOptions.applyAnthropic(body, modelOptions, MAX_TOKENS);
+
+        String raw = LlmProviderErrors.translate(ClaudeClient.PROVIDER_NAME, () -> restClient()
                 .post()
                 .uri(API_URL)
                 .body(body)
                 .retrieve()
-                .body(String.class);
+                .body(String.class));
 
         log.debug("Claude Tool API 응답 수신");
         return parse(raw);

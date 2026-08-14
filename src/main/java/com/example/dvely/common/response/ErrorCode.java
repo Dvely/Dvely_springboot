@@ -20,7 +20,14 @@ public enum ErrorCode {
     NOT_FOUND(404, "NOT_FOUND", "리소스를 찾을 수 없습니다"),
     METHOD_NOT_ALLOWED(405, "METHOD_NOT_ALLOWED", "허용되지 않는 HTTP 메서드입니다"),
     CONFLICT(409, "CONFLICT", "현재 리소스 상태와 요청이 충돌합니다"),
-    INTERNAL_SERVER_ERROR(500, "INTERNAL_SERVER_ERROR", "서버 내부 오류가 발생했습니다");
+    INTERNAL_SERVER_ERROR(500, "INTERNAL_SERVER_ERROR", "서버 내부 오류가 발생했습니다"),
+
+    // AI 제공자 (Anthropic/OpenAI). 요청 자체는 정상이고 제공자 쪽 상태가 원인이므로 4xx가 아니다 —
+    // 클라이언트는 이 코드들을 보고 "다른 제공자로 전환"(UNAVAILABLE)과 "잠시 후 재시도"(나머지)를
+    // 구분할 수 있어야 한다.
+    AI_PROVIDER_UNAVAILABLE(503, "AI_PROVIDER_UNAVAILABLE", "선택한 AI 제공자를 사용할 수 없습니다"),
+    AI_PROVIDER_RATE_LIMITED(429, "AI_PROVIDER_RATE_LIMITED", "AI 제공자 요청량 한도를 초과했습니다"),
+    AI_PROVIDER_ERROR(502, "AI_PROVIDER_ERROR", "AI 제공자 호출에 실패했습니다");
 
     private final int status;
     private final String code;

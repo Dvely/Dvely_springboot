@@ -3,6 +3,7 @@ package com.example.dvely.agent.infrastructure.llm;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -30,6 +31,15 @@ public class OpenAiToolClient {
             String systemPrompt,
             List<Map<String, Object>> messages,
             List<ToolDefinition> tools) {
+        return completeWithTools(systemPrompt, messages, tools, AiModelOptions.defaults());
+    }
+
+    @SuppressWarnings("unchecked")
+    public LlmToolResponse completeWithTools(
+            String systemPrompt,
+            List<Map<String, Object>> messages,
+            List<ToolDefinition> tools,
+            AiModelOptions modelOptions) {
 
         List<Map<String, Object>> toolsPayload = tools.stream()
                 .map(t -> Map.of(
@@ -46,17 +56,20 @@ public class OpenAiToolClient {
         apiMessages.add(Map.of("role", "system", "content", systemPrompt));
         apiMessages.addAll(messages);
 
+        LlmProviderErrors.requireApiKey(OpenAiClient.PROVIDER_NAME, aiProperties.getOpenai().getApiKey());
+
         Map<String, Object> body = new HashMap<>();
-        body.put("model",    aiProperties.getOpenai().getModel());
+        body.put("model",    modelOptions.modelOr(aiProperties.getOpenai().getModel()));
         body.put("messages", apiMessages);
         body.put("tools",    toolsPayload);
+        LlmRequestOptions.applyOpenAi(body, modelOptions);
 
-        String raw = restClient()
+        String raw = LlmProviderErrors.translate(OpenAiClient.PROVIDER_NAME, () -> restClient()
                 .post()
                 .uri(API_URL)
                 .body(body)
                 .retrieve()
-                .body(String.class);
+                .body(String.class));
 
         log.debug("OpenAI Tool API 응답 수신");
         return parse(raw);
@@ -77,12 +90,10 @@ public class OpenAiToolClient {
             if (rawToolCalls != null) {
                 for (Map<String, Object> tc : rawToolCalls) {
                     Map<String, Object> function = (Map<String, Object>) tc.get("function");
-                    Map<String, Object> input    = objectMapper.readValue(
-                            (String) function.get("arguments"), Map.class);
                     toolCalls.add(new ToolCall(
                             (String) tc.get("id"),
                             (String) function.get("name"),
-                            input
+                            parseArguments((String) function.get("arguments"))
                     ));
                 }
             }
@@ -93,6 +104,28 @@ public class OpenAiToolClient {
         } catch (Exception e) {
             log.error("OpenAI Tool 응답 파싱 실패: {}", raw, e);
             throw new RuntimeException("OpenAI Tool API 응답 파싱 실패", e);
+        }
+    }
+
+    /**
+     * A tool call's {@code arguments} is a JSON string the model produced, so it can be incomplete
+     * — most often when generation stopped at the output limit mid-arguments
+     * ({@code finish_reason=length}). That used to abort the whole parse and fail the task with
+     * "OpenAI Tool API 응답 파싱 실패", losing every round of work already done in the container.
+     * Degrading to empty arguments keeps the response usable: CodeAgentService answers the call
+     * with a "missing argument" tool result and the model retries it, and for the truncation case
+     * it skips the call outright on {@code finish_reason}.
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseArguments(String arguments) {
+        if (arguments == null || arguments.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(arguments, Map.class);
+        } catch (Exception e) {
+            log.warn("OpenAI tool 인자 JSON 파싱 실패, 빈 인자로 처리: {}", e.getMessage());
+            return Map.of();
         }
     }
 

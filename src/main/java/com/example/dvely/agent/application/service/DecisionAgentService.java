@@ -4,6 +4,7 @@ import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.domain.value.AgentType;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.llm.LlmRouter;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -113,10 +114,21 @@ public class DecisionAgentService {
             """;
 
     public AgentPlan decide(String userMessage, AiProvider provider, Long projectId) {
-        return decide(List.of(new LlmMessage("user", userMessage)), provider, projectId);
+        return decide(userMessage, provider, projectId, AiModelOptions.defaults());
+    }
+
+    public AgentPlan decide(String userMessage, AiProvider provider, Long projectId, AiModelOptions modelOptions) {
+        return decide(List.of(new LlmMessage("user", userMessage)), provider, projectId, modelOptions);
     }
 
     public AgentPlan decide(List<LlmMessage> conversation, AiProvider provider, Long projectId) {
+        return decide(conversation, provider, projectId, AiModelOptions.defaults());
+    }
+
+    public AgentPlan decide(List<LlmMessage> conversation,
+                            AiProvider provider,
+                            Long projectId,
+                            AiModelOptions modelOptions) {
         List<LlmMessage> messages = new ArrayList<>(conversation);
         if (projectId != null) {
             messages.add(new LlmMessage(
@@ -126,13 +138,14 @@ public class DecisionAgentService {
                             + "Do not scaffold a new project.]"
             ));
         }
-        String raw = llmRouter.route(provider).complete(SYSTEM_PROMPT, messages);
-        log.info("의사결정 완료: provider={}, projectId={}, raw={}", provider, projectId, raw);
-        return parse(raw, provider, projectId);
+        String raw = llmRouter.route(provider).complete(SYSTEM_PROMPT, messages, modelOptions);
+        log.info("의사결정 완료: provider={}, model={}, projectId={}, raw={}",
+                provider, modelOptions.model(), projectId, raw);
+        return parse(raw, provider, projectId, modelOptions);
     }
 
     @SuppressWarnings("unchecked")
-    private AgentPlan parse(String raw, AiProvider provider, Long projectId) {
+    private AgentPlan parse(String raw, AiProvider provider, Long projectId, AiModelOptions modelOptions) {
         try {
             String json = extractJson(raw);
             Map<String, Object> map = objectMapper.readValue(json, Map.class);
@@ -153,7 +166,7 @@ public class DecisionAgentService {
 
             String reasoning = (String) map.getOrDefault("reasoning", "");
             log.info("의사결정 결과: steps={}, reasoning={}", steps.stream().map(AgentStep::agentType).toList(), reasoning);
-            return new AgentPlan(steps, reasoning, provider, projectId);
+            return new AgentPlan(steps, reasoning, provider, projectId, modelOptions);
 
         } catch (Exception e) {
             log.warn("AgentPlan 파싱 실패, CHAT 으로 폴백: raw={}", raw, e);
@@ -161,7 +174,8 @@ public class DecisionAgentService {
                     List.of(new AgentStep(AgentType.CHAT, Map.of("instruction", raw))),
                     "parsing failed",
                     provider,
-                    projectId
+                    projectId,
+                    modelOptions
             );
         }
     }

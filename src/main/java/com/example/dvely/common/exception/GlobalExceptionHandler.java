@@ -153,6 +153,26 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ErrorCode.CONFLICT, e.getMessage()));
     }
 
+    // 429/502/503 - AI 제공자 호출 실패
+    // Handled here rather than in a dedicated advice: this class declares a catch-all
+    // @ExceptionHandler(Exception.class), and Spring resolves an exception against advice beans in
+    // order — the first advice with *any* matching method wins, so a more specific handler placed
+    // in a separate advice would still lose to the catch-all below unless it were ordered ahead of
+    // this class. Keeping it in the same advice makes the specificity rule apply directly.
+    @ExceptionHandler(LlmProviderException.class)
+    public ResponseEntity<ApiResponse<Void>> handleLlmProvider(LlmProviderException e) {
+        ErrorCode errorCode = switch (e.reason()) {
+            case MISSING_API_KEY, AUTH_FAILED, QUOTA_EXCEEDED -> ErrorCode.AI_PROVIDER_UNAVAILABLE;
+            case RATE_LIMITED -> ErrorCode.AI_PROVIDER_RATE_LIMITED;
+            case UPSTREAM_ERROR -> ErrorCode.AI_PROVIDER_ERROR;
+        };
+        // The provider's own response body is already logged by LlmProviderErrors; this line is
+        // about which request was affected, so it stays short and carries no response content.
+        log.warn("LLM provider unavailable: provider={} reason={}", e.providerName(), e.reason());
+        return ResponseEntity.status(errorCode.getStatus())
+                .body(ApiResponse.error(errorCode, e.getMessage()));
+    }
+
     // 500 - 예상치 못한 오류
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleException(Exception e) {
