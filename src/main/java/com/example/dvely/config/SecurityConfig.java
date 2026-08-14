@@ -90,7 +90,21 @@ public class SecurityConfig {
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
 
+        // 프리뷰 게이트웨이 전용 CORS (Issue #108). CSP sandbox(#102)로 불투명 오리진이 된
+        // 프리뷰 문서의 module script 는 Origin: null 로 오는데, 위 FE 오리진 목록 기반
+        // 설정에 걸리면 컨트롤러 도달 전에 403 으로 거절되어 프리뷰가 백지가 된다. 이
+        // 경로의 자격은 쿠키가 아니라 URL 의 회전 accessToken 이므로 credentials 없이
+        // 전부 연다 — 'null' 오리진은 누구나 sandbox iframe 으로 만들 수 있어 목록으로
+        // 좁혀도 효과가 없다. 등록 순서 유의: 먼저 등록해야 "/**" 보다 우선한다.
+        CorsConfiguration previewConfig = new CorsConfiguration();
+        previewConfig.setAllowedOrigins(List.of(CorsConfiguration.ALL));
+        previewConfig.setAllowedMethods(List.of("GET", "OPTIONS"));
+        previewConfig.setAllowedHeaders(List.of("*"));
+        previewConfig.setAllowCredentials(false);
+        previewConfig.setMaxAge(3600L);
+
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/api/v1/previews/**", previewConfig);
         source.registerCorsConfiguration("/**", config);
         return source;
     }
