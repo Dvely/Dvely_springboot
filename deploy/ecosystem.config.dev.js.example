@@ -1,0 +1,95 @@
+// dev 서버 전용. /var/www/dvely/backend/ecosystem.config.js 로 복사해 값을 채운다.
+//
+//   cp ecosystem.config.dev.js.example /var/www/dvely/backend/ecosystem.config.js
+//   chmod 600 /var/www/dvely/backend/ecosystem.config.js   # 시크릿이 들어가므로 필수
+//
+// 운영용은 ecosystem.config.js.example 을 쓴다. 두 파일의 차이는 프로파일·URL·힙뿐이고,
+// pm2 앱 이름과 경로는 일부러 동일하게 뒀다 — 그래야 배포 워크플로가 그대로 재사용된다.
+//
+// ⚠️ 값을 고친 뒤에는 `pm2 startOrRestart ecosystem.config.js --update-env` 로 재시작해야
+//    한다. `pm2 restart dvely-backend` 는 프로세스 생성 당시의 env 를 재사용해서 이 파일을
+//    아무리 고쳐도 반영되지 않는다. 이어서 `pm2 save --force` 까지 해야 재부팅 후에도 유지된다.
+//
+// <EIP> 를 전부 실제 Elastic IP 로 치환할 것. 아래 명령 한 줄이면 된다.
+//   sed -i 's/<EIP>/1.2.3.4/g' /var/www/dvely/backend/ecosystem.config.js
+
+module.exports = {
+  apps: [
+    {
+      name: 'dvely-backend',
+      script: '/usr/bin/java',
+      // 운영과 달리 힙을 명시한다. dev 는 에이전트/프리뷰 경로를 일부러 돌려보는 서버인데
+      // 프리뷰 컨테이너가 개당 1 GiB 를 요구한다(DockerContainerService.MEMORY_LIMIT_BYTES).
+      // JVM 기본값(물리 RAM 25%)에 맡기면 t3.large 에서 2 GiB 까지 늘어나, 컨테이너 두 개만
+      // 겹쳐도 스왑을 갉아먹기 시작한다. 1g 로 묶어 컨테이너 쪽에 여유를 남긴다.
+      args: '-Xmx1g -jar /var/www/dvely/backend/app.jar',
+      cwd: '/var/www/dvely/backend',
+      interpreter: 'none', // script 가 Node 가 아니라 java 바이너리이므로 인터프리터를 끈다
+      autorestart: true,
+      max_restarts: 10,
+      kill_timeout: 30000,
+
+      env: {
+        // dev 프로파일은 datasource 를 전부 환경변수에서 읽는다(application-dev.yml:7-9).
+        // gitignore 대상인 application-local.yml 이 필요 없어서 서버 배포에 적합하다.
+        SPRING_PROFILES_ACTIVE: 'dev',
+
+        // --- DB ---
+        // setup-dev-server.sh 가 만든 스키마/계정. 비밀번호는 그때 입력한 값과 같아야 한다.
+        DB_URL: 'jdbc:mysql://127.0.0.1:3306/dvely?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=UTF-8',
+        DB_USERNAME: 'dvely',
+        DB_PASSWORD: '',
+
+        // --- 암호화 / 서명 ---
+        // ⚠️ ENCRYPT_SECRET 은 한 번 정하면 바꾸지 말 것. 바꾸면 그 전에 저장된 암호문을
+        //    복호화할 수 없다. 운영 값을 그대로 쓰지 말고 dev 전용으로 새로 만든다.
+        ENCRYPT_SECRET: '',
+        // HS256. 32바이트 이상이어야 한다 — 짧으면 jjwt 가 WeakKeyException 으로 거부한다.
+        //   openssl rand -hex 32
+        JWT_SECRET: '',
+
+        // --- GitHub OAuth App (로그인) ---
+        // OAuth App 은 콜백 URL 을 하나만 등록할 수 있으므로 dev 전용 App 을 따로 만들어야
+        // 한다. 운영 App 의 client id/secret 을 여기 넣으면 콜백이 운영으로 튄다.
+        GITHUB_OAUTH_CLIENT_ID: '',
+        GITHUB_OAUTH_CLIENT_SECRET: '',
+        GITHUB_OAUTH_REDIRECT_URI: 'http://<EIP>/api/v1/auth/github/callback',
+
+        // --- GitHub App (레포 접근) ---
+        // GitHub App 은 콜백 URL 을 여러 개 등록할 수 있어 운영 App 에 dev 콜백을 추가하는
+        // 방법도 된다. 다만 웹훅 URL 은 하나뿐이라, dev 에서 웹훅까지 받으려면 App 을 따로
+        // 만들어야 한다. 웹훅이 필요 없으면 콜백만 추가하는 쪽이 간단하다.
+        GITHUB_APP_ID: '',
+        GITHUB_APP_CLIENT_ID: '',
+        GITHUB_APP_CLIENT_SECRET: '',
+        GITHUB_APP_INSTALLATION_REDIRECT_URI: 'http://<EIP>/api/v1/auth/github/app/callback',
+        // GithubAppClient 는 값이 "-----BEGIN" 으로 시작하지 않으면 파일 경로로 읽는다.
+        //   install -m 0600 github-app.pem /var/www/dvely/backend/github-app.pem
+        GITHUB_APP_PRIVATE_KEY: '/var/www/dvely/backend/github-app.pem',
+        // GitHub 이 주는 값이 아니라 직접 정해 양쪽에 넣는 공유 비밀이다.
+        //   openssl rand -hex 32
+        // 이 값이 GitHub App 설정의 Webhook secret 과 다르면 모든 웹훅이 서명 불일치로 거부된다.
+        GITHUB_WEBHOOK_SECRET: '',
+
+        // --- AI ---
+        // 채팅 경로(ChatCommandService)는 ANTHROPIC 고정, FE 의 decision 폴백은 OPENAI
+        // 고정이다. 둘 중 하나만 채우면 다른 경로에서 조용히 실패하므로 양쪽 다 넣는다.
+        QEPLOY_AI_ANTHROPIC_API_KEY: '',
+        QEPLOY_AI_OPENAI_API_KEY: '',
+
+        // --- 프론트 연동 ---
+        // 프론트는 각자 로컬에서 돌린다. allowCredentials(true) 라 와일드카드를 쓸 수 없어
+        // 오리진을 나열해야 한다. Vite 가 5173 이 막히면 5174 로 올라가므로 몇 개 열어둔다.
+        QEPLOY_CORS_ALLOWED_ORIGINS: 'http://localhost:5173,http://localhost:5174,http://localhost:3000',
+        // GitHub App 설치 완료 후 백엔드가 여기로 리다이렉트한다. 브라우저가 가는 주소이므로
+        // 서버가 아니라 각자 로컬 프론트를 가리켜야 한다.
+        FRONTEND_REDIRECT_URL: 'http://localhost:5173',
+
+        // --- 프리뷰 ---
+        // 프리뷰 URL 이 이 값을 앞에 붙여 만들어진다. localhost 로 두면 다른 사람 브라우저에서
+        // 열리지 않으므로 반드시 EIP 로 바꾼다.
+        QEPLOY_PREVIEW_GATEWAY_BASE_URL: 'http://<EIP>',
+      },
+    },
+  ],
+};
