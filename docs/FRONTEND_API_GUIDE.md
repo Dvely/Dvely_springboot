@@ -287,7 +287,7 @@ Accept: text/event-stream
 
 | 메서드 | 경로 | 용도 | 요청 | 응답(핵심 필드) | 주요 에러 |
 |---|---|---|---|---|---|
-| POST | `/decision` | 자연어 요청 분석 → 실행 계획 수립 + 비동기 제출 | `{ content, aiProvider(ANTHROPIC\|OPENAI), projectId?, conversationId? }` | `{ steps[], reasoning, aiProvider, taskId, status, approvalIds }` | 400, 401 |
+| POST | `/decision` | 자연어 요청 분석 → 실행 계획 수립 + 비동기 제출 | `{ content, aiProvider(ANTHROPIC\|OPENAI), projectId?, conversationId?, model?, thinking? }` | `{ steps[], reasoning, aiProvider, taskId, status, approvalIds }` | 400, 401, 429/502/503(AI 제공자) |
 | GET | `/tasks/{taskId}` | 태스크 상태 조회 | - | `{ taskId, status, previewUrl, summary, error, question, failureLog, suggestedFix, attempt, maxAttempts, retryable, pendingApprovalId }` | 404 |
 | GET | `/tasks/{taskId}/events` | 영속 이벤트 목록(증분) | query: `afterEventId`(기본 0) | `[{ eventId, taskId, type, status, message, createdAt }]` | 404 |
 | GET | `/tasks/{taskId}/events/stream` | SSE 이벤트 스트림 | query: `afterEventId` | `text/event-stream`(`@RawApiResponse`) | 404(emitter null) |
@@ -303,6 +303,29 @@ Accept: text/event-stream
 `retryable`(boolean, #57): `POST /tasks/{taskId}/retry` 호출이 실제로 성공할지 여부 — `/retry`의 게이트(§4.5 위 표)와 **동일한 정의**를 read-only로 미리 보여주는 힌트입니다. `true`가 되려면 `status`가 `FAILED`이고, `pendingApprovalId`가 `null`(승인 대기 중인 건이 없음)이며, `attempt < maxAttempts`여야 합니다. `pendingApprovalId`가 채워져 있으면 이 값은 항상 `false`이며 `/retry`를 호출해도 409로 거부됩니다 — 먼저 그 승인을 approve/reject로 처리해야 합니다(승인 처리 자체가 재실행/재개를 트리거함).
 
 `AgentType`(`POST /decision` 응답의 `steps[].agentType`으로 직접 노출됨. task 상태 폴링 응답에는 없음): `CHAT · CODE · DEPLOY · DOMAIN_BIND · INFRA_OPERATE`.
+
+#### 모델·thinking 선택 (#86)
+
+`POST /decision`의 `model`·`thinking`은 **둘 다 선택 항목**입니다. 보내지 않으면 기존과 동일하게 서버에 설정된 provider 기본 모델 + thinking 없음으로 동작하므로, 이 기능을 쓰지 않는 화면은 요청을 바꿀 필요가 없습니다.
+
+- `model`(string, nullable): 사용할 모델 ID. 서버가 허용한 모델이 아니면 **400**입니다. 허용 목록은 배포 설정(`qeploy.ai.<provider>.allowed-models`)이며 기본값은 "설정된 기본 모델 하나"입니다 — 모델 선택 UI를 붙이려면 어떤 값을 노출할지 백엔드와 먼저 맞춰주세요.
+- `thinking`(enum, nullable): `OFF · LOW · MEDIUM · HIGH`. 미지정은 `OFF`입니다. **해당 모델이 thinking을 지원하지 않으면 무시하지 않고 400을 반환합니다** — 조용히 무시하면 켜진 요청과 결과가 구분되지 않아, 동작하지 않는 컨트롤을 사용자에게 보여주게 되기 때문입니다.
+
+확정된 설정은 그 태스크의 모든 단계에 그대로 적용됩니다(실행 도중 서버 설정이 바뀌어도 태스크가 모델을 갈아타지 않음). 400 응답의 `message`에 사용 가능한 값이 함께 담기므로 그대로 노출해도 됩니다.
+
+#### AI 제공자 오류 (#85)
+
+제공자(Anthropic/OpenAI) 쪽 사정으로 실패한 경우는 일반 500이 아니라 아래 코드로 구분되어 옵니다. **요청 자체는 정상이므로 요청 내용을 고쳐 재시도할 대상이 아닙니다.**
+
+| code | HTTP | 의미 | FE 처리 |
+|---|---|---|---|
+| `AI_PROVIDER_UNAVAILABLE` | 503 | API 키 미설정 · 인증 실패 · **크레딧 부족** | 재시도 금지. `message`를 그대로 노출하고 **다른 provider 선택을 유도** |
+| `AI_PROVIDER_RATE_LIMITED` | 429 | 요청량 한도 초과 | 잠시 후 재시도 가능 |
+| `AI_PROVIDER_ERROR` | 502 | 제공자 장애 · 연결 실패 | 잠시 후 재시도 가능 |
+
+`message`는 사유별로 완결된 안내 문장(예: `"OpenAI 크레딧이 부족해 요청을 처리할 수 없습니다. 다른 AI 제공자를 선택하거나 결제 상태를 확인해주세요."`)이므로 가공 없이 그대로 표시하면 됩니다.
+
+비동기 실행(CODE/CHAT 단계) 중 같은 실패가 발생하면 태스크는 `FAILED`가 되고 **동일한 문장이 어시스턴트 채팅 메시지로** 저장됩니다. 이 경우는 build 실패가 아니므로 자동 재시도를 하지 않으며 `retryable`도 `false`입니다.
 
 ### 4.6 Deployment — `com.example.dvely.deployment.presentation` (10)
 
