@@ -86,16 +86,15 @@ class PreviewGatewayServiceTest {
     }
 
     /**
-     * sandbox 로 불투명 오리진이 된 문서의 module script 는 Origin: null 의 CORS 요청으로
-     * 온다(Issue #108). 이 헤더가 빠지면 Vite 류 빌드의 메인 번들이 차단되어 프리뷰가 백지가 된다.
+     * 불투명 오리진의 CORS 로드(Issue #108)는 SecurityConfig 의 previews 전용 CORS 설정이
+     * 담당한다({@code CorsConfigurationTest} 참고). 프록시가 ACAO 를 직접 달면 CorsFilter 의
+     * 것과 중복되어 브라우저가 "multiple values" 로 거절하므로, 여기서는 안 다는 것이 계약이다.
      */
     @Test
-    void allowsCorsLoadsFromTheOpaqueOriginTheSandboxCreates() {
-        ResponseEntity<byte[]> html = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
-        ResponseEntity<byte[]> asset = service.proxy(session(), "/api/v1/previews/s/t/", "app.js", null);
+    void doesNotSetItsOwnCorsHeaderBecauseTheCorsFilterOwnsIt() {
+        ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
 
-        assertThat(html.getHeaders().getAccessControlAllowOrigin()).isEqualTo("*");
-        assertThat(asset.getHeaders().getAccessControlAllowOrigin()).isEqualTo("*");
+        assertThat(response.getHeaders().getAccessControlAllowOrigin()).isNull();
     }
 
     private PreviewSessionInfo session() {
