@@ -12,22 +12,16 @@ import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
 import com.example.dvely.agent.infrastructure.llm.OpenAiToolClient;
-import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.common.exception.LlmProviderException;
-import com.example.dvely.auth.domain.model.User;
-import com.example.dvely.auth.domain.repository.UserRepository;
-import com.example.dvely.project.domain.model.Project;
-import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewSessionService;
+import com.example.dvely.preview.application.service.PreviewWorkspaceService;
 import java.util.Base64;
-import java.nio.charset.StandardCharsets;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -60,15 +54,13 @@ public class CodeAgentService {
     // How many recent tool calls to keep as the failure's log excerpt when the round budget runs out.
     private static final int PROGRESS_TRACE_TAIL = 12;
 
-    private final ClaudeToolClient       claudeToolClient;
-    private final OpenAiToolClient       openAiToolClient;
-    private final DockerContainerService dockerService;
-    private final PreviewSessionService  previewSessionService;
-    private final UserRepository         userRepository;
-    private final AuthCommandService     authCommandService;
-    private final ProjectRepository      projectRepository;
-    private final BuildFailureAnalyzer   buildFailureAnalyzer;
-    private final AiProperties           aiProperties;
+    private final ClaudeToolClient        claudeToolClient;
+    private final OpenAiToolClient        openAiToolClient;
+    private final DockerContainerService  dockerService;
+    private final PreviewSessionService   previewSessionService;
+    private final PreviewWorkspaceService previewWorkspaceService;
+    private final BuildFailureAnalyzer    buildFailureAnalyzer;
+    private final AiProperties            aiProperties;
 
     private static final String SYSTEM_PROMPT = """
             You are an expert full-stack developer working inside a Docker container (node:20-alpine).
@@ -165,7 +157,7 @@ public class CodeAgentService {
 
         // 기존 프로젝트인 경우 GitHub 저장소를 컨테이너에 clone/pull
         if (projectId != null) {
-            prepareProjectInContainer(containerId, userId, projectId);
+            previewWorkspaceService.prepareProject(containerId, userId, projectId);
         }
 
         try {
@@ -173,7 +165,7 @@ public class CodeAgentService {
                     ? runOpenAiLoop(instruction, containerId, modelOptions)
                     : runClaudeLoop(instruction, containerId, modelOptions);
 
-            startPreviewServer(containerId);
+            previewWorkspaceService.startPreviewServer(containerId);
 
             String previewUrl = previewSession.publicUrl();
             log.info("[CodeAgent] 완료 | previewUrl={}", previewUrl);
@@ -418,77 +410,6 @@ public class CodeAgentService {
                 || normalized.contains("bun run build");
     }
 
-    // ── 기존 프로젝트 준비 (clone or pull) ──────────────────────────────────────
-    private void prepareProjectInContainer(String containerId, Long userId, Long projectId) {
-        Project project = projectRepository.findByIdAndOwnerUserId(projectId, userId)
-                .orElseThrow(() -> new RuntimeException("프로젝트를 찾을 수 없거나 접근 권한이 없습니다: projectId=" + projectId));
-
-        String sourceRepo = project.getSourceRepository();
-        if (sourceRepo == null || sourceRepo.isBlank()) {
-            log.warn("[CodeAgent] projectId={} 에 연결된 GitHub 저장소 없음, 신규 프로젝트로 진행", projectId);
-            return;
-        }
-
-        // 유저 토큰 조회 (만료 시 갱신)
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("유저를 찾을 수 없습니다: " + userId));
-        if (user.isUserAccessTokenExpired()) {
-            authCommandService.refreshGithubUserToken(userId);
-            user = userRepository.findById(userId).orElseThrow();
-        }
-        String userToken = user.getGithubUserAccessToken();
-        String username  = user.getUsername();
-
-        // 인증 포함 clone URL
-        String cloneUrl = "https://" + username + ":" + userToken + "@github.com/" + sourceRepo + ".git";
-
-        // git credential 파일 작성 (토큰 로그 노출 최소화)
-        dockerService.exec(containerId, "apk add --no-cache git 2>/dev/null || true");
-        String cred = "https://" + username + ":" + userToken + "@github.com";
-        String credB64 = Base64.getEncoder().encodeToString(cred.getBytes(StandardCharsets.UTF_8));
-        dockerService.exec(containerId,
-                "node -e \"require('fs').writeFileSync('/tmp/.git-credentials', Buffer.from('" + credB64 + "', 'base64').toString('utf8'))\"");
-        dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
-        dockerService.exec(containerId, "git config --global user.email 'agent@qeploy.com'");
-        dockerService.exec(containerId, "git config --global user.name 'Qeploy Agent'");
-
-        String appExists = dockerService.exec(containerId, "[ -d /workspace/app/.git ] && echo yes || echo no").trim();
-
-        if ("yes".equals(appExists)) {
-            // 이미 clone됨 → pull로 최신화
-            String currentRemote = dockerService.exec(containerId,
-                    "git -C /workspace/app remote get-url origin 2>/dev/null || echo __none__").trim();
-            if (!currentRemote.contains(sourceRepo)) {
-                // 다른 repo → 삭제 후 재clone
-                dockerService.exec(containerId, "rm -rf /workspace/app");
-                dockerService.exec(containerId, "git clone " + cloneUrl + " /workspace/app");
-                log.info("[CodeAgent] 다른 repo 감지, 재clone: {}", sourceRepo);
-            } else {
-                dockerService.exec(containerId, "cd /workspace/app && git fetch origin");
-                log.info("[CodeAgent] 기존 repo fetch: {}", sourceRepo);
-            }
-        } else {
-            // 처음 clone
-            dockerService.exec(containerId, "mkdir -p /workspace");
-            dockerService.exec(containerId, "git clone " + cloneUrl + " /workspace/app");
-            log.info("[CodeAgent] 저장소 clone 완료: {}", sourceRepo);
-        }
-
-        dockerService.exec(containerId,
-                "cd /workspace/app && git fetch origin preview 2>/dev/null || true");
-        dockerService.exec(containerId,
-                "cd /workspace/app && "
-                        + "(git show-ref --verify --quiet refs/remotes/origin/preview "
-                        + "&& git checkout -B preview origin/preview || git checkout -B preview)");
-
-        // clone 후 의존성 설치
-        String pkgJson = dockerService.exec(containerId, "[ -f /workspace/app/package.json ] && echo yes || echo no").trim();
-        if ("yes".equals(pkgJson)) {
-            log.info("[CodeAgent] npm install 실행");
-            dockerService.exec(containerId, "cd /workspace/app && npm install");
-        }
-    }
-
     private String writeFile(String containerId, String path, String content) {
         try {
             String base64 = Base64.getEncoder().encodeToString(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -500,80 +421,6 @@ public class CodeAgentService {
         } catch (Exception e) {
             return "파일 작성 실패: " + e.getMessage();
         }
-    }
-
-    // ── Preview 서버 (loop 종료 후 서버가 직접 실행) ───────────────────────────
-    private void startPreviewServer(String containerId) {
-        String buildDir = detectBuildOutputDir(containerId);
-        dockerService.exec(containerId, "pkill -f 'npx serve' 2>/dev/null || true");
-        dockerService.exec(containerId,
-                "nohup npx serve -s " + buildDir + " -l 3000 > /tmp/serve.log 2>&1 &");
-        String serveLog = dockerService.exec(containerId, "sleep 3 && cat /tmp/serve.log");
-        log.info("[CodeAgent] 프리뷰 서버 시작 | buildDir={} | log={}", buildDir, serveLog);
-    }
-
-    /**
-     * Resolves the directory to serve as the preview.
-     *
-     * <p>The known output directories are checked first; the index.html search below them exists
-     * for projects that have no build step at all (a plain static site), and for build output
-     * under a directory this list does not name. That search used to accept the first index.html
-     * it found anywhere under /workspace, which for a Vite or CRA project is the <em>source</em>
-     * entry point — so a run whose build never happened or failed still resolved to a directory,
-     * started a preview over unbuilt sources, and reported success. That was the second half of
-     * the frontend's report: a task marked complete whose preview does not work.</p>
-     *
-     * <p>What separates the two is a sibling package.json: a project root has one next to its
-     * index.html, a build output directory does not. Skipping those roots means a missing build
-     * now reaches the caller as a failure, where the build log drives {@link BuildFailureAnalyzer}
-     * and the retry — which is what should have happened all along.</p>
-     */
-    private String detectBuildOutputDir(String containerId) {
-        for (String candidate : List.of(
-                "/workspace/app/dist",
-                "/workspace/app/build",
-                "/workspace/app/out")) {
-            String result = dockerService.exec(containerId,
-                    "[ -d " + candidate + " ] && echo exists || echo missing");
-            if ("exists".equals(result.trim())) {
-                log.info("[CodeAgent] 빌드 결과물 감지: {}", candidate);
-                return candidate;
-            }
-        }
-        for (String candidate : findIndexHtmlDirectories(containerId)) {
-            if (isProjectSourceRoot(containerId, candidate)) {
-                log.info("[CodeAgent] 프로젝트 소스 루트이므로 빌드 결과물에서 제외: {}", candidate);
-                continue;
-            }
-            log.info("[CodeAgent] index.html 기반 빌드 경로 감지: {}", candidate);
-            return candidate;
-        }
-        throw new IllegalStateException(
-                "빌드 결과 디렉터리를 찾지 못했습니다. build가 실행되지 않았거나 실패했습니다.");
-    }
-
-    /**
-     * Directories holding an index.html, nearest-first. {@code public/} is excluded because CRA
-     * keeps its source template there; node_modules because a dependency's own index.html is never
-     * this project's output. More than one candidate is read so that a skipped source root does not
-     * exhaust the search — a Vite project has its source index.html and its dist/index.html both.
-     */
-    private List<String> findIndexHtmlDirectories(String containerId) {
-        String found = dockerService.exec(containerId,
-                "find /workspace -name 'index.html' -not -path '*/node_modules/*' "
-                        + "-not -path '*/public/*' 2>/dev/null | head -5");
-        return found.lines()
-                .map(String::trim)
-                .filter(line -> line.endsWith("/index.html"))
-                .map(line -> line.substring(0, line.lastIndexOf('/')))
-                .distinct()
-                .toList();
-    }
-
-    private boolean isProjectSourceRoot(String containerId, String directory) {
-        String result = dockerService.exec(containerId,
-                "[ -f " + directory + "/package.json ] && echo exists || echo missing");
-        return "exists".equals(result.trim());
     }
 
     private void logToolCallResult(ToolCall tc, String result) {

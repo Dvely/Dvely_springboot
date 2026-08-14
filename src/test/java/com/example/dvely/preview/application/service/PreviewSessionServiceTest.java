@@ -83,8 +83,8 @@ class PreviewSessionServiceTest {
                 "https://preview.qeploy.test/session-1/",
                 LocalDateTime.now().minusMinutes(1)
         );
-        when(repository.findByStatusAndExpiresAtBefore(
-                org.mockito.ArgumentMatchers.eq(PreviewSessionStatus.ACTIVE.name()),
+        when(repository.findByStatusInAndExpiresAtBefore(
+                any(),
                 any(LocalDateTime.class)
         )).thenReturn(List.of(expired));
         when(repository.save(expired)).thenReturn(expired);
@@ -93,6 +93,46 @@ class PreviewSessionServiceTest {
 
         assertThat(expired.getStatus()).isEqualTo(PreviewSessionStatus.EXPIRED.name());
         verify(dockerService).removeContainer("container-1");
+    }
+
+    /**
+     * 프로젝트 단위 프리뷰의 준비(clone/install/build)는 비동기라, 그 도중 앱이 재시작되면 어느
+     * 상태로도 가지 못한 PROVISIONING 행이 컨테이너를 붙든 채 남는다. 청소기가 이 행을 EXPIRED 로
+     * 닫아버리면 사용자 화면에는 "프리뷰 없음"만 남아 왜 안 떴는지 알 수 없으므로, 사유가 남는
+     * FAILED 로 닫는다.
+     */
+    @Test
+    void cleanupFailsProvisioningSessionThatNeverFinished() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository,
+                dockerService,
+                mock(TaskStore.class),
+                properties()
+        );
+        PreviewSessionEntity stuck = new PreviewSessionEntity(
+                "session-2",
+                "token-2",
+                1L,
+                11L,
+                null,
+                null,
+                "container-2",
+                32769,
+                "https://preview.qeploy.test/session-2/",
+                LocalDateTime.now().minusMinutes(1),
+                PreviewSessionStatus.PROVISIONING
+        );
+        when(repository.findByStatusInAndExpiresAtBefore(any(), any(LocalDateTime.class)))
+                .thenReturn(List.of(stuck));
+        when(repository.save(stuck)).thenReturn(stuck);
+
+        service.cleanupExpired();
+
+        assertThat(stuck.getStatus()).isEqualTo(PreviewSessionStatus.FAILED.name());
+        assertThat(stuck.getFailureReason()).contains("제한 시간");
+        verify(dockerService).removeContainer("container-2");
     }
 
     // Issue #71 (High): after a CloudOps RESTART, the caller (InfraOpsAgentService) re-queries
