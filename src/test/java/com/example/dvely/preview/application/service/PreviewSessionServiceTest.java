@@ -14,6 +14,8 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
+import com.example.dvely.config.CorsProperties;
+import com.example.dvely.preview.infrastructure.config.PreviewGatewayUrlResolver;
 import com.example.dvely.preview.infrastructure.config.PreviewProperties;
 import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity;
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
@@ -36,7 +38,8 @@ class PreviewSessionServiceTest {
                 repository,
                 dockerService,
                 taskStore,
-                properties
+                properties,
+                gatewayUrlResolver()
         );
         when(taskStore.get("task-1")).thenReturn(task());
         when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.ACTIVE.name()))
@@ -69,7 +72,8 @@ class PreviewSessionServiceTest {
                 repository,
                 dockerService,
                 mock(TaskStore.class),
-                properties()
+                properties(),
+                gatewayUrlResolver()
         );
         PreviewSessionEntity expired = new PreviewSessionEntity(
                 "session-1",
@@ -109,7 +113,8 @@ class PreviewSessionServiceTest {
                 repository,
                 dockerService,
                 mock(TaskStore.class),
-                properties()
+                properties(),
+                gatewayUrlResolver()
         );
         PreviewSessionEntity stuck = new PreviewSessionEntity(
                 "session-2",
@@ -147,7 +152,8 @@ class PreviewSessionServiceTest {
                 repository,
                 mock(DockerContainerService.class),
                 mock(TaskStore.class),
-                properties()
+                properties(),
+                gatewayUrlResolver()
         );
         PreviewSessionEntity session = new PreviewSessionEntity(
                 "session-1", "token", 1L, 11L, 21L, "task-1",
@@ -174,7 +180,8 @@ class PreviewSessionServiceTest {
                 repository,
                 mock(DockerContainerService.class),
                 mock(TaskStore.class),
-                properties()
+                properties(),
+                gatewayUrlResolver()
         );
         when(repository.findById("missing")).thenReturn(Optional.empty());
 
@@ -190,7 +197,8 @@ class PreviewSessionServiceTest {
                 repository,
                 mock(DockerContainerService.class),
                 mock(TaskStore.class),
-                properties()
+                properties(),
+                gatewayUrlResolver()
         );
         PreviewSessionEntity active = new PreviewSessionEntity(
                 "session-1", "token", 1L, 11L, 21L, "task-1",
@@ -216,13 +224,19 @@ class PreviewSessionServiceTest {
                 repository,
                 mock(DockerContainerService.class),
                 mock(TaskStore.class),
-                properties()
+                properties(),
+                gatewayUrlResolver()
         );
         when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusOrderByLastAccessedAtDesc(
                 11L, 1L, PreviewSessionStatus.ACTIVE.name()
         )).thenReturn(Optional.empty());
 
         assertThat(service.findActiveByProject(11L, 1L)).isEmpty();
+    }
+
+    /** 게이트웨이 오리진 해석은 PreviewGatewayUrlResolverTest 가 따로 검증한다. */
+    private PreviewGatewayUrlResolver gatewayUrlResolver() {
+        return new PreviewGatewayUrlResolver(properties(), new CorsProperties(List.of(), List.of()));
     }
 
     private PreviewProperties properties() {

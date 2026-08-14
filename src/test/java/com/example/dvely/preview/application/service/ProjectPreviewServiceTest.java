@@ -12,9 +12,12 @@ import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.common.exception.PreviewEnvironmentUnavailableException;
+import com.example.dvely.config.CorsProperties;
 import com.example.dvely.preview.application.result.ProjectPreviewSessionResult;
 import com.example.dvely.preview.application.service.ProjectPreviewService.ProvisionOutcome;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
+import com.example.dvely.preview.infrastructure.config.PreviewGatewayUrlResolver;
 import com.example.dvely.preview.infrastructure.config.PreviewProperties;
 import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity;
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
@@ -57,8 +60,10 @@ class ProjectPreviewServiceTest {
         PreviewProperties properties = new PreviewProperties();
         properties.setGatewayBaseUrl("https://preview.qeploy.test");
         properties.setTtl(Duration.ofMinutes(30));
+        PreviewGatewayUrlResolver gatewayUrlResolver = new PreviewGatewayUrlResolver(
+                properties, new CorsProperties(List.of(), List.of()));
         service = new ProjectPreviewService(
-                repository, projectRepository, dockerService, properties, provisioner);
+                repository, projectRepository, dockerService, properties, gatewayUrlResolver, provisioner);
         // 목 생성/스터빙을 when(...) 인자 안에서 하면 Mockito 가 중첩 스터빙으로 보고 실패한다.
         Project connected = project("owner/repo");
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(PROJECT_ID, USER_ID))
@@ -169,6 +174,24 @@ class ProjectPreviewServiceTest {
         // 준비가 끝나기 전 주소는 게이트웨이가 열어주지 않으므로 내려주지 않는다.
         assertThat(outcome.session().previewUrl()).isNull();
         verify(provisioner).provision(savedSession().getId());
+    }
+
+    /**
+     * Docker 가 없는 서버(설치 누락·소켓 권한 없음)에서 처음 실패하는 지점이다. 그대로 흘리면
+     * catch-all 500 "서버 내부 오류"가 되어, FE 도 운영자도 서버에 붙기 전에는 원인을 알 수 없다.
+     */
+    @Test
+    void aDockerFailureIsReportedAsAnUnavailableEnvironmentInsteadOfAnOpaqueError() {
+        when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusInOrderByLastAccessedAtDesc(
+                eq(PROJECT_ID), eq(USER_ID), any())).thenReturn(Optional.empty());
+        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null)))
+                .thenThrow(new RuntimeException("Cannot connect to the Docker daemon at unix:///var/run/docker.sock"));
+
+        assertThatThrownBy(() -> service.provision(PROJECT_ID, USER_ID))
+                .isInstanceOf(PreviewEnvironmentUnavailableException.class)
+                .hasMessageContaining("Docker")
+                .hasMessageContaining("docker.sock");
+        verify(provisioner, never()).provision(anyString());
     }
 
     @Test

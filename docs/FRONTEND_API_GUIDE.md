@@ -387,7 +387,7 @@ Accept: text/event-stream
 | 메서드 | 경로 | 용도 | 인증 | 응답 |
 |---|---|---|---|---|
 | GET | `/api/v1/projects/{projectId}/preview-session` | **프로젝트의 현재 프리뷰 조회(진입 시 호출)** | Bearer | 200 `ProjectPreviewSession` / **204**(띄워진 프리뷰 없음) / 404(프로젝트 없음) |
-| POST | `/api/v1/projects/{projectId}/preview-session` | **프리뷰 띄우기(버튼)** — preview 브랜치 현재 상태를 clone→빌드→서빙 | Bearer | 200(이미 떠 있는 세션에 붙음) / **202**(준비 시작·진행 중) / 409(저장소 미연결) / 404 |
+| POST | `/api/v1/projects/{projectId}/preview-session` | **프리뷰 띄우기(버튼)** — preview 브랜치 현재 상태를 clone→빌드→서빙 | Bearer | 200(이미 떠 있는 세션에 붙음) / **202**(준비 시작·진행 중) / 409(저장소 미연결) / **503**(서버의 Docker 실행 환경 문제 — 재시도가 아니라 운영자 조치 필요) / 404 |
 | GET | `/api/v1/previews/{sessionId}/{accessToken}/**` | Docker 프리뷰 컨테이너로 리버스 프록시(HTML/JS/CSS 등 원본 그대로) | URL 내장 1회성 토큰(JWT 아님) | 프리뷰 앱 응답 그대로(`@RawApiResponse`). 세션 없음/토큰 불일치 시 404 |
 | DELETE | `/api/v1/preview-sessions/{sessionId}` | 세션 종료 + 컨테이너 정리 | Bearer | 204(404: 없음/타 유저 소유) |
 | GET | `/api/v1/preview-sessions/{sessionId}/status` | 컨테이너 실행 여부·리소스 사용량 조회(p95 ~1.5초 — 폴링은 5초 이상 권장) | Bearer | `{ sessionId, projectId, taskId, sessionStatus(ACTIVE\|PROVISIONING\|CLOSED\|EXPIRED\|FAILED), containerRunning, oomKilled, exitCode, startedAt, expiresAt, resources{ memoryUsageBytes, memoryLimitBytes, memoryUsagePercent, cpuPercent } }`(resources는 미실행/조회 3초 초과 시 null) |
@@ -402,6 +402,8 @@ Accept: text/event-stream
 2. **현재 상태 프리뷰**(신규): 작업 지시 없이 `POST /api/v1/projects/{id}/preview-session`으로 띄웁니다. `preview` 브랜치를 그대로 clone → (build 스크립트가 있으면) 빌드 → 서빙하므로, 저장소를 막 연결한 직후에도 배포 전에 현재 화면을 볼 수 있습니다.
 
 두 종류 모두 같은 게이트웨이로 서빙되고 같은 TTL(기본 30분, `qeploy.preview.ttl`)로 회수되며, 프리뷰를 보는 동안에는 접근할 때마다 만료가 연장됩니다.
+
+`previewUrl`의 오리진은 서버 설정(`qeploy.preview.gateway-base-url`, 운영은 `https://qeploy.com`)에서 옵니다 — 받은 주소를 그대로 열면 되고, FE에서 직접 조립하지 마세요.
 
 **FE 권장 흐름**
 

@@ -5,6 +5,7 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
+import com.example.dvely.preview.infrastructure.config.PreviewGatewayUrlResolver;
 import com.example.dvely.preview.infrastructure.config.PreviewProperties;
 import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity;
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
@@ -27,6 +28,7 @@ public class PreviewSessionService {
     private final DockerContainerService dockerService;
     private final TaskStore taskStore;
     private final PreviewProperties properties;
+    private final PreviewGatewayUrlResolver gatewayUrlResolver;
 
     public PreviewSessionInfo acquire(String taskId) {
         AgentTask task = taskStore.get(taskId);
@@ -53,12 +55,7 @@ public class PreviewSessionService {
                 task.taskId()
         );
         int hostPort = dockerService.getMappedPort(containerId);
-        String publicUrl = normalizedGatewayBaseUrl()
-                + "/api/v1/previews/"
-                + sessionId
-                + "/"
-                + accessToken
-                + "/";
+        String publicUrl = gatewayUrlResolver.publicUrl(sessionId, accessToken);
         PreviewSessionEntity created = new PreviewSessionEntity(
                 sessionId,
                 accessToken,
@@ -193,8 +190,4 @@ public class PreviewSessionService {
         return LocalDateTime.now().plus(properties.getTtl());
     }
 
-    private String normalizedGatewayBaseUrl() {
-        String value = properties.getGatewayBaseUrl();
-        return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
-    }
 }
