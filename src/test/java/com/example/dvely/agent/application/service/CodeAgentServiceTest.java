@@ -27,6 +27,7 @@ import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewSessionService;
+import com.example.dvely.preview.application.service.PreviewWorkspaceService;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -65,14 +66,20 @@ class CodeAgentServiceTest {
     void setUp() {
         AiProperties aiProperties = new AiProperties();
         aiProperties.getCodeAgent().setMaxIterations(MAX_ITERATIONS);
+        // 워크스페이스 서비스는 실물을 쓴다: 빌드 결과 디렉터리 판별과 serve 기동은 여기 옮겨졌을
+        // 뿐 CODE 스텝의 관찰 가능한 동작 그대로이고(같은 dockerService.exec 명령), 이 테스트들이
+        // 지키려는 것도 "빌드 안 된 워크스페이스를 서빙하지 않는다"는 그 동작이다.
         service = new CodeAgentService(
                 claudeToolClient,
                 openAiToolClient,
                 dockerService,
                 previewSessionService,
-                userRepository,
-                authCommandService,
-                projectRepository,
+                new PreviewWorkspaceService(
+                        dockerService,
+                        projectRepository,
+                        userRepository,
+                        authCommandService
+                ),
                 buildFailureAnalyzer,
                 aiProperties
         );
