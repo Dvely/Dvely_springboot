@@ -186,7 +186,103 @@ class CodeAgentServiceTest {
         assertThat(capturedToolResultContent()).contains("command 인자가 없어");
     }
 
+    @Test
+    void servesTheBuildOutputDirectoryWhenTheBuildProducedOne() {
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(textResponse("빌드까지 완료했습니다."));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(containerWith(
+                "/workspace/app/dist"
+        ));
+
+        service.execute(step(), AiProvider.ANTHROPIC, 1L, null, TASK_ID);
+
+        verify(dockerService).exec(eq(CONTAINER_ID), contains("npx serve -s /workspace/app/dist"));
+    }
+
+    @Test
+    void doesNotServeAProjectSourceRootAsIfItWereBuildOutput() {
+        // A Vite project with no dist/: its /workspace/app/index.html is the source entry point,
+        // and serving that is what made a failed build look like a finished task with a preview
+        // that renders nothing. Failing here instead hands the build log to BuildFailureAnalyzer.
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(textResponse("빌드까지 완료했습니다."));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(containerWith(
+                "/workspace/app"  // package.json 이 함께 있는 소스 루트
+        ));
+        // Reaching the analyzer at all is the point: a missing build is now diagnosed from the
+        // build log and retried, instead of being served as a finished preview.
+        when(buildFailureAnalyzer.analyze(anyString())).thenReturn(new BuildFailureAnalyzer.Analysis(
+                "프로젝트 빌드가 완료되지 않았습니다.", "로그 일부", "build를 다시 실행합니다."
+        ));
+
+        assertThatThrownBy(() -> execute(AiProvider.ANTHROPIC))
+                .isInstanceOf(CodeAgentExecutionException.class)
+                .hasMessageContaining("빌드가 완료되지 않았습니다");
+
+        verify(dockerService, never()).exec(eq(CONTAINER_ID), contains("npx serve"));
+    }
+
+    @Test
+    void stillServesAStaticProjectThatHasNoBuildStep() {
+        // The index.html fallback exists for exactly this: a plain static site, whose index.html
+        // has no package.json beside it, is legitimately its own output.
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(textResponse("정적 페이지를 만들었습니다."));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(containerWith(
+                "/workspace/site"
+        ));
+
+        service.execute(step(), AiProvider.ANTHROPIC, 1L, null, TASK_ID);
+
+        verify(dockerService).exec(eq(CONTAINER_ID), contains("npx serve -s /workspace/site"));
+    }
+
+    @Test
+    void skipsTheSourceRootAndTakesTheBuildOutputWhenBothCarryAnIndexHtml() {
+        // The realistic Vite layout once a build has run under a directory the known-name check
+        // does not cover: both /workspace/web and /workspace/web/output hold an index.html, and
+        // only the former has a package.json beside it.
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+                .thenReturn(textResponse("빌드까지 완료했습니다."));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(invocation -> {
+            String command = invocation.getArgument(1);
+            if (command.startsWith("find /workspace -name 'index.html'")) {
+                return "/workspace/web/index.html\n/workspace/web/output/index.html\n";
+            }
+            if (command.contains("/workspace/web/package.json")) {
+                return "exists";
+            }
+            return "missing";
+        });
+
+        service.execute(step(), AiProvider.ANTHROPIC, 1L, null, TASK_ID);
+
+        verify(dockerService).exec(eq(CONTAINER_ID), contains("npx serve -s /workspace/web/output"));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    /**
+     * Container whose only index.html sits in {@code indexHtmlDir}, and where a package.json
+     * exists beside it only when that directory is a project root ({@code /workspace/app} in
+     * these tests). Known output directories (dist/build/out) report as present only when
+     * {@code indexHtmlDir} names one.
+     */
+    private org.mockito.stubbing.Answer<String> containerWith(String indexHtmlDir) {
+        return invocation -> {
+            String command = invocation.getArgument(1);
+            if (command.startsWith("find /workspace -name 'index.html'")) {
+                return indexHtmlDir + "/index.html\n";
+            }
+            if (command.startsWith("[ -d ")) {
+                return command.contains("[ -d " + indexHtmlDir + " ]") ? "exists" : "missing";
+            }
+            if (command.startsWith("[ -f ")) {
+                return command.contains("/workspace/app/package.json") ? "exists" : "missing";
+            }
+            return "";
+        };
+    }
 
     private CodeAgentService.CodeResult execute(AiProvider provider) {
         return service.execute(step(), provider, 1L, null, TASK_ID);

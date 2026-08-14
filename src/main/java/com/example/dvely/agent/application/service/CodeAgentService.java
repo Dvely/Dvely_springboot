@@ -493,6 +493,22 @@ public class CodeAgentService {
         log.info("[CodeAgent] 프리뷰 서버 시작 | buildDir={} | log={}", buildDir, serveLog);
     }
 
+    /**
+     * Resolves the directory to serve as the preview.
+     *
+     * <p>The known output directories are checked first; the index.html search below them exists
+     * for projects that have no build step at all (a plain static site), and for build output
+     * under a directory this list does not name. That search used to accept the first index.html
+     * it found anywhere under /workspace, which for a Vite or CRA project is the <em>source</em>
+     * entry point — so a run whose build never happened or failed still resolved to a directory,
+     * started a preview over unbuilt sources, and reported success. That was the second half of
+     * the frontend's report: a task marked complete whose preview does not work.</p>
+     *
+     * <p>What separates the two is a sibling package.json: a project root has one next to its
+     * index.html, a build output directory does not. Skipping those roots means a missing build
+     * now reaches the caller as a failure, where the build log drives {@link BuildFailureAnalyzer}
+     * and the retry — which is what should have happened all along.</p>
+     */
     private String detectBuildOutputDir(String containerId) {
         for (String candidate : List.of(
                 "/workspace/app/dist",
@@ -505,15 +521,40 @@ public class CodeAgentService {
                 return candidate;
             }
         }
-        // 폴백: index.html 위치로 추론
-        String found = dockerService.exec(containerId,
-                "find /workspace -name 'index.html' -not -path '*/node_modules/*' -not -path '*/public/*' 2>/dev/null | head -1");
-        if (!found.isBlank()) {
-            String dir = found.trim().replace("/index.html", "");
-            log.info("[CodeAgent] index.html 기반 빌드 경로 감지: {}", dir);
-            return dir;
+        for (String candidate : findIndexHtmlDirectories(containerId)) {
+            if (isProjectSourceRoot(containerId, candidate)) {
+                log.info("[CodeAgent] 프로젝트 소스 루트이므로 빌드 결과물에서 제외: {}", candidate);
+                continue;
+            }
+            log.info("[CodeAgent] index.html 기반 빌드 경로 감지: {}", candidate);
+            return candidate;
         }
-        throw new IllegalStateException("빌드 결과 디렉터리를 찾지 못했습니다.");
+        throw new IllegalStateException(
+                "빌드 결과 디렉터리를 찾지 못했습니다. build가 실행되지 않았거나 실패했습니다.");
+    }
+
+    /**
+     * Directories holding an index.html, nearest-first. {@code public/} is excluded because CRA
+     * keeps its source template there; node_modules because a dependency's own index.html is never
+     * this project's output. More than one candidate is read so that a skipped source root does not
+     * exhaust the search — a Vite project has its source index.html and its dist/index.html both.
+     */
+    private List<String> findIndexHtmlDirectories(String containerId) {
+        String found = dockerService.exec(containerId,
+                "find /workspace -name 'index.html' -not -path '*/node_modules/*' "
+                        + "-not -path '*/public/*' 2>/dev/null | head -5");
+        return found.lines()
+                .map(String::trim)
+                .filter(line -> line.endsWith("/index.html"))
+                .map(line -> line.substring(0, line.lastIndexOf('/')))
+                .distinct()
+                .toList();
+    }
+
+    private boolean isProjectSourceRoot(String containerId, String directory) {
+        String result = dockerService.exec(containerId,
+                "[ -f " + directory + "/package.json ] && echo exists || echo missing");
+        return "exists".equals(result.trim());
     }
 
     private void logToolCallResult(ToolCall tc, String result) {
