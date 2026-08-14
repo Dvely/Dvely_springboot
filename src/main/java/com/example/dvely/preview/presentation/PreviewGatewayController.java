@@ -4,12 +4,16 @@ import com.example.dvely.common.response.RawApiResponse;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewGatewayService;
 import com.example.dvely.preview.application.service.PreviewSessionService;
+import com.example.dvely.preview.infrastructure.config.PreviewProperties;
+import com.example.dvely.preview.infrastructure.security.PreviewAccessCookies;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
@@ -22,6 +26,8 @@ public class PreviewGatewayController {
 
     private final PreviewSessionService previewSessionService;
     private final PreviewGatewayService previewGatewayService;
+    private final PreviewAccessCookies accessCookies;
+    private final PreviewProperties previewProperties;
 
     @Operation(
             summary = "Preview 컨테이너 리버스 프록시",
@@ -38,12 +44,18 @@ public class PreviewGatewayController {
     public ResponseEntity<byte[]> proxy(
             @Parameter(description = "Preview 세션 ID") @PathVariable String sessionId,
             @Parameter(description = "세션 발급 시 함께 생성된 1회성 접근 토큰(랜덤 UUID)") @PathVariable String accessToken,
+            @CookieValue(name = PreviewAccessCookies.COOKIE_NAME, required = false) String accessCookie,
             HttpServletRequest request
     ) {
         PreviewSessionInfo session = previewSessionService.resolveGateway(sessionId, accessToken)
                 .orElse(null);
         if (session == null) {
             return ResponseEntity.notFound().build();
+        }
+        if (!isAuthorized(session, accessCookie)) {
+            // 401: URL은 맞지만 이 브라우저가 소유자임을 증명하지 못했다. FE는
+            // POST /preview-sessions/{id}/access 로 발급받은 뒤 다시 열면 된다.
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         String prefix = "/api/v1/previews/" + sessionId + "/" + accessToken + "/";
         String requestUri = request.getRequestURI();
@@ -55,5 +67,24 @@ public class PreviewGatewayController {
                 path,
                 request.getQueryString()
         );
+    }
+
+    /**
+     * 소유권 증명 여부 (Issue #77 G2).
+     *
+     * <p>이전에는 URL의 accessToken 일치가 곧 허가였다 — 주소를 입수한 누구든, 로그인 없이도 남의
+     * 프리뷰를 열 수 있었다. 이제 그 위에 "이 브라우저가 세션 소유자로 발급받은 쿠키를 갖고 있는가"를
+     * 얹는다. 쿠키는 세션 경로로 좁혀져 있고 소유자 ID까지 서명에 담기므로, 다른 세션의 쿠키를
+     * 가져와 쓸 수 없다.</p>
+     *
+     * <p>{@code qeploy.preview.require-access-cookie=false}로 끄면 예전 동작으로 되돌아간다. FE가
+     * 발급 호출을 아직 배포하지 못한 환경을 위한 임시 스위치이며, 끈 동안에는 이 갭이 그대로 열려
+     * 있다.</p>
+     */
+    private boolean isAuthorized(PreviewSessionInfo session, String accessCookie) {
+        if (!previewProperties.isRequireAccessCookie()) {
+            return true;
+        }
+        return accessCookies.isValid(accessCookie, session.sessionId(), session.ownerUserId());
     }
 }

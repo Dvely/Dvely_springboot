@@ -3,12 +3,16 @@ package com.example.dvely.preview.application.service;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.preview.application.result.PreviewAccessGrant;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
 import com.example.dvely.preview.infrastructure.config.PreviewGatewayUrlResolver;
 import com.example.dvely.preview.infrastructure.config.PreviewProperties;
 import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity;
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
+import com.example.dvely.preview.infrastructure.security.PreviewAccessCookies;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -29,6 +33,7 @@ public class PreviewSessionService {
     private final TaskStore taskStore;
     private final PreviewProperties properties;
     private final PreviewGatewayUrlResolver gatewayUrlResolver;
+    private final PreviewAccessCookies accessCookies;
 
     public PreviewSessionInfo acquire(String taskId) {
         AgentTask task = taskStore.get(taskId);
@@ -111,6 +116,44 @@ public class PreviewSessionService {
                 .orElseThrow(() -> new IllegalStateException("Preview 세션을 찾을 수 없습니다. sessionId=" + sessionId));
         session.rebindPort(newHostPort);
         return repository.save(session).toInfo();
+    }
+
+    /**
+     * 소유자에게 이 세션의 열람 권한을 발급한다 (Issue #77).
+     *
+     * <p>두 가지를 한 번에 한다. 하나는 게이트웨이가 요구할 소유권 쿠키를 만들어 주는 것(G2),
+     * 다른 하나는 accessToken을 회전시켜 예전 주소를 죽이는 것(G4)이다. 회전이 발급과 같은 호출에
+     * 묶인 이유는 호출자가 곧바로 새 주소를 화면에 걸기 때문이다 — 유출된 주소의 수명이 "소유자가
+     * 다음에 프리뷰를 여는 시점"으로 제한된다.</p>
+     *
+     * <p>남의 세션은 존재 여부를 알려주지 않도록 404로 통일한다(기존 close/status API와 같은 계약).
+     * 이미 종료·만료된 세션은 열어줄 것이 없으므로 상태 충돌(409)이다.</p>
+     */
+    @Transactional
+    public PreviewAccessGrant grantAccess(String sessionId, Long ownerUserId, Duration cookieValidity) {
+        PreviewSessionEntity session = repository.findByIdAndOwnerUserId(sessionId, ownerUserId)
+                .orElseThrow(() -> new NotFoundException("PreviewSession을 찾을 수 없습니다. sessionId=" + sessionId));
+        if (!PreviewSessionStatus.ACTIVE.name().equals(session.getStatus())) {
+            throw new IllegalStateException(
+                    "종료되었거나 아직 준비 중인 프리뷰입니다. status=" + session.getStatus());
+        }
+
+        String rotatedToken = UUID.randomUUID().toString().replace("-", "");
+        session.rotateAccess(rotatedToken, gatewayUrlResolver.publicUrl(sessionId, rotatedToken));
+        PreviewSessionEntity saved = repository.save(session);
+        log.info("[PreviewSession] 접근 발급 및 토큰 회전: sessionId={} ownerUserId={}", sessionId, ownerUserId);
+
+        // 쿠키가 세션보다 오래 살아남을 이유가 없다 — 세션이 끝나면 어차피 게이트웨이가 열리지 않는다.
+        Duration untilExpiry = Duration.between(LocalDateTime.now(), saved.getExpiresAt());
+        Duration maxAge = untilExpiry.compareTo(cookieValidity) < 0 ? untilExpiry : cookieValidity;
+        return new PreviewAccessGrant(
+                sessionId,
+                saved.getPublicUrl(),
+                saved.getExpiresAt(),
+                accessCookies.issue(sessionId, ownerUserId, maxAge),
+                accessCookies.cookiePath(sessionId),
+                maxAge
+        );
     }
 
     @Transactional

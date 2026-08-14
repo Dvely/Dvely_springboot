@@ -137,6 +137,18 @@ public class PreviewSessionEntity {
         this.hostPort = hostPort;
     }
 
+    /**
+     * accessToken을 새로 발급하고 공개 주소를 그에 맞춰 갱신한다 (Issue #77 G4).
+     *
+     * <p>기존 토큰은 이 시점에 죽는다 — 채팅 기록·브라우저 히스토리·화면 공유로 흘러나간 예전
+     * 주소가 계속 열리는 것이 G4가 지적한 문제였고, 소유자가 프리뷰를 다시 열 때마다 그 창을
+     * 닫는 것이 이 메서드의 목적이다.</p>
+     */
+    public void rotateAccess(String accessToken, String publicUrl) {
+        this.accessToken = accessToken;
+        this.publicUrl = publicUrl;
+    }
+
     public void close(PreviewSessionStatus status) {
         this.status = status.name();
     }

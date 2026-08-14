@@ -10,10 +10,14 @@ import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.preview.application.result.PreviewContainerLogsResult;
 import com.example.dvely.preview.application.result.PreviewContainerStatusResult;
 import com.example.dvely.preview.application.service.PreviewContainerOpsService;
+import com.example.dvely.config.CorsProperties;
 import com.example.dvely.preview.application.service.PreviewSessionService;
+import com.example.dvely.preview.infrastructure.config.PreviewGatewayUrlResolver;
+import com.example.dvely.preview.infrastructure.config.PreviewProperties;
 import com.example.dvely.preview.presentation.dto.response.PreviewContainerLogsResponse;
 import com.example.dvely.preview.presentation.dto.response.PreviewContainerStatusResponse;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 
@@ -23,7 +27,7 @@ class PreviewSessionControllerTest {
     void ownerCanClosePreviewSession() {
         PreviewSessionService service = mock(PreviewSessionService.class);
         PreviewContainerOpsService opsService = mock(PreviewContainerOpsService.class);
-        PreviewSessionController controller = new PreviewSessionController(service, opsService);
+        PreviewSessionController controller = new PreviewSessionController(service, opsService, previewProperties(), gatewayUrlResolver());
         when(service.closeOwned("session-1", 1L)).thenReturn(true);
 
         assertThat(controller.close(1L, "session-1").getStatusCode())
@@ -34,7 +38,7 @@ class PreviewSessionControllerTest {
     void foreignOwnerGetsCommonNotFoundError() {
         PreviewSessionService service = mock(PreviewSessionService.class);
         PreviewContainerOpsService opsService = mock(PreviewContainerOpsService.class);
-        PreviewSessionController controller = new PreviewSessionController(service, opsService);
+        PreviewSessionController controller = new PreviewSessionController(service, opsService, previewProperties(), gatewayUrlResolver());
 
         assertThatThrownBy(() -> controller.close(2L, "session-1"))
                 .isInstanceOf(NotFoundException.class)
@@ -45,7 +49,7 @@ class PreviewSessionControllerTest {
     void getStatusDelegatesToOpsServiceAndMapsResourcesWhenRunning() {
         PreviewSessionService service = mock(PreviewSessionService.class);
         PreviewContainerOpsService opsService = mock(PreviewContainerOpsService.class);
-        PreviewSessionController controller = new PreviewSessionController(service, opsService);
+        PreviewSessionController controller = new PreviewSessionController(service, opsService, previewProperties(), gatewayUrlResolver());
         PreviewContainerStatusResult result = new PreviewContainerStatusResult(
                 "session-1",
                 11L,
@@ -74,7 +78,7 @@ class PreviewSessionControllerTest {
     void getStatusMapsNullResourcesForClosedSession() {
         PreviewSessionService service = mock(PreviewSessionService.class);
         PreviewContainerOpsService opsService = mock(PreviewContainerOpsService.class);
-        PreviewSessionController controller = new PreviewSessionController(service, opsService);
+        PreviewSessionController controller = new PreviewSessionController(service, opsService, previewProperties(), gatewayUrlResolver());
         PreviewContainerStatusResult result = new PreviewContainerStatusResult(
                 "session-1",
                 11L,
@@ -99,7 +103,7 @@ class PreviewSessionControllerTest {
     void getLogsDelegatesTailAndSinceSecondsToOpsService() {
         PreviewSessionService service = mock(PreviewSessionService.class);
         PreviewContainerOpsService opsService = mock(PreviewContainerOpsService.class);
-        PreviewSessionController controller = new PreviewSessionController(service, opsService);
+        PreviewSessionController controller = new PreviewSessionController(service, opsService, previewProperties(), gatewayUrlResolver());
         when(opsService.getLogs(1L, "session-1", 500, 60))
                 .thenReturn(new PreviewContainerLogsResult("session-1", true, "2026-07-17T00:00:00Z log line\n"));
 
@@ -109,5 +113,13 @@ class PreviewSessionControllerTest {
         assertThat(response.containerRunning()).isTrue();
         assertThat(response.logText()).contains("log line");
         verify(opsService).getLogs(1L, "session-1", 500, 60);
+    }
+
+    private PreviewProperties previewProperties() {
+        return new PreviewProperties();
+    }
+
+    private PreviewGatewayUrlResolver gatewayUrlResolver() {
+        return new PreviewGatewayUrlResolver(previewProperties(), new CorsProperties(List.of(), List.of()));
     }
 }
