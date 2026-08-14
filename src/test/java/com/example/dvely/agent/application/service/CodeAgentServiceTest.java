@@ -84,7 +84,7 @@ class CodeAgentServiceTest {
         // Every round asks for another tool call and the model never sends a text-only turn, so
         // the loop runs out of rounds. Before the fix this returned a sentence that became the
         // step summary: AgentPlanExecutor marked the task done and posted it as the chat reply.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of("command", "ls"))));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("app");
 
@@ -94,7 +94,7 @@ class CodeAgentServiceTest {
                 .hasMessageContaining(String.valueOf(MAX_ITERATIONS))
                 .hasRootCauseInstanceOf(AgentIterationLimitException.class);
 
-        verify(claudeToolClient, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList());
+        verify(claudeToolClient, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList(), any());
         // The preview server must not be started for a run that never reached a build: doing so is
         // what let an unbuilt workspace be served as a finished result.
         verify(dockerService, never()).exec(eq(CONTAINER_ID), contains("npx serve"));
@@ -105,7 +105,7 @@ class CodeAgentServiceTest {
         // suggestedFix is not cosmetic: AgentPlanExecutor#withSuggestedFix appends it to the
         // instruction on retry, and the retry reuses this container — that is what makes the retry
         // continue the work rather than scaffold it all over again.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of("command", "npm run build"))));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("built");
 
@@ -120,7 +120,7 @@ class CodeAgentServiceTest {
 
     @Test
     void openAiLoopFailsTheSameWayWhenItRunsOutOfRounds() {
-        when(openAiToolClient.completeWithTools(anyString(), anyList(), anyList()))
+        when(openAiToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(openAiToolResponse("stop", toolCall("call-1", "execute_command", Map.of("command", "ls"))));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("app");
 
@@ -128,7 +128,7 @@ class CodeAgentServiceTest {
                 .isInstanceOf(CodeAgentExecutionException.class)
                 .hasRootCauseInstanceOf(AgentIterationLimitException.class);
 
-        verify(openAiToolClient, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList());
+        verify(openAiToolClient, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList(), any());
     }
 
     @Test
@@ -138,7 +138,7 @@ class CodeAgentServiceTest {
         String head = "npm install 시작\n";
         String tail = "\nnpm ERR! build failed";
         String oversized = head + "x".repeat(30_000) + tail;
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of("command", "npm install"))))
                 .thenReturn(textResponse("완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(invocation -> {
@@ -159,7 +159,7 @@ class CodeAgentServiceTest {
     void doesNotRunAToolCallThatWasCutOffByTheOutputLimit() {
         // stop_reason=max_tokens means the last block stopped mid-generation, so its arguments may
         // be half a file. Writing that truncated content is worse than not writing it.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("max_tokens",
                         toolCall("call-1", "write_file", Map.of("path", "/workspace/app/src/App.jsx", "content", "export default function App() {"))))
                 .thenReturn(textResponse("완료했습니다."));
@@ -175,7 +175,7 @@ class CodeAgentServiceTest {
     void answersAToolCallWithMissingArgumentsInsteadOfFailingTheWholeRun() {
         // A missing argument used to be a raw cast to null and an NPE out of the loop, failing the
         // task with an unrelated message; the model can simply be told what it left out.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of())))
                 .thenReturn(textResponse("완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("exists");
@@ -188,7 +188,7 @@ class CodeAgentServiceTest {
 
     @Test
     void servesTheBuildOutputDirectoryWhenTheBuildProducedOne() {
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(textResponse("빌드까지 완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(containerWith(
                 "/workspace/app/dist"
@@ -204,7 +204,7 @@ class CodeAgentServiceTest {
         // A Vite project with no dist/: its /workspace/app/index.html is the source entry point,
         // and serving that is what made a failed build look like a finished task with a preview
         // that renders nothing. Failing here instead hands the build log to BuildFailureAnalyzer.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(textResponse("빌드까지 완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(containerWith(
                 "/workspace/app"  // package.json 이 함께 있는 소스 루트
@@ -226,7 +226,7 @@ class CodeAgentServiceTest {
     void stillServesAStaticProjectThatHasNoBuildStep() {
         // The index.html fallback exists for exactly this: a plain static site, whose index.html
         // has no package.json beside it, is legitimately its own output.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(textResponse("정적 페이지를 만들었습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(containerWith(
                 "/workspace/site"
@@ -242,7 +242,7 @@ class CodeAgentServiceTest {
         // The realistic Vite layout once a build has run under a directory the known-name check
         // does not cover: both /workspace/web and /workspace/web/output hold an index.html, and
         // only the former has a package.json beside it.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList()))
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(textResponse("빌드까지 완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(invocation -> {
             String command = invocation.getArgument(1);
@@ -331,7 +331,7 @@ class CodeAgentServiceTest {
     private String capturedToolResultContent() {
         ArgumentCaptor<List<Map<String, Object>>> captor = ArgumentCaptor.forClass(List.class);
         verify(claudeToolClient, times(2))
-                .completeWithTools(anyString(), captor.capture(), any());
+                .completeWithTools(anyString(), captor.capture(), any(), any());
         List<Map<String, Object>> transcript = captor.getValue();
         for (Map<String, Object> message : transcript) {
             if (!(message.get("content") instanceof List<?> blocks)) {

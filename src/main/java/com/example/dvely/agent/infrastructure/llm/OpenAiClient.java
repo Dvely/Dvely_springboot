@@ -2,6 +2,7 @@ package com.example.dvely.agent.infrastructure.llm;
 
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.port.out.LlmPort;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -11,6 +12,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -25,17 +27,17 @@ public class OpenAiClient implements LlmPort {
     private final AiProperties aiProperties;
 
     @Override
-    public String complete(String systemPrompt, List<LlmMessage> messages) {
+    public String complete(String systemPrompt, List<LlmMessage> messages, AiModelOptions modelOptions) {
         LlmProviderErrors.requireApiKey(PROVIDER_NAME, aiProperties.getOpenai().getApiKey());
 
         List<Map<String, String>> apiMessages = new ArrayList<>();
         apiMessages.add(Map.of("role", "system", "content", systemPrompt));
         messages.forEach(m -> apiMessages.add(Map.of("role", m.role(), "content", m.content())));
 
-        Map<String, Object> body = Map.of(
-                "model",    aiProperties.getOpenai().getModel(),
-                "messages", apiMessages
-        );
+        Map<String, Object> body = new HashMap<>();
+        body.put("model",    modelOptions.modelOr(aiProperties.getOpenai().getModel()));
+        body.put("messages", apiMessages);
+        LlmRequestOptions.applyOpenAi(body, modelOptions);
 
         OpenAiResponse response = LlmProviderErrors.translate(PROVIDER_NAME, () -> restClient()
                 .post()
@@ -48,7 +50,7 @@ public class OpenAiClient implements LlmPort {
             throw new IllegalStateException("OpenAI API 응답이 비어있습니다");
         }
 
-        log.debug("OpenAI 응답 수신: model={}", aiProperties.getOpenai().getModel());
+        log.debug("OpenAI 응답 수신: model={}", body.get("model"));
         return response.choices().get(0).message().content();
     }
 

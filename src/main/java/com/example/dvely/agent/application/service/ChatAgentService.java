@@ -4,6 +4,7 @@ import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.llm.LlmRouter;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
@@ -45,6 +46,10 @@ public class ChatAgentService {
             """;
 
     public CodeResult execute(AgentStep step, AiProvider provider, String taskId) {
+        return execute(step, provider, taskId, AiModelOptions.defaults());
+    }
+
+    public CodeResult execute(AgentStep step, AiProvider provider, String taskId, AiModelOptions modelOptions) {
         String instruction = step.parameters().getOrDefault("instruction", "");
         log.info("[ChatAgent] 실행 시작 | provider={} taskId={}", provider, taskId);
         log.info("  instruction : {}", instruction);
@@ -68,7 +73,7 @@ public class ChatAgentService {
         // turns into markFailed(...) + a user-facing assistant error message. Catching here too
         // would duplicate that handling and diverge from how CodeAgentService/DeployAgentService/
         // DomainBindAgentService let non-recoverable errors propagate the same way.
-        String answer = llmRouter.route(provider).complete(SYSTEM_PROMPT, messages);
+        String answer = llmRouter.route(provider).complete(SYSTEM_PROMPT, messages, modelOptions);
         log.info("[ChatAgent] 완료 | taskId={}", taskId);
         return new CodeResult(null, answer);
     }

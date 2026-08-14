@@ -6,6 +6,7 @@ import com.example.dvely.agent.application.exception.CodeAgentExecutionException
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
@@ -147,6 +148,15 @@ public class CodeAgentService {
                               Long userId,
                               Long projectId,
                               String taskId) {
+        return execute(step, provider, userId, projectId, taskId, AiModelOptions.defaults());
+    }
+
+    public CodeResult execute(AgentStep step,
+                              AiProvider provider,
+                              Long userId,
+                              Long projectId,
+                              String taskId,
+                              AiModelOptions modelOptions) {
         String instruction = step.parameters().getOrDefault("instruction", "");
         log.info("[CodeAgent] 실행 시작 | userId={} provider={} projectId={} instruction={}", userId, provider, projectId, instruction);
 
@@ -160,8 +170,8 @@ public class CodeAgentService {
 
         try {
             String summary = (provider == AiProvider.OPENAI)
-                    ? runOpenAiLoop(instruction, containerId)
-                    : runClaudeLoop(instruction, containerId);
+                    ? runOpenAiLoop(instruction, containerId, modelOptions)
+                    : runClaudeLoop(instruction, containerId, modelOptions);
 
             startPreviewServer(containerId);
 
@@ -212,7 +222,7 @@ public class CodeAgentService {
     public record CodeResult(String previewUrl, String summary) {}
 
     // ── Claude 루프 ──────────────────────────────────────────────────────────
-    private String runClaudeLoop(String instruction, String containerId) {
+    private String runClaudeLoop(String instruction, String containerId, AiModelOptions modelOptions) {
         int maxIterations = maxIterations();
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", instruction));
@@ -220,7 +230,7 @@ public class CodeAgentService {
 
         for (int i = 0; i < maxIterations; i++) {
             log.info("[CodeAgent/Claude] LLM 호출 (round {}/{})", i + 1, maxIterations);
-            LlmToolResponse response = claudeToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS);
+            LlmToolResponse response = claudeToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS, modelOptions);
 
             messages.add(Map.of("role", "assistant", "content", response.contentBlocks()));
 
@@ -254,7 +264,7 @@ public class CodeAgentService {
     }
 
     // ── OpenAI 루프 ──────────────────────────────────────────────────────────
-    private String runOpenAiLoop(String instruction, String containerId) {
+    private String runOpenAiLoop(String instruction, String containerId, AiModelOptions modelOptions) {
         int maxIterations = maxIterations();
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", instruction));
@@ -262,7 +272,7 @@ public class CodeAgentService {
 
         for (int i = 0; i < maxIterations; i++) {
             log.info("[CodeAgent/OpenAI] LLM 호출 (round {}/{})", i + 1, maxIterations);
-            LlmToolResponse response = openAiToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS);
+            LlmToolResponse response = openAiToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS, modelOptions);
 
             messages.add(response.contentBlocks().get(0));
 
