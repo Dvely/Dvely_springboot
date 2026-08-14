@@ -101,6 +101,29 @@ class PreviewGatewayControllerTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
+    /**
+     * sandbox(불투명 오리진) 문서가 끌어오는 서브리소스에는 브라우저가 쿠키를 실어주지 않는다
+     * (Issue #108 — SameSite 와 무관하게 module script 는 credentials 자체를 보내지 않는다).
+     * 회전 accessToken 이 든 URL 자체가 자격이므로 쿠키 없이 통과해야 프리뷰가 백지가 되지 않는다.
+     */
+    @Test
+    void servesSubresourceRequestsWithoutTheCookie() {
+        ResponseEntity<byte[]> script = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request("script"));
+        ResponseEntity<byte[]> fetch = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request("empty"));
+
+        assertThat(script.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(fetch.getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    /** 문서를 "여는" 요청은 여전히 쿠키 게이트다 — iframe 진입이든 새 탭(document)이든. */
+    @Test
+    void keepsRequiringTheCookieForDocumentNavigations() {
+        assertThat(controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request("iframe")).getStatusCode())
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request("document")).getStatusCode())
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
     /** FE가 발급 호출을 아직 배포하지 못한 환경을 위한 임시 스위치. */
     @Test
     void canBeTurnedOffForEnvironmentsWhoseClientHasNotShippedTheAccessCallYet() {
@@ -118,9 +141,16 @@ class PreviewGatewayControllerTest {
                 LocalDateTime.now().plusMinutes(30));
     }
 
+    /** Sec-Fetch-Dest 없는 요청 — curl 등 비브라우저. 탐색으로 간주되어 쿠키 게이트를 받는다. */
     private HttpServletRequest request() {
         HttpServletRequest request = mock(HttpServletRequest.class);
         when(request.getRequestURI()).thenReturn("/api/v1/previews/" + SESSION_ID + "/" + ACCESS_TOKEN + "/");
+        return request;
+    }
+
+    private HttpServletRequest request(String secFetchDest) {
+        HttpServletRequest request = request();
+        when(request.getHeader(PreviewGatewayController.SEC_FETCH_DEST)).thenReturn(secFetchDest);
         return request;
     }
 }
