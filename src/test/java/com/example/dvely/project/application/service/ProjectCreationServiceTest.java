@@ -1,100 +1,57 @@
 package com.example.dvely.project.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.example.dvely.agent.application.dto.AgentPlan;
-import com.example.dvely.agent.application.dto.AgentSubmission;
-import com.example.dvely.agent.application.dto.TaskStatus;
-import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
-import com.example.dvely.agent.domain.value.AgentType;
-import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.project.application.command.ProjectCommandService;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
 import com.example.dvely.project.application.result.ProjectCreationResult;
 import com.example.dvely.project.application.result.ProjectDetailResult;
 import java.time.LocalDateTime;
-import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+/**
+ * 프로젝트 생성은 프로젝트 행만 만든다. 예전에는 초기 코드 생성 태스크를 함께 제출했는데,
+ * conversationId 없이 제출돼 아무도 볼 수 없는 승인 뒤에 갇힌 채 한 번도 실행되지 않았다.
+ */
 @ExtendWith(MockitoExtension.class)
 class ProjectCreationServiceTest {
 
     @Mock
     private ProjectCommandService projectCommandService;
 
-    @Mock
-    private AgentOrchestrator agentOrchestrator;
-
     private ProjectCreationService service;
 
     @BeforeEach
     void setUp() {
-        service = new ProjectCreationService(projectCommandService, agentOrchestrator);
+        service = new ProjectCreationService(projectCommandService);
     }
 
     @Test
-    void templateQualityCreatesAnthropicCodeTaskForSavedProject() {
-        CreateProjectCommand command = new CreateProjectCommand(
-                "shop",
-                "template",
-                "e-commerce",
-                "quality"
-        );
-        ProjectDetailResult project = project(
-                "shop",
-                "template",
-                "e-commerce",
-                "quality"
-        );
-        AgentSubmission submission = new AgentSubmission(
-                "task-1",
-                TaskStatus.WAITING_APPROVAL,
-                List.of(31L)
-        );
+    void createsTheProjectAndNothingElse() {
+        CreateProjectCommand command = new CreateProjectCommand("shop", "template", "e-commerce", "quality");
+        ProjectDetailResult project = project("shop", "template", "e-commerce", "quality");
         when(projectCommandService.createProject(1L, command)).thenReturn(project);
-        when(agentOrchestrator.submit(org.mockito.ArgumentMatchers.any(), eq(1L), eq(null)))
-                .thenReturn(submission);
 
         ProjectCreationResult result = service.create(1L, command);
 
-        ArgumentCaptor<AgentPlan> planCaptor = ArgumentCaptor.forClass(AgentPlan.class);
-        verify(agentOrchestrator).submit(planCaptor.capture(), eq(1L), eq(null));
-        AgentPlan plan = planCaptor.getValue();
-
         assertThat(result.project()).isEqualTo(project);
-        assertThat(result.generation()).isEqualTo(submission);
-        assertThat(plan.projectId()).isEqualTo(11L);
-        assertThat(plan.aiProvider()).isEqualTo(AiProvider.ANTHROPIC);
-        assertThat(plan.steps()).hasSize(1);
-        assertThat(plan.steps().getFirst().agentType()).isEqualTo(AgentType.CODE);
-        assertThat(plan.steps().getFirst().parameters().get("instruction"))
-                .contains("e-commerce", "production-quality");
     }
 
     @Test
-    void blankFastCreatesOpenAiStarterTask() {
+    void blankStartModeAlsoSubmitsNoTask() {
+        // 생성 시점에 에이전트를 부르지 않는다는 것이 이 클래스의 계약 전부다. 협력자가
+        // ProjectCommandService 하나뿐이라는 사실 자체가 그 계약을 강제한다 — 오케스트레이터를
+        // 다시 주입하려면 생성자를 고쳐야 하고, 그러면 이 테스트가 컴파일되지 않는다.
         CreateProjectCommand command = new CreateProjectCommand("starter", "blank", null, "fast");
         ProjectDetailResult project = project("starter", "blank", null, "fast");
         when(projectCommandService.createProject(1L, command)).thenReturn(project);
-        when(agentOrchestrator.submit(org.mockito.ArgumentMatchers.any(), eq(1L), eq(null)))
-                .thenReturn(new AgentSubmission("task-2", TaskStatus.QUEUED, List.of()));
 
-        service.create(1L, command);
-
-        ArgumentCaptor<AgentPlan> planCaptor = ArgumentCaptor.forClass(AgentPlan.class);
-        verify(agentOrchestrator).submit(planCaptor.capture(), eq(1L), eq(null));
-
-        assertThat(planCaptor.getValue().aiProvider()).isEqualTo(AiProvider.OPENAI);
-        assertThat(planCaptor.getValue().steps().getFirst().parameters().get("instruction"))
-                .contains("blank web project", "minimum clean structure");
+        assertThat(service.create(1L, command).project().startMode()).isEqualTo("blank");
     }
 
     private ProjectDetailResult project(String name,

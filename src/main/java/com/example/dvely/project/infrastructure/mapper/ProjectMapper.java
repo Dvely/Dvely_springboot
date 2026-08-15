@@ -35,10 +35,7 @@ public class ProjectMapper {
         return new ProjectCreateResponse(
                 result.project().projectId(),
                 result.project().name(),
-                result.project().status(),
-                result.generation().taskId(),
-                result.generation().status().name(),
-                result.generation().approvalIds()
+                result.project().status()
         );
     }
 

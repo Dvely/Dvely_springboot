@@ -242,6 +242,40 @@ public class AgentOrchestrator {
     }
 
     /**
+     * 방치된 승인 대기 태스크를 닫는다. {@code AbandonedApprovalSweeper} 가 후보마다 부른다.
+     *
+     * {@link #recoverStuckApprovedTask} 와 같은 잠금 순서(태스크 행 → 승인 잠금 읽기)를 쓰므로,
+     * 아직 진행 중인 approve/reject 는 이 호출을 경쟁시키는 대신 잠금에서 기다리게 만든다. 잠금을
+     * 잡은 뒤의 상태 재검사가 "그 사이에 결정된 태스크"를 조용한 no-op 으로 만든다.
+     *
+     * 정리는 {@link #cancelTaskCascade} 를 그대로 쓴다. 사용자가 직접 취소했을 때와 같은 결과를
+     * 남겨야 하고("task 터미널 ⇒ PENDING 승인 없음"), 그 불변식과 잠금 규율이 이미 거기 있다.
+     * 소유자는 잠금 아래 읽은 태스크에서 가져오므로 스윕이 남의 태스크를 건드릴 수 없다.
+     *
+     * WAITING_RESULT_APPROVAL 도 대상이다. 그 태스크는 이미 코드를 만들고 프리뷰까지 띄운
+     * 상태지만, 결정이 오지 않으면 프리뷰는 자체 TTL 로 만료되고 태스크만 영구히 남는다. 취소가
+     * 되돌리는 것은 없다 — 이미 한 일은 그대로 두고 대기만 닫는다.
+     */
+    @Transactional
+    public boolean abandonStaleApprovalTask(String taskId) {
+        AgentTask task = taskStore.lockTask(taskId);
+        if (task.status() != TaskStatus.WAITING_APPROVAL
+                && task.status() != TaskStatus.WAITING_RESULT_APPROVAL) {
+            return false; // 스캔과 잠금 사이에 누군가 결정했다 — 정상적인 no-op
+        }
+        if (!cancelTaskCascade(taskId, task.ownerUserId())) {
+            return false;
+        }
+        log.info("[AgentOrchestrator] 결정되지 않은 채 방치된 승인 대기 태스크를 정리했습니다. taskId={} status={}",
+                taskId, task.status());
+        agentMessageService.appendAssistant(
+                task.conversationId(),
+                "오랫동안 결정되지 않아 이 작업을 종료했습니다. 필요하면 다시 요청해주세요."
+        );
+        return true;
+    }
+
+    /**
      * Issue #64 fix: brought into ADR-Y1's task-bound-decision discipline (same lock hierarchy as
      * approve/reject/cancel/RESULT/sweep — see {@link TaskStore#lockTask} javadoc) so its
      * "no PENDING approval blocks retry" check and the retry action itself are now one atomic unit
