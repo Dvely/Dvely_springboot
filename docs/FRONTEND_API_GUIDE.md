@@ -86,7 +86,11 @@ DELETE /api/v1/auth/logout   (Authorization 필요)
 
 ### 2.6 GitHub App 재인증 (User Token 만료)
 
-`GET /api/v1/users/me` 응답의 `githubAppTokenExpired`가 `true`이거나 `githubAppRefreshTokenExpiresAt`이 과거이면, GitHub App User Token이 만료된 것입니다(GitHub App 설치 자체와는 별개 — 설치는 유지된 채 유저 토큰만 만료될 수 있음).
+`GET /api/v1/users/me` 응답의 **`githubAppReauthorizationRequired`가 `true`일 때만** 재인증 UI를 띄우세요(GitHub App 설치 자체와는 별개 — 설치는 유지된 채 유저 토큰만 만료될 수 있음).
+
+**`githubAppTokenExpired`로 판단하면 안 됩니다.** 이 값은 액세스 토큰의 신선도만 나타내는 진단용 필드입니다. 액세스 토큰 수명이 8시간이라 자주 `true`가 되지만, 리프레시 토큰이 살아 있으면 GitHub을 실제로 호출하는 서버 경로들이 그 자리에서 자동 재발급하므로 유저가 할 일이 없습니다. 이걸로 모달을 띄우면 멀쩡히 권한이 있는 유저에게 8시간마다 재인증을 요구하게 됩니다.
+
+`githubAppReauthorizationRequired`는 자동 재발급이 불가능한 경우에만 `true`입니다 — 리프레시 토큰이 없거나(미연동, 또는 `bad_refresh_token`으로 서버가 비운 뒤) 180일 수명이 지난 경우. `githubAppRefreshTokenExpiresAt`을 FE가 직접 비교할 필요도 없습니다.
 
 ```
 GET /api/v1/auth/github/app/reauthorize-url   (Authorization 필요)
@@ -252,7 +256,7 @@ Accept: text/event-stream
 
 | 메서드 | 경로 | 용도 | 응답(핵심 필드) |
 |---|---|---|---|
-| GET | `/api/v1/users/me` | 현재 로그인 유저 프로필 + GitHub App 연동 상태 | `{ id, username, avatarUrl, githubAppInstalled, githubAppTokenLinked, githubAppTokenExpired, githubAppAccessTokenExpiresAt, githubAppRefreshTokenExpiresAt }` |
+| GET | `/api/v1/users/me` | 현재 로그인 유저 프로필 + GitHub App 연동 상태 | `{ id, username, avatarUrl, githubAppInstalled, githubAppTokenLinked, githubAppTokenExpired, githubAppReauthorizationRequired, githubAppAccessTokenExpiresAt, githubAppRefreshTokenExpiresAt }` (재인증 UI는 `githubAppReauthorizationRequired`로만 판단 — §2.6) |
 
 ### 4.3 Project — `com.example.dvely.project.presentation` (+ Approval, Change) (24 + 4 + 3 = 31)
 
