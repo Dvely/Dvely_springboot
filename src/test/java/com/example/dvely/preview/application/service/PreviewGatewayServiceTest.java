@@ -86,6 +86,68 @@ class PreviewGatewayServiceTest {
     }
 
     /**
+     * 앱이 GitHub Pages 배포용 base(/my-todo-app/)로 빌드되면 index.html 이 그 접두가 붙은
+     * 자산을 참조하는데, 컨테이너는 빌드 산출물 루트를 서빙하므로 그 경로에는 아무것도 없다.
+     * serve -s 는 없는 경로에 index.html(200)을 주기 때문에 브라우저가 MIME 을 거부하고 화면이
+     * 백지가 됐다(Issue #111). 접두를 벗겨 다시 물어보는 것이 이 테스트가 지키는 계약이다.
+     */
+    @Test
+    void absorbsTheBuildBasePathSoAssetsResolveToTheServedRoot() {
+        serveAsset("/assets/app.js", "application/javascript", "console.log(1)");
+
+        ResponseEntity<byte[]> response =
+                service.proxy(session(), "/api/v1/previews/s/t/", "my-todo-app/assets/app.js", null);
+
+        assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE))
+                .contains("application/javascript");
+        assertThat(new String(response.getBody(), StandardCharsets.UTF_8)).isEqualTo("console.log(1)");
+    }
+
+    /** 루트 자산(favicon 등)도 같은 경로로 살아난다. */
+    @Test
+    void absorbsTheBasePathForRootLevelAssetsToo() {
+        serveAsset("/favicon.svg", "image/svg+xml", "<svg/>");
+
+        ResponseEntity<byte[]> response =
+                service.proxy(session(), "/api/v1/previews/s/t/", "my-todo-app/favicon.svg", null);
+
+        assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE)).contains("image/svg+xml");
+    }
+
+    /** base 가 없는 프로젝트(대다수)는 첫 요청에서 끝나야 한다 — 추가 왕복도, 경로 변형도 없다. */
+    @Test
+    void leavesAssetsThatAlreadyResolveUntouched() {
+        serveAsset("/assets/app.js", "application/javascript", "console.log(1)");
+
+        ResponseEntity<byte[]> response =
+                service.proxy(session(), "/api/v1/previews/s/t/", "assets/app.js", null);
+
+        assertThat(new String(response.getBody(), StandardCharsets.UTF_8)).isEqualTo("console.log(1)");
+    }
+
+    /**
+     * SPA 라우트는 확장자가 없어 자산으로 보지 않는다 — serve -s 의 index.html fallback 이
+     * 그대로 유지돼야 새로고침한 딥링크가 앱으로 들어간다.
+     */
+    @Test
+    void keepsTheSpaFallbackForRoutesThatAreNotAssets() {
+        ResponseEntity<byte[]> response =
+                service.proxy(session(), "/api/v1/previews/s/t/", "todos/42", null);
+
+        assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE)).contains("text/html");
+    }
+
+    /** 접두를 벗겨도 없는 자산은 원래 응답을 그대로 돌려준다 — 경로를 무한히 깎지 않는다. */
+    @Test
+    void fallsBackToTheOriginalResponseWhenStrippingDoesNotHelp() {
+        ResponseEntity<byte[]> response =
+                service.proxy(session(), "/api/v1/previews/s/t/", "a/b/c/missing.js", null);
+
+        assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE)).contains("text/html");
+        assertThat(response.getStatusCode().value()).isEqualTo(200);
+    }
+
+    /**
      * 불투명 오리진의 CORS 로드(Issue #108)는 SecurityConfig 의 previews 전용 CORS 설정이
      * 담당한다({@code CorsConfigurationTest} 참고). 프록시가 ACAO 를 직접 달면 CorsFilter 의
      * 것과 중복되어 브라우저가 "multiple values" 로 거절하므로, 여기서는 안 다는 것이 계약이다.
@@ -95,6 +157,17 @@ class PreviewGatewayServiceTest {
         ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
 
         assertThat(response.getHeaders().getAccessControlAllowOrigin()).isNull();
+    }
+
+    /** 이 경로에만 실제 파일이 있는 상태를 만든다. 나머지 경로는 @BeforeEach 의 "/" 가 받아 index.html 을 돌려준다(serve -s 와 같은 동작). */
+    private void serveAsset(String path, String contentType, String content) {
+        container.createContext(path, exchange -> {
+            byte[] body = content.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, contentType);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
     }
 
     private PreviewSessionInfo session() {
