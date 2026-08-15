@@ -165,7 +165,20 @@ public class CodeAgentService {
                     ? runOpenAiLoop(instruction, containerId, modelOptions)
                     : runClaudeLoop(instruction, containerId, modelOptions);
 
-            previewWorkspaceService.startPreviewServer(containerId);
+            // 세션은 PROVISIONING 으로 만들어져 있다. 서버가 실제로 뜬 뒤에만 ACTIVE 로 올려야
+            // FE 가 "열면 보인다"는 계약대로 iframe 을 붙일 수 있다. 실패하면 PROVISIONING 인 채
+            // 두지 않고 사유와 함께 FAILED 로 닫는다 — 안 그러면 FE 가 준비 중 화면을 무한히 돈다.
+            try {
+                previewWorkspaceService.startPreviewServer(containerId);
+            } catch (RuntimeException exception) {
+                // 사유는 FE 가 사용자에게 그대로 보여주므로 내부 예외 문구를 넣지 않는다.
+                // 원인은 이 예외가 그대로 전파되며 로그에 남는다.
+                previewSessionService.markServeFailed(
+                        taskId,
+                        "빌드는 끝났지만 프리뷰 서버를 시작하지 못했습니다. 다시 시도해주세요.");
+                throw exception;
+            }
+            previewSessionService.markServing(taskId);
 
             String previewUrl = previewSession.publicUrl();
             log.info("[CodeAgent] 완료 | previewUrl={}", previewUrl);
