@@ -141,13 +141,49 @@ public class PreviewWorkspaceService {
     }
 
     // ── Preview 서버 (빌드 종료 후 서버가 직접 실행) ───────────────────────────
+
+    /** 프리뷰 서버가 포트를 열 때까지 기다리는 최대 시간(초). */
+    private static final int SERVE_READY_TIMEOUT_SECONDS = 30;
+
+    /**
+     * 빌드 산출물을 서빙하고, 포트가 실제로 응답할 때까지 기다린 뒤 반환한다.
+     *
+     * 호출자(CodeAgentService)는 이 메서드가 정상 반환하면 세션을 ACTIVE 로 올린다. 그래서
+     * "반환됐다 = 열면 보인다"가 성립해야 한다. 예전에는 nohup 으로 띄우고 sleep 3 만 한 뒤
+     * 로그만 읽고 끝냈는데, 그 3초는 npx serve 가 포트를 잡기에 모자랄 때가 있었다. 그러면
+     * 세션은 ACTIVE 인데 프록시는 연결을 못 해 첫 요청이 502 가 된다(2026-08-15 dev 실측:
+     * 13:04:27 ACTIVE → 13:04:30 첫 요청 502).
+     *
+     * 그래서 고정 대기 대신 포트를 직접 폴링한다. curl 이 없는 이미지가 있어 node 로 확인한다 —
+     * npx 를 쓰는 컨테이너이므로 node 는 반드시 있다.
+     *
+     * @throws IllegalStateException 제한 시간 안에 포트가 응답하지 않으면. 호출자가 이 예외를
+     *         받아 세션을 FAILED 로 닫으므로, FE 는 준비 중 화면을 무한히 돌리지 않는다.
+     */
     public void startPreviewServer(String containerId) {
         String buildDir = detectBuildOutputDir(containerId);
         dockerService.exec(containerId, "pkill -f 'npx serve' 2>/dev/null || true");
         dockerService.exec(containerId,
                 "nohup npx serve -s " + buildDir + " -l 3000 > /tmp/serve.log 2>&1 &");
-        String serveLog = dockerService.exec(containerId, "sleep 3 && cat /tmp/serve.log");
-        log.info("[PreviewWorkspace] 프리뷰 서버 시작 | buildDir={} | log={}", buildDir, serveLog);
+
+        String probe = "node -e \"require('http')"
+                + ".get({host:'127.0.0.1',port:3000,timeout:1000},r=>process.exit(0))"
+                + ".on('error',()=>process.exit(1))\" 2>/dev/null";
+        String result = dockerService.exec(containerId,
+                "ready=no; "
+                        + "for i in $(seq 1 " + SERVE_READY_TIMEOUT_SECONDS + "); do "
+                        + "if " + probe + "; then ready=yes; break; fi; sleep 1; "
+                        + "done; "
+                        + "echo \"serve_ready=$ready\"; "
+                        + "tail -n 20 /tmp/serve.log 2>/dev/null || true");
+
+        if (result == null || !result.contains("serve_ready=yes")) {
+            log.warn("[PreviewWorkspace] 프리뷰 서버가 {}초 안에 응답하지 않음 | buildDir={} | log={}",
+                    SERVE_READY_TIMEOUT_SECONDS, buildDir, result);
+            throw new IllegalStateException(
+                    "프리뷰 서버가 제한 시간 안에 시작되지 않았습니다. buildDir=" + buildDir);
+        }
+        log.info("[PreviewWorkspace] 프리뷰 서버 준비 완료 | buildDir={} | log={}", buildDir, result);
     }
 
     /**
