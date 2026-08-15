@@ -31,6 +31,96 @@ import org.junit.jupiter.api.Test;
 
 class PreviewSessionServiceTest {
 
+    // ── Agent 세션도 PROVISIONING 을 거친다 ────────────────────────────────────────────
+
+    @Test
+    void agentSessionStartsAsProvisioningNotActive() {
+        // acquire 는 CodeAgentService 가 LLM 작업을 시작하기 전에 불린다. 그 시점에 ACTIVE 로
+        // 만들어두면 FE 가 "열면 보인다"로 읽고 iframe 을 붙였다가 빌드가 끝날 때까지 502 만 본다.
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        TaskStore taskStore = mock(TaskStore.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository, dockerService, taskStore, properties(), gatewayUrlResolver(), accessCookies()
+        );
+        when(taskStore.get("task-1")).thenReturn(task());
+        when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.ACTIVE.name()))
+                .thenReturn(Optional.empty());
+        when(dockerService.createAndStartContainer(eq(1L), any(String.class), eq(11L), eq(21L), eq("task-1")))
+                .thenReturn("container-1");
+        when(dockerService.getMappedPort("container-1")).thenReturn(32768);
+        when(repository.save(any(PreviewSessionEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.acquire("task-1");
+
+        org.mockito.ArgumentCaptor<PreviewSessionEntity> captor =
+                org.mockito.ArgumentCaptor.forClass(PreviewSessionEntity.class);
+        verify(repository).save(captor.capture());
+        assertThat(captor.getValue().getStatus()).isEqualTo(PreviewSessionStatus.PROVISIONING.name());
+    }
+
+    @Test
+    void markServingPromotesProvisioningSessionToActive() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository, mock(DockerContainerService.class), mock(TaskStore.class),
+                properties(), gatewayUrlResolver(), accessCookies()
+        );
+        PreviewSessionEntity provisioning = provisioningSession();
+        when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.PROVISIONING.name()))
+                .thenReturn(Optional.of(provisioning));
+
+        service.markServing("task-1");
+
+        assertThat(provisioning.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
+        verify(repository).save(provisioning);
+    }
+
+    @Test
+    void markServeFailedClosesTheSessionWithAReasonInsteadOfLeavingItProvisioning() {
+        // PROVISIONING 인 채로 두면 FE 가 준비 중 스켈레톤을 무한히 돌린다.
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository, mock(DockerContainerService.class), mock(TaskStore.class),
+                properties(), gatewayUrlResolver(), accessCookies()
+        );
+        PreviewSessionEntity provisioning = provisioningSession();
+        when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.PROVISIONING.name()))
+                .thenReturn(Optional.of(provisioning));
+
+        service.markServeFailed("task-1", "빌드는 끝났지만 프리뷰 서버를 시작하지 못했습니다.");
+
+        assertThat(provisioning.getStatus()).isEqualTo(PreviewSessionStatus.FAILED.name());
+        assertThat(provisioning.getFailureReason()).contains("프리뷰 서버를 시작하지 못했습니다");
+        verify(repository).save(provisioning);
+    }
+
+    @Test
+    void findByTaskIdStaysEmptyWhileProvisioning() {
+        // ChangeService / ResultApprovalGate / RepositoryBindingGate 가 이 조회를 쓴다. 전부
+        // startPreviewServer 이후에 도는 코드라 그때는 ACTIVE 지만, 순서가 뒤집히면 빈다는 것을
+        // 고정해둔다.
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository, mock(DockerContainerService.class), mock(TaskStore.class),
+                properties(), gatewayUrlResolver(), accessCookies()
+        );
+        when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.ACTIVE.name()))
+                .thenReturn(Optional.empty());
+
+        assertThat(service.findByTaskId("task-1")).isEmpty();
+    }
+
+    private PreviewSessionEntity provisioningSession() {
+        return new PreviewSessionEntity(
+                "session-1", "token-1", 1L, 11L, 21L, "task-1", "container-1", 32768,
+                "https://preview.qeploy.test/api/v1/previews/session-1/token-1/",
+                java.time.LocalDateTime.now().plusMinutes(30),
+                PreviewSessionStatus.PROVISIONING
+        );
+    }
+
     @Test
     void createsTaskScopedGatewaySession() {
         SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
