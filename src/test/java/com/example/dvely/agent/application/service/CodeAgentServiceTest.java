@@ -150,6 +150,9 @@ class CodeAgentServiceTest {
                 .thenReturn(textResponse("완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(invocation -> {
             String command = invocation.getArgument(1);
+            if (command.contains("serve_ready")) {
+                return "serve_ready=yes";
+            }
             return command.contains("npm install") ? oversized : "exists";
         });
 
@@ -170,7 +173,7 @@ class CodeAgentServiceTest {
                 .thenReturn(toolResponse("max_tokens",
                         toolCall("call-1", "write_file", Map.of("path", "/workspace/app/src/App.jsx", "content", "export default function App() {"))))
                 .thenReturn(textResponse("완료했습니다."));
-        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("exists");
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(serveReadyOr("exists"));
 
         service.execute(step(), AiProvider.ANTHROPIC, 1L, null, TASK_ID);
 
@@ -185,7 +188,7 @@ class CodeAgentServiceTest {
         when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of())))
                 .thenReturn(textResponse("완료했습니다."));
-        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("exists");
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(serveReadyOr("exists"));
 
         CodeAgentService.CodeResult result = service.execute(step(), AiProvider.ANTHROPIC, 1L, null, TASK_ID);
 
@@ -256,6 +259,9 @@ class CodeAgentServiceTest {
             if (command.startsWith("find /workspace -name 'index.html'")) {
                 return "/workspace/web/index.html\n/workspace/web/output/index.html\n";
             }
+            if (command.contains("serve_ready")) {
+                return "serve_ready=yes";
+            }
             if (command.contains("/workspace/web/package.json")) {
                 return "exists";
             }
@@ -275,9 +281,26 @@ class CodeAgentServiceTest {
      * these tests). Known output directories (dist/build/out) report as present only when
      * {@code indexHtmlDir} names one.
      */
+    /**
+     * 프리뷰 서버 준비 확인에만 다르게 답하고 나머지는 고정값을 돌려주는 스텁.
+     * startPreviewServer 가 포트 응답을 기다린 뒤에야 반환하므로, 서빙과 무관한 테스트도
+     * 준비됐다고 답해줘야 execute 가 끝까지 간다.
+     */
+    private org.mockito.stubbing.Answer<String> serveReadyOr(String defaultValue) {
+        return invocation -> {
+            String command = invocation.getArgument(1);
+            return command.contains("serve_ready") ? "serve_ready=yes" : defaultValue;
+        };
+    }
+
     private org.mockito.stubbing.Answer<String> containerWith(String indexHtmlDir) {
         return invocation -> {
             String command = invocation.getArgument(1);
+            // 프리뷰 서버 준비 확인. startPreviewServer 는 포트가 응답할 때까지 폴링한 뒤에만
+            // 반환하므로, 여기서 준비됐다고 답하지 않으면 서빙 경로 테스트가 전부 실패한다.
+            if (command.contains("serve_ready")) {
+                return "serve_ready=yes";
+            }
             if (command.startsWith("find /workspace -name 'index.html'")) {
                 return indexHtmlDir + "/index.html\n";
             }

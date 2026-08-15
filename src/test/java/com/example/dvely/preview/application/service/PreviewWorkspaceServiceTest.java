@@ -1,0 +1,90 @@
+package com.example.dvely.preview.application.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
+import com.example.dvely.auth.application.command.AuthCommandService;
+import com.example.dvely.auth.domain.repository.UserRepository;
+import com.example.dvely.project.domain.repository.ProjectRepository;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+class PreviewWorkspaceServiceTest {
+
+    private static final String CONTAINER_ID = "container-1";
+
+    private final DockerContainerService dockerService = mock(DockerContainerService.class);
+    private final PreviewWorkspaceService service = new PreviewWorkspaceService(
+            dockerService,
+            mock(ProjectRepository.class),
+            mock(UserRepository.class),
+            mock(AuthCommandService.class)
+    );
+
+    // startPreviewServer 가 반환하면 호출자가 세션을 ACTIVE 로 올린다. 그래서 "반환됐다 = 열면
+    // 보인다"가 성립해야 한다. 예전에는 nohup 으로 띄우고 sleep 3 만 했는데, 그 3초가 모자라
+    // ACTIVE 인데 첫 요청이 502 가 되는 일이 있었다(2026-08-15 dev 실측).
+
+    @Test
+    void returnsOnceTheServePortAnswers() {
+        stubBuildDir("/workspace/app/dist");
+        when(dockerService.exec(eq(CONTAINER_ID), contains("serve_ready")))
+                .thenReturn("serve_ready=yes\nINFO  Accepting connections at http://localhost:3000");
+
+        service.startPreviewServer(CONTAINER_ID);
+
+        // 고정 대기가 아니라 포트를 직접 확인해야 한다.
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(dockerService, org.mockito.Mockito.atLeastOnce()).exec(eq(CONTAINER_ID), captor.capture());
+        assertThat(captor.getAllValues())
+                .anySatisfy(command -> assertThat(command).contains("serve_ready"));
+        assertThat(captor.getAllValues())
+                .noneSatisfy(command -> assertThat(command).isEqualTo("sleep 3 && cat /tmp/serve.log"));
+    }
+
+    @Test
+    void throwsWhenThePortNeverAnswers() {
+        // 포트가 안 열린 채 반환하면 세션이 ACTIVE 가 되고 사용자는 502 를 본다. 던져야 호출자가
+        // 세션을 FAILED 로 닫고 FE 가 실패 화면을 띄운다.
+        stubBuildDir("/workspace/app/dist");
+        when(dockerService.exec(eq(CONTAINER_ID), contains("serve_ready")))
+                .thenReturn("serve_ready=no\nError: listen EADDRINUSE");
+
+        assertThatThrownBy(() -> service.startPreviewServer(CONTAINER_ID))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("제한 시간");
+    }
+
+    @Test
+    void throwsWhenTheProbeProducesNoOutput() {
+        // exec 이 빈 문자열이나 null 을 돌려주는 경우에도 성공으로 넘어가면 안 된다.
+        stubBuildDir("/workspace/app/dist");
+        when(dockerService.exec(eq(CONTAINER_ID), contains("serve_ready"))).thenReturn("");
+
+        assertThatThrownBy(() -> service.startPreviewServer(CONTAINER_ID))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void servesTheDetectedBuildOutputDirectory() {
+        stubBuildDir("/workspace/app/build");
+        when(dockerService.exec(eq(CONTAINER_ID), contains("serve_ready"))).thenReturn("serve_ready=yes");
+
+        service.startPreviewServer(CONTAINER_ID);
+
+        verify(dockerService).exec(CONTAINER_ID,
+                "nohup npx serve -s /workspace/app/build -l 3000 > /tmp/serve.log 2>&1 &");
+    }
+
+    private void stubBuildDir(String dir) {
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("missing");
+        when(dockerService.exec(eq(CONTAINER_ID), contains("[ -d " + dir + " ]"))).thenReturn("exists");
+    }
+}
