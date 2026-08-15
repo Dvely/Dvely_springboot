@@ -3,6 +3,7 @@ package com.example.dvely.approval.presentation;
 import com.example.dvely.approval.application.facade.ApprovalFacade;
 import com.example.dvely.approval.application.result.ApprovalResult;
 import com.example.dvely.approval.presentation.dto.ApprovalDecisionRequest;
+import com.example.dvely.approval.presentation.dto.ApprovalInputResponse;
 import com.example.dvely.approval.presentation.dto.ApprovalResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -94,6 +95,7 @@ public class ApprovalController {
                 result.type(),
                 result.status(),
                 result.summary(),
+                ApprovalInputResponse.from(result.input()),
                 result.createdAt(),
                 result.decidedAt()
         );

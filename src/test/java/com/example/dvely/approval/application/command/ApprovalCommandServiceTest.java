@@ -633,6 +633,7 @@ class ApprovalCommandServiceTest {
                 approval.getType().name(),
                 approval.getStatus().name(),
                 approval.getSummary(),
+                null,
                 approval.getCreatedAt(),
                 approval.getDecidedAt()
         );
