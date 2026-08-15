@@ -187,4 +187,20 @@ public interface SpringDataAgentRunRepository extends JpaRepository<AgentRunEnti
             @Param("status") String status,
             @Param("before") LocalDateTime before
     );
+
+    // 방치된 승인 대기 태스크 후보. 위 스윕과 조건이 정반대다 — 저쪽은 "승인이 전부 APPROVED
+    // 인데 안 돌아간" 것을 구조하고, 이쪽은 "아무도 결정하지 않은 채 TTL 을 넘긴" 것을 닫는다.
+    // 마찬가지로 비잠금 스칼라 읽기이고, 실제 재확인은 AgentOrchestrator#abandonStaleApprovalTask
+    // 가 태스크 행 잠금 아래에서 한다.
+    @Query("""
+            select run.taskId
+            from AgentRunEntity run
+            where run.status in :statuses
+              and run.updatedAt < :before
+            order by run.updatedAt asc
+            """)
+    List<String> findAbandonedApprovalTaskIds(
+            @Param("statuses") List<String> statuses,
+            @Param("before") LocalDateTime before
+    );
 }

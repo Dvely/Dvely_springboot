@@ -170,6 +170,8 @@ Agent가 수행하는 부수효과 작업(코드 생성/수정, 배포, 도메�
 - `approvalIds`의 각 ID를 `POST /api/v1/approvals/{approvalId}/approve` 또는 `/reject`로 처리해야 작업이 재개/취소됩니다.
 - 승인이 필요 없으면(`approvalIds`가 빈 배열) `status`는 바로 `QUEUED`입니다.
 
+**방치된 승인은 서버가 닫습니다.** 승인도 거절도 오지 않은 채 오래 남은 task(`WAITING_APPROVAL` / `WAITING_RESULT_APPROVAL`)는 서버가 주기적으로 `CANCELLED`로 정리하고, 그 task의 `PENDING` 승인도 함께 `CANCELLED`가 됩니다. 대화가 있으면 "오랫동안 결정되지 않아 이 작업을 종료했습니다"라는 안내가 남습니다. 기본 유예 기간은 7일이라 정상적인 사용 중에 마주칠 일은 없지만, FE는 승인 카드를 띄운 뒤 해당 승인이 `CANCELLED`로 바뀔 수 있다는 점을 고려해야 합니다(승인/거절 시도 시 409).
+
 **② 결과 승인 (CODE 실행 후, main 반영 전 — `ApprovalType`: `RESULT`)**
 
 - plan에 CODE step이 있고, `resultApprovalRequired` 정책(기본값 `true`)이 켜져 있으며, 프로젝트에 GitHub 저장소가 연결(BOUND)된 상태라면, **마지막 CODE step이 끝난 직후** 별도의 2단계 게이트가 발동합니다. 저장소 미연결 프로젝트(예: 최초 생성 직후의 CODE 작업 — §5.1)에는 반영할 저장소 자체가 없어 이 게이트 대신 아래 ③이 발동합니다.
@@ -264,7 +266,7 @@ Accept: text/event-stream
 
 | 메서드 | 경로 | 용도 | 요청 | 응답(핵심 필드) | 주요 에러 |
 |---|---|---|---|---|---|
-| POST | `/api/v1/projects` | 프로젝트 생성(DRAFT) + 초기 코드 생성 Agent task 자동 제출 | `{ name, startMode(blank\|template), templateType?, draftMode(fast\|quality) }` | 202 `{ projectId, name, status, taskId, taskStatus, approvalIds }` | 400 |
+| POST | `/api/v1/projects` | 프로젝트 생성(DRAFT). **코드 생성은 시작하지 않음** — 대화로 첫 요청을 보낼 때 task가 제출된다 | `{ name, startMode(blank\|template), templateType?, draftMode(fast\|quality) }` | 202 `{ projectId, name, status }` | 400 |
 | POST | `/api/v1/projects/{id}/repository` | GitHub 저장소 연결(신규 생성 또는 기존 import) | `{ repositoryMode(create\|existing), repositoryName?, repositoryFullName?, repositoryVisibility? }` | `{ projectId, repositoryFullName, repositoryVisibility, bindingStatus, repositoryHealth }` | 409(이미 연결됨), 400(저장소 접근 불가) |
 | DELETE | `/api/v1/projects/{id}/repository` | 저장소 연결 해제(GitHub 저장소 자체는 삭제 안 함) | - | 204 | 404 |
 | GET | `/api/v1/projects/github/repositories` | GitHub App으로 접근 가능한 내 저장소 목록 | - | `[{ fullName, name, owner, visibility, defaultBranch, updatedAt }]` | - |
@@ -494,7 +496,7 @@ setIframeSrc(previewUrl);   // ← 반드시 이 응답의 previewUrl 을 사용
 
 아래 예시는 실제 DTO 필드명과 일치합니다(테스트/문서 목적의 예시 값 사용). 모든 요청에 `Authorization: Bearer {accessToken}` 헤더가 필요합니다(명시 생략).
 
-### 5.1 프로젝트 생성 → 승인 → agent task 폴링 → preview
+### 5.1 프로젝트 생성 → 첫 요청 → 승인 → agent task 폴링 → preview
 
 ```
 ① POST /api/v1/projects
@@ -502,25 +504,34 @@ setIframeSrc(previewUrl);   // ← 반드시 이 응답의 previewUrl 을 사용
 
 → 202
 { "status": 202, "code": "SUCCESS", "message": "요청이 접수되었습니다", "data": {
-    "projectId": 12, "name": "my-landing", "status": "DRAFT",
-    "taskId": "a1b2c3d4e5f6", "taskStatus": "WAITING_APPROVAL", "approvalIds": [34]
+    "projectId": 12, "name": "my-landing", "status": "DRAFT"
 } }
 ```
-프로젝트 생성 시 Chat 승인 정책은 기본값이 전부 `true`이므로, 이 초기 CODE 작업도 `changeApprovalRequired` 정책의 적용을 받아 **승인 대기**로 시작합니다.
+**프로젝트 생성은 코드 생성을 시작하지 않습니다.** 프로젝트 행만 만들어지고, Agent task는 사용자가 대화로 첫 요청을 보낼 때 제출됩니다(②). `startMode`/`templateType`은 프로젝트에 저장되지만 현재 이 값을 실제로 적용하는 코드 생성 경로는 없습니다.
+
+> 이전에는 이 응답에 `taskId` / `taskStatus` / `approvalIds`가 있었고 생성 시점에 초기 코드 생성 task가 제출됐습니다. 그 task는 `conversationId` 없이 제출돼 안내 메시지가 채팅에 남지 않았고, 결과적으로 **아무도 볼 수 없는 승인 뒤에서 한 번도 실행되지 않은 채** `WAITING_APPROVAL`로 쌓이기만 했습니다. 세 필드는 응답에서 제거됐습니다.
 
 ```
-② POST /api/v1/approvals/34/approve
+② POST /api/v1/conversations/{conversationId}/messages
+{ "content": "간단한 랜딩 페이지를 만들어줘" }
+→ 201  { "data": { "messageId": 3001, "taskId": "a1b2c3d4e5f6", ... } }
+
+   대화가 없으면 먼저 POST /api/v1/projects/12/conversations 로 만듭니다.
+   승인이 필요한 계획이면 taskId가 WAITING_APPROVAL로 시작하고,
+   승인 ID는 GET /api/v1/agent/tasks/{taskId}의 pendingApprovalId(§4.5)로 얻습니다.
+
+③ POST /api/v1/approvals/34/approve
 → { "approvalId": 34, "status": "APPROVED", ... }
    (내부적으로 taskId=a1b2c3d4e5f6이 QUEUED로 전환되어 worker가 실행 시작)
 
-③ GET /api/v1/agent/tasks/a1b2c3d4e5f6   (수 초 간격 폴링)
+④ GET /api/v1/agent/tasks/a1b2c3d4e5f6   (수 초 간격 폴링)
 → status: QUEUED → RUNNING → DONE
    DONE 시: { "status": "DONE", "previewUrl": "https://qeploy.com/api/v1/previews/101/abcdef.../", "summary": "..." }
 ```
 
 ```
-④ (선택) previewUrl을 iframe/새 탭으로 열어 결과 확인
-⑤ (선택) 실제 GitHub 배포를 하려면 저장소를 먼저 연결:
+⑤ (선택) previewUrl을 iframe/새 탭으로 열어 결과 확인
+⑥ (선택) 실제 GitHub 배포를 하려면 저장소를 먼저 연결:
    POST /api/v1/projects/12/repository
    { "repositoryMode": "create", "repositoryName": "my-landing-repo", "repositoryVisibility": "PRIVATE" }
 ```

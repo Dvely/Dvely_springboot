@@ -37,6 +37,12 @@ public class TaskStore {
     // this grace period is purely to avoid pointless lock waits against a task an approve() call is
     // actively finishing up on. Not a correctness-affecting number.
     private static final Duration STUCK_APPROVAL_GRACE = Duration.ofSeconds(30);
+    // 사람의 결정을 기다리는 상태들. 워커가 집을 수 없으므로(RUNNABLE_STATUSES 밖) 결정이
+    // 오지 않으면 스스로 빠져나올 길이 없다 — 방치 스윕이 닫아주는 대상이다.
+    private static final List<String> AWAITING_DECISION_STATUSES = List.of(
+            TaskStatus.WAITING_APPROVAL.name(),
+            TaskStatus.WAITING_RESULT_APPROVAL.name()
+    );
 
     private final SpringDataAgentRunRepository runRepository;
     private final SpringDataAgentRunEventRepository eventRepository;
@@ -260,6 +266,25 @@ public class TaskStore {
         return runRepository.findStuckWaitingApprovalTaskIds(
                 TaskStatus.WAITING_APPROVAL.name(),
                 LocalDateTime.now().minus(STUCK_APPROVAL_GRACE)
+        );
+    }
+
+    /**
+     * 방치 스윕 후보: 사람의 결정을 기다리는 두 상태 중 TTL 을 넘기도록 아무 변화가 없었던
+     * 태스크. {@link #findStuckWaitingApprovalTaskIds} 와 조건이 정반대라는 점이 중요하다 —
+     * 저쪽은 승인이 전부 APPROVED 인데 실행으로 못 넘어간 것을 구조하고, 이쪽은 아무도 결정하지
+     * 않아 영영 남을 것을 닫는다. 그래서 PENDING 승인을 가진 태스크는 저쪽 스윕에서 매 분 후보로
+     * 잡혔다가 매 분 그냥 지나쳐졌다.
+     *
+     * 비잠금 스칼라 읽기다. 재확인은 {@code AgentOrchestrator#abandonStaleApprovalTask} 가
+     * 태스크 행 잠금 아래에서 하므로, 여기서의 오검출(예: 방금 결정이 커밋된 태스크)은 그 호출이
+     * 상태 재검사로 조용히 no-op 되는 것으로 끝난다.
+     */
+    @Transactional(readOnly = true)
+    public List<String> findAbandonedApprovalTaskIds(Duration ttl) {
+        return runRepository.findAbandonedApprovalTaskIds(
+                AWAITING_DECISION_STATUSES,
+                LocalDateTime.now().minus(ttl)
         );
     }
 

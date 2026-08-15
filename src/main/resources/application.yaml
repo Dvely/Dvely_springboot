@@ -111,6 +111,11 @@ qeploy:
       # write-skew stuck state (structurally prevented by ADR-Y1's lock hierarchy; this is the
       # safety net for anything that slips through anyway).
       sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_SWEEP_INTERVAL_MS:60000}
+      # AbandonedApprovalSweeper: 아무도 결정하지 않은 승인 대기 태스크를 닫기까지 기다리는 시간.
+      # 넉넉해야 한다 — 승인 카드를 띄워둔 채 하루 자리를 비우는 것은 정상이고, 그걸 취소하면
+      # 스윕이 오히려 기능을 망가뜨린다. 0 이하로 두면 스윕이 꺼진다.
+      abandon-ttl: ${QEPLOY_AGENT_APPROVAL_ABANDON_TTL:7d}
+      abandon-sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_ABANDON_SWEEP_INTERVAL_MS:3600000}
   deployment:
     worker:
       poll-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_POLL_INTERVAL_MS:1000}

@@ -72,8 +72,9 @@ public class ProjectController {
 
     @Operation(
             summary = "프로젝트 생성",
-            description = "프로젝트를 DRAFT 상태로 저장하고 startMode/templateType/draftMode에 맞는 " +
-                          "초기 코드 생성 Agent task를 제출합니다. GitHub 저장소 연결은 생성 후 별도로 처리합니다."
+            description = "프로젝트를 DRAFT 상태로 저장합니다. 코드 생성은 이 시점에 시작하지 않습니다 — " +
+                          "사용자가 대화로 첫 요청을 보낼 때 Agent task가 제출됩니다. " +
+                          "GitHub 저장소 연결은 생성 후 별도로 처리합니다."
     )
     @PostMapping
     @ResponseStatus(HttpStatus.ACCEPTED)
