@@ -14,11 +14,14 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
+import com.example.dvely.auth.infrastructure.config.JwtProperties;
 import com.example.dvely.config.CorsProperties;
 import com.example.dvely.preview.infrastructure.config.PreviewGatewayUrlResolver;
 import com.example.dvely.preview.infrastructure.config.PreviewProperties;
 import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity;
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
+import com.example.dvely.preview.infrastructure.security.PreviewAccessCookies;
+import com.example.dvely.common.exception.NotFoundException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -39,7 +42,8 @@ class PreviewSessionServiceTest {
                 dockerService,
                 taskStore,
                 properties,
-                gatewayUrlResolver()
+                gatewayUrlResolver(),
+                accessCookies()
         );
         when(taskStore.get("task-1")).thenReturn(task());
         when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.ACTIVE.name()))
@@ -73,7 +77,8 @@ class PreviewSessionServiceTest {
                 dockerService,
                 mock(TaskStore.class),
                 properties(),
-                gatewayUrlResolver()
+                gatewayUrlResolver(),
+                accessCookies()
         );
         PreviewSessionEntity expired = new PreviewSessionEntity(
                 "session-1",
@@ -114,7 +119,8 @@ class PreviewSessionServiceTest {
                 dockerService,
                 mock(TaskStore.class),
                 properties(),
-                gatewayUrlResolver()
+                gatewayUrlResolver(),
+                accessCookies()
         );
         PreviewSessionEntity stuck = new PreviewSessionEntity(
                 "session-2",
@@ -153,7 +159,8 @@ class PreviewSessionServiceTest {
                 mock(DockerContainerService.class),
                 mock(TaskStore.class),
                 properties(),
-                gatewayUrlResolver()
+                gatewayUrlResolver(),
+                accessCookies()
         );
         PreviewSessionEntity session = new PreviewSessionEntity(
                 "session-1", "token", 1L, 11L, 21L, "task-1",
@@ -181,7 +188,8 @@ class PreviewSessionServiceTest {
                 mock(DockerContainerService.class),
                 mock(TaskStore.class),
                 properties(),
-                gatewayUrlResolver()
+                gatewayUrlResolver(),
+                accessCookies()
         );
         when(repository.findById("missing")).thenReturn(Optional.empty());
 
@@ -198,7 +206,8 @@ class PreviewSessionServiceTest {
                 mock(DockerContainerService.class),
                 mock(TaskStore.class),
                 properties(),
-                gatewayUrlResolver()
+                gatewayUrlResolver(),
+                accessCookies()
         );
         PreviewSessionEntity active = new PreviewSessionEntity(
                 "session-1", "token", 1L, 11L, 21L, "task-1",
@@ -225,7 +234,8 @@ class PreviewSessionServiceTest {
                 mock(DockerContainerService.class),
                 mock(TaskStore.class),
                 properties(),
-                gatewayUrlResolver()
+                gatewayUrlResolver(),
+                accessCookies()
         );
         when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusOrderByLastAccessedAtDesc(
                 11L, 1L, PreviewSessionStatus.ACTIVE.name()
@@ -237,6 +247,11 @@ class PreviewSessionServiceTest {
     /** 게이트웨이 오리진 해석은 PreviewGatewayUrlResolverTest 가 따로 검증한다. */
     private PreviewGatewayUrlResolver gatewayUrlResolver() {
         return new PreviewGatewayUrlResolver(properties(), new CorsProperties(List.of(), List.of()));
+    }
+
+    private PreviewAccessCookies accessCookies() {
+        return new PreviewAccessCookies(
+                new JwtProperties("test-secret-key-that-is-long-enough-32", 3600000L, 7200000L));
     }
 
     private PreviewProperties properties() {
@@ -259,5 +274,53 @@ class PreviewSessionServiceTest {
                 null,
                 Instant.now()
         );
+    }
+
+    /**
+     * Issue #77 G4: 유출된 주소가 세션 수명 내내 유효하던 문제. 소유자가 프리뷰를 다시 열면
+     * (= 접근을 발급받으면) 그 시점에 예전 주소가 죽어야 한다.
+     */
+    @Test
+    void grantingAccessRotatesTheTokenSoThePreviousUrlStopsWorking() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository,
+                mock(DockerContainerService.class),
+                mock(TaskStore.class),
+                properties(),
+                gatewayUrlResolver(),
+                accessCookies()
+        );
+        PreviewSessionEntity session = new PreviewSessionEntity(
+                "session-1", "old-token", 7L, 11L, null, null, "container-1", 32768,
+                "https://preview.qeploy.test/api/v1/previews/session-1/old-token/",
+                LocalDateTime.now().plusMinutes(30));
+        when(repository.findByIdAndOwnerUserId("session-1", 7L)).thenReturn(Optional.of(session));
+        when(repository.save(session)).thenReturn(session);
+
+        var grant = service.grantAccess("session-1", 7L, Duration.ofMinutes(30));
+
+        assertThat(session.getAccessToken()).isNotEqualTo("old-token");
+        assertThat(grant.previewUrl()).doesNotContain("old-token").contains(session.getAccessToken());
+        assertThat(grant.cookiePath()).isEqualTo("/api/v1/previews/session-1/");
+        assertThat(grant.cookieMaxAge()).isLessThanOrEqualTo(Duration.ofMinutes(30));
+    }
+
+    /** 남의 세션은 존재 자체를 알려주지 않는다 — 기존 close/status API 와 같은 계약. */
+    @Test
+    void refusesToGrantAccessToAForeignSession() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository,
+                mock(DockerContainerService.class),
+                mock(TaskStore.class),
+                properties(),
+                gatewayUrlResolver(),
+                accessCookies()
+        );
+        when(repository.findByIdAndOwnerUserId("session-1", 8L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.grantAccess("session-1", 8L, Duration.ofMinutes(30)))
+                .isInstanceOf(NotFoundException.class);
     }
 }

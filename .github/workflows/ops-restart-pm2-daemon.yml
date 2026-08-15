@@ -1,0 +1,112 @@
+name: Ops - Restart pm2 daemon
+
+# 프리뷰가 Docker 권한 문제로 503을 내는 서버 상태를 SSH 없이 복구한다
+# (deploy/README.md §4). 2026-08-15 실측: ubuntu 계정이 docker 그룹에 아예 없었다 —
+# 그룹 등록(usermod)부터 pm2 데몬 재기동까지 §4 전체를 멱등하게 적용해야 한다.
+# 배포 워크플로의 `pm2 startOrRestart`는 데몬을 그대로 두므로 이 문제를 못 고친다.
+on:
+  workflow_dispatch:
+
+# 배포 도중 데몬을 죽이면 어중간한 상태로 남으므로 배포와 같은 그룹으로 직렬화한다.
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: /var/www/dvely/backend
+  PM2_APP: dvely-backend
+  HEALTH_URL: http://127.0.0.1:8080/actuator/health
+
+jobs:
+  restart:
+    name: Apply docker group and restart pm2 daemon on EC2
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Apply docker group and restart pm2 daemon over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_SSH_PORT || 22 }}
+          envs: APP_DIR,PM2_APP,HEALTH_URL
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            # ---- 현재 상태 진단(로그용) ----------------------------------------
+            echo "== 진단 =="
+            echo "docker 바이너리: $(command -v docker || echo '없음')"
+            echo "docker 서비스:  $(systemctl is-active docker 2>/dev/null || echo '없음/정지')"
+            echo "docker 그룹:    $(getent group docker || echo '없음')"
+            echo "현재 세션 그룹: $(id -nG)"
+
+            # ---- deploy/README.md §4 적용(멱등) --------------------------------
+            # sudo는 전부 -n: NOPASSWD가 아니면 조용히 멈추는 대신 즉시 실패시킨다.
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "docker가 없어 설치합니다(deploy/README.md §4)."
+              sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+              sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io
+            fi
+            sudo -n systemctl enable --now docker
+
+            if ! id -nG "$(whoami)" | tr ' ' '\n' | grep -qx docker; then
+              echo "$(whoami) 계정을 docker 그룹에 추가합니다."
+              sudo -n usermod -aG docker "$(whoami)"
+            fi
+
+            # ---- pm2 데몬 재기동 ------------------------------------------------
+            old_pid=$(pm2 pid "${PM2_APP}" 2>/dev/null || echo 0)
+
+            # systemd 유닛이 있으면 그 경로가 정본이다 — systemd는 서비스를 새로
+            # 띄울 때 그룹 DB를 다시 읽으므로 방금 추가한 그룹이 실린다.
+            # 없으면 sudo -i로 "새 로그인"을 만들어 갱신된 그룹으로 데몬을 다시 띄운다
+            # (이 SSH 세션 자체는 usermod 이전 로그인이라 그룹이 옛 것일 수 있다).
+            unit="pm2-$(whoami).service"
+            if systemctl list-unit-files "${unit}" 2>/dev/null | grep -q "${unit}"; then
+              echo "systemd 유닛(${unit})으로 데몬을 재기동합니다."
+              sudo -n systemctl restart "pm2-$(whoami)"
+            else
+              echo "systemd 유닛이 없어 새 로그인 셸에서 데몬을 다시 띄웁니다."
+              sudo -n -i -u "$(whoami)" bash -c "pm2 kill >/dev/null 2>&1 || true; cd '${APP_DIR}' && pm2 startOrRestart ecosystem.config.js --update-env && pm2 save --force"
+            fi
+
+            # ---- 검증 1: 배포 워크플로와 같은 기준의 health 폴링 ----------------
+            healthy=0
+            for _ in $(seq 1 60); do
+              new_pid=$(pm2 pid "${PM2_APP}" 2>/dev/null || echo 0)
+              if [ "${new_pid}" != "${old_pid}" ] && [ "${new_pid}" != "0" ] \
+                 && curl -fsS -o /dev/null "${HEALTH_URL}"; then
+                healthy=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "${healthy}" -ne 1 ]; then
+              echo "::error::${PM2_APP}가 120초 안에 health 응답을 내지 못했습니다. 최근 로그:"
+              pm2 logs "${PM2_APP}" --lines 80 --nostream || true
+              exit 1
+            fi
+
+            # ---- 검증 2: 실행 중인 앱 프로세스가 docker 그룹을 실제로 보유하는지
+            # /proc에서 직접 확인한다. 로그 문자열 검색은 기동 로그가 밀려나면
+            # 놓친다(2026-08-15 1차 실행 실측) — 프로세스 자격증명이 정본이다 ------
+            docker_gid=$(getent group docker | cut -d: -f3)
+            if grep -q "^Groups:.*\b${docker_gid}\b" "/proc/${new_pid}/status"; then
+              echo "앱 프로세스(pid ${new_pid})가 docker 그룹(gid ${docker_gid})을 보유합니다."
+            else
+              echo "::error::앱 프로세스(pid ${new_pid})에 docker 그룹(gid ${docker_gid})이 없습니다."
+              grep '^Groups:' "/proc/${new_pid}/status" || true
+              exit 1
+            fi
+
+            # 참고용: 앱이 남긴 PreviewEnv 핑 로그. 없어도 실패로 치지 않는다 —
+            # 위 프로세스 자격증명 확인이 정본이고, 이건 사람이 읽는 보조 신호다.
+            tail -n 800 "$HOME"/.pm2/logs/*out*.log 2>/dev/null | grep '\[PreviewEnv\]' | tail -2 || echo "(PreviewEnv 로그 없음)"
+
+            echo "조치 완료 (pid ${new_pid}) — 앱이 docker 그룹을 들고 재기동되었습니다."

@@ -2,7 +2,7 @@
 
 이 문서는 프론트엔드 개발자가 Swagger UI와 함께 참고하는 통합 작업 문서입니다. 컨트롤러·DTO·설계서(`.agent-team/04-architecture/`)의 실제 계약만을 근거로 작성했으며, 추측/날조된 필드나 동작은 없습니다. 필드 하나하나의 상세 스키마(타입, `nullable`, `example`)는 Swagger UI(`/swagger-ui/index.html`)가 항상 최신 소스이므로, 이 문서는 **"무엇을 언제 왜 호출하는가"**에 집중하고 세부 스키마는 Swagger로 위임합니다.
 
-- **컨트롤러 수**: 15개 · **공개 엔드포인트 수**: 92개 (Swagger 그룹 11개 + 프로젝트 그룹에 포함된 Approval/Change 하위 리소스)
+- **컨트롤러 수**: 16개 · **공개 엔드포인트 수**: 94개 (Swagger 그룹 11개 + 프로젝트 그룹에 포함된 Approval/Change 하위 리소스)
 - **작성 기준 커밋**: main `eb0ec2d` (U0~U7 · I45 · Cost(#58) · CloudOps(#59) · 결과 승인 2단계(#56) · pendingApprovalId/retryable 재정의(#57) · retry TOCTOU 제거(#64) · 결과 게이트 이력 판정 보강(#62) 머지 완료)
 
 ---
@@ -207,7 +207,7 @@ Accept: text/event-stream
 
 ---
 
-## 4. 도메인별 엔드포인트 카탈로그 (전수 92개)
+## 4. 도메인별 엔드포인트 카탈로그 (전수 94개)
 
 각 표의 "요청"·"응답" 열은 핵심 필드만 나열합니다. 전체 필드/타입/예시 값은 Swagger UI에서 확인하세요.
 
@@ -382,13 +382,14 @@ Accept: text/event-stream
 
 `CloudConnectionStatus` 전체 값: `VALIDATED · VERIFYING · CHECKING · CONNECTED · PERMISSION_MISSING · BILLING_DISABLED · REGION_UNSUPPORTED · INVALID_CREDENTIAL · UNKNOWN_ERROR`.
 
-### 4.10 Preview — `com.example.dvely.preview.presentation` (6개 논리 엔드포인트, 프록시가 경로 패턴 2개를 가져 Swagger에는 7개로 집계)
+### 4.10 Preview — `com.example.dvely.preview.presentation` (7개 논리 엔드포인트, 프록시가 경로 패턴 2개를 가져 Swagger에는 8개로 집계)
 
 | 메서드 | 경로 | 용도 | 인증 | 응답 |
 |---|---|---|---|---|
 | GET | `/api/v1/projects/{projectId}/preview-session` | **프로젝트의 현재 프리뷰 조회(진입 시 호출)** | Bearer | 200 `ProjectPreviewSession` / **204**(띄워진 프리뷰 없음) / 404(프로젝트 없음) |
 | POST | `/api/v1/projects/{projectId}/preview-session` | **프리뷰 띄우기(버튼)** — preview 브랜치 현재 상태를 clone→빌드→서빙 | Bearer | 200(이미 떠 있는 세션에 붙음) / **202**(준비 시작·진행 중) / 409(저장소 미연결) / **503**(서버의 Docker 실행 환경 문제 — 재시도가 아니라 운영자 조치 필요) / 404 |
-| GET | `/api/v1/previews/{sessionId}/{accessToken}/**` | Docker 프리뷰 컨테이너로 리버스 프록시(HTML/JS/CSS 등 원본 그대로) | URL 내장 1회성 토큰(JWT 아님) | 프리뷰 앱 응답 그대로(`@RawApiResponse`). 세션 없음/토큰 불일치 시 404 |
+| GET | `/api/v1/previews/{sessionId}/{accessToken}/**` | Docker 프리뷰 컨테이너로 리버스 프록시(HTML/JS/CSS 등 원본 그대로) | URL 내장 토큰 + **소유권 쿠키** | 프리뷰 앱 응답 그대로(`@RawApiResponse`) + CSP `sandbox` 헤더. 세션 없음/토큰 불일치 404, **쿠키 없음/불일치 401** |
+| POST | `/api/v1/preview-sessions/{sessionId}/access` | **프리뷰 열람 권한 발급(iframe 표시 전 필수)** | Bearer | `{ sessionId, previewUrl, expiresAt }` + 소유권 쿠키(`Set-Cookie`). 404(없음/타 유저), 409(종료·준비 중) |
 | DELETE | `/api/v1/preview-sessions/{sessionId}` | 세션 종료 + 컨테이너 정리 | Bearer | 204(404: 없음/타 유저 소유) |
 | GET | `/api/v1/preview-sessions/{sessionId}/status` | 컨테이너 실행 여부·리소스 사용량 조회(p95 ~1.5초 — 폴링은 5초 이상 권장) | Bearer | `{ sessionId, projectId, taskId, sessionStatus(ACTIVE\|PROVISIONING\|CLOSED\|EXPIRED\|FAILED), containerRunning, oomKilled, exitCode, startedAt, expiresAt, resources{ memoryUsageBytes, memoryLimitBytes, memoryUsagePercent, cpuPercent } }`(resources는 미실행/조회 3초 초과 시 null) |
 | GET | `/api/v1/preview-sessions/{sessionId}/logs` | 컨테이너 stdout/stderr 텍스트 조회(영속화 안 됨) | Bearer | `{ sessionId, containerRunning, logText }`(query: `tail`(기본 200, [1,2000] 클램프), `sinceSeconds`) |
@@ -404,6 +405,26 @@ Accept: text/event-stream
 두 종류 모두 같은 게이트웨이로 서빙되고 같은 TTL(기본 30분, `qeploy.preview.ttl`)로 회수되며, 프리뷰를 보는 동안에는 접근할 때마다 만료가 연장됩니다.
 
 `previewUrl`의 오리진은 서버 설정(`qeploy.preview.gateway-base-url`, 운영은 `https://qeploy.com`)에서 옵니다 — 받은 주소를 그대로 열면 되고, FE에서 직접 조립하지 마세요.
+
+**프리뷰 문서는 격리된 컨텍스트에서 실행됩니다.** 게이트웨이가 모든 프록시 응답에 `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups allow-modals; frame-ancestors 'self'`를 붙입니다(Issue #102). 프리뷰 URL이 서비스와 같은 오리진이라 격리가 없으면 프리뷰로 서빙되는 코드가 부모 창의 `localStorage`(서비스 JWT)에 접근할 수 있기 때문입니다. FE 입장에서 달라지는 점은 두 가지입니다.
+
+- iframe에 `sandbox` 속성을 따로 걸 필요가 없습니다(걸어도 무해합니다).
+- 프리뷰 **앱 자신의** `localStorage`·쿠키는 동작하지 않습니다(불투명 오리진). 미리보기 대상 앱이 로그인 상태 저장 같은 기능을 쓰면 그 부분만 보이지 않습니다.
+
+#### 프리뷰를 열기 전에 반드시 권한을 발급받으세요 (Issue #77)
+
+게이트웨이는 URL만으로 열리지 않습니다. `POST /api/v1/preview-sessions/{sessionId}/access`를 먼저 호출해 소유권 쿠키를 받아야 하며, 쿠키 없이 프리뷰 URL을 열면 **401**입니다.
+
+```ts
+// iframe 을 띄우기 직전 1회. axios 는 이미 withCredentials: true 이므로 쿠키는 자동 저장됩니다.
+const { previewUrl } = await postPreviewAccess(sessionId);
+setIframeSrc(previewUrl);   // ← 반드시 이 응답의 previewUrl 을 사용
+```
+
+- **이 호출은 accessToken을 회전시킵니다.** 응답의 `previewUrl`이 유일하게 유효한 주소이고, 이전에 받은 주소(작업 응답의 `previewUrl` 포함)는 즉시 404가 됩니다. 채팅 기록·브라우저 히스토리로 흘러나간 예전 주소를 닫기 위한 동작입니다.
+- 쿠키는 `HttpOnly`이며 `Path=/api/v1/previews/{sessionId}/`로 좁혀져 있어 FE가 값을 다룰 일은 없습니다. 새 탭으로 열어도 같은 브라우저이므로 그대로 동작합니다.
+- 프리뷰를 다시 열거나 새로고침할 때마다 이 호출을 앞에 두면 됩니다(비용이 낮고, 만료 걱정도 사라집니다).
+- 401을 받으면 권한이 만료·회전된 것이므로 다시 발급받아 `previewUrl`을 갱신하세요.
 
 **FE 권장 흐름**
 
@@ -423,7 +444,11 @@ Accept: text/event-stream
 
 ③ 폴링(5초 이상 권장)
    GET /api/v1/projects/{id}/preview-session  (또는 /preview-sessions/{sessionId}/status)
-     → status=ACTIVE 가 되면 previewUrl 표시. npm install·build를 포함해 보통 수십 초~수 분.
+     → status=ACTIVE 가 되면 ④로
+
+④ 표시 직전 권한 발급 (필수)
+   POST /api/v1/preview-sessions/{sessionId}/access
+     → 응답의 previewUrl 을 iframe src 로 사용(쿠키는 브라우저가 자동 보관)
 ```
 
 세션 행은 남아 있는데 컨테이너만 사라진 경우(데몬 재시작 등), 조회 API가 그 세션을 정리하고 204로 응답합니다 — 죽은 URL이 iframe에 걸리는 일은 없습니다. 요청이 겹쳐도(버튼 더블클릭) 프로젝트당 컨테이너는 하나만 남습니다.
