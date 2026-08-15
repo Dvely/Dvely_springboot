@@ -126,6 +126,18 @@ public class AgentOrchestrator {
     }
 
     /**
+     * {@link #resumeAfterResult}와 상태 전이는 같고 이벤트만 다른 거절 경로 — 게이트를 거절했는데도
+     * 태스크는 계속 진행하는 REPOSITORY_BINDING 거절 전용이다. RESULT 거절은 여기가 아니라
+     * {@link #reject}로 가서 태스크째 취소된다.
+     */
+    public void declineAfterResult(String taskId, String message) {
+        if (!taskStore.resumeAfterResultDecline(taskId, message)) {
+            throw new IllegalStateException(
+                    "결과 승인 대기 상태가 아닌 Agent task입니다. taskId=" + taskId);
+        }
+    }
+
+    /**
      * Review follow-up (BLOCKING-3): the "may this RESULT approval still proceed" half of
      * resuming a task past its result-approval gate, split out from {@link #resumeAfterResult} so
      * {@code ApprovalCommandService} can call this <em>before</em> {@code

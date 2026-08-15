@@ -14,11 +14,11 @@ import com.example.dvely.project.application.port.out.GithubRepositoryPort;
 import com.example.dvely.project.application.port.out.UserProfilePort;
 import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectRepositoryResult;
+import com.example.dvely.project.application.service.RepositoryProvisioningService;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.service.ProjectDomainService;
-import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
@@ -35,6 +35,7 @@ public class ProjectCommandService {
     private final UserProfilePort userProfilePort;
     private final ChatCommandService chatCommandService;
     private final AuditRecorder auditRecorder;
+    private final RepositoryProvisioningService repositoryProvisioningService;
 
     @Transactional
     public ProjectDetailResult createProject(Long ownerUserId, CreateProjectCommand command) {
@@ -78,28 +79,18 @@ public class ProjectCommandService {
             repositoryFullName = githubRepositoryPort.createRepository(ownerUserId, repositoryName, visibility);
         }
 
-        githubRepositoryPort.preparePreviewBranch(ownerUserId, repositoryFullName);
-        project.bindRepository(repositoryFullName, visibility);
-        project.updateRepositoryHealth(RepositoryHealthStatus.HEALTHY);
-
-        Project savedProject = projectRepository.save(project);
-        // H1 (design §4): "create" mode actually created a new GitHub repository (a GITHUB-scope
-        // write distinct from "connected an existing one") — recorded after save, once binding is
-        // durable, matching the "record after external effect + state confirmed" rule (design §4
-        // intro).
-        auditRecorder.record(new AuditEvent(
-                "create".equals(repositoryMode) ? AuditAction.REPOSITORY_CREATED : AuditAction.REPOSITORY_CONNECTED,
-                AuditOutcome.SUCCEEDED,
-                AuditActorType.USER,
+        // preview 브랜치 준비부터 저장·감사까지는 저장소 연결 승인 경로와 완전히 같은 순서라
+        // 공용 코어에 맡긴다.
+        Project savedProject = repositoryProvisioningService.bindToProject(
+                project,
                 ownerUserId,
-                savedProject.getId(),
-                "REPOSITORY",
                 repositoryFullName,
+                visibility,
+                "create".equals(repositoryMode),
+                AuditActorType.USER,
                 null,
-                null,
-                "mode=" + repositoryMode + ", visibility=" + visibility,
-                null
-        ));
+                "mode=" + repositoryMode + ", visibility=" + visibility
+        );
         return toRepositoryResult(savedProject);
     }
 

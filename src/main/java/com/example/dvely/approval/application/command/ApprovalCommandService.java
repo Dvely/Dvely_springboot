@@ -2,6 +2,7 @@ package com.example.dvely.approval.application.command;
 
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.service.AgentMessageService;
+import com.example.dvely.agent.application.service.RepositoryBindingService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.application.port.out.StandaloneApprovalHandler;
 import com.example.dvely.approval.application.query.ApprovalQueryService;
@@ -35,6 +36,9 @@ public class ApprovalCommandService {
     // ResultApprovalGate) and never joins the allApproved plan-approval vote below — it gets its
     // own branch between the two, matching design D2/§4.2.
     private final ResultApprovalService resultApprovalService;
+    // RESULT 와 같은 성질의 게이트 승인(태스크 바인딩, allApproved 투표에 참여하지 않음)이라 바로
+    // 옆에 자기 분기를 갖는다 — 다만 NOT_BOUND 프로젝트를 대상으로 한다.
+    private final RepositoryBindingService repositoryBindingService;
     // ADR-Y1 (#55): the task-row mutex (agent_runs, the aggregate root every task-bound decision
     // must lock FIRST — see TaskStore#lockTask) lives in the agent module's store, not here. This
     // service already reaches into the agent module for AgentOrchestrator/AgentMessageService, so
@@ -42,8 +46,20 @@ public class ApprovalCommandService {
     // (approval gates agent task execution).
     private final TaskStore taskStore;
 
+    /** 값이 필요 없는 승인용. REPOSITORY_BINDING 이라면 게이트가 제안한 후보 이름으로 폴백한다. */
     @Transactional
     public ApprovalResult approve(Long ownerUserId, Long approvalId) {
+        return approve(ownerUserId, approvalId, null);
+    }
+
+    /**
+     * @param repositoryName REPOSITORY_BINDING 승인에서만 의미가 있다. 다른 타입에서는 무시되므로
+     *                       기존 다섯 타입의 동작은 이 파라미터가 생기기 전과 완전히 동일하다.
+     *                       null/공백이면 게이트가 승인 요약에 적어 사용자에게 이미 보여준 후보
+     *                       이름이 쓰인다.
+     */
+    @Transactional
+    public ApprovalResult approve(Long ownerUserId, Long approvalId, String repositoryName) {
         ApprovalRouting routing = routingFor(ownerUserId, approvalId);
         if (routing.isStandalone()) {
             // Standalone: single row, no task to lock, order irrelevant (design §1 step②).
@@ -80,6 +96,22 @@ public class ApprovalCommandService {
             agentMessageService.appendAssistant(
                     saved.getConversationId(),
                     buildResultApprovedMessage(reflectResult)
+            );
+            return queryService.toResult(saved);
+        }
+
+        if (saved.getType() == ApprovalType.REPOSITORY_BINDING) {
+            // RESULT 분기와 같은 순서: 되돌릴 수 있는 DB 전제조건(태스크가 아직
+            // WAITING_RESULT_APPROVAL 인가)을 되돌릴 수 없는 GitHub 저장소 생성보다 먼저 확인한다.
+            // 태스크 행은 위 step③ 에서 이미 잠갔으므로 이 호출은 이 트랜잭션이 이미 쥔 락을 다시
+            // 확인할 뿐이다.
+            agentOrchestrator.verifyResumableAfterResult(saved.getTaskId());
+            RepositoryBindingService.BindResult bindResult =
+                    repositoryBindingService.bind(saved, repositoryName);
+            agentOrchestrator.resumeAfterResult(saved.getTaskId());
+            agentMessageService.appendAssistant(
+                    saved.getConversationId(),
+                    buildRepositoryBoundMessage(bindResult)
             );
             return queryService.toResult(saved);
         }
@@ -132,6 +164,24 @@ public class ApprovalCommandService {
             return queryService.toResult(saved);
         }
 
+        if (saved.getType() == ApprovalType.REPOSITORY_BINDING) {
+            // 다른 모든 거절과 달리 태스크를 취소하지 않는다. 이 승인은 실행을 막는 게이트가 아니라
+            // 이미 성공한 CODE 작업물을 저장소에 남길지 묻는 것이므로, 거절은 "저장소를 만들지
+            // 않는다"는 뜻일 뿐 작업 자체는 성공으로 끝나야 한다. cancelTaskCascade 를 태우면
+            // 멀쩡히 끝난 작업이 CANCELLED 로 뒤집힌다. 상태 전이는 승인과 같지만 이벤트는 갈라야
+            // 한다 — resumeAfterResult 를 쓰면 거절한 시점에 RESULT_APPROVED 가 스트림에 찍힌다.
+            agentOrchestrator.declineAfterResult(
+                    saved.getTaskId(),
+                    "저장소를 연결하지 않기로 하여 남은 작업을 재개합니다."
+            );
+            agentMessageService.appendAssistant(
+                    saved.getConversationId(),
+                    "저장소를 연결하지 않았습니다. 작업물은 프리뷰에만 남아 있으며 프리뷰가 만료되면 사라집니다.\n"
+                            + "나중에 연결하려면 프로젝트 설정에서 저장소를 연결하거나 배포를 요청해주세요."
+            );
+            return queryService.toResult(saved);
+        }
+
         agentOrchestrator.reject(saved.getTaskId(), ownerUserId);
         agentMessageService.appendAssistant(
                 saved.getConversationId(),
@@ -159,6 +209,19 @@ public class ApprovalCommandService {
         }
         message.append("\n남은 작업을 이어서 진행합니다.");
         return message.toString();
+    }
+
+    private String buildRepositoryBoundMessage(RepositoryBindingService.BindResult result) {
+        if (!result.pushed()) {
+            // 승인 대기 중 다른 경로로 이미 연결된 경우 — 이번 승인은 GitHub 작업을 하지 않았다.
+            return "이미 연결된 저장소가 있어 그대로 사용합니다.\n"
+                    + "- 저장소: https://github.com/" + result.repositoryFullName();
+        }
+        return (result.created()
+                ? "GitHub 저장소를 새로 만들어 연결했습니다.\n"
+                : "기존 GitHub 저장소에 연결했습니다.\n")
+                + "- 저장소: https://github.com/" + result.repositoryFullName() + "\n"
+                + "- 작업물을 preview 브랜치에 올렸습니다. 프리뷰가 만료돼도 코드는 남습니다.";
     }
 
     // Both approve() and reject() funnel through this single locked lookup (review F1) — the

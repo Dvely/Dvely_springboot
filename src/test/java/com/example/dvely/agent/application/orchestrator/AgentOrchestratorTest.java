@@ -256,6 +256,45 @@ class AgentOrchestratorTest {
                 .hasMessageContaining("task-1");
     }
 
+    @Test
+    void declineAfterResultResumesThroughTheDeclineEventInsteadOfTheApprovalOne() {
+        // REPOSITORY_BINDING rejection: same WAITING_RESULT_APPROVAL -> QUEUED transition as an
+        // approval, but it must not route through the RESULT_APPROVED event.
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+        when(taskStore.resumeAfterResultDecline("task-1", "연결하지 않음")).thenReturn(true);
+
+        orchestrator.declineAfterResult("task-1", "연결하지 않음");
+
+        verify(taskStore).resumeAfterResultDecline("task-1", "연결하지 않음");
+        verify(taskStore, never()).resumeAfterResultApproval(anyString());
+    }
+
+    @Test
+    void declineAfterResultThrowsConflictWhenTaskIsNotWaitingForResultApproval() {
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class)
+        );
+        when(taskStore.resumeAfterResultDecline("task-1", "연결하지 않음")).thenReturn(false);
+
+        assertThatThrownBy(() -> orchestrator.declineAfterResult("task-1", "연결하지 않음"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("task-1");
+    }
+
     // ── Review follow-up (BLOCKING-3): verifyResumableAfterResult — the locked precondition check
     // that must run BEFORE ResultApprovalService#reflect()'s irreversible GitHub merge. ──────────
 

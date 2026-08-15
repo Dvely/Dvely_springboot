@@ -26,6 +26,10 @@ public class ApprovalFacade {
         return commandService.approve(ownerUserId, approvalId);
     }
 
+    public ApprovalResult approve(Long ownerUserId, Long approvalId, String repositoryName) {
+        return commandService.approve(ownerUserId, approvalId, repositoryName);
+    }
+
     public ApprovalResult reject(Long ownerUserId, Long approvalId) {
         return commandService.reject(ownerUserId, approvalId);
     }

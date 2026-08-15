@@ -412,11 +412,30 @@ public class TaskStore {
      */
     @Transactional
     public boolean resumeAfterResultApproval(String taskId) {
+        return resumePastResultGate(taskId, "RESULT_APPROVED", "결과 승인이 완료되어 남은 작업을 재개합니다.");
+    }
+
+    /**
+     * 게이트에서 <em>거절</em>했지만 태스크는 그대로 진행해야 하는 경로 — 현재는 REPOSITORY_BINDING
+     * 거절 하나뿐이다. RESULT 거절과 달리 태스크가 취소되지 않으므로
+     * ({@code ApprovalCommandService.reject}의 주석 참고) 상태 전이는 승인과 완전히 같고, 이벤트만
+     * 갈라진다. 같은 전이라고 {@link #resumeAfterResultApproval}을 재사용하면 사용자가 거절한
+     * 시점에 이벤트 스트림에 {@code RESULT_APPROVED}("결과 승인이 완료되어...")가 찍힌다.
+     *
+     * @param message 이벤트에 실릴 문구. {@link #markWaitingResultApproval}과 같이 호출자가 넘긴다 —
+     *                무엇을 거절했는지는 승인 타입을 아는 approval 레이어만 정확히 말할 수 있다.
+     */
+    @Transactional
+    public boolean resumeAfterResultDecline(String taskId, String message) {
+        return resumePastResultGate(taskId, "RESULT_DECLINED", message);
+    }
+
+    private boolean resumePastResultGate(String taskId, String eventType, String message) {
         AgentRunEntity run = requireRun(taskId);
         if (!run.resumeAfterResultApproval()) {
             return false;
         }
-        appendEvent(taskId, "RESULT_APPROVED", TaskStatus.QUEUED, "결과 승인이 완료되어 남은 작업을 재개합니다.");
+        appendEvent(taskId, eventType, TaskStatus.QUEUED, message);
         return true;
     }
 

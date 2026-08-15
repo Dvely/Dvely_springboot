@@ -24,12 +24,9 @@ public class PreviewBranchPushService {
     private final DockerContainerService dockerService;
 
     /**
-     * @param isNew true for a repository this container has never pushed to before (fresh
-     *              {@code git init}) — writes a starter {@code .gitignore} and initializes the
-     *              local repo with {@code preview} as its default branch. False reuses the
-     *              container's existing {@code .git} (already on some branch from a prior clone
-     *              — see {@code CodeAgentService#prepareProjectInContainer}) and just retargets
-     *              the remote and checks out {@code preview}.
+     * @param isNew 이 컨테이너에 재사용할 .git 이 없어 새로 init 해야 하면 true. 시작용 .gitignore 를
+     *              쓴다. 원격 저장소를 방금 만들었는지와는 무관하다. false 면 이전 clone 으로 생긴
+     *              .git 을 그대로 쓴다(CodeAgentService.prepareProjectInContainer).
      */
     public void push(String containerId,
                      String userToken,
@@ -51,6 +48,14 @@ public class PreviewBranchPushService {
             if (isNew) writeGitignore(containerId);
             dockerService.exec(containerId, "cd /workspace/app && git init -b preview");
             dockerService.exec(containerId, "cd /workspace/app && git remote add origin " + remoteUrl);
+            // 원격에 이미 preview 가 있으면 그 커밋을 부모로 삼는다. 저장소를 연결할 때
+            // preparePreviewBranch 가 기본 브랜치 HEAD 에서 preview 를 갈라두기 때문에, 갓 init 한
+            // 로컬 히스토리를 그대로 올리면 두 히스토리에 공통 조상이 없어 push 가 거부된다.
+            // --soft 라서 작업 트리와 인덱스는 건드리지 않고 HEAD 만 원격 끝으로 옮긴다.
+            dockerService.exec(containerId,
+                    "cd /workspace/app && "
+                            + "(git fetch origin preview 2>/dev/null "
+                            + "&& git reset --soft FETCH_HEAD) || true");
         } else {
             dockerService.exec(containerId, "cd /workspace/app && git remote set-url origin " + remoteUrl);
             dockerService.exec(containerId, "cd /workspace/app && git checkout -B preview");

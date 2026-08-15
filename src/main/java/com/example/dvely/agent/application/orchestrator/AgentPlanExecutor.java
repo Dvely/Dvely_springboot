@@ -13,6 +13,7 @@ import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
 import com.example.dvely.agent.application.service.InfraOpsAgentService;
 import com.example.dvely.agent.application.service.AgentMessageService;
+import com.example.dvely.agent.application.service.RepositoryBindingGate;
 import com.example.dvely.agent.application.service.ResultApprovalGate;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiModelOptions;
@@ -40,6 +41,7 @@ public class AgentPlanExecutor {
     private final BuildFailureRecoveryService buildFailureRecoveryService;
     private final ChangeService changeService;
     private final ResultApprovalGate resultApprovalGate;
+    private final RepositoryBindingGate repositoryBindingGate;
     // ADR-Y4 (#55): paired with AgentRunWorker's register-before-submit call — see
     // AgentExecutionRegistry's javadoc for why registration itself must NOT happen here.
     private final AgentExecutionRegistry executionRegistry;
@@ -91,6 +93,14 @@ public class AgentPlanExecutor {
                         // markStepCompleted below runs exactly as it did before this feature.
                         if (resultApprovalGate.requestIfRequired(plan, i, taskId, userId, plan.projectId())) {
                             log.info("=== AgentPlan 결과 승인 대기: taskId={} ===", taskId);
+                            return;
+                        }
+                        // 위 게이트가 발동하지 않은 경우에만 평가된다. 두 게이트는 같은
+                        // repositoryBindingStatus 를 보고 갈리므로(BOUND -> 결과 승인,
+                        // NOT_BOUND -> 저장소 연결) 한 태스크에서 둘 다 발동하는 일은 없다.
+                        // 이 게이트도 자기가 발동한 CODE 스텝의 markStepCompleted 를 직접 소유한다.
+                        if (repositoryBindingGate.requestIfRequired(plan, i, taskId, userId, plan.projectId())) {
+                            log.info("=== AgentPlan 저장소 연결 승인 대기: taskId={} ===", taskId);
                             return;
                         }
                     }

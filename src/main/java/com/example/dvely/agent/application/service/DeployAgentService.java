@@ -21,6 +21,7 @@ import com.example.dvely.project.application.port.out.GithubRepositoryPort;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
+import com.example.dvely.project.domain.value.RepositoryNamePolicy;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
@@ -173,14 +174,14 @@ public class DeployAgentService {
 
     private String resolveRepoName(AgentStep step, Long userId, String containerId, String taskId) {
         String fromStep = step.parameters().getOrDefault("repoName", "").trim();
-        if (!fromStep.isEmpty()) return sanitize(fromStep);
+        if (!fromStep.isEmpty()) return RepositoryNamePolicy.sanitize(fromStep);
 
         String remote = dockerService.exec(containerId,
                 "git -C /workspace/app remote get-url origin 2>/dev/null || echo __none__").trim();
         if (!remote.equals("__none__") && !remote.isEmpty()) {
             String name = remote.substring(remote.lastIndexOf('/') + 1).replace(".git", "");
             log.info("[DeployAgent] 기존 remote에서 저장소명 추출: {}", name);
-            return sanitize(name);
+            return RepositoryNamePolicy.sanitize(name);
         }
 
         return askUserForRepoName(userId, taskId);
@@ -193,7 +194,7 @@ public class DeployAgentService {
 
         return inputWaitStore.consume(taskId)
                 .map(String::trim)
-                .map(this::sanitize)
+                .map(RepositoryNamePolicy::sanitize)
                 .filter(name -> !name.isEmpty())
                 .orElseThrow(() -> new AgentInputRequiredException(question));
     }
@@ -249,7 +250,7 @@ public class DeployAgentService {
     private Project autoBindRepository(Project project, Long userId) {
         User user = resolveUser(userId);
         String username = user.getUsername();
-        String candidateRepo = username + "/" + sanitize(project.getName());
+        String candidateRepo = username + "/" + RepositoryNamePolicy.sanitize(project.getName());
         log.info("[DeployAgent] NOT_BOUND 프로젝트 저장소 자동 탐색: candidate={}", candidateRepo);
 
         if (githubRepositoryPort.repositoryExists(userId, candidateRepo)) {
@@ -316,14 +317,6 @@ public class DeployAgentService {
     }
 
     // ── 유틸 ───────────────────────────────────────────────────────────────────
-
-    private String sanitize(String name) {
-        return name.toLowerCase().replaceAll("[^a-z0-9-]", "-").replaceAll("-{2,}", "-").replaceAll("^-|-$", "");
-    }
-
-    private String defaultRepoName(Long userId) {
-        return "qeploy-project-" + userId;
-    }
 
     private String buildSummary(String repoFullName, Long deploymentId) {
         return String.format("""
