@@ -28,6 +28,11 @@ public record ApprovalResponse(
         @Schema(description = "승인창에 표시되는 한 줄 요약. 서비스/비용 영향이 있으면 [서비스 영향]/[비용 증가 가능] 마커가 앞에 붙을 수 있음")
         String summary,
 
+        @Schema(description = "승인할 때 함께 받아야 하는 입력의 스펙. null 이면 단순 승인/거절이므로 버튼만 그리면 됩니다. " +
+                "값이 있으면 defaultValue 를 채운 입력 필드를 그리고, 승인 시 그 값을 field 이름으로 본문에 실어 보내세요. " +
+                "현재는 REPOSITORY_BINDING(저장소 이름)에만 채워집니다.", nullable = true)
+        ApprovalInputResponse input,
+
         @Schema(description = "승인 생성 시각") LocalDateTime createdAt,
         @Schema(description = "APPROVED/REJECTED/CANCELLED로 확정된 시각. PENDING이면 null", nullable = true) LocalDateTime decidedAt
 ) {

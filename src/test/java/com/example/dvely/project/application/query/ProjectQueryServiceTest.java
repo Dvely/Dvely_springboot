@@ -123,6 +123,7 @@ class ProjectQueryServiceTest {
                         "DEPLOYMENT",
                         "APPROVED",
                         "운영 배포",
+                        null,
                         now.minusMinutes(4),
                         now.minusMinutes(3)
                 )));
