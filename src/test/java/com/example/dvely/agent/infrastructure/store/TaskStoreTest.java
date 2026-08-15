@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -176,6 +177,39 @@ class TaskStoreTest {
         // A second, racing approve/resume call against the same task must not re-enqueue it a
         // second time now that it has already moved past WAITING_RESULT_APPROVAL.
         assertThat(taskStore.resumeAfterResultApproval("task-1")).isFalse();
+    }
+
+    @Test
+    void resumeAfterResultDeclineMakesTheSameTransitionUnderADistinctEvent() {
+        taskStore.save(task(TaskStatus.RUNNING));
+        taskStore.markWaitingResultApproval("task-1", "[저장소 연결] my-project");
+
+        assertThat(taskStore.resumeAfterResultDecline("task-1", "저장소를 연결하지 않기로 하여 남은 작업을 재개합니다."))
+                .isTrue();
+
+        assertThat(taskStore.getOwned("task-1", 1L).status()).isEqualTo(TaskStatus.QUEUED);
+        // The decline path shares resumeAfterResultApproval's transition but must NOT share its
+        // event: a REPOSITORY_BINDING rejection resumes the task, and emitting RESULT_APPROVED
+        // here would tell the SSE stream the user approved something they just declined.
+        ArgumentCaptor<AgentRunEventEntity> captor = ArgumentCaptor.forClass(AgentRunEventEntity.class);
+        verify(eventRepository, atLeastOnce()).save(captor.capture());
+        List<AgentRunEventEntity> events = captor.getAllValues();
+        AgentRunEventEntity resumeEvent = events.get(events.size() - 1);
+        assertThat(resumeEvent.getType()).isEqualTo("RESULT_DECLINED");
+        assertThat(resumeEvent.getStatus()).isEqualTo(TaskStatus.QUEUED.name());
+        assertThat(resumeEvent.getMessage()).isEqualTo("저장소를 연결하지 않기로 하여 남은 작업을 재개합니다.");
+        assertThat(events).noneMatch(event -> "RESULT_APPROVED".equals(event.getType()));
+    }
+
+    @Test
+    void resumeAfterResultDeclineGuardsAgainstNonWaitingStateLikeItsApprovalTwin() {
+        taskStore.save(task(TaskStatus.RUNNING));
+
+        assertThat(taskStore.resumeAfterResultDecline("task-1", "거절")).isFalse();
+        assertThat(taskStore.getOwned("task-1", 1L).status()).isEqualTo(TaskStatus.RUNNING);
+        ArgumentCaptor<AgentRunEventEntity> captor = ArgumentCaptor.forClass(AgentRunEventEntity.class);
+        verify(eventRepository, atLeastOnce()).save(captor.capture());
+        assertThat(captor.getAllValues()).noneMatch(event -> "RESULT_DECLINED".equals(event.getType()));
     }
 
     // ── Track Z (#56) review follow-up (BLOCKING-3): requireWaitingResultApproval — the locked

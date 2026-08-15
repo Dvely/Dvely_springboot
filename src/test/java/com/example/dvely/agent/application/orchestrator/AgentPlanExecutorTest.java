@@ -19,6 +19,7 @@ import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
 import com.example.dvely.agent.application.service.InfraOpsAgentService;
+import com.example.dvely.agent.application.service.RepositoryBindingGate;
 import com.example.dvely.agent.application.service.ResultApprovalGate;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
@@ -72,6 +73,7 @@ class AgentPlanExecutorTest {
                 mock(BuildFailureRecoveryService.class),
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
+                mock(RepositoryBindingGate.class),
                 registry
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
@@ -103,6 +105,7 @@ class AgentPlanExecutorTest {
                 mock(BuildFailureRecoveryService.class),
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
+                mock(RepositoryBindingGate.class),
                 registry
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
@@ -135,6 +138,7 @@ class AgentPlanExecutorTest {
                 mock(BuildFailureRecoveryService.class),
                 changeService,
                 gate,
+                mock(RepositoryBindingGate.class),
                 mock(AgentExecutionRegistry.class)
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
@@ -156,6 +160,80 @@ class AgentPlanExecutorTest {
     }
 
     @Test
+    void stopsAfterLastCodeStepWithoutMarkingDoneWhenRepositoryBindingGateFires() {
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        ResultApprovalGate resultGate = mock(ResultApprovalGate.class);
+        RepositoryBindingGate bindingGate = mock(RepositoryBindingGate.class);
+        ChangeService changeService = mock(ChangeService.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                taskStore,
+                mock(AgentMessageService.class),
+                mock(BuildFailureRecoveryService.class),
+                changeService,
+                resultGate,
+                bindingGate,
+                mock(AgentExecutionRegistry.class)
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
+        when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
+                .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
+        // NOT_BOUND project: the result gate declines, the binding gate takes over. Same contract
+        // as the result gate — it owns markStepCompleted, so the executor must stop without
+        // markDone/removePlan.
+        when(resultGate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(false);
+        when(bindingGate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(true);
+
+        executor.execute(plan, "task-1", 1L);
+
+        verify(changeService).record("task-1", "수정 완료");
+        verify(bindingGate).requestIfRequired(plan, 0, "task-1", 1L, 11L);
+        verify(taskStore, org.mockito.Mockito.never()).markStepCompleted(org.mockito.ArgumentMatchers.eq("task-1"), org.mockito.ArgumentMatchers.anyInt());
+        verify(taskStore, org.mockito.Mockito.never()).markDone(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(taskStore, org.mockito.Mockito.never()).removePlan(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void skipsRepositoryBindingGateEntirelyWhenTheResultGateAlreadyFired() {
+        // The two gates branch on the same repositoryBindingStatus, so exactly one may fire. If
+        // the result gate parked the task, evaluating the binding gate afterwards would open a
+        // second approval on a task that is already waiting on the first one.
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        ResultApprovalGate resultGate = mock(ResultApprovalGate.class);
+        RepositoryBindingGate bindingGate = mock(RepositoryBindingGate.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                taskStore,
+                mock(AgentMessageService.class),
+                mock(BuildFailureRecoveryService.class),
+                mock(ChangeService.class),
+                resultGate,
+                bindingGate,
+                mock(AgentExecutionRegistry.class)
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
+        when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
+                .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
+        when(resultGate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(true);
+
+        executor.execute(plan, "task-1", 1L);
+
+        org.mockito.Mockito.verifyNoInteractions(bindingGate);
+    }
+
+    @Test
     void continuesNormallyWhenResultApprovalGateDoesNotFire() {
         CodeAgentService codeService = mock(CodeAgentService.class);
         TaskStore taskStore = taskStore();
@@ -172,6 +250,7 @@ class AgentPlanExecutorTest {
                 mock(BuildFailureRecoveryService.class),
                 mock(ChangeService.class),
                 gate,
+                mock(RepositoryBindingGate.class),
                 mock(AgentExecutionRegistry.class)
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
@@ -243,6 +322,7 @@ class AgentPlanExecutorTest {
                 mock(BuildFailureRecoveryService.class),
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
+                mock(RepositoryBindingGate.class),
                 mock(AgentExecutionRegistry.class)
         );
 
@@ -276,6 +356,7 @@ class AgentPlanExecutorTest {
                 mock(BuildFailureRecoveryService.class),
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
+                mock(RepositoryBindingGate.class),
                 mock(AgentExecutionRegistry.class)
         );
         AgentStep step = new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "STATUS_CHECK"));
@@ -312,6 +393,7 @@ class AgentPlanExecutorTest {
                 recoveryService,
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
+                mock(RepositoryBindingGate.class),
                 mock(AgentExecutionRegistry.class)
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
@@ -351,6 +433,7 @@ class AgentPlanExecutorTest {
                 mock(BuildFailureRecoveryService.class),
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
+                mock(RepositoryBindingGate.class),
                 mock(AgentExecutionRegistry.class)
         );
     }

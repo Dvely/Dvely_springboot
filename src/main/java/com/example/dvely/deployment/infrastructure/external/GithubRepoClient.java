@@ -41,10 +41,67 @@ public class GithubRepoClient implements GithubRepoPort {
             return response != null && response.aheadBy() > 0;
         } catch (RestClientResponseException e) {
             if (e.getStatusCode().value() == 404) {
-                log.warn("[GithubRepoClient] 브랜치 비교 404 (head 브랜치 없음) → false 반환: repo={} base={} head={}", repoFullName, base, head);
-                return false;
+                return resolveCompareNotFound(userToken, repoFullName, parts, base, head);
             }
             throw new IllegalStateException(githubError("브랜치 비교 실패", e), e);
+        }
+    }
+
+    /**
+     * compare API 는 브랜치가 없을 때도, 두 브랜치에 공통 조상이 없을 때도 똑같이 404 를 준다.
+     *
+     * 앞은 "아직 아무것도 안 올렸다"는 정상 상태라 false 가 맞다. 하지만 뒤까지 false 로 삼키면
+     * 호출부가 "병합할 것 없음" 경로로 빠져서, 실제로는 아무것도 반영하지 않은 채 Change 를
+     * MERGED 로 기록하고 사용자에게는 반영됐다고 알린다. 예외도 롤백도 감사 기록도 없이 실패가
+     * 성공으로 남기 때문에 둘을 구분한다.
+     *
+     * 공통 조상이 없어지는 경우는 두 가지다. 저장소를 연결할 때 preview 를 기본 브랜치에서 갈라두지
+     * 않았거나, 병합 대상 브랜치 이름이 실제 기본 브랜치와 다른 경우(기본 브랜치가 master 인 기존
+     * 저장소를 연결했을 때 등).
+     */
+    private boolean resolveCompareNotFound(String userToken, String repoFullName,
+                                           String[] parts, String base, String head) {
+        boolean headExists = branchExists(userToken, parts, head);
+        // head 가 없으면 base 는 볼 필요가 없다. API 호출을 한 번 아낀다.
+        boolean baseExists = headExists && branchExists(userToken, parts, base);
+        return interpretCompareNotFound(repoFullName, base, head, headExists, baseExists);
+    }
+
+    /**
+     * 404 를 어떻게 읽을지 정하는 순수 판단부. 이 클래스가 RestClient 를 직접 만들어 쓰는 탓에
+     * HTTP 를 끼운 테스트가 어려워서, 실제로 틀리기 쉬운 판단만 떼어 두었다.
+     */
+    static boolean interpretCompareNotFound(String repoFullName, String base, String head,
+                                            boolean headExists, boolean baseExists) {
+        if (!headExists) {
+            log.warn("[GithubRepoClient] 브랜치 비교 404 — head 브랜치 없음 → false: repo={} head={}",
+                    repoFullName, head);
+            return false;
+        }
+        if (!baseExists) {
+            throw new IllegalStateException(
+                    "병합 대상 브랜치가 저장소에 없습니다. repo=" + repoFullName + " base=" + base);
+        }
+        throw new IllegalStateException(
+                "두 브랜치에 공통 조상이 없어 병합할 수 없습니다. 저장소 연결 시 preview 브랜치가 "
+                        + "기본 브랜치에서 갈라져 나왔는지 확인해주세요. repo=" + repoFullName
+                        + " base=" + base + " head=" + head);
+    }
+
+    private boolean branchExists(String userToken, String[] parts, String branch) {
+        try {
+            restClient(userToken)
+                    .get()
+                    .uri(API_BASE + "/repos/{owner}/{repo}/branches/{branch}",
+                            parts[0], parts[1], branch)
+                    .retrieve()
+                    .toBodilessEntity();
+            return true;
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 404) {
+                return false;
+            }
+            throw new IllegalStateException(githubError("브랜치 조회 실패", e), e);
         }
     }
 

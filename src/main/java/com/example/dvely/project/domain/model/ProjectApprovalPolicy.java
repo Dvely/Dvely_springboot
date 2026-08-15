@@ -59,6 +59,12 @@ public class ProjectApprovalPolicy {
             case DOMAIN_BINDING -> domainApprovalRequired;
             case INFRA_OPERATION -> infraApprovalRequired;
             case RESULT -> resultApprovalRequired;
+            // 정책으로 끌 수 없는 유일한 타입이다. 나머지는 "끄면 사람 확인 없이 그대로 진행"이라는
+            // 분명한 대안 동작이 있지만(RESULT 를 끄면 preview 가 main 으로 바로 반영된다), 이 타입은
+            // 연결할 저장소 자체가 없는 상태라 끌 경우의 대안이 "아무것도 하지 않는다" 뿐이다.
+            // 그러면 컨테이너 TTL 만료와 함께 작업물이 사라지는데, 그것이 바로 이 게이트가 막으려는
+            // 상황이므로 정책 스위치를 두면 사고를 켜고 끄는 옵션이 된다.
+            case REPOSITORY_BINDING -> true;
         };
     }
 

@@ -15,8 +15,11 @@ public record ApprovalResponse(
         String taskId,
 
         @Schema(description = "승인 유형. RESULT는 계획 승인이 아니라 CODE 실행 '결과'(preview+diff) 확인 승인 — " +
-                "ResultApprovalGate가 마지막 CODE step 완료 직후에만 생성합니다.",
-                allowableValues = {"CHANGE", "DEPLOYMENT", "DOMAIN_BINDING", "INFRA_OPERATION", "RESULT"}, example = "DEPLOYMENT")
+                "ResultApprovalGate가 마지막 CODE step 완료 직후에만 생성합니다. REPOSITORY_BINDING은 같은 지점에서 " +
+                "저장소가 아직 연결되지 않은(NOT_BOUND) 프로젝트에만 생성되는 RESULT의 짝으로, 저장소를 만들어 연결할지 묻습니다 — " +
+                "approve 시 본문으로 저장소 이름을 지정할 수 있고, 거절해도 task는 취소되지 않고 그대로 완료됩니다.",
+                allowableValues = {"CHANGE", "DEPLOYMENT", "DOMAIN_BINDING", "INFRA_OPERATION", "RESULT", "REPOSITORY_BINDING"},
+                example = "DEPLOYMENT")
         String type,
 
         @Schema(description = "승인 상태. PENDING만 approve/reject 가능(그 외 호출 시 409)", allowableValues = {"PENDING", "APPROVED", "REJECTED", "CANCELLED"}, example = "PENDING")
