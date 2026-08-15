@@ -61,6 +61,10 @@ public class PreviewSessionService {
         );
         int hostPort = dockerService.getMappedPort(containerId);
         String publicUrl = gatewayUrlResolver.publicUrl(sessionId, accessToken);
+        // PROVISIONING 으로 시작한다. 컨테이너는 떴지만 그 안의 서버는 아직 없다 — CodeAgentService
+        // 가 LLM 작업과 빌드를 마친 뒤에야 startPreviewServer 를 부른다. ACTIVE 로 만들어두면
+        // "열면 보인다"는 계약을 어기게 되고, 그 사이 iframe 을 붙인 FE 는 502 만 본다.
+        // markServing 이 그 계약을 지키는 지점이다.
         PreviewSessionEntity created = new PreviewSessionEntity(
                 sessionId,
                 accessToken,
@@ -71,12 +75,48 @@ public class PreviewSessionService {
                 containerId,
                 hostPort,
                 publicUrl,
-                nextExpiry()
+                nextExpiry(),
+                PreviewSessionStatus.PROVISIONING
         );
         repository.save(created);
         log.info("[PreviewSession] 생성: sessionId={} taskId={} projectId={} conversationId={}",
                 sessionId, taskId, task.projectId(), task.conversationId());
         return created.toInfo();
+    }
+
+    /**
+     * 컨테이너 안의 서버가 실제로 뜬 뒤에 부른다. 이때부터 게이트웨이가 프록시를 열어주고,
+     * FE 도 ACTIVE 를 보고 iframe 을 붙인다.
+     *
+     * acquire 가 PROVISIONING 으로 만들어두기 때문에 이 호출이 없으면 프리뷰는 영영 안 열린다.
+     * 반대로 서버가 뜨기 전에 부르면 예전처럼 502 를 보게 된다.
+     */
+    @Transactional
+    public void markServing(String taskId) {
+        repository.findByTaskIdAndStatus(taskId, PreviewSessionStatus.PROVISIONING.name())
+                .ifPresent(session -> {
+                    session.activate(nextExpiry());
+                    repository.save(session);
+                    log.info("[PreviewSession] 서빙 시작: sessionId={} taskId={}", session.getId(), taskId);
+                });
+    }
+
+    /**
+     * 서버를 띄우지 못했을 때. PROVISIONING 인 채로 두면 FE 가 준비 중 화면을 무한히 돌리므로
+     * 실패를 명시하고 사유를 남긴다 — FE 는 그 문자열을 그대로 사용자에게 보여준다.
+     *
+     * 컨테이너는 남겨둔다. 태스크 실패 후 로그를 확인할 수 있어야 하고, TTL 이 지나면
+     * cleanupExpired 가 정리한다.
+     */
+    @Transactional
+    public void markServeFailed(String taskId, String reason) {
+        repository.findByTaskIdAndStatus(taskId, PreviewSessionStatus.PROVISIONING.name())
+                .ifPresent(session -> {
+                    session.markFailed(reason);
+                    repository.save(session);
+                    log.warn("[PreviewSession] 서빙 실패: sessionId={} taskId={} reason={}",
+                            session.getId(), taskId, reason);
+                });
     }
 
     @Transactional(readOnly = true)
