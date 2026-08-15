@@ -103,6 +103,27 @@ class PreviewGatewayServiceTest {
         assertThat(new String(response.getBody(), StandardCharsets.UTF_8)).isEqualTo("console.log(1)");
     }
 
+    /**
+     * Cloudflare는 이 zone의 HTML 응답에 자기 RUM beacon을 주입하는데, 프리뷰 문서는 sandbox로
+     * 불투명 오리진이라 그 beacon의 POST가 cross-origin이 되어 콘솔에 CORS 에러만 남는다
+     * (Issue #113). no-transform이 주입 자체를 막는다 — 주입은 HTML에만 일어나므로 자산 응답에는
+     * 붙이지 않아 CDN 압축을 잃지 않는다.
+     */
+    @Test
+    void tellsTheCdnNotToInjectIntoThePreviewDocument() {
+        serveAsset("/assets/app.js", "application/javascript", "console.log(1)");
+
+        ResponseEntity<byte[]> document = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+        ResponseEntity<byte[]> asset =
+                service.proxy(session(), "/api/v1/previews/s/t/", "assets/app.js", null);
+
+        assertThat(document.getHeaders().getCacheControl()).contains("no-transform");
+        assertThat(asset.getHeaders().getCacheControl()).doesNotContain("no-transform");
+        // 캐시 금지는 두 경우 모두 유지된다.
+        assertThat(document.getHeaders().getCacheControl()).contains("no-store");
+        assertThat(asset.getHeaders().getCacheControl()).contains("no-store");
+    }
+
     /** 루트 자산(favicon 등)도 같은 경로로 살아난다. */
     @Test
     void absorbsTheBasePathForRootLevelAssetsToo() {
