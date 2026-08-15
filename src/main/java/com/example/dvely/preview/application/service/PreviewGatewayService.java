@@ -62,12 +62,18 @@ public class PreviewGatewayService {
                     .firstValue(HttpHeaders.CONTENT_TYPE)
                     .orElse(MediaType.APPLICATION_OCTET_STREAM_VALUE);
             byte[] body = response.body();
-            if (contentType.contains(MediaType.TEXT_HTML_VALUE)) {
+            boolean html = contentType.contains(MediaType.TEXT_HTML_VALUE);
+            if (html) {
                 body = rewriteHtml(body, gatewayPrefix);
             }
             return ResponseEntity.status(response.statusCode())
                     .header(HttpHeaders.CONTENT_TYPE, contentType)
-                    .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                    // HTML의 no-transform은 CDN이 문서를 건드리지 못하게 한다 (Issue #113).
+                    // Cloudflare는 이 zone의 HTML 응답에 자기 RUM beacon을 주입하는데, 프리뷰
+                    // 문서는 아래 sandbox로 불투명 오리진이라 그 beacon의 POST가 cross-origin이
+                    // 되어 콘솔에 CORS 에러만 남긴다(수집도 되지 않는다). 주입은 HTML에만
+                    // 일어나므로 HTML에만 붙여, 자산 응답의 압축은 그대로 둔다.
+                    .header(HttpHeaders.CACHE_CONTROL, html ? "no-store, no-transform" : "no-store")
                     // HTML뿐 아니라 모든 프록시 응답에 붙인다. 프리뷰 앱이 자기 JS/워커를 어떤
                     // Content-Type으로 내보내든 실행 컨텍스트는 동일하게 격리돼야 한다.
                     // 불투명 오리진의 CORS 로드(module script 등, Issue #108)는 여기서가 아니라
