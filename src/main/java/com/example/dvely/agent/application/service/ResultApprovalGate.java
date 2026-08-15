@@ -43,6 +43,8 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class ResultApprovalGate {
 
+    private static final String DEFAULT_SUMMARY_LABEL = "CODE 작업 결과";
+
     private final ProjectRepository projectRepository;
     private final ProjectApprovalPolicyRepository policyRepository;
     private final PreviewSessionService previewSessionService;
@@ -130,9 +132,7 @@ public class ResultApprovalGate {
         taskStore.markStepCompleted(taskId, stepIndex + 1);
 
         AgentTask task = taskStore.get(taskId);
-        String resultSummary = task == null || task.summary() == null || task.summary().isBlank()
-                ? "CODE 작업 결과"
-                : task.summary();
+        String resultSummary = summaryLabel(task);
         // State transition strictly before the approval row is created (design D3/§5.2): once the
         // approval becomes visible to the user, the task must already be in a state where
         // resumeAfterResult's guard accepts it — otherwise an approve arriving in the ms window
@@ -153,6 +153,28 @@ public class ResultApprovalGate {
                 buildGateMessage(task == null ? null : task.previewUrl(), approval)
         );
         return true;
+    }
+
+    /**
+     * 승인창에 한 줄로 뜨는 라벨. CODE 요약은 여러 문단짜리 마크다운 리포트라 그대로 넣으면
+     * 라벨이 아니라 본문이 되고, approvals.summary(VARCHAR 500)를 넘겨 insert 가 깨진다.
+     *
+     * 잘라내도 사용자가 잃는 것은 없다. 요약 전문과 diff 는 이 게이트가 평가되기 직전
+     * AgentPlanExecutor 가 부르는 ChangeService.record 가 project_changes 에 저장하므로
+     * GET /changes/{id} 와 /diff 로 전부 볼 수 있고, 대화에도 그대로 남는다.
+     */
+    private String summaryLabel(AgentTask task) {
+        String summary = task == null ? null : task.summary();
+        if (summary == null) {
+            return DEFAULT_SUMMARY_LABEL;
+        }
+        for (String line : summary.split("\n")) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty()) {
+                return trimmed;
+            }
+        }
+        return DEFAULT_SUMMARY_LABEL;
     }
 
     private boolean isLastCodeStep(AgentPlan plan, int stepIndex) {
