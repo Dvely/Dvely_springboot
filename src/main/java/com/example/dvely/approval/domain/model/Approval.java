@@ -59,7 +59,7 @@ public class Approval {
         this.taskId = taskId == null ? null : requireText(taskId, "taskId");
         this.type = Objects.requireNonNull(type, "type must not be null");
         this.status = Objects.requireNonNull(status, "status must not be null");
-        this.summary = requireText(summary, "summary");
+        this.summary = normalizeSummary(summary);
         this.createdAt = createdAt;
         this.decidedAt = decidedAt;
     }
@@ -98,6 +98,32 @@ public class Approval {
         }
         status = decision;
         decidedAt = LocalDateTime.now();
+    }
+
+    /**
+     * approvals.summary 컬럼은 VARCHAR(500)이다. 승인창에 한 줄로 띄우는 라벨이라 그 이상이 필요
+     * 없고, 요약 전문과 diff 는 게이트가 발동하기 전에 ChangeService 가 project_changes
+     * (summary TEXT, diff_text MEDIUMTEXT)에 저장하므로 GET /changes/{id} 로 그대로 볼 수 있다.
+     *
+     * 길이를 넘긴 채 저장하면 insert 가 Data truncation 으로 실패하고, 그 예외는 게이트를 호출한
+     * AgentPlanExecutor 의 catch-all 까지 올라가 태스크를 FAILED 로 끝낸다. 사용자는 승인창 대신
+     * 작업 실패를 보게 된다. 실제로 ResultApprovalGate 가 CODE 요약 전문을 그대로 넘기고 있어
+     * dev 로그에 이 예외가 20회 쌓여 있었다(2026-08-15 실측).
+     *
+     * 호출부마다 자르는 걸 기억하는 대신 여기서 한 번 막는다. 라벨이 조금 잘리는 것보다 작업이
+     * 통째로 실패하는 쪽이 훨씬 나쁘다. 다만 이건 어디까지나 안전망이고, 호출부는 애초에 한 줄
+     * 라벨을 넘기는 것이 맞다.
+     */
+    static final int MAX_SUMMARY_LENGTH = 500;
+
+    private static String normalizeSummary(String summary) {
+        String text = requireText(summary, "summary");
+        if (text.length() <= MAX_SUMMARY_LENGTH) {
+            return text;
+        }
+        // MySQL 의 VARCHAR(n) 은 바이트가 아니라 문자 수를 센다. 말줄임표까지 포함해 정확히
+        // MAX_SUMMARY_LENGTH 문자가 되도록 자른다.
+        return text.substring(0, MAX_SUMMARY_LENGTH - 1) + "…";
     }
 
     private static String requireText(String value, String field) {
