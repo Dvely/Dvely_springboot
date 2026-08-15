@@ -1,15 +1,18 @@
-name: Ops - Restart pm2 daemon
+name: Ops - Restart pm2 daemon (dev)
 
-# 프리뷰가 Docker 권한 문제로 503을 내는 서버 상태를 SSH 없이 복구한다
-# (deploy/README.md §4). 2026-08-15 실측: ubuntu 계정이 docker 그룹에 아예 없었다 —
-# 그룹 등록(usermod)부터 pm2 데몬 재기동까지 §4 전체를 멱등하게 적용해야 한다.
-# 배포 워크플로의 `pm2 startOrRestart`는 데몬을 그대로 두므로 이 문제를 못 고친다.
+# ops-restart-pm2-daemon.yml 의 dev 서버 판. 스크립트는 같고 접속 대상만 다르다.
+#
+# 원본은 secrets.EC2_HOST(운영)를 보고 concurrency 도 운영 배포와 같은 그룹이라,
+# dev 를 고치려고 그걸 돌리면 정작 dev 는 그대로인 채 운영 데몬만 재기동된다.
+# 대상이 다른 조치를 입력값 하나로 가르면 기본값을 잘못 두는 순간 운영을 건드리게 되므로,
+# 파일을 나눠 각 워크플로가 한 서버만 보게 했다.
 on:
   workflow_dispatch:
 
-# 배포 도중 데몬을 죽이면 어중간한 상태로 남으므로 배포와 같은 그룹으로 직렬화한다.
+# dev 배포 도중 데몬을 죽이면 어중간한 상태로 남으므로 dev 배포와 같은 그룹으로 직렬화한다.
+# 운영 그룹(deploy-ec2)과는 별개라 서로를 기다리지 않는다.
 concurrency:
-  group: deploy-ec2
+  group: deploy-ec2-dev
   cancel-in-progress: false
 
 permissions:
@@ -22,7 +25,7 @@ env:
 
 jobs:
   restart:
-    name: Apply docker group and restart pm2 daemon on EC2
+    name: Apply docker group and restart pm2 daemon on dev EC2
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -30,10 +33,10 @@ jobs:
       - name: Apply docker group and restart pm2 daemon over SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: ${{ secrets.EC2_SSH_PORT || 22 }}
+          host: ${{ secrets.DEV_EC2_HOST }}
+          username: ${{ secrets.DEV_EC2_USER }}
+          key: ${{ secrets.DEV_EC2_SSH_KEY }}
+          port: ${{ secrets.DEV_EC2_SSH_PORT || 22 }}
           envs: APP_DIR,PM2_APP,HEALTH_URL
           script_stop: true
           script: |

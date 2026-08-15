@@ -27,6 +27,12 @@ qeploy:
     # 기준 오리진을 유추하므로, 서버에 환경변수를 추가하지 않아도 열리는 주소가 나온다.
     # 도메인을 따로 쓴다면 이 환경변수로 명시하는 편이 안전하다.
     gateway-base-url: ${QEPLOY_PREVIEW_GATEWAY_BASE_URL:}
+    # dev 는 FE 가 각자 로컬(localhost:5173)에서 뜨고 게이트웨이는 이 서버라 항상 cross-site 다.
+    # 소유권 쿠키는 SameSite=Lax 라 그 경계를 못 넘어 프리뷰 문서 요청이 전부 401 이 된다
+    # (2026-08-15 실측: 동기화로 #77 G2 가 dev 에 들어온 직후부터 401, 그 전날까지는 200).
+    # 운영은 FE 와 게이트웨이가 같은 사이트라 영향이 없으므로 기본값 true 를 유지하고,
+    # dev 에서만 끈다. 끈 동안에는 "URL 을 아는 자 = 접근 허가" 모델로 돌아간다.
+    require-access-cookie: ${QEPLOY_PREVIEW_REQUIRE_ACCESS_COOKIE:false}
   ai:
     anthropic:
       api-key: ${QEPLOY_AI_ANTHROPIC_API_KEY:${ANTHROPIC_API_KEY:}}

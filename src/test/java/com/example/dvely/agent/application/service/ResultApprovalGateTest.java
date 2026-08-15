@@ -118,6 +118,40 @@ class ResultApprovalGateTest {
     }
 
     @Test
+    void approvalLabelUsesOnlyTheFirstLineOfAMultiParagraphCodeSummary() {
+        // CODE 요약은 여러 문단짜리 마크다운 리포트다. 그대로 넣으면 승인창 라벨이 본문이 되고,
+        // approvals.summary(VARCHAR 500)를 넘겨 insert 가 깨진다(2026-08-15 dev 실측 20회).
+        AgentPlan plan = codePlan();
+        stubBoundPolicyOnProject();
+        stubPreviewSessionAndUser();
+        String report = "빌드가 성공적으로 완료되었습니다!\n\n## 완료 내용\n\n"
+                + "**수정된 주요 파일:**\n- `src/App.jsx`\n".repeat(60);
+        when(taskStore.get("task-1")).thenReturn(task(TaskStatus.RUNNING, "preview-url", report));
+        when(approvalRepository.save(any(Approval.class))).thenReturn(approval(501L));
+
+        gate.requestIfRequired(plan, 0, "task-1", 1L, 11L);
+
+        org.mockito.ArgumentCaptor<Approval> captor = org.mockito.ArgumentCaptor.forClass(Approval.class);
+        verify(approvalRepository).save(captor.capture());
+        assertThat(captor.getValue().getSummary()).isEqualTo("[결과 반영] 빌드가 성공적으로 완료되었습니다!");
+    }
+
+    @Test
+    void approvalLabelFallsBackWhenTheSummaryIsOnlyWhitespace() {
+        AgentPlan plan = codePlan();
+        stubBoundPolicyOnProject();
+        stubPreviewSessionAndUser();
+        when(taskStore.get("task-1")).thenReturn(task(TaskStatus.RUNNING, "preview-url", "\n  \n\t\n"));
+        when(approvalRepository.save(any(Approval.class))).thenReturn(approval(501L));
+
+        gate.requestIfRequired(plan, 0, "task-1", 1L, 11L);
+
+        org.mockito.ArgumentCaptor<Approval> captor = org.mockito.ArgumentCaptor.forClass(Approval.class);
+        verify(approvalRepository).save(captor.capture());
+        assertThat(captor.getValue().getSummary()).isEqualTo("[결과 반영] CODE 작업 결과");
+    }
+
+    @Test
     void doesNotFireWhenTaskWasAlreadyCancelledBeforeGateEntry() {
         // BLOCKING-2 regression: models a DELETE /tasks/{id} landing during the CODE step / the
         // gap before this method starts (AgentPlanExecutor's own isCancelled check happens before
