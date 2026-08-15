@@ -6,12 +6,14 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
+@Slf4j
 @Service
 public class PreviewGatewayService {
 
@@ -53,14 +55,9 @@ public class PreviewGatewayService {
                                         String query) {
         try {
             String safePath = sanitizePath(path);
-            String target = "http://127.0.0.1:" + session.hostPort() + "/" + safePath;
-            if (query != null && !query.isBlank()) {
-                target += "?" + query;
-            }
-            HttpResponse<byte[]> response = httpClient.send(
-                    HttpRequest.newBuilder(URI.create(target)).GET().build(),
-                    HttpResponse.BodyHandlers.ofByteArray()
-            );
+            HttpResponse<byte[]> response = fetch(session, safePath, query);
+            response = absorbBuildBasePath(session, safePath, query, response);
+
             String contentType = response.headers()
                     .firstValue(HttpHeaders.CONTENT_TYPE)
                     .orElse(MediaType.APPLICATION_OCTET_STREAM_VALUE);
@@ -84,6 +81,86 @@ public class PreviewGatewayService {
         } catch (Exception exception) {
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
         }
+    }
+
+    private HttpResponse<byte[]> fetch(PreviewSessionInfo session, String path, String query)
+            throws java.io.IOException, InterruptedException {
+        String target = "http://127.0.0.1:" + session.hostPort() + "/" + path;
+        if (query != null && !query.isBlank()) {
+            target += "?" + query;
+        }
+        return httpClient.send(
+                HttpRequest.newBuilder(URI.create(target)).GET().build(),
+                HttpResponse.BodyHandlers.ofByteArray()
+        );
+    }
+
+    /**
+     * 앱이 배포용 base로 빌드된 경우의 경로 어긋남을 흡수한다 (Issue #111).
+     *
+     * <p>GitHub Pages는 {@code {owner}.github.io/{repo}/}에서 서빙하므로 앱이 base를
+     * {@code /my-todo-app/}으로 두는 것은 정상이다 — 배포 워크플로는 이 값을 무시하고
+     * {@code vite build --base=...}로 덮어쓰므로 배포에는 영향이 없다. 그러나 프리뷰 빌드는
+     * 순수 {@code npm run build}라 커밋된 base가 그대로 반영되고, index.html은
+     * {@code /my-todo-app/assets/app.js}를 참조하게 된다. 컨테이너는 빌드 산출물 <b>루트</b>를
+     * 서빙하므로 그 경로에는 아무것도 없고, {@code serve -s}는 없는 경로에 200 + index.html을
+     * 돌려준다 — 브라우저는 스타일시트·모듈 자리에서 HTML을 받아 MIME을 거부하고 화면은 백지가 된다.</p>
+     *
+     * <p>그래서 "확장자가 있는 자산을 요청했는데 HTML이 돌아왔다"를 경로 어긋남의 신호로 삼아
+     * 선행 세그먼트를 벗겨 다시 묻는다. base를 미리 알아낼 필요도, 어딘가에 저장할 필요도 없다 —
+     * 어떤 툴체인이 어떤 base로 구웠든 같은 방식으로 풀리고, JS 번들 안에 인라인된 동적 import
+     * 청크 경로까지 본문을 건드리지 않고 살아난다. base가 없는 프로젝트(대다수)는 첫 요청에서
+     * 끝나므로 추가 왕복이 없다.</p>
+     *
+     * <p>재시도가 실패하면 원래 응답을 그대로 돌려준다. 앱이 의도적으로 확장자 경로에서 HTML을
+     * 내보내는 경우(SPA가 처리하는 가짜 경로 등)에도 동작이 달라지지 않는다.</p>
+     */
+    private HttpResponse<byte[]> absorbBuildBasePath(PreviewSessionInfo session,
+                                                     String path,
+                                                     String query,
+                                                     HttpResponse<byte[]> original)
+            throws java.io.IOException, InterruptedException {
+        if (!looksLikeStaticAsset(path) || !isHtml(original)) {
+            return original;
+        }
+        // base가 두 단계(/a/b/)인 경우까지만 벗긴다. 그보다 깊은 base는 실물을 본 적이 없고,
+        // 한도가 없으면 어긋난 경로 하나가 컨테이너 왕복을 경로 깊이만큼 유발한다.
+        String candidate = path;
+        for (int depth = 0; depth < 2; depth++) {
+            int slash = candidate.indexOf('/');
+            if (slash < 0 || slash == candidate.length() - 1) {
+                return original;
+            }
+            candidate = candidate.substring(slash + 1);
+            HttpResponse<byte[]> retried = fetch(session, candidate, query);
+            if (!isHtml(retried)) {
+                log.info("[PreviewGateway] 빌드 base 흡수: {} -> {}", path, candidate);
+                return retried;
+            }
+        }
+        return original;
+    }
+
+    /**
+     * 마지막 세그먼트에 확장자가 있고 그것이 HTML이 아니면 정적 자산 요청으로 본다.
+     * SPA 라우트({@code /todos/42})는 확장자가 없어 걸리지 않으므로 fallback 동작을 건드리지 않는다.
+     */
+    private boolean looksLikeStaticAsset(String path) {
+        int lastSlash = path.lastIndexOf('/');
+        String lastSegment = lastSlash < 0 ? path : path.substring(lastSlash + 1);
+        int dot = lastSegment.lastIndexOf('.');
+        if (dot <= 0 || dot == lastSegment.length() - 1) {
+            return false;
+        }
+        String extension = lastSegment.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
+        return !extension.equals("html") && !extension.equals("htm");
+    }
+
+    private boolean isHtml(HttpResponse<byte[]> response) {
+        return response.headers()
+                .firstValue(HttpHeaders.CONTENT_TYPE)
+                .filter(type -> type.contains(MediaType.TEXT_HTML_VALUE))
+                .isPresent();
     }
 
     private byte[] rewriteHtml(byte[] body, String gatewayPrefix) {
