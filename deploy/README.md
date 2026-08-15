@@ -121,6 +121,11 @@ pm2 startOrRestart ecosystem.config.js --update-env
 
 ## 주의
 
+- **호스트 타임존은 `Asia/Seoul`이어야 한다.** `DB_URL`이 `serverTimezone=Asia/Seoul`로 접속하므로 Connector/J가 JVM 기본 타임존과 그 값 사이에서 시각을 변환한다. 호스트가 UTC면 앱이 쓴 시각이 +9된 값으로 저장돼 같은 DB의 `NOW()`·`DEFAULT CURRENT_TIMESTAMP`와 9시간 어긋난다. 앱 안에서는 읽을 때 같은 폭으로 되돌아오므로 **기능은 멀쩡히 돌고 테스트도 통과한다** — SQL로 직접 들여다볼 때만 드러나고, 그때 만료 시각 같은 값을 잘못 읽게 된다. 실제로 dev가 Ubuntu 기본값인 UTC로 떠 있어 이 상태였다(2026-08-16 수정). MySQL은 `time_zone=SYSTEM`이라 **기동 시점의** 호스트 타임존을 잡으므로, 바꿨으면 MySQL과 앱을 모두 재기동해야 한다.
+  ```bash
+  timedatectl show -p Timezone --value        # => Asia/Seoul
+  mysql -e "select now(), utc_timestamp();"   # 두 값이 9시간 차이여야 한다
+  ```
 - **`pm2 restart dvely-backend` 로는 env가 갱신되지 않는다.** pm2는 프로세스 생성 당시의 env를 저장해두고 재사용하므로, `ecosystem.config.js`를 고쳐도 반영되지 않는다. 반드시 파일을 인자로 주고 `--update-env`를 붙여야 한다. 이어서 `pm2 save`까지 해야 재부팅 후에도 유지된다 — 안 하면 `~/.pm2/dump.pm2`의 옛 env로 되돌아간다.
 - 워크플로는 테스트를 돌리지 않는다(`-x test`). 검증은 `ci.yml`이 PR 단계에서 MySQL을 붙여 수행한다. **main 보호 규칙에 `Build and test`를 required status check로 걸어야** 실제로 병합이 막힌다. 워크플로 파일만으로는 강제되지 않는다.
 - 시크릿이 비어 있어도 **앱은 정상 기동한다.** 이 값들은 `@Value` 지연 주입이라 기동 시점에 검증되지 않고, 해석 못 한 `${GITHUB_OAUTH_CLIENT_ID}` 같은 문자열이 그대로 OAuth URL에 실려 나간다. 배포 후 아래로 실제 값이 들어갔는지 확인할 것.

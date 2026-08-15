@@ -48,6 +48,31 @@ fi
 sudo sysctl -w vm.swappiness=10 >/dev/null
 grep -q '^vm.swappiness' /etc/sysctl.conf || echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf >/dev/null
 
+# ---------------------------------------------------------------------------
+# 타임존 (Asia/Seoul)
+#
+# DB_URL 이 serverTimezone=Asia/Seoul 로 접속하므로(deploy/ecosystem.config.dev.js.example),
+# Connector/J 는 JVM 기본 타임존과 이 값 사이에서 시각을 변환한다. 호스트가 UTC 면 앱이 쓴
+# LocalDateTime 이 +9 된 값으로 저장돼, DB 자신의 NOW() 나 DEFAULT CURRENT_TIMESTAMP 와
+# 9시간 어긋난다. 앱 안에서는 읽기도 같은 폭으로 되돌아와 티가 나지 않고, SQL 콘솔로 직접
+# 들여다볼 때만 드러난다.
+#
+# 운영 서버와 개발자 로컬은 이미 Asia/Seoul 이라 이 문제가 없었고, dev 만 Ubuntu 기본값인
+# UTC 로 떠서 어긋나 있었다(2026-08-16 확인 후 수정). 여기서 고정해 재구축 때 되돌아가지
+# 않게 한다. MySQL 은 time_zone=SYSTEM 이라 기동 시점의 호스트 타임존을 잡으므로, 반드시
+# MySQL 설치보다 먼저 실행해야 한다.
+# ---------------------------------------------------------------------------
+log "타임존 Asia/Seoul 설정"
+if [ "$(timedatectl show -p Timezone --value)" = "Asia/Seoul" ]; then
+  echo "이미 Asia/Seoul — 건너뜀"
+else
+  sudo timedatectl set-timezone Asia/Seoul
+  # 재실행이라 MySQL 이 이미 떠 있다면 기동 때 잡은 옛 타임존을 그대로 들고 있다.
+  if systemctl is-active --quiet mysql; then
+    sudo systemctl restart mysql
+  fi
+fi
+
 log "apt 갱신"
 sudo apt-get update -y
 
