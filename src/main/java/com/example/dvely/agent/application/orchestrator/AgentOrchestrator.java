@@ -36,6 +36,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class AgentOrchestrator {
 
+    private static final String APPROVAL_HEADLINE = "작업 계획을 만들었습니다. 승인 후 실행합니다.";
+
     private final TaskStore              taskStore;
     private final ProjectRepository      projectRepository;
     private final ConversationRepository conversationRepository;
@@ -69,9 +71,8 @@ public class AgentOrchestrator {
             return new AgentSubmission(taskId, TaskStatus.QUEUED, List.of());
         }
 
-        String approvalSummary = buildApprovalMessage(approvals);
-        taskStore.markWaitingApproval(taskId, approvalSummary);
-        agentMessageService.appendAssistant(conversationId, approvalSummary);
+        taskStore.markWaitingApproval(taskId, buildApprovalSummary(approvals));
+        agentMessageService.appendAssistant(conversationId, buildApprovalChatMessage(approvals));
         return new AgentSubmission(
                 taskId,
                 TaskStatus.WAITING_APPROVAL,
@@ -469,8 +470,12 @@ public class AgentOrchestrator {
         return markers + truncated;
     }
 
-    private String buildApprovalMessage(List<Approval> approvals) {
-        StringBuilder message = new StringBuilder("작업 계획을 만들었습니다. 승인 후 실행합니다.");
+    /**
+     * 태스크의 summary. 화면의 승인 카드와 나란히 놓이지 않으므로 지시문을 그대로 담는다 —
+     * 태스크만 조회했을 때 무엇을 기다리는 중인지 알 수 있어야 한다.
+     */
+    private String buildApprovalSummary(List<Approval> approvals) {
+        StringBuilder message = new StringBuilder(APPROVAL_HEADLINE);
         for (Approval approval : approvals) {
             message.append("\n- [")
                     .append(approval.getId())
@@ -478,6 +483,25 @@ public class AgentOrchestrator {
                     .append(approval.getType())
                     .append(": ")
                     .append(approval.getSummary());
+        }
+        return message.toString();
+    }
+
+    /**
+     * 채팅에 남길 안내. 지시문은 담지 않는다.
+     *
+     * 바로 아래에 승인 카드가 붙고 그 카드가 같은 summary 를 그리므로, 여기까지 지시문을 실으면
+     * 같은 내용이 두 번 보인다(사용자 요청 원문까지 치면 세 번이다). 지시문은 카드가 소유하고
+     * 이 메시지는 "어떤 승인이 걸렸는지"만 기록한다 — 카드는 결정하면 사라지지만 이 줄은 대화
+     * 이력으로 남아 승인 ID 와 유형을 되짚을 수 있다.
+     */
+    private String buildApprovalChatMessage(List<Approval> approvals) {
+        StringBuilder message = new StringBuilder(APPROVAL_HEADLINE);
+        for (Approval approval : approvals) {
+            message.append("\n- [")
+                    .append(approval.getId())
+                    .append("] ")
+                    .append(approval.getType());
         }
         return message.toString();
     }
