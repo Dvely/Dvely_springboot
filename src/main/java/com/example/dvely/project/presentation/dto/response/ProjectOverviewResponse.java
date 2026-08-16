@@ -17,9 +17,6 @@ public record ProjectOverviewResponse(
         @Schema(description = "GitHub webhook으로 동기화된 최신 vN 저장소 태그")
         String repositoryVersion,
 
-        @Schema(description = "Deployment, Change, Approval, Domain의 최근 이벤트 3개")
-        List<ProjectActivityLogResponse> recentChanges,
-
         @Schema(description = "연결 저장소의 최신 커밋. 저장소가 없으면 null")
         ProjectCommitResponse latestCommit,
 

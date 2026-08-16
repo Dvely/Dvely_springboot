@@ -274,8 +274,22 @@ Accept: text/event-stream
 | GET | `/api/v1/projects/{id}` | 프로젝트 상세(메타데이터) | - | `{ projectId, name, status, startMode, templateType, draftMode, createdAt, updatedAt }` (`templateType`은 콘텐츠 템플릿 — 프레임워크가 아님, §5.1) | 404 |
 | PATCH | `/api/v1/projects/{id}` | 프로젝트명 수정(현재 name만 수정 가능) | `{ name }` | `ProjectDetailResponse` (위와 동일 shape) | 400, 404 |
 | DELETE | `/api/v1/projects/{id}` | 프로젝트 삭제 | query: `deleteMode`(`PROJECT_ONLY` 기본값 \| `PROJECT_AND_REPOSITORY`) | 204 | 404, 409(락 경합) |
-| GET | `/api/v1/projects/{id}/overview` | 개요(도메인/배포/최근 이벤트/커밋/저장소·클라우드 상태/운영조치) | - | `{ currentUrl, deployStatus, currentVersion, repositoryVersion, recentChanges[], latestCommit, repositoryHealth, domainSummary, cloudSummary, operationActions[] }` | 404 |
-| GET | `/api/v1/projects/{id}/activity-logs` | 활동 로그(Deployment/Change/Approval/Domain 통합) | - | `[{ type, message, occurredAt }]` | - |
+| GET | `/api/v1/projects/{id}/overview` | 개요(도메인/배포/커밋/저장소·클라우드 상태/운영조치) | - | `{ currentUrl, deployStatus, currentVersion, repositoryVersion, latestCommit, repositoryHealth, domainSummary, cloudSummary, operationActions[] }` | 404 |
+| GET | `/api/v1/projects/{id}/activity-logs` | 활동 로그(Deployment/Change/Approval/Domain 통합) | - | `[{ type, message, occurredAt }]` — `type`은 고정 목록이 아니다(아래 참고) | - |
+
+> **`activity-logs`의 `type`을 닫힌 enum으로 받지 마세요.** 값이 고정 목록이 아니라 접두사와 상태 enum의 조합으로 만들어집니다.
+>
+> ```
+> "DEPLOYMENT_" + DeployStatus     DRAFT PENDING IN_PROGRESS PREVIEW_READY LIVE FAILED
+> "CHANGE_"     + ChangeStatus     PREVIEW_READY DEPLOYED MERGED REJECTED
+> "APPROVAL_"   + ApprovalStatus   PENDING APPROVED REJECTED CANCELLED
+> "DOMAIN_"     + DomainStatus     REQUESTED PROVISIONING VERIFYING CONNECTED FAILED
+> "PROJECT_CREATED"
+> ```
+>
+> 네 enum 중 어디에 값이 하나 추가되면 새 `type`이 저절로 생깁니다. 실제로 FE가 이 값을 `z.enum(['PROJECT_CREATED'])`로 받고 있어서 다른 유형이 섞이는 순간 목록 전체가 파싱 실패로 사라진 적이 있습니다(2026-08-16). 화면이 이 값으로 분기하지 않는다면 열린 문자열로 받는 편이 안전합니다.
+
+`message`는 이벤트 설명 뒤에 원문이 붙는 `"<라벨>: <본문>"` 구조입니다. `CHANGE_*` 계열은 에이전트 요약 마크다운이 통째로 들어가 30줄을 넘기도 하므로, 목록에서는 클램프하고 필요할 때 펼치는 식으로 다루세요. 서버는 자르지 않습니다 — 잘라서 보내면 상세를 볼 방법이 사라지기 때문입니다.
 | GET | `/api/v1/projects/{id}/commits` | 연결 저장소 최근 커밋(미연결 시 빈 배열) | - | `[{ sha, message, author, committedAt, relativeTime }]` | - |
 | GET | `/api/v1/projects/{id}/repository-health` | 저장소 접근 가능 여부 라이브 확인 | - | `{ health: HEALTHY\|REPOSITORY_NOT_FOUND\|ACCESS_DENIED\|PERMISSION_MISMATCH\|UNKNOWN_ERROR }` | - |
 | GET | `/api/v1/projects/{id}/settings/chat` | Agent 승인 정책 조회 | - | `{ projectId, changeApprovalRequired, deploymentApprovalRequired, domainApprovalRequired, infraApprovalRequired, resultApprovalRequired }`(생성 시 전부 `true`. `REPOSITORY_BINDING`은 끌 수 없어 대응 필드가 없습니다 — §3.5③) | 404 |

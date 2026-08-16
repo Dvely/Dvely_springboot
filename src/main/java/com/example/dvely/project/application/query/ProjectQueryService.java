@@ -44,7 +44,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class ProjectQueryService {
 
     private static final int DEFAULT_COMMIT_LIMIT = 20;
-    private static final int OVERVIEW_ACTIVITY_LIMIT = 3;
 
     private final ProjectRepository projectRepository;
     private final GithubRepositoryPort githubRepositoryPort;
@@ -101,9 +100,6 @@ public class ProjectQueryService {
         DomainBindingResult currentDomain = selectCurrentDomain(domains);
         DomainBindingResult connectedDomain = selectConnectedDomain(domains);
         ProjectCloudSummaryResult cloudSummary = toCloudSummary(infrastructure);
-        List<ActivityLogResult> activityLogs =
-                buildActivityLogs(project, deployments, changes, approvals, domains);
-
         String currentUrl = connectedDomain == null
                 ? firstNonBlank(
                         latestLiveDeployment == null ? null : latestLiveDeployment.deployedUrl(),
@@ -123,7 +119,6 @@ public class ProjectQueryService {
                 deployStatus,
                 currentVersion,
                 project.getRepositoryVersion(),
-                activityLogs.stream().limit(OVERVIEW_ACTIVITY_LIMIT).toList(),
                 latestCommit,
                 repositoryHealth,
                 toDomainSummary(currentDomain),

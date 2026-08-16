@@ -7,7 +7,6 @@ public record ProjectOverviewResult(
         String deployStatus,
         String currentVersion,
         String repositoryVersion,
-        List<ActivityLogResult> recentChanges,
         CommitResult latestCommit,
         RepositoryHealthResult repositoryHealth,
         ProjectDomainSummaryResult domainSummary,
