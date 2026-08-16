@@ -86,9 +86,12 @@ public class GithubPagesDomainHostingAdapter implements DomainHostingAdapter {
             PackageManager packageManager =
                     githubRepoPort.detectPackageManager(context.userToken(), sourceRepository);
             String nodeVersion = githubRepoPort.detectNodeVersion(context.userToken(), sourceRepository);
+            // 프레임워크는 저장소 감지 결과만 쓴다. 예전에는 감지 실패 시 context.templateType()
+            // 으로 폴백했는데, 그 값은 프레임워크가 아니라 사용자가 고른 콘텐츠 템플릿이라
+            // publish 디렉터리를 잘못 고를 수 있었다. 감지 실패 시 null 은 generate() 의
+            // 기본값(./dist)으로 떨어진다.
             String detectedType = githubRepoPort.detectFrameworkType(context.userToken(), sourceRepository);
-            String resolvedType = detectedType != null ? detectedType : context.templateType();
-            String workflow = DeployWorkflowTemplate.generate(resolvedType, null, packageManager, nodeVersion);
+            String workflow = DeployWorkflowTemplate.generate(detectedType, null, packageManager, nodeVersion);
 
             githubActionsPort.createOrUpdateWorkflow(
                     context.userToken(),
