@@ -38,7 +38,12 @@ jobs:
           key: ${{ secrets.DEV_EC2_SSH_KEY }}
           port: ${{ secrets.DEV_EC2_SSH_PORT || 22 }}
           envs: APP_DIR,PM2_APP,HEALTH_URL
-          script_stop: true
+          # script_stop 은 쓰지 않는다. 스크립트 첫 줄의 set -euo pipefail 이 이미 종료를
+          # 제어하는데, 액션이 그 위에 자체 중단 규칙을 겹치면 셸의 규칙과 어긋난다.
+          # 실측(2026-08-16 dev): if 조건 안에서 systemctl restart 가 실패했을 때 POSIX 상
+          # set -e 는 스크립트를 죽이지 않아야 하고 플레인 SSH 로는 실제로 else 로 넘어가는데,
+          # script_stop: true 로 돌리면 그 지점에서 status 1 로 끝나 폴백이 실행되지 않았다.
+          # 스크립트가 0 이 아닌 값으로 끝나면 SSH 종료 코드로 스텝은 그대로 실패한다.
           script: |
             set -euo pipefail
 
@@ -58,19 +63,15 @@ jobs:
             fi
             sudo -n systemctl enable --now docker
 
-            # 파이프라인을 쓰지 않는다. `... | grep -q`는 매치를 찾는 순간 grep이 끝나면서
-            # 앞 명령에 SIGPIPE를 던지고, set -o pipefail이 그 141을 파이프라인 상태로
-            # 삼는다. 계정이 이미 docker 그룹일 때만 재현되는 탓에 그룹이 없던 서버에서는
-            # 드러나지 않았다(2026-08-15 dev 실측: 진단 직후 status 141로 중단).
-            case " $(id -nG "$(whoami)") " in
-              *" docker "*)
-                echo "$(whoami) 계정은 이미 docker 그룹입니다."
-                ;;
-              *)
-                echo "$(whoami) 계정을 docker 그룹에 추가합니다."
-                sudo -n usermod -aG docker "$(whoami)"
-                ;;
-            esac
+            # grep 에 -q 를 쓰지 않는다. -q 는 첫 매치에서 즉시 끝나며 아직 쓰고 있던 tr 에
+            # SIGPIPE 를 던지고, set -o pipefail 이 그 141 을 파이프라인 상태로 삼아 스크립트가
+            # 죽는다. 계정이 이미 docker 그룹일 때만 재현되므로 그룹이 없던 서버에서는
+            # 드러나지 않았다(2026-08-15 dev 실측: 진단 직후 status 141 로 중단).
+            # -q 없이 출력만 버리면 grep 이 입력을 끝까지 읽어 파이프가 조기에 닫히지 않는다.
+            if ! id -nG "$(whoami)" | tr ' ' '\n' | grep -x docker >/dev/null; then
+              echo "$(whoami) 계정을 docker 그룹에 추가합니다."
+              sudo -n usermod -aG docker "$(whoami)"
+            fi
 
             # ---- pm2 데몬 재기동 ------------------------------------------------
             old_pid=$(pm2 pid "${PM2_APP}" 2>/dev/null || echo 0)
@@ -79,15 +80,19 @@ jobs:
             # 띄울 때 그룹 DB를 다시 읽으므로 방금 추가한 그룹이 실린다.
             # 없으면 sudo -i로 "새 로그인"을 만들어 갱신된 그룹으로 데몬을 다시 띄운다
             # (이 SSH 세션 자체는 usermod 이전 로그인이라 그룹이 옛 것일 수 있다).
-            # 위와 같은 이유로 파이프라인을 피한다. 명령 치환은 출력을 끝까지 읽으므로
-            # SIGPIPE가 나지 않는다.
+            # 위와 같은 이유로 여기서도 -q 를 쓰지 않는다.
+            # 유닛의 존재가 아니라 재기동의 성공 여부로 갈린다. dev 실측(2026-08-16)에서
+            # 유닛은 enabled 인데 pm2 데몬이 systemd 밖에서 떠 있어 restart 가 계속 실패했다
+            # (pm2 resurrect 가 추적할 메인 프로세스를 남기지 않아 Result: protocol). 존재만
+            # 보고 정본으로 삼으면 실제로 동작하는 아래 경로로 넘어가지 못한다.
+            # if 조건 안의 명령은 set -e 대상이 아니므로 실패해도 여기서 죽지 않는다.
             unit="pm2-$(whoami).service"
-            unit_files=$(systemctl list-unit-files "${unit}" --no-legend 2>/dev/null || true)
-            if [ -n "${unit_files}" ]; then
-              echo "systemd 유닛(${unit})으로 데몬을 재기동합니다."
-              sudo -n systemctl restart "pm2-$(whoami)"
+            if systemctl list-unit-files "${unit}" 2>/dev/null | grep "${unit}" >/dev/null \
+               && sudo -n systemctl restart "pm2-$(whoami)"; then
+              echo "systemd 유닛(${unit})으로 데몬을 재기동했습니다."
             else
-              echo "systemd 유닛이 없어 새 로그인 셸에서 데몬을 다시 띄웁니다."
+              echo "systemd 경로를 쓸 수 없어 새 로그인 셸에서 데몬을 다시 띄웁니다."
+              sudo -n systemctl reset-failed "${unit}" 2>/dev/null || true
               sudo -n -i -u "$(whoami)" bash -c "pm2 kill >/dev/null 2>&1 || true; cd '${APP_DIR}' && pm2 startOrRestart ecosystem.config.js --update-env && pm2 save --force"
             fi
 
