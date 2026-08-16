@@ -119,8 +119,10 @@ public class ChatCommandService {
         // below) — the caller (FE) uses its presence to know whether there is anything to poll.
         String taskId = null;
         try {
+            // 계획 수립에는 사용자 발화만 넘긴다. 우리가 쓴 운영 안내가 섞이면 모델이 그 문장을
+            // 흉내 내다 JSON 을 내지 못한다 — AgentMessageService#getUserIntentHistory 참고.
             AgentPlan plan = decisionAgentService.decide(
-                    agentMessageService.getConversationContext(conversationId),
+                    agentMessageService.getUserIntentHistory(conversationId),
                     AiProvider.ANTHROPIC,
                     conversation.getProjectId()
             );
