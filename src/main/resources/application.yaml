@@ -96,6 +96,10 @@ qeploy:
     allowed-origin-patterns: ${QEPLOY_CORS_ALLOWED_ORIGIN_PATTERNS:}
   preview:
     gateway-base-url: ${QEPLOY_PREVIEW_GATEWAY_BASE_URL:http://localhost:8080}
+    # 프리뷰 문서를 iframe 으로 띄울 수 있는 오리진. 기본값은 FE 와 게이트웨이가 같은 오리진이라는
+    # 전제이고, 그렇지 않은 환경(dev 처럼 FE 가 로컬에서 뜨는 경우)만 여기에 오리진을 더한다.
+    # sandbox 지시어는 이 값과 무관하게 항상 붙으므로 부모 토큰 탈취 차단은 그대로 유지된다.
+    frame-ancestors: "${QEPLOY_PREVIEW_FRAME_ANCESTORS:'self'}"
     ttl: ${QEPLOY_PREVIEW_TTL:30m}
     cleanup-interval-ms: ${QEPLOY_PREVIEW_CLEANUP_INTERVAL_MS:60000}
   agent:

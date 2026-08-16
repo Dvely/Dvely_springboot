@@ -7,6 +7,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -32,8 +33,15 @@ public class PreviewGatewayService {
      * 프리뷰답게 동작하는 데 필요해 허용하되, 팝업은 sandbox를 물려받는다
      * ({@code allow-popups-to-escape-sandbox}는 넣지 않는다).</p>
      *
-     * <p>{@code frame-ancestors 'self'}는 제3자 사이트가 이 프리뷰를 자기 페이지에 끼워 넣는 것을
-     * 막는다. 우리 FE는 같은 오리진이라 영향받지 않는다.</p>
+     * <p>{@code frame-ancestors}는 제3자 사이트가 이 프리뷰를 자기 페이지에 끼워 넣는 것을 막는다.
+     * 기본값 {@code 'self'}는 FE와 게이트웨이가 같은 오리진이라는 전제 위에 있는데, 그 전제가
+     * 성립하지 않는 환경이 있다 — dev 는 FE 가 각자 로컬(localhost:5173)에서 뜨고 게이트웨이는
+     * EC2 라 cross-origin 이고, 그래서 인앱 프리뷰가 통째로 차단됐다(2026-08-16 실측). 프리뷰 접근
+     * 쿠키가 SameSite=Lax 라 dev 에서만 401 이 나던 것과 같은 구조다.</p>
+     *
+     * <p>그래서 허용 오리진을 설정으로 받는다. 운영은 기본값 {@code 'self'} 를 그대로 쓰고, dev 만
+     * 로컬 FE 오리진을 더한다. 넓히는 것은 {@code frame-ancestors} 뿐이고 {@code sandbox} 는 그대로라,
+     * 위에서 막은 부모 토큰 탈취는 어떤 설정에서도 열리지 않는다.</p>
      *
      * <p>대가: 불투명 오리진이므로 <b>프리뷰 앱 자신의</b> {@code localStorage}·쿠키도 쓸 수 없다.
      * 정적 빌드 미리보기 용도에서는 수용 가능한 손실이며, 그 기능이 필요해지면 프리뷰를 전용
@@ -42,12 +50,24 @@ public class PreviewGatewayService {
     // Spring 의 HttpHeaders 에는 이 이름의 상수가 없다.
     static final String CONTENT_SECURITY_POLICY = "Content-Security-Policy";
 
-    static final String SANDBOX_POLICY =
-            "sandbox allow-scripts allow-forms allow-popups allow-modals; frame-ancestors 'self'";
+    static final String SANDBOX_DIRECTIVES =
+            "sandbox allow-scripts allow-forms allow-popups allow-modals";
 
     private final HttpClient httpClient = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
+
+    private final String contentSecurityPolicy;
+
+    public PreviewGatewayService(
+            @Value("${qeploy.preview.frame-ancestors:'self'}") String frameAncestors) {
+        this.contentSecurityPolicy = SANDBOX_DIRECTIVES + "; frame-ancestors " + frameAncestors.trim();
+    }
+
+    // 테스트가 조립 결과를 직접 확인하기 위한 접근자.
+    String sandboxPolicy() {
+        return contentSecurityPolicy;
+    }
 
     public ResponseEntity<byte[]> proxy(PreviewSessionInfo session,
                                         String gatewayPrefix,
@@ -79,7 +99,7 @@ public class PreviewGatewayService {
                     // 불투명 오리진의 CORS 로드(module script 등, Issue #108)는 여기서가 아니라
                     // SecurityConfig 의 /api/v1/previews/** 전용 CORS 설정이 허용한다 — 여기서
                     // ACAO 를 또 달면 CorsFilter 의 것과 중복되어 브라우저가 거절한다.
-                    .header(CONTENT_SECURITY_POLICY, SANDBOX_POLICY)
+                    .header(CONTENT_SECURITY_POLICY, contentSecurityPolicy)
                     .body(body);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
