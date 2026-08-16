@@ -91,7 +91,6 @@ public class ProjectMapper {
                 result.deployStatus(),
                 result.currentVersion(),
                 result.repositoryVersion(),
-                result.recentChanges().stream().map(this::toActivityLogResponse).toList(),
                 result.latestCommit() == null ? null : toCommitResponse(result.latestCommit()),
                 toRepositoryHealthResponse(result.repositoryHealth()),
                 result.domainSummary() == null
