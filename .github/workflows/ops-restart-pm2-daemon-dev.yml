@@ -38,7 +38,12 @@ jobs:
           key: ${{ secrets.DEV_EC2_SSH_KEY }}
           port: ${{ secrets.DEV_EC2_SSH_PORT || 22 }}
           envs: APP_DIR,PM2_APP,HEALTH_URL
-          script_stop: true
+          # script_stop 은 쓰지 않는다. 스크립트 첫 줄의 set -euo pipefail 이 이미 종료를
+          # 제어하는데, 액션이 그 위에 자체 중단 규칙을 겹치면 셸의 규칙과 어긋난다.
+          # 실측(2026-08-16 dev): if 조건 안에서 systemctl restart 가 실패했을 때 POSIX 상
+          # set -e 는 스크립트를 죽이지 않아야 하고 플레인 SSH 로는 실제로 else 로 넘어가는데,
+          # script_stop: true 로 돌리면 그 지점에서 status 1 로 끝나 폴백이 실행되지 않았다.
+          # 스크립트가 0 이 아닌 값으로 끝나면 SSH 종료 코드로 스텝은 그대로 실패한다.
           script: |
             set -euo pipefail
 
