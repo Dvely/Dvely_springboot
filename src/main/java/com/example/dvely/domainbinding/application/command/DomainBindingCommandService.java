@@ -276,7 +276,6 @@ public class DomainBindingCommandService {
                 project.getId(),
                 project.getSourceRepository(),
                 project.getDeploymentRepository(),
-                project.getTemplateType(),
                 project.getCurrentVersion(),
                 resolveDeploymentUrl(project)
         );

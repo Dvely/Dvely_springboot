@@ -271,7 +271,7 @@ Accept: text/event-stream
 | DELETE | `/api/v1/projects/{id}/repository` | 저장소 연결 해제(GitHub 저장소 자체는 삭제 안 함) | - | 204 | 404 |
 | GET | `/api/v1/projects/github/repositories` | GitHub App으로 접근 가능한 내 저장소 목록 | - | `[{ fullName, name, owner, visibility, defaultBranch, updatedAt }]` | - |
 | GET | `/api/v1/projects` | 내 프로젝트 목록(최신 수정순) | - | `[{ projectId, name, deployStatus, currentUrl, updatedAt, updatedAtRelativeText }]` | - |
-| GET | `/api/v1/projects/{id}` | 프로젝트 상세(메타데이터) | - | `{ projectId, name, status, startMode, templateType, draftMode, createdAt, updatedAt }` | 404 |
+| GET | `/api/v1/projects/{id}` | 프로젝트 상세(메타데이터) | - | `{ projectId, name, status, startMode, templateType, draftMode, createdAt, updatedAt }` (`templateType`은 콘텐츠 템플릿 — 프레임워크가 아님, §5.1) | 404 |
 | PATCH | `/api/v1/projects/{id}` | 프로젝트명 수정(현재 name만 수정 가능) | `{ name }` | `ProjectDetailResponse` (위와 동일 shape) | 400, 404 |
 | DELETE | `/api/v1/projects/{id}` | 프로젝트 삭제 | query: `deleteMode`(`PROJECT_ONLY` 기본값 \| `PROJECT_AND_REPOSITORY`) | 204 | 404, 409(락 경합) |
 | GET | `/api/v1/projects/{id}/overview` | 개요(도메인/배포/최근 이벤트/커밋/저장소·클라우드 상태/운영조치) | - | `{ currentUrl, deployStatus, currentVersion, repositoryVersion, recentChanges[], latestCommit, repositoryHealth, domainSummary, cloudSummary, operationActions[] }` | 404 |
@@ -508,6 +508,10 @@ setIframeSrc(previewUrl);   // ← 반드시 이 응답의 previewUrl 을 사용
 } }
 ```
 **프로젝트 생성은 코드 생성을 시작하지 않습니다.** 프로젝트 행만 만들어지고, Agent task는 사용자가 대화로 첫 요청을 보낼 때 제출됩니다(②). `startMode`/`templateType`은 프로젝트에 저장되지만 현재 이 값을 실제로 적용하는 코드 생성 경로는 없습니다.
+
+> **`templateType`은 빌드 프레임워크가 아닙니다.** 사용자가 고른 **콘텐츠 템플릿**(랜딩·포트폴리오 등)을 담는 자리이고, 여기에 `nextjs`·`vite` 같은 프레임워크 이름을 넣지 마세요.
+>
+> 배포 워크플로의 publish 디렉터리는 **저장소에서 자동 감지한 프레임워크만으로** 결정됩니다(감지 실패 시 `./dist`). 예전에는 감지가 실패하면 `templateType`으로 폴백했는데, 어휘가 맞지 않아 `landing` 같은 값이 들어오면 publish 디렉터리를 잘못 골라 **배포는 성공하는데 산출물만 비는** 상태가 될 수 있었습니다. 그래서 그 폴백을 제거했습니다.
 
 > 이전에는 이 응답에 `taskId` / `taskStatus` / `approvalIds`가 있었고 생성 시점에 초기 코드 생성 task가 제출됐습니다. 그 task는 `conversationId` 없이 제출돼 안내 메시지가 채팅에 남지 않았고, 결과적으로 **아무도 볼 수 없는 승인 뒤에서 한 번도 실행되지 않은 채** `WAITING_APPROVAL`로 쌓이기만 했습니다. 세 필드는 응답에서 제거됐습니다.
 

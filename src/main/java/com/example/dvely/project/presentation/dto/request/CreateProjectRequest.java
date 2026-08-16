@@ -15,7 +15,10 @@ public record CreateProjectRequest(
         @Pattern(regexp = "(?i)blank|template")
         String startMode,
 
-        @Schema(description = "템플릿 유형. startMode가 템플릿 기반일 때 사용", example = "landing")
+        @Schema(description = "콘텐츠 템플릿 식별자. startMode가 template일 때 사용한다. "
+                            + "현재는 프로젝트에 저장만 되고 코드 생성에 반영되지 않는다 — 템플릿 기능 착수 시 사용한다. "
+                            + "빌드 프레임워크를 담는 필드가 아니다(그 값은 저장소에서 자동 감지한다).",
+                example = "landing")
         @Size(max = 50)
         String templateType,
 

@@ -177,7 +177,7 @@ public class DeploymentCommandService {
         String sourceRepo = project.getSourceRepository();
         String deploymentRepo = project.getDeploymentRepository();
 
-        ensureWorkflow(userToken, sourceRepo, project.getTemplateType());
+        ensureWorkflow(userToken, sourceRepo);
 
         ReleaseSelection release = prepareRelease(userToken, sourceRepo, history, project);
         String deployBranch = resolveDeployBranch(
@@ -490,13 +490,22 @@ public class DeploymentCommandService {
         );
     }
 
-    private void ensureWorkflow(String userToken, String sourceRepo, String templateType) {
+    /**
+     * 프레임워크는 저장소에서 감지한 것만 쓴다.
+     *
+     * 예전에는 감지가 실패하면 project.templateType 으로 폴백했는데, 그 필드가 담는 것은
+     * 프레임워크가 아니라 사용자가 고른 콘텐츠 템플릿이다. DeployWorkflowTemplate 이 기대하는
+     * 어휘는 cra/nextjs/gatsby 같은 값인데 여기에 landing 같은 값이 들어오면 publish 디렉터리를
+     * 잘못 고르고, 배포는 성공으로 끝나면서 산출물만 비게 된다.
+     *
+     * 감지 실패 시에는 null 이 그대로 넘어가 generate() 의 기본값(./dist)으로 떨어진다. 지금까지도
+     * templateType 이 늘 비어 있어 실제 동작은 이것이었다.
+     */
+    private void ensureWorkflow(String userToken, String sourceRepo) {
         PackageManager packageManager = githubRepoPort.detectPackageManager(userToken, sourceRepo);
         String nodeVersion = githubRepoPort.detectNodeVersion(userToken, sourceRepo);
-        String detectedType = githubRepoPort.detectFrameworkType(userToken, sourceRepo);
-        String resolvedType = detectedType != null ? detectedType : templateType;
         String content = DeployWorkflowTemplate.generate(
-                resolvedType,
+                githubRepoPort.detectFrameworkType(userToken, sourceRepo),
                 null,
                 packageManager,
                 nodeVersion
