@@ -98,11 +98,14 @@ class AgentOrchestratorTest {
                         + "- [101] CHANGE: FAQ를 추가한다\n"
                         + "- [102] DEPLOYMENT: 최신 버전을 배포한다"
         );
+        // 채팅에는 지시문을 담지 않는다. 바로 아래 붙는 승인 카드가 같은 summary 를 그리므로
+        // 여기까지 실으면 같은 내용이 두 번 보인다. 태스크 summary(위 markWaitingApproval)는
+        // 카드와 나란히 놓이지 않으므로 지시문을 그대로 유지한다.
         verify(messageService).appendAssistant(
                 null,
                 "작업 계획을 만들었습니다. 승인 후 실행합니다.\n"
-                        + "- [101] CHANGE: FAQ를 추가한다\n"
-                        + "- [102] DEPLOYMENT: 최신 버전을 배포한다"
+                        + "- [101] CHANGE\n"
+                        + "- [102] DEPLOYMENT"
         );
     }
 
