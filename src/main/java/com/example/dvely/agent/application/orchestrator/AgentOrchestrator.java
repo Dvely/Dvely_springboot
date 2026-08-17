@@ -163,9 +163,25 @@ public class AgentOrchestrator {
         }
     }
 
+    /**
+     * 사용자가 직접 취소한 경우. 취소 사실을 대화에 남긴다 — 화면에서는 방금 누른 행동이라
+     * 자명하지만, 나중에 대화를 다시 열었을 때 "여기서 멈췄다"가 남아 있어야 이력이 읽힌다.
+     *
+     * 안내문은 {@link #cancelTaskCascade} 가 아니라 여기서 남긴다. 그 캐스케이드는 승인 거절도
+     * 공유하는데, 거절은 ApprovalCommandService 가 이미 자기 문구를 남기므로 거기에 넣으면 두
+     * 번 나온다.
+     */
     @Transactional
     public boolean cancel(String taskId, Long ownerUserId) {
-        return cancelTaskCascade(taskId, ownerUserId);
+        AgentTask task = taskStore.getOwned(taskId, ownerUserId);
+        if (!cancelTaskCascade(taskId, ownerUserId)) {
+            return false;
+        }
+        agentMessageService.appendAssistant(
+                task == null ? null : task.conversationId(),
+                "작업을 취소했습니다."
+        );
+        return true;
     }
 
     /**

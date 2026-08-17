@@ -9,12 +9,14 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.orchestrator.AgentPlanExecutor;
+import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import java.time.Instant;
@@ -32,9 +34,10 @@ class AgentRunWorkerTest {
     @Test
     void recoversLeasesAndDispatchesClaimedTask() {
         TaskStore taskStore = mock(TaskStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
         AgentPlanExecutor executor = mock(AgentPlanExecutor.class);
         AgentExecutionRegistry registry = new AgentExecutionRegistry();
-        AgentRunWorker worker = new AgentRunWorker(taskStore, executor, registry, freeExecutor(), BACKOFF_MS);
+        AgentRunWorker worker = new AgentRunWorker(taskStore, executor, messageService, registry, freeExecutor(), BACKOFF_MS);
         AgentPlan plan = new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L);
         AgentTask task = agentTask();
         when(taskStore.claimRunnableTasks(anyString(), eq(2))).thenReturn(List.of("task-1"));
@@ -47,14 +50,52 @@ class AgentRunWorkerTest {
         verify(executor).execute(plan, "task-1", 1L);
     }
 
+    /**
+     * 리스 소진은 사람이 만든 실패가 아니다 — 워커가 죽거나 서버가 재시작돼 실행이 통째로 사라진
+     * 경우다. 그래서 다른 실패 경로와 달리 아무도 채팅에 말을 남기지 않았고, 사용자에게는 진행
+     * 표시만 사라진 멈춘 화면으로 보였다.
+     */
+    @Test
+    void leaseExhaustionTellsTheUserInsteadOfLeavingTheScreenSilent() {
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentExecutionRegistry registry = new AgentExecutionRegistry();
+        AgentRunWorker worker = new AgentRunWorker(
+                taskStore, mock(AgentPlanExecutor.class), messageService, registry, freeExecutor(), BACKOFF_MS);
+        when(taskStore.recoverExpiredLeases()).thenReturn(List.of("task-1"));
+        when(taskStore.get("task-1")).thenReturn(agentTask());
+        when(taskStore.claimRunnableTasks(anyString(), eq(2))).thenReturn(List.of());
+
+        worker.dispatchQueuedRuns();
+
+        verify(messageService).appendAssistant(21L, "실행이 중단되어 작업을 종료했습니다. 다시 요청해주세요.");
+    }
+
+    @Test
+    void leaseRecoveryWithoutExhaustionSaysNothing() {
+        // 다시 대기열에 들어간 것은 사용자가 알 필요가 없다. 작업은 계속 진행된다.
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentExecutionRegistry registry = new AgentExecutionRegistry();
+        AgentRunWorker worker = new AgentRunWorker(
+                taskStore, mock(AgentPlanExecutor.class), messageService, registry, freeExecutor(), BACKOFF_MS);
+        when(taskStore.recoverExpiredLeases()).thenReturn(List.of());
+        when(taskStore.claimRunnableTasks(anyString(), eq(2))).thenReturn(List.of());
+
+        worker.dispatchQueuedRuns();
+
+        verifyNoInteractions(messageService);
+    }
+
     // ── ADR-Y4 (#55): register-before-submit ────────────────────────────────────────────────
 
     @Test
     void registersTaskInExecutionRegistryBeforeSubmittingToTheExecutor() {
         TaskStore taskStore = mock(TaskStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
         AgentPlanExecutor executor = mock(AgentPlanExecutor.class);
         AgentExecutionRegistry registry = mock(AgentExecutionRegistry.class);
-        AgentRunWorker worker = new AgentRunWorker(taskStore, executor, registry, freeExecutor(), BACKOFF_MS);
+        AgentRunWorker worker = new AgentRunWorker(taskStore, executor, messageService, registry, freeExecutor(), BACKOFF_MS);
         AgentPlan plan = new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L);
         AgentTask task = agentTask();
         when(taskStore.claimRunnableTasks(anyString(), eq(2))).thenReturn(List.of("task-1"));
@@ -76,9 +117,10 @@ class AgentRunWorkerTest {
     @Test
     void executorRejectionReleasesClaimUnregistersAndContinuesDispatchingTheRestOfTheBatch() {
         TaskStore taskStore = mock(TaskStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
         AgentPlanExecutor executor = mock(AgentPlanExecutor.class);
         AgentExecutionRegistry registry = mock(AgentExecutionRegistry.class);
-        AgentRunWorker worker = new AgentRunWorker(taskStore, executor, registry, freeExecutor(), BACKOFF_MS);
+        AgentRunWorker worker = new AgentRunWorker(taskStore, executor, messageService, registry, freeExecutor(), BACKOFF_MS);
         AgentPlan plan = new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L);
         AgentTask rejectedTask = agentTask("task-1");
         AgentTask okTask = agentTask("task-2");
@@ -106,8 +148,9 @@ class AgentRunWorkerTest {
     @Test
     void heartbeatSkipsTheRenewalQueryWhenTheRegistryIsEmpty() {
         TaskStore taskStore = mock(TaskStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
         AgentExecutionRegistry registry = new AgentExecutionRegistry();
-        AgentRunWorker worker = new AgentRunWorker(taskStore, mock(AgentPlanExecutor.class), registry,
+        AgentRunWorker worker = new AgentRunWorker(taskStore, mock(AgentPlanExecutor.class), messageService, registry,
                 freeExecutor(), BACKOFF_MS);
 
         worker.renewLeases();
@@ -118,10 +161,11 @@ class AgentRunWorkerTest {
     @Test
     void heartbeatRenewsExactlyTheRegisteredTaskIds() {
         TaskStore taskStore = mock(TaskStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
         AgentExecutionRegistry registry = new AgentExecutionRegistry();
         registry.register("task-1");
         registry.register("task-2");
-        AgentRunWorker worker = new AgentRunWorker(taskStore, mock(AgentPlanExecutor.class), registry,
+        AgentRunWorker worker = new AgentRunWorker(taskStore, mock(AgentPlanExecutor.class), messageService, registry,
                 freeExecutor(), BACKOFF_MS);
 
         worker.renewLeases();
@@ -137,6 +181,7 @@ class AgentRunWorkerTest {
     @Test
     void skipsClaimEntirelyWhenTheExecutorHasNoFreeCapacity() throws InterruptedException {
         TaskStore taskStore = mock(TaskStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
         ThreadPoolTaskExecutor saturated = new ThreadPoolTaskExecutor();
         saturated.setCorePoolSize(1);
         saturated.setMaxPoolSize(1);
@@ -159,7 +204,7 @@ class AgentRunWorkerTest {
         });
         try {
             started.await(2, java.util.concurrent.TimeUnit.SECONDS);
-            AgentRunWorker worker = new AgentRunWorker(taskStore, mock(AgentPlanExecutor.class),
+            AgentRunWorker worker = new AgentRunWorker(taskStore, mock(AgentPlanExecutor.class), messageService,
                     new AgentExecutionRegistry(), saturated, BACKOFF_MS);
 
             worker.dispatchQueuedRuns();

@@ -3,6 +3,7 @@ package com.example.dvely.agent.infrastructure.worker;
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.orchestrator.AgentPlanExecutor;
+import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import java.lang.management.ManagementFactory;
 import java.util.List;
@@ -32,6 +33,7 @@ public class AgentRunWorker {
 
     private final TaskStore taskStore;
     private final AgentPlanExecutor agentPlanExecutor;
+    private final AgentMessageService agentMessageService;
     private final AgentExecutionRegistry executionRegistry;
     private final ThreadPoolTaskExecutor agentExecutor;
     private final long dispatchRejectBackoffMs;
@@ -39,12 +41,14 @@ public class AgentRunWorker {
 
     public AgentRunWorker(TaskStore taskStore,
                           AgentPlanExecutor agentPlanExecutor,
+                          AgentMessageService agentMessageService,
                           AgentExecutionRegistry executionRegistry,
                           @Qualifier("agentExecutor") ThreadPoolTaskExecutor agentExecutor,
                           @Value("${qeploy.agent.worker.dispatch-reject-backoff-ms:5000}")
                           long dispatchRejectBackoffMs) {
         this.taskStore = taskStore;
         this.agentPlanExecutor = agentPlanExecutor;
+        this.agentMessageService = agentMessageService;
         this.executionRegistry = executionRegistry;
         this.agentExecutor = agentExecutor;
         this.dispatchRejectBackoffMs = dispatchRejectBackoffMs;
@@ -52,7 +56,7 @@ public class AgentRunWorker {
 
     @Scheduled(fixedDelayString = "${qeploy.agent.worker.poll-interval-ms:1000}")
     public void dispatchQueuedRuns() {
-        taskStore.recoverExpiredLeases();
+        notifyLeaseExhausted(taskStore.recoverExpiredLeases());
 
         // ADR-Y3 SHOULD: best-effort capacity check before claiming at all. Deliberately racy (the
         // pool's real state can change the instant after this read) — it only needs to be
@@ -122,6 +126,33 @@ public class AgentRunWorker {
             return;
         }
         taskStore.renewWorkerLeases(workerId, registered);
+    }
+
+    /**
+     * 리스가 만료돼 복구 횟수까지 소진한 태스크를 사용자에게 알린다.
+     *
+     * 이 경로는 사람이 만든 실패가 아니다 — 워커가 죽거나 서버가 재시작돼 실행이 통째로
+     * 사라진 경우다. 그래서 다른 실패 경로와 달리 아무도 채팅에 말을 남기지 않았고, 사용자에게는
+     * 진행 표시만 사라진 멈춘 화면으로 보였다. 종료 상태는 모두 대화에 흔적을 남겨야 한다.
+     *
+     * 한 건의 실패가 나머지를 막지 않게 태스크 단위로 격리한다 — 이 클래스의 다른 루프와 같은
+     * 원칙이다(ADR-Y3).
+     */
+    private void notifyLeaseExhausted(List<String> taskIds) {
+        for (String taskId : taskIds) {
+            try {
+                AgentTask task = taskStore.get(taskId);
+                if (task == null) {
+                    continue;
+                }
+                agentMessageService.appendAssistant(
+                        task.conversationId(),
+                        "실행이 중단되어 작업을 종료했습니다. 다시 요청해주세요."
+                );
+            } catch (Exception exception) {
+                log.warn("[AgentRunWorker] 리스 소진 안내 실패 — taskId={}", taskId, exception);
+            }
+        }
     }
 
     private int estimateFreeExecutorSlots() {

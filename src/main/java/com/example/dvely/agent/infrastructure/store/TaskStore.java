@@ -13,6 +13,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -153,18 +154,30 @@ public class TaskStore {
      * unlocked and in taskId-ascending order (LO-2) — the ordering mostly documents intent for a
      * future multi-row batch; today at most one row is realistically contended at a time.
      */
+    /**
+     * @return 최대 복구 횟수를 넘겨 FAILED 로 닫힌 taskId 들. 호출자가 이 목록으로 사용자에게
+     *         알린다 — 이 경로는 사람이 만든 실패가 아니라 실행이 통째로 사라진 경우이므로,
+     *         채팅에 아무 말도 남지 않으면 화면이 그냥 멈춘 것처럼 보인다. 여기서 직접 채팅에
+     *         쓰지 않는 이유는 이 클래스가 인프라 계층이라 AgentMessageService 를 들 수 없기
+     *         때문이다.
+     */
     @Transactional
-    public void recoverExpiredLeases() {
+    public List<String> recoverExpiredLeases() {
         List<String> candidates = runRepository.findExpiredLeaseTaskIds(
                 TaskStatus.RUNNING.name(),
                 LocalDateTime.now()
         );
+        List<String> exhausted = new ArrayList<>();
         for (String taskId : candidates) {
-            recoverOneExpiredLease(taskId);
+            if (recoverOneExpiredLease(taskId)) {
+                exhausted.add(taskId);
+            }
         }
+        return exhausted;
     }
 
-    private void recoverOneExpiredLease(String taskId) {
+    /** @return 복구 횟수를 소진해 FAILED 로 닫혔으면 true. */
+    private boolean recoverOneExpiredLease(String taskId) {
         LocalDateTime now = LocalDateTime.now();
         int exhausted = runRepository.failExhaustedLease(
                 taskId,
@@ -181,7 +194,7 @@ public class TaskStore {
                     TaskStatus.FAILED,
                     "중단된 실행의 최대 복구 횟수에 도달했습니다."
             );
-            return;
+            return true;
         }
         int recovered = runRepository.recoverLease(
                 taskId,
@@ -200,6 +213,7 @@ public class TaskStore {
         // If neither UPDATE affected a row, some other actor (a racing recovery attempt, or a
         // heartbeat that renewed the lease a moment ago) already resolved this row between the
         // candidate read above and now — a correct, silent no-op.
+        return false;
     }
 
     /**
