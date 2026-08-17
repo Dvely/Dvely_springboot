@@ -37,12 +37,29 @@ class PreviewGatewayServiceTest {
             exchange.close();
         });
         container.start();
-        service = new PreviewGatewayService();
+        service = new PreviewGatewayService("'self'");
     }
 
     @AfterEach
     void stopFakeContainer() {
         container.stop(0);
+    }
+
+    /**
+     * frame-ancestors 만 설정으로 넓힌다. 기본값 'self' 는 FE 와 게이트웨이가 같은 오리진이라는
+     * 전제인데 dev 는 그렇지 않아 인앱 프리뷰가 통째로 차단됐다. 넓히더라도 sandbox 는 그대로여야
+     * 한다 — 부모 토큰 탈취를 막는 것은 그쪽이고, 이 설정으로 열려서는 안 된다.
+     */
+    @Test
+    void configuredFrameAncestorsWidenFramingButNeverTheSandbox() {
+        var widened = new PreviewGatewayService("'self' http://localhost:5173");
+
+        String policy = widened.sandboxPolicy();
+
+        assertThat(policy).contains("frame-ancestors 'self' http://localhost:5173");
+        assertThat(policy).contains("sandbox allow-scripts allow-forms allow-popups allow-modals");
+        assertThat(policy).doesNotContain("allow-same-origin");
+        assertThat(policy).doesNotContain("allow-popups-to-escape-sandbox");
     }
 
     @Test

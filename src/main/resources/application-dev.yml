@@ -33,6 +33,10 @@ qeploy:
     # 운영은 FE 와 게이트웨이가 같은 사이트라 영향이 없으므로 기본값 true 를 유지하고,
     # dev 에서만 끈다. 끈 동안에는 "URL 을 아는 자 = 접근 허가" 모델로 돌아간다.
     require-access-cookie: ${QEPLOY_PREVIEW_REQUIRE_ACCESS_COOKIE:false}
+    # 위와 같은 이유로 프레이밍도 dev 에서만 넓힌다. FE 가 각자 로컬에서 뜨고 게이트웨이는 이
+    # 서버라 'self' 로는 인앱 프리뷰가 통째로 차단된다(iframe 이 빈 화면이 된다). 운영은 같은
+    # 사이트라 기본값 'self' 를 그대로 쓴다.
+    frame-ancestors: "${QEPLOY_PREVIEW_FRAME_ANCESTORS:'self' http://localhost:5173}"
   ai:
     anthropic:
       api-key: ${QEPLOY_AI_ANTHROPIC_API_KEY:${ANTHROPIC_API_KEY:}}

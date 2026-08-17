@@ -1,73 +1,36 @@
 package com.example.dvely.project.application.service;
 
-import com.example.dvely.agent.application.dto.AgentPlan;
-import com.example.dvely.agent.application.dto.AgentStep;
-import com.example.dvely.agent.application.dto.AgentSubmission;
-import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
-import com.example.dvely.agent.domain.value.AgentType;
-import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.project.application.command.ProjectCommandService;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
 import com.example.dvely.project.application.result.ProjectCreationResult;
 import com.example.dvely.project.application.result.ProjectDetailResult;
-import java.util.List;
-import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+/**
+ * 프로젝트 생성은 프로젝트 행만 만든다.
+ *
+ * 예전에는 여기서 초기 코드 생성 Agent task 를 함께 제출했는데, 그 태스크는 한 번도 실행된
+ * 적이 없다. conversationId 없이 제출돼서 (a) 승인 정책 기본값이 전부 true 라 CODE 스텝에
+ * CHANGE 승인이 붙고, (b) AgentMessageService 가 null 대화에서 no-op 이라 "승인 후 실행합니다"
+ * 안내가 버려지고, (c) WAITING_APPROVAL 은 워커가 집을 수 없는 상태라, 아무도 볼 수 없는 승인
+ * 뒤에서 current_step=0 인 채로 영구히 남았다.
+ *
+ * 없애도 잃는 기능이 없다. 사용자가 첫 요청을 보내면 CodeAgentService 가 프로젝트 전체를
+ * 처음부터 만들기 때문에 스캐폴딩 결과물은 어차피 덮인다.
+ *
+ * 다만 startMode=template 로 고른 templateType 을 실제로 적용하는 경로가 지금은 없다. 값은
+ * 프로젝트 행에 저장되지만 아무도 읽지 않는다 — 스캐폴딩이 실행된 적이 없으므로 이 PR 이전에도
+ * 마찬가지였다.
+ */
 @Service
 @RequiredArgsConstructor
 public class ProjectCreationService {
 
     private final ProjectCommandService projectCommandService;
-    private final AgentOrchestrator agentOrchestrator;
 
     public ProjectCreationResult create(Long ownerUserId, CreateProjectCommand command) {
         ProjectDetailResult project = projectCommandService.createProject(ownerUserId, command);
-        AgentSubmission generation = agentOrchestrator.submit(
-                generationPlan(project),
-                ownerUserId,
-                null
-        );
-        return new ProjectCreationResult(project, generation);
-    }
-
-    private AgentPlan generationPlan(ProjectDetailResult project) {
-        String instruction = buildInstruction(project);
-        return new AgentPlan(
-                List.of(new AgentStep(
-                        AgentType.CODE,
-                        Map.of(
-                                "instruction", instruction,
-                                "targetFile", ""
-                        )
-                )),
-                "프로젝트 생성 옵션에 따라 초기 코드를 생성합니다.",
-                providerFor(project.draftMode()),
-                project.projectId()
-        );
-    }
-
-    private String buildInstruction(ProjectDetailResult project) {
-        String draftInstruction = "quality".equals(project.draftMode())
-                ? "Use a production-quality structure, accessible UI, responsive design, and complete error/empty states."
-                : "Create a focused working draft with the minimum clean structure needed for preview.";
-        if ("template".equals(project.startMode())) {
-            return """
-                    Create a new %s template project named "%s".
-                    Implement the template as a complete working web application, not a placeholder.
-                    %s
-                    """.formatted(project.templateType(), project.name(), draftInstruction).trim();
-        }
-        return """
-                Create a new blank web project named "%s".
-                Start from a minimal usable page that the user can continue editing in the AI workspace.
-                Do not add product-specific sample features beyond a clean starter.
-                %s
-                """.formatted(project.name(), draftInstruction).trim();
-    }
-
-    private AiProvider providerFor(String draftMode) {
-        return "quality".equals(draftMode) ? AiProvider.ANTHROPIC : AiProvider.OPENAI;
+        return new ProjectCreationResult(project);
     }
 }

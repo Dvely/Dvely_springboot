@@ -123,6 +123,7 @@ class ProjectQueryServiceTest {
                         "DEPLOYMENT",
                         "APPROVED",
                         "운영 배포",
+                        null,
                         now.minusMinutes(4),
                         now.minusMinutes(3)
                 )));
@@ -154,9 +155,6 @@ class ProjectQueryServiceTest {
         assertThat(overview.domainSummary().certificateStatus()).isEqualTo("ACTIVE");
         assertThat(overview.domainSummary().httpsEnforced()).isTrue();
         assertThat(overview.cloudSummary().status()).isEqualTo("CONNECTED");
-        assertThat(overview.recentChanges())
-                .extracting(event -> event.type())
-                .containsExactly("DOMAIN_CONNECTED", "CHANGE_PREVIEW_READY", "APPROVAL_APPROVED");
         assertThat(overview.operationActions())
                 .filteredOn(action -> action.type().equals("DEPLOY"))
                 .singleElement()

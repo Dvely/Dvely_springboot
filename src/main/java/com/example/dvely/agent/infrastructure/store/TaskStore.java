@@ -13,6 +13,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -37,6 +38,12 @@ public class TaskStore {
     // this grace period is purely to avoid pointless lock waits against a task an approve() call is
     // actively finishing up on. Not a correctness-affecting number.
     private static final Duration STUCK_APPROVAL_GRACE = Duration.ofSeconds(30);
+    // 사람의 결정을 기다리는 상태들. 워커가 집을 수 없으므로(RUNNABLE_STATUSES 밖) 결정이
+    // 오지 않으면 스스로 빠져나올 길이 없다 — 방치 스윕이 닫아주는 대상이다.
+    private static final List<String> AWAITING_DECISION_STATUSES = List.of(
+            TaskStatus.WAITING_APPROVAL.name(),
+            TaskStatus.WAITING_RESULT_APPROVAL.name()
+    );
 
     private final SpringDataAgentRunRepository runRepository;
     private final SpringDataAgentRunEventRepository eventRepository;
@@ -147,18 +154,30 @@ public class TaskStore {
      * unlocked and in taskId-ascending order (LO-2) — the ordering mostly documents intent for a
      * future multi-row batch; today at most one row is realistically contended at a time.
      */
+    /**
+     * @return 최대 복구 횟수를 넘겨 FAILED 로 닫힌 taskId 들. 호출자가 이 목록으로 사용자에게
+     *         알린다 — 이 경로는 사람이 만든 실패가 아니라 실행이 통째로 사라진 경우이므로,
+     *         채팅에 아무 말도 남지 않으면 화면이 그냥 멈춘 것처럼 보인다. 여기서 직접 채팅에
+     *         쓰지 않는 이유는 이 클래스가 인프라 계층이라 AgentMessageService 를 들 수 없기
+     *         때문이다.
+     */
     @Transactional
-    public void recoverExpiredLeases() {
+    public List<String> recoverExpiredLeases() {
         List<String> candidates = runRepository.findExpiredLeaseTaskIds(
                 TaskStatus.RUNNING.name(),
                 LocalDateTime.now()
         );
+        List<String> exhausted = new ArrayList<>();
         for (String taskId : candidates) {
-            recoverOneExpiredLease(taskId);
+            if (recoverOneExpiredLease(taskId)) {
+                exhausted.add(taskId);
+            }
         }
+        return exhausted;
     }
 
-    private void recoverOneExpiredLease(String taskId) {
+    /** @return 복구 횟수를 소진해 FAILED 로 닫혔으면 true. */
+    private boolean recoverOneExpiredLease(String taskId) {
         LocalDateTime now = LocalDateTime.now();
         int exhausted = runRepository.failExhaustedLease(
                 taskId,
@@ -175,7 +194,7 @@ public class TaskStore {
                     TaskStatus.FAILED,
                     "중단된 실행의 최대 복구 횟수에 도달했습니다."
             );
-            return;
+            return true;
         }
         int recovered = runRepository.recoverLease(
                 taskId,
@@ -194,6 +213,7 @@ public class TaskStore {
         // If neither UPDATE affected a row, some other actor (a racing recovery attempt, or a
         // heartbeat that renewed the lease a moment ago) already resolved this row between the
         // candidate read above and now — a correct, silent no-op.
+        return false;
     }
 
     /**
@@ -260,6 +280,25 @@ public class TaskStore {
         return runRepository.findStuckWaitingApprovalTaskIds(
                 TaskStatus.WAITING_APPROVAL.name(),
                 LocalDateTime.now().minus(STUCK_APPROVAL_GRACE)
+        );
+    }
+
+    /**
+     * 방치 스윕 후보: 사람의 결정을 기다리는 두 상태 중 TTL 을 넘기도록 아무 변화가 없었던
+     * 태스크. {@link #findStuckWaitingApprovalTaskIds} 와 조건이 정반대라는 점이 중요하다 —
+     * 저쪽은 승인이 전부 APPROVED 인데 실행으로 못 넘어간 것을 구조하고, 이쪽은 아무도 결정하지
+     * 않아 영영 남을 것을 닫는다. 그래서 PENDING 승인을 가진 태스크는 저쪽 스윕에서 매 분 후보로
+     * 잡혔다가 매 분 그냥 지나쳐졌다.
+     *
+     * 비잠금 스칼라 읽기다. 재확인은 {@code AgentOrchestrator#abandonStaleApprovalTask} 가
+     * 태스크 행 잠금 아래에서 하므로, 여기서의 오검출(예: 방금 결정이 커밋된 태스크)은 그 호출이
+     * 상태 재검사로 조용히 no-op 되는 것으로 끝난다.
+     */
+    @Transactional(readOnly = true)
+    public List<String> findAbandonedApprovalTaskIds(Duration ttl) {
+        return runRepository.findAbandonedApprovalTaskIds(
+                AWAITING_DECISION_STATUSES,
+                LocalDateTime.now().minus(ttl)
         );
     }
 
@@ -412,11 +451,30 @@ public class TaskStore {
      */
     @Transactional
     public boolean resumeAfterResultApproval(String taskId) {
+        return resumePastResultGate(taskId, "RESULT_APPROVED", "결과 승인이 완료되어 남은 작업을 재개합니다.");
+    }
+
+    /**
+     * 게이트에서 <em>거절</em>했지만 태스크는 그대로 진행해야 하는 경로 — 현재는 REPOSITORY_BINDING
+     * 거절 하나뿐이다. RESULT 거절과 달리 태스크가 취소되지 않으므로
+     * ({@code ApprovalCommandService.reject}의 주석 참고) 상태 전이는 승인과 완전히 같고, 이벤트만
+     * 갈라진다. 같은 전이라고 {@link #resumeAfterResultApproval}을 재사용하면 사용자가 거절한
+     * 시점에 이벤트 스트림에 {@code RESULT_APPROVED}("결과 승인이 완료되어...")가 찍힌다.
+     *
+     * @param message 이벤트에 실릴 문구. {@link #markWaitingResultApproval}과 같이 호출자가 넘긴다 —
+     *                무엇을 거절했는지는 승인 타입을 아는 approval 레이어만 정확히 말할 수 있다.
+     */
+    @Transactional
+    public boolean resumeAfterResultDecline(String taskId, String message) {
+        return resumePastResultGate(taskId, "RESULT_DECLINED", message);
+    }
+
+    private boolean resumePastResultGate(String taskId, String eventType, String message) {
         AgentRunEntity run = requireRun(taskId);
         if (!run.resumeAfterResultApproval()) {
             return false;
         }
-        appendEvent(taskId, "RESULT_APPROVED", TaskStatus.QUEUED, "결과 승인이 완료되어 남은 작업을 재개합니다.");
+        appendEvent(taskId, eventType, TaskStatus.QUEUED, message);
         return true;
     }
 

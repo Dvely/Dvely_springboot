@@ -22,6 +22,7 @@ import com.example.dvely.project.application.result.ProjectRepositoryResult;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.project.application.service.RepositoryProvisioningService;
 import com.example.dvely.project.domain.service.ProjectDomainService;
 import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.project.domain.value.ProjectStatus;
@@ -66,7 +67,11 @@ class ProjectCommandServiceTest {
                 githubRepositoryPort,
                 userProfilePort,
                 chatCommandService,
-                auditRecorder
+                auditRecorder,
+                // 실제 구현을 물린다. 저장소 연결의 마지막 순서(preview 브랜치 준비 → 바인딩 →
+                // 저장 → 감사)는 이 서비스로 옮겨갔을 뿐 동작이 바뀐 게 아니라, mock 으로 막으면
+                // 기존 검증이 전부 무의미해진다.
+                new RepositoryProvisioningService(githubRepositoryPort, projectRepository, auditRecorder)
         );
     }
 

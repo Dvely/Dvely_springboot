@@ -16,8 +16,6 @@ import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectRepositoryResult;
 import com.example.dvely.project.application.result.ProjectRepositorySettingsResult;
 import com.example.dvely.project.application.result.ProjectSummaryResult;
-import com.example.dvely.agent.application.dto.AgentSubmission;
-import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.project.application.service.ProjectCostBudgetService;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
 import com.example.dvely.project.presentation.dto.request.ConnectProjectRepositoryRequest;
@@ -91,18 +89,8 @@ class ProjectControllerTest {
                 LocalDateTime.now(),
                 LocalDateTime.now()
         );
-        ProjectCreationResult result = new ProjectCreationResult(
-                project,
-                new AgentSubmission("task-1", TaskStatus.WAITING_APPROVAL, List.of(21L))
-        );
-        ProjectCreateResponse response = new ProjectCreateResponse(
-                11L,
-                "my-landing",
-                "DRAFT",
-                "task-1",
-                "WAITING_APPROVAL",
-                List.of(21L)
-        );
+        ProjectCreationResult result = new ProjectCreationResult(project);
+        ProjectCreateResponse response = new ProjectCreateResponse(11L, "my-landing", "DRAFT");
 
         when(projectFacade.createProject(eq(1L), any(CreateProjectCommand.class))).thenReturn(result);
         when(projectMapper.toCreateResponse(result)).thenReturn(response);
@@ -120,8 +108,6 @@ class ProjectControllerTest {
         assertThat(actual.projectId()).isEqualTo(11L);
         assertThat(actual.name()).isEqualTo("my-landing");
         assertThat(actual.status()).isEqualTo("DRAFT");
-        assertThat(actual.taskId()).isEqualTo("task-1");
-        assertThat(actual.approvalIds()).containsExactly(21L);
     }
 
     @Test

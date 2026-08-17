@@ -93,7 +93,7 @@ class ChatCommandServiceTest {
     }
 
     @Test
-    void sendMessageStartsAgentUsingConversationContext() {
+    void sendMessageStartsAgentUsingUserIntentHistoryOnly() {
         Conversation conversation = new Conversation(
                 21L,
                 2L,
@@ -116,7 +116,7 @@ class ChatCommandServiceTest {
         when(conversationRepository.findByIdAndUserIdAndDeletedFalse(21L, 2L))
                 .thenReturn(Optional.of(conversation));
         when(chatMessageRepository.save(any(ChatMessage.class))).thenReturn(saved);
-        when(agentMessageService.getConversationContext(21L)).thenReturn(context);
+        when(agentMessageService.getUserIntentHistory(21L)).thenReturn(context);
         when(decisionAgentService.decide(context, AiProvider.ANTHROPIC, 7L)).thenReturn(plan);
         when(agentOrchestrator.submit(plan, 2L, 21L))
                 .thenReturn(new AgentSubmission("task-abc123", TaskStatus.QUEUED, List.of()));
@@ -237,7 +237,7 @@ class ChatCommandServiceTest {
         when(conversationRepository.findByIdAndUserIdAndDeletedFalse(21L, 2L))
                 .thenReturn(Optional.of(conversation));
         when(chatMessageRepository.save(any(ChatMessage.class))).thenReturn(saved);
-        when(agentMessageService.getConversationContext(21L)).thenReturn(context);
+        when(agentMessageService.getUserIntentHistory(21L)).thenReturn(context);
         when(decisionAgentService.decide(context, AiProvider.ANTHROPIC, 7L))
                 .thenThrow(new IllegalStateException("LLM 연결 실패"));
 

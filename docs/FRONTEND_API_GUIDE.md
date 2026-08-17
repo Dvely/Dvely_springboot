@@ -86,7 +86,11 @@ DELETE /api/v1/auth/logout   (Authorization 필요)
 
 ### 2.6 GitHub App 재인증 (User Token 만료)
 
-`GET /api/v1/users/me` 응답의 `githubAppTokenExpired`가 `true`이거나 `githubAppRefreshTokenExpiresAt`이 과거이면, GitHub App User Token이 만료된 것입니다(GitHub App 설치 자체와는 별개 — 설치는 유지된 채 유저 토큰만 만료될 수 있음).
+`GET /api/v1/users/me` 응답의 **`githubAppReauthorizationRequired`가 `true`일 때만** 재인증 UI를 띄우세요(GitHub App 설치 자체와는 별개 — 설치는 유지된 채 유저 토큰만 만료될 수 있음).
+
+**`githubAppTokenExpired`로 판단하면 안 됩니다.** 이 값은 액세스 토큰의 신선도만 나타내는 진단용 필드입니다. 액세스 토큰 수명이 8시간이라 자주 `true`가 되지만, 리프레시 토큰이 살아 있으면 GitHub을 실제로 호출하는 서버 경로들이 그 자리에서 자동 재발급하므로 유저가 할 일이 없습니다. 이걸로 모달을 띄우면 멀쩡히 권한이 있는 유저에게 8시간마다 재인증을 요구하게 됩니다.
+
+`githubAppReauthorizationRequired`는 자동 재발급이 불가능한 경우에만 `true`입니다 — 리프레시 토큰이 없거나(미연동, 또는 `bad_refresh_token`으로 서버가 비운 뒤) 180일 수명이 지난 경우. `githubAppRefreshTokenExpiresAt`을 FE가 직접 비교할 필요도 없습니다.
 
 ```
 GET /api/v1/auth/github/app/reauthorize-url   (Authorization 필요)
@@ -146,7 +150,7 @@ function unwrapResponse(body: unknown): unknown {
 | 403 | `GITHUB_APP_NOT_INSTALLED` | GitHub App 미설치 상태에서 App 필요 작업 시도 | (정의는 있으나 현재 코드에서 직접 throw하는 지점은 제한적 — `githubAppInstalled` 필드로 사전 분기 권장) |
 | 404 | `NOT_FOUND` | 리소스 없음/소유권 불일치(존재 자체를 숨김) | 잘못된 ID, 다른 유저 소유 리소스 |
 | 405 | `METHOD_NOT_ALLOWED` | 지원하지 않는 HTTP 메서드 | 라우트는 있으나 메서드 불일치 |
-| 409 | `CONFLICT` | 상태 충돌(낙관적 락 경합, 이미 처리된 승인, 잘못된 상태 전이 등) | 동시 수정 경합(I45), 이미 결정된 Approval 재결정, FAILED가 아닌 배포 재시도, PENDING 승인이 남아있거나 attempt가 maxAttempts에 도달한 `/retry` 호출, `WAITING_RESULT_APPROVAL`이 아닌 태스크의 결과 승인 재개 시도, **RESULT 승인 approve 중 preview↔main GitHub merge 충돌/실패**(승인은 PENDING으로 롤백 유지 — 재시도 또는 거절 필요) 등 |
+| 409 | `CONFLICT` | 상태 충돌(낙관적 락 경합, 이미 처리된 승인, 잘못된 상태 전이 등) | 동시 수정 경합(I45), 이미 결정된 Approval 재결정, FAILED가 아닌 배포 재시도, PENDING 승인이 남아있거나 attempt가 maxAttempts에 도달한 `/retry` 호출, `WAITING_RESULT_APPROVAL`이 아닌 태스크의 결과 승인 재개 시도, **RESULT 승인 approve 중 preview↔main GitHub merge 충돌/실패**(승인은 PENDING으로 롤백 유지 — 재시도 또는 거절 필요), **REPOSITORY_BINDING 승인 approve 중 저장소 생성/push 실패**(마찬가지로 PENDING 유지. 프리뷰 컨테이너가 이미 만료됐다면 재시도해도 실패하므로 거절로 정리), **`preview`와 병합 대상 브랜치에 공통 조상이 없거나 병합 대상 브랜치가 없음**(저장소 연결이 잘못된 상태 — 메시지에 저장소·브랜치 이름이 담기며, 재시도해도 같은 오류라 저장소 설정을 고쳐야 함) 등 |
 | 500 | `INTERNAL_SERVER_ERROR` | 예기치 못한 서버 오류 | 미처리 예외 |
 
 **409(`CONFLICT`) 복구 패턴(공용)**: `Project`·`ProjectCloudConnectionSetting` 등 낙관적 락(`@Version`)이 걸린 리소스를 동시에 수정하면 409가 반환됩니다. FE는 최신 상태를 재조회(`GET`)한 뒤 사용자에게 재시도를 안내하세요(자동 재적용 없음 — 사용자가 마지막으로 본 화면 기준의 의도가 이미 낡았을 수 있으므로).
@@ -157,7 +161,7 @@ function unwrapResponse(body: unknown): unknown {
 
 ### 3.5 202 + 승인(Approval) 시맨틱 — 계획 승인(1단계) → 실행 → 결과 승인(2단계)
 
-Agent가 수행하는 부수효과 작업(코드 생성/수정, 배포, 도메인 연결/해제, 인프라 설정 변경, 인프라 운영)은 **비동기**입니다. 이런 엔드포인트는 최종 결과가 아니라 **추적 ID**를 즉시 반환합니다. CODE 작업이 포함된 plan은 **최대 2단계**의 승인을 거칠 수 있습니다 — 아래 ①이 1단계(계획 승인, 실행 전), ②가 2단계(결과 승인, 실행 후)입니다.
+Agent가 수행하는 부수효과 작업(코드 생성/수정, 배포, 도메인 연결/해제, 인프라 설정 변경, 인프라 운영)은 **비동기**입니다. 이런 엔드포인트는 최종 결과가 아니라 **추적 ID**를 즉시 반환합니다. CODE 작업이 포함된 plan은 **최대 2단계**의 승인을 거칠 수 있습니다 — 아래 ①이 1단계(계획 승인, 실행 전), ②·③이 2단계(실행 후)입니다. ②와 ③은 프로젝트의 저장소 연결 여부로 갈리므로 **한 task에서 둘 중 하나만** 발동합니다.
 
 **① 계획 승인 (실행 전 — `ApprovalType`: `CHANGE`·`DEPLOYMENT`·`DOMAIN_BINDING`·`INFRA_OPERATION`)**
 
@@ -166,12 +170,39 @@ Agent가 수행하는 부수효과 작업(코드 생성/수정, 배포, 도메�
 - `approvalIds`의 각 ID를 `POST /api/v1/approvals/{approvalId}/approve` 또는 `/reject`로 처리해야 작업이 재개/취소됩니다.
 - 승인이 필요 없으면(`approvalIds`가 빈 배열) `status`는 바로 `QUEUED`입니다.
 
+**방치된 승인은 서버가 닫습니다.** 승인도 거절도 오지 않은 채 오래 남은 task(`WAITING_APPROVAL` / `WAITING_RESULT_APPROVAL`)는 서버가 주기적으로 `CANCELLED`로 정리하고, 그 task의 `PENDING` 승인도 함께 `CANCELLED`가 됩니다. 대화가 있으면 "오랫동안 결정되지 않아 이 작업을 종료했습니다"라는 안내가 남습니다. 기본 유예 기간은 7일이라 정상적인 사용 중에 마주칠 일은 없지만, FE는 승인 카드를 띄운 뒤 해당 승인이 `CANCELLED`로 바뀔 수 있다는 점을 고려해야 합니다(승인/거절 시도 시 409).
+
 **② 결과 승인 (CODE 실행 후, main 반영 전 — `ApprovalType`: `RESULT`)**
 
-- plan에 CODE step이 있고, `resultApprovalRequired` 정책(기본값 `true`)이 켜져 있으며, 프로젝트에 GitHub 저장소가 연결(BOUND)된 상태라면, **마지막 CODE step이 끝난 직후** 별도의 2단계 게이트가 발동합니다. 저장소 미연결 프로젝트(예: 최초 생성 직후의 CODE 작업 — §5.1)에는 반영할 저장소 자체가 없어 이 게이트가 적용되지 않습니다.
+- plan에 CODE step이 있고, `resultApprovalRequired` 정책(기본값 `true`)이 켜져 있으며, 프로젝트에 GitHub 저장소가 연결(BOUND)된 상태라면, **마지막 CODE step이 끝난 직후** 별도의 2단계 게이트가 발동합니다. 저장소 미연결 프로젝트(예: 최초 생성 직후의 CODE 작업 — §5.1)에는 반영할 저장소 자체가 없어 이 게이트 대신 아래 ③이 발동합니다.
 - 게이트가 발동하면 변경 사항이 먼저 `preview` 브랜치에 commit·push되고, `taskId`의 `status`가 `WAITING_RESULT_APPROVAL`로 전이하며, 타입 `RESULT`인 신규 승인 1건이 `PENDING`으로 생성됩니다. 이 승인 ID는 ①의 `approvalIds`에는 없습니다(①은 실행 전에 알 수 있는 계획 승인만 포함) — `GET /api/v1/agent/tasks/{taskId}`의 `pendingApprovalId` 필드(§4.5)로 얻거나 `GET /api/v1/projects/{id}/approvals`에서 `type=RESULT`·`status=PENDING` 행을 찾습니다.
 - 같은 `POST /approvals/{approvalId}/approve`/`/reject` 엔드포인트를 그대로 사용합니다. **승인**하면 그 시점 preview 브랜치 전체 상태가 main에 반영(PR 생성+merge)되고 `Change.status`가 `MERGED`로, task는 남은 step이 있으면 `QUEUED`로 재개(없으면 바로 `DONE`)됩니다. **거절**하면 main에는 반영되지 않고(`Change.status`=`REJECTED`) task는 `CANCELLED`로 종료되며, 변경 내용은 preview 브랜치에 그대로 남습니다(다음 작업이 그 위에 이어짐).
 - git 반영(결과 승인)과 GitHub Pages 배포(`DEPLOYMENT` 승인 + `POST /projects/{id}/deployments`)는 **서로 다른 단계**입니다. 결과 승인은 "이 결과를 제품 소스(main)로 받아들일지"를, 배포는 "main의 현재 상태를 실제로 공개할지"를 결정합니다 — 결과 승인만으로는 라이브 사이트가 바뀌지 않습니다. 상세 흐름 예시는 §5.3.
+
+**③ 저장소 연결 승인 (CODE 실행 후, 저장소 미연결 프로젝트 — `ApprovalType`: `REPOSITORY_BINDING`)**
+
+- ②와 **같은 지점**(마지막 CODE step 직후)에서 평가되며, 프로젝트가 아직 저장소 미연결(NOT_BOUND)일 때 ② 대신 발동합니다. ②가 "이 preview를 main에 반영할까?"를 묻는다면 ③은 "저장소를 만들어 연결할까?"를 묻습니다.
+- **왜 필요한가**: 미연결 프로젝트의 CODE 결과물은 preview 컨테이너에만 존재하고, 컨테이너는 TTL(기본 30분)로 삭제됩니다. 이 게이트가 없으면 프리뷰가 만료되는 순간 작업물이 영구 소실됩니다.
+- 발동하면 task가 ②와 동일하게 `WAITING_RESULT_APPROVAL`로 전이하고, 타입 `REPOSITORY_BINDING`인 승인 1건이 `PENDING`으로 생성됩니다. 승인 ID를 얻는 방법도 ②와 같습니다(`pendingApprovalId`). 채팅 메시지에는 기본 저장소 이름 후보(프로젝트 이름 기반)와 preview URL이 함께 안내됩니다.
+- 이 타입만 **승인 정책으로 끌 수 없습니다.** 다른 타입은 끄면 "사람 확인 없이 그대로 진행"이라는 대안 동작이 있지만, 이 게이트는 끌 경우의 대안이 "작업물을 버린다"뿐이라 정책 스위치를 두지 않았습니다. `GET /projects/{id}/settings/chat`에도 대응 필드가 없습니다.
+- **승인 화면 구성**: 승인 조회 응답(`GET /approvals/{id}`, `GET /projects/{id}/approvals`)의 **`input` 필드**로 입력 UI를 그립니다. `input`이 `null`이면 단순 승인/거절 버튼만, 값이 있으면 `defaultValue`를 채운 입력 필드를 함께 그리고 승인 시 그 값을 `field` 이름으로 본문에 실어 보냅니다. 저장소 이름 기본값을 `summary`("[저장소 연결] my-repo")에서 접두사를 잘라 쓰지 마세요 — 그 문구는 표시용이라 언제든 바뀝니다.
+
+```json
+{
+  "approvalId": 50, "type": "REPOSITORY_BINDING", "status": "PENDING",
+  "summary": "[저장소 연결] my-repo",
+  "input": {
+    "field": "repositoryName",
+    "defaultValue": "my-repo",
+    "required": false,
+    "pattern": "^[a-z0-9-]+$",
+    "maxLength": 100
+  }
+}
+```
+
+- **승인**: `POST /approvals/{approvalId}/approve`에 **선택적 본문** `{ "repositoryName": "my-repo" }`를 실어 저장소 이름을 지정할 수 있습니다. 본문을 생략(또는 `repositoryName`을 `null`/공백)하면 승인 요약에 표시된 후보 이름이 그대로 쓰입니다. 이름은 소문자·숫자·하이픈만 남기고 정규화됩니다(`My Repo!!` → `my-repo`). 같은 이름의 저장소가 이미 있으면 새로 만들지 않고 그것을 연결합니다. 연결 후 현재 작업물이 `preview` 브랜치에 push되고 task가 재개됩니다.
+- **거절**: `POST /approvals/{approvalId}/reject`. **이 타입만 task를 취소하지 않습니다** — 이미 성공한 CODE 작업을 저장소에 남길지 묻는 승인이라, 거절은 "저장소를 만들지 않는다"는 뜻일 뿐이고 task는 그대로 재개되어 정상 완료(`DONE`)됩니다. 작업물은 프리뷰에만 남고 만료 시 사라집니다.
 
 ### 3.6 taskId 폴링 / SSE
 
@@ -181,13 +212,13 @@ Agent가 수행하는 부수효과 작업(코드 생성/수정, 배포, 도메�
 ```
 GET /api/v1/agent/tasks/{taskId}
 ```
-`status`가 `DONE`/`FAILED`/`CANCELLED`가 될 때까지 주기적으로 호출합니다. `WAITING_INPUT` 상태이면 `question` 필드를 사용자에게 보여주고 `POST /api/v1/agent/tasks/{taskId}/input`으로 응답을 제출해야 다음 단계로 진행됩니다. `WAITING_RESULT_APPROVAL` 상태이면(§3.5②) `pendingApprovalId`(§4.5)로 얻은 RESULT 승인 ID를 `POST /api/v1/approvals/{pendingApprovalId}/approve` 또는 `/reject`로 처리해야 다음 단계로 진행됩니다.
+`status`가 `DONE`/`FAILED`/`CANCELLED`가 될 때까지 주기적으로 호출합니다. `WAITING_INPUT` 상태이면 `question` 필드를 사용자에게 보여주고 `POST /api/v1/agent/tasks/{taskId}/input`으로 응답을 제출해야 다음 단계로 진행됩니다. `WAITING_RESULT_APPROVAL` 상태이면(§3.5②③) `pendingApprovalId`(§4.5)로 얻은 승인 ID를 `POST /api/v1/approvals/{pendingApprovalId}/approve` 또는 `/reject`로 처리해야 다음 단계로 진행됩니다. 이 상태는 `RESULT`와 `REPOSITORY_BINDING` 두 게이트가 공유하므로, 어느 쪽인지는 승인의 `type`으로 구분하세요(§3.5③은 approve에 선택적 본문을 받고 reject해도 task가 취소되지 않습니다).
 
 **이벤트 조회(증분)**
 ```
 GET /api/v1/agent/tasks/{taskId}/events?afterEventId={마지막으로 받은 ID}
 ```
-`type`은 `CREATED | WAITING_APPROVAL | QUEUED | STARTED | RETRY_QUEUED | LEASE_RECOVERED | RECOVERY_EXHAUSTED | WAITING_RESULT_APPROVAL | RESULT_APPROVED | WAITING_INPUT | INPUT_RECEIVED | COMPLETED | FAILED | CANCELLED` 중 하나입니다. 매번 전체를 다시 받지 않고 `eventId`만 이어서 조회할 수 있습니다. `WAITING_RESULT_APPROVAL`은 결과 승인 대기 진입, `RESULT_APPROVED`는 결과 승인 완료 후 재개(둘 다 §3.5②) 이벤트입니다 — 결과 승인 거절은 별도 타입 없이 기존 `CANCELLED`로 기록됩니다(계획 승인 거절과 동일 시맨틱).
+`type`은 `CREATED | WAITING_APPROVAL | QUEUED | STARTED | RETRY_QUEUED | LEASE_RECOVERED | RECOVERY_EXHAUSTED | WAITING_RESULT_APPROVAL | RESULT_APPROVED | RESULT_DECLINED | WAITING_INPUT | INPUT_RECEIVED | COMPLETED | FAILED | CANCELLED` 중 하나입니다. 매번 전체를 다시 받지 않고 `eventId`만 이어서 조회할 수 있습니다. `WAITING_RESULT_APPROVAL`은 결과/저장소 연결 승인 대기 진입, `RESULT_APPROVED`는 그 승인 완료 후 재개 이벤트입니다. `RESULT_DECLINED`는 **거절했지만 task는 계속 진행되는** 경우 — 현재는 저장소 연결 승인 거절(§3.5③) 하나뿐입니다. RESULT 승인 거절(§3.5②)은 task가 취소되므로 별도 타입 없이 기존 `CANCELLED`로 기록됩니다(계획 승인 거절과 동일 시맨틱).
 
 **SSE(실시간)**
 ```
@@ -227,7 +258,7 @@ Accept: text/event-stream
 
 | 메서드 | 경로 | 용도 | 응답(핵심 필드) |
 |---|---|---|---|
-| GET | `/api/v1/users/me` | 현재 로그인 유저 프로필 + GitHub App 연동 상태 | `{ id, username, avatarUrl, githubAppInstalled, githubAppTokenLinked, githubAppTokenExpired, githubAppAccessTokenExpiresAt, githubAppRefreshTokenExpiresAt }` |
+| GET | `/api/v1/users/me` | 현재 로그인 유저 프로필 + GitHub App 연동 상태 | `{ id, username, avatarUrl, githubAppInstalled, githubAppTokenLinked, githubAppTokenExpired, githubAppReauthorizationRequired, githubAppAccessTokenExpiresAt, githubAppRefreshTokenExpiresAt }` (재인증 UI는 `githubAppReauthorizationRequired`로만 판단 — §2.6) |
 
 ### 4.3 Project — `com.example.dvely.project.presentation` (+ Approval, Change) (24 + 4 + 3 = 31)
 
@@ -235,19 +266,33 @@ Accept: text/event-stream
 
 | 메서드 | 경로 | 용도 | 요청 | 응답(핵심 필드) | 주요 에러 |
 |---|---|---|---|---|---|
-| POST | `/api/v1/projects` | 프로젝트 생성(DRAFT) + 초기 코드 생성 Agent task 자동 제출 | `{ name, startMode(blank\|template), templateType?, draftMode(fast\|quality) }` | 202 `{ projectId, name, status, taskId, taskStatus, approvalIds }` | 400 |
+| POST | `/api/v1/projects` | 프로젝트 생성(DRAFT). **코드 생성은 시작하지 않음** — 대화로 첫 요청을 보낼 때 task가 제출된다 | `{ name, startMode(blank\|template), templateType?, draftMode(fast\|quality) }` | 202 `{ projectId, name, status }` | 400 |
 | POST | `/api/v1/projects/{id}/repository` | GitHub 저장소 연결(신규 생성 또는 기존 import) | `{ repositoryMode(create\|existing), repositoryName?, repositoryFullName?, repositoryVisibility? }` | `{ projectId, repositoryFullName, repositoryVisibility, bindingStatus, repositoryHealth }` | 409(이미 연결됨), 400(저장소 접근 불가) |
 | DELETE | `/api/v1/projects/{id}/repository` | 저장소 연결 해제(GitHub 저장소 자체는 삭제 안 함) | - | 204 | 404 |
 | GET | `/api/v1/projects/github/repositories` | GitHub App으로 접근 가능한 내 저장소 목록 | - | `[{ fullName, name, owner, visibility, defaultBranch, updatedAt }]` | - |
 | GET | `/api/v1/projects` | 내 프로젝트 목록(최신 수정순) | - | `[{ projectId, name, deployStatus, currentUrl, updatedAt, updatedAtRelativeText }]` | - |
-| GET | `/api/v1/projects/{id}` | 프로젝트 상세(메타데이터) | - | `{ projectId, name, status, startMode, templateType, draftMode, createdAt, updatedAt }` | 404 |
+| GET | `/api/v1/projects/{id}` | 프로젝트 상세(메타데이터) | - | `{ projectId, name, status, startMode, templateType, draftMode, createdAt, updatedAt }` (`templateType`은 콘텐츠 템플릿 — 프레임워크가 아님, §5.1) | 404 |
 | PATCH | `/api/v1/projects/{id}` | 프로젝트명 수정(현재 name만 수정 가능) | `{ name }` | `ProjectDetailResponse` (위와 동일 shape) | 400, 404 |
 | DELETE | `/api/v1/projects/{id}` | 프로젝트 삭제 | query: `deleteMode`(`PROJECT_ONLY` 기본값 \| `PROJECT_AND_REPOSITORY`) | 204 | 404, 409(락 경합) |
-| GET | `/api/v1/projects/{id}/overview` | 개요(도메인/배포/최근 이벤트/커밋/저장소·클라우드 상태/운영조치) | - | `{ currentUrl, deployStatus, currentVersion, repositoryVersion, recentChanges[], latestCommit, repositoryHealth, domainSummary, cloudSummary, operationActions[] }` | 404 |
-| GET | `/api/v1/projects/{id}/activity-logs` | 활동 로그(Deployment/Change/Approval/Domain 통합) | - | `[{ type, message, occurredAt }]` | - |
+| GET | `/api/v1/projects/{id}/overview` | 개요(도메인/배포/커밋/저장소·클라우드 상태/운영조치) | - | `{ currentUrl, deployStatus, currentVersion, repositoryVersion, latestCommit, repositoryHealth, domainSummary, cloudSummary, operationActions[] }` | 404 |
+| GET | `/api/v1/projects/{id}/activity-logs` | 활동 로그(Deployment/Change/Approval/Domain 통합) | - | `[{ type, message, occurredAt }]` — `type`은 고정 목록이 아니다(아래 참고) | - |
+
+> **`activity-logs`의 `type`을 닫힌 enum으로 받지 마세요.** 값이 고정 목록이 아니라 접두사와 상태 enum의 조합으로 만들어집니다.
+>
+> ```
+> "DEPLOYMENT_" + DeployStatus     DRAFT PENDING IN_PROGRESS PREVIEW_READY LIVE FAILED
+> "CHANGE_"     + ChangeStatus     PREVIEW_READY DEPLOYED MERGED REJECTED
+> "APPROVAL_"   + ApprovalStatus   PENDING APPROVED REJECTED CANCELLED
+> "DOMAIN_"     + DomainStatus     REQUESTED PROVISIONING VERIFYING CONNECTED FAILED
+> "PROJECT_CREATED"
+> ```
+>
+> 네 enum 중 어디에 값이 하나 추가되면 새 `type`이 저절로 생깁니다. 실제로 FE가 이 값을 `z.enum(['PROJECT_CREATED'])`로 받고 있어서 다른 유형이 섞이는 순간 목록 전체가 파싱 실패로 사라진 적이 있습니다(2026-08-16). 화면이 이 값으로 분기하지 않는다면 열린 문자열로 받는 편이 안전합니다.
+
+`message`는 이벤트 설명 뒤에 원문이 붙는 `"<라벨>: <본문>"` 구조입니다. `CHANGE_*` 계열은 에이전트 요약 마크다운이 통째로 들어가 30줄을 넘기도 하므로, 목록에서는 클램프하고 필요할 때 펼치는 식으로 다루세요. 서버는 자르지 않습니다 — 잘라서 보내면 상세를 볼 방법이 사라지기 때문입니다.
 | GET | `/api/v1/projects/{id}/commits` | 연결 저장소 최근 커밋(미연결 시 빈 배열) | - | `[{ sha, message, author, committedAt, relativeTime }]` | - |
 | GET | `/api/v1/projects/{id}/repository-health` | 저장소 접근 가능 여부 라이브 확인 | - | `{ health: HEALTHY\|REPOSITORY_NOT_FOUND\|ACCESS_DENIED\|PERMISSION_MISMATCH\|UNKNOWN_ERROR }` | - |
-| GET | `/api/v1/projects/{id}/settings/chat` | Agent 승인 정책 조회 | - | `{ projectId, changeApprovalRequired, deploymentApprovalRequired, domainApprovalRequired, infraApprovalRequired, resultApprovalRequired }`(생성 시 전부 `true`) | 404 |
+| GET | `/api/v1/projects/{id}/settings/chat` | Agent 승인 정책 조회 | - | `{ projectId, changeApprovalRequired, deploymentApprovalRequired, domainApprovalRequired, infraApprovalRequired, resultApprovalRequired }`(생성 시 전부 `true`. `REPOSITORY_BINDING`은 끌 수 없어 대응 필드가 없습니다 — §3.5③) | 404 |
 | PATCH | `/api/v1/projects/{id}/settings/chat` | Agent 승인 정책 수정(`changeApprovalRequired`~`infraApprovalRequired` 4개 필드는 전체 필수 — 부분 수정 불가) | `{ changeApprovalRequired, deploymentApprovalRequired, domainApprovalRequired, infraApprovalRequired, resultApprovalRequired? }`(`resultApprovalRequired`만 예외적으로 nullable — 생략/`null`이면 현재 값 유지, 구버전 FE 호환용) | 위와 동일 shape | 400 |
 | GET | `/api/v1/projects/{id}/settings/infrastructure` | 선택된 클라우드 연결 조회 | - | `{ projectId, cloudConnectionId, provider, displayName, region, status, lastCheckedAt, updatedAt }`(미선택 시 전부 null) | 404 |
 | PUT | `/api/v1/projects/{id}/settings/infrastructure` | 클라우드 연결 선택(CONNECTED만 가능) | `{ cloudConnectionId }` | 위와 동일 shape | 409(대상이 CONNECTED 아님) |
@@ -260,9 +305,9 @@ Accept: text/event-stream
 | DELETE | `/api/v1/projects/{id}/settings/cost-budget` | 예산 해제 | - | 204(멱등) | - |
 | GET | `/api/v1/projects/{id}/settings/repository` | 저장소 연결 설정 조회(`defaultBranch`는 GitHub 라이브 조회, 실패 시 null) | - | `{ projectId, connected, repositoryFullName, repositoryUrl, defaultBranch, repositoryVisibility, bindingStatus, repositoryHealth, connectedAt, lastSyncedAt }` | 404 |
 | GET | `/api/v1/projects/{id}/approvals` | 프로젝트 승인 목록(전체 상태) | - | `[ApprovalResponse]` | - |
-| GET | `/api/v1/approvals/{approvalId}` | 승인 상세 | - | `{ approvalId, projectId, conversationId, taskId, type(CHANGE\|DEPLOYMENT\|DOMAIN_BINDING\|INFRA_OPERATION\|RESULT), status(PENDING\|APPROVED\|REJECTED\|CANCELLED), summary, createdAt, decidedAt }` | 404 |
-| POST | `/api/v1/approvals/{approvalId}/approve` | 승인(계획 승인은 모든 필요 승인 완료 시 task 자동 재개. `type=RESULT`는 단독 결정 — 즉시 preview→main 반영 후 task 재개, §3.5②) | - | `ApprovalResponse` | 409(이미 처리됨, 또는 RESULT 반영 중 GitHub merge 충돌/실패로 PENDING 유지) |
-| POST | `/api/v1/approvals/{approvalId}/reject` | 거절(task 취소. `type=RESULT`는 main 미반영 + Change=REJECTED, 변경은 preview 브랜치에 잔존) | - | `ApprovalResponse` | 409(이미 처리됨) |
+| GET | `/api/v1/approvals/{approvalId}` | 승인 상세 | - | `{ approvalId, projectId, conversationId, taskId, type(CHANGE\|DEPLOYMENT\|DOMAIN_BINDING\|INFRA_OPERATION\|RESULT\|REPOSITORY_BINDING), status(PENDING\|APPROVED\|REJECTED\|CANCELLED), summary, input, createdAt, decidedAt }`(`input`은 §3.5③ — 값을 함께 받아야 하는 승인에만 채워지고 나머지는 null) | 404 |
+| POST | `/api/v1/approvals/{approvalId}/approve` | 승인(계획 승인은 모든 필요 승인 완료 시 task 자동 재개. `type=RESULT`는 단독 결정 — 즉시 preview→main 반영 후 task 재개, §3.5②. `type=REPOSITORY_BINDING`은 저장소 생성·연결 후 task 재개, §3.5③) | 선택 · `{ repositoryName? }`(`REPOSITORY_BINDING`에서만 의미 있음. 생략/`null`/공백이면 승인 요약의 후보 이름 사용. 다른 타입은 무시) | `ApprovalResponse` | 409(이미 처리됨, 또는 RESULT 반영 중 GitHub merge 충돌/실패로 PENDING 유지) |
+| POST | `/api/v1/approvals/{approvalId}/reject` | 거절(task 취소. `type=RESULT`는 main 미반영 + Change=REJECTED, 변경은 preview 브랜치에 잔존. **`type=REPOSITORY_BINDING`만 task를 취소하지 않고** 그대로 재개·완료, §3.5③) | - | `ApprovalResponse` | 409(이미 처리됨) |
 | GET | `/api/v1/projects/{id}/changes` | 프로젝트 코드 변경(Change) 목록 | - | `[ChangeResponse]` | - |
 | GET | `/api/v1/changes/{changeId}` | Change 상세 | - | `{ changeId, projectId, conversationId, taskId, previewSessionId, status(PREVIEW_READY\|MERGED\|REJECTED\|DEPLOYED), summary, approvalId, prNumber, mergeCommitSha, mergedAt, createdAt, updatedAt }`(`approvalId`~`mergedAt`은 결과 승인 게이트가 발동하지 않은 legacy 변경이면 전부 null) | 404 |
 | GET | `/api/v1/changes/{changeId}/diff` | Change의 git diff 텍스트 | - | `{ changeId, diff }` | 404 |
@@ -296,9 +341,9 @@ Accept: text/event-stream
 | POST | `/tasks/{taskId}/retry` | 실패한 태스크를 저장된 plan + 현재 step부터 재시도 | - | 202 | 409(PENDING 승인이 남아있거나 attempt가 maxAttempts에 도달함 — `retryable`이 `false`) |
 | DELETE | `/session` | 현재 유저의 모든 PreviewSession 종료(Docker 컨테이너 정리) | - | 204 | 404(종료할 세션 없음) |
 
-`TaskStatus` 전체 값: `PENDING · WAITING_APPROVAL · QUEUED · RETRY_WAIT · RUNNING · WAITING_INPUT · WAITING_RESULT_APPROVAL · DONE · FAILED · CANCELLED`. `WAITING_RESULT_APPROVAL`(#56)은 plan의 마지막 CODE step이 끝난 직후, 결과(preview+diff) 반영을 위한 RESULT 승인을 기다리는 상태입니다(§3.5②) — worker가 절대 claim하지 않는 상태이므로 사람의 승인/거절 없이는 자동으로 빠져나가지 않습니다.
+`TaskStatus` 전체 값: `PENDING · WAITING_APPROVAL · QUEUED · RETRY_WAIT · RUNNING · WAITING_INPUT · WAITING_RESULT_APPROVAL · DONE · FAILED · CANCELLED`. `WAITING_RESULT_APPROVAL`(#56)은 plan의 마지막 CODE step이 끝난 직후, 사람의 게이트 결정을 기다리는 상태입니다 — worker가 절대 claim하지 않는 상태이므로 사람의 승인/거절 없이는 자동으로 빠져나가지 않습니다. 저장소가 연결된 프로젝트는 결과(preview+diff) 반영을 위한 `RESULT` 승인(§3.5②), 미연결 프로젝트는 `REPOSITORY_BINDING` 승인(§3.5③)을 기다리며, **두 경우가 같은 상태 값을 공유**하므로 어느 쪽인지는 승인의 `type`으로 구분해야 합니다.
 
-`pendingApprovalId`(nullable Long, #57): 이 태스크에 걸린 **PENDING 승인 중 가장 오래된 것의 ID**(예: 빌드 실패 자동복구가 만드는 CHANGE 승인, 또는 `WAITING_RESULT_APPROVAL` 상태의 RESULT 승인). `WAITING_RESULT_APPROVAL` 상태에서는 이 시점 PENDING 승인이 정확히 1건(RESULT)뿐이므로 항상 그 결과 승인 ID를 신뢰할 수 있습니다 — 별도 `GET /projects/{id}/approvals` 조회 없이 바로 `POST /approvals/{pendingApprovalId}/approve`(`/reject`)를 호출하면 됩니다. null이면 승인 대기 없음.
+`pendingApprovalId`(nullable Long, #57): 이 태스크에 걸린 **PENDING 승인 중 가장 오래된 것의 ID**(예: 빌드 실패 자동복구가 만드는 CHANGE 승인, 또는 `WAITING_RESULT_APPROVAL` 상태의 RESULT·REPOSITORY_BINDING 승인). `WAITING_RESULT_APPROVAL` 상태에서는 이 시점 PENDING 승인이 정확히 1건(RESULT 또는 REPOSITORY_BINDING 중 하나 — 둘이 동시에 열리는 일은 없습니다)뿐이므로 항상 그 게이트 승인 ID를 신뢰할 수 있습니다 — 별도 `GET /projects/{id}/approvals` 조회 없이 바로 `POST /approvals/{pendingApprovalId}/approve`(`/reject`)를 호출하면 됩니다. null이면 승인 대기 없음.
 
 `retryable`(boolean, #57): `POST /tasks/{taskId}/retry` 호출이 실제로 성공할지 여부 — `/retry`의 게이트(§4.5 위 표)와 **동일한 정의**를 read-only로 미리 보여주는 힌트입니다. `true`가 되려면 `status`가 `FAILED`이고, `pendingApprovalId`가 `null`(승인 대기 중인 건이 없음)이며, `attempt < maxAttempts`여야 합니다. `pendingApprovalId`가 채워져 있으면 이 값은 항상 `false`이며 `/retry`를 호출해도 409로 거부됩니다 — 먼저 그 승인을 approve/reject로 처리해야 합니다(승인 처리 자체가 재실행/재개를 트리거함).
 
@@ -465,7 +510,7 @@ setIframeSrc(previewUrl);   // ← 반드시 이 응답의 previewUrl 을 사용
 
 아래 예시는 실제 DTO 필드명과 일치합니다(테스트/문서 목적의 예시 값 사용). 모든 요청에 `Authorization: Bearer {accessToken}` 헤더가 필요합니다(명시 생략).
 
-### 5.1 프로젝트 생성 → 승인 → agent task 폴링 → preview
+### 5.1 프로젝트 생성 → 첫 요청 → 승인 → agent task 폴링 → preview
 
 ```
 ① POST /api/v1/projects
@@ -473,25 +518,38 @@ setIframeSrc(previewUrl);   // ← 반드시 이 응답의 previewUrl 을 사용
 
 → 202
 { "status": 202, "code": "SUCCESS", "message": "요청이 접수되었습니다", "data": {
-    "projectId": 12, "name": "my-landing", "status": "DRAFT",
-    "taskId": "a1b2c3d4e5f6", "taskStatus": "WAITING_APPROVAL", "approvalIds": [34]
+    "projectId": 12, "name": "my-landing", "status": "DRAFT"
 } }
 ```
-프로젝트 생성 시 Chat 승인 정책은 기본값이 전부 `true`이므로, 이 초기 CODE 작업도 `changeApprovalRequired` 정책의 적용을 받아 **승인 대기**로 시작합니다.
+**프로젝트 생성은 코드 생성을 시작하지 않습니다.** 프로젝트 행만 만들어지고, Agent task는 사용자가 대화로 첫 요청을 보낼 때 제출됩니다(②). `startMode`/`templateType`은 프로젝트에 저장되지만 현재 이 값을 실제로 적용하는 코드 생성 경로는 없습니다.
+
+> **`templateType`은 빌드 프레임워크가 아닙니다.** 사용자가 고른 **콘텐츠 템플릿**(랜딩·포트폴리오 등)을 담는 자리이고, 여기에 `nextjs`·`vite` 같은 프레임워크 이름을 넣지 마세요.
+>
+> 배포 워크플로의 publish 디렉터리는 **저장소에서 자동 감지한 프레임워크만으로** 결정됩니다(감지 실패 시 `./dist`). 예전에는 감지가 실패하면 `templateType`으로 폴백했는데, 어휘가 맞지 않아 `landing` 같은 값이 들어오면 publish 디렉터리를 잘못 골라 **배포는 성공하는데 산출물만 비는** 상태가 될 수 있었습니다. 그래서 그 폴백을 제거했습니다.
+
+> 이전에는 이 응답에 `taskId` / `taskStatus` / `approvalIds`가 있었고 생성 시점에 초기 코드 생성 task가 제출됐습니다. 그 task는 `conversationId` 없이 제출돼 안내 메시지가 채팅에 남지 않았고, 결과적으로 **아무도 볼 수 없는 승인 뒤에서 한 번도 실행되지 않은 채** `WAITING_APPROVAL`로 쌓이기만 했습니다. 세 필드는 응답에서 제거됐습니다.
 
 ```
-② POST /api/v1/approvals/34/approve
+② POST /api/v1/conversations/{conversationId}/messages
+{ "content": "간단한 랜딩 페이지를 만들어줘" }
+→ 201  { "data": { "messageId": 3001, "taskId": "a1b2c3d4e5f6", ... } }
+
+   대화가 없으면 먼저 POST /api/v1/projects/12/conversations 로 만듭니다.
+   승인이 필요한 계획이면 taskId가 WAITING_APPROVAL로 시작하고,
+   승인 ID는 GET /api/v1/agent/tasks/{taskId}의 pendingApprovalId(§4.5)로 얻습니다.
+
+③ POST /api/v1/approvals/34/approve
 → { "approvalId": 34, "status": "APPROVED", ... }
    (내부적으로 taskId=a1b2c3d4e5f6이 QUEUED로 전환되어 worker가 실행 시작)
 
-③ GET /api/v1/agent/tasks/a1b2c3d4e5f6   (수 초 간격 폴링)
+④ GET /api/v1/agent/tasks/a1b2c3d4e5f6   (수 초 간격 폴링)
 → status: QUEUED → RUNNING → DONE
    DONE 시: { "status": "DONE", "previewUrl": "https://qeploy.com/api/v1/previews/101/abcdef.../", "summary": "..." }
 ```
 
 ```
-④ (선택) previewUrl을 iframe/새 탭으로 열어 결과 확인
-⑤ (선택) 실제 GitHub 배포를 하려면 저장소를 먼저 연결:
+⑤ (선택) previewUrl을 iframe/새 탭으로 열어 결과 확인
+⑥ (선택) 실제 GitHub 배포를 하려면 저장소를 먼저 연결:
    POST /api/v1/projects/12/repository
    { "repositoryMode": "create", "repositoryName": "my-landing-repo", "repositoryVisibility": "PRIVATE" }
 ```
@@ -517,9 +575,9 @@ CODE 단계는 GitHub 저장소 연결과 무관하게 동작합니다(Docker �
 ② GET /api/v1/agent/tasks/b2c3d4e5f6a1  (§3.6 폴링 또는 SSE)
 → DONE 시 summary/previewUrl 확인
 ```
-프로젝트에 저장소가 연결(BOUND)되어 있고 `resultApprovalRequired` 정책(기본 `true`)이 켜져 있으면, CODE 작업 완료 시 바로 `DONE`이 아니라 `WAITING_RESULT_APPROVAL`을 먼저 거칩니다 — 이어지는 결과 승인 흐름은 §5.3을 참고하세요.
+프로젝트에 저장소가 연결(BOUND)되어 있고 `resultApprovalRequired` 정책(기본 `true`)이 켜져 있으면, CODE 작업 완료 시 바로 `DONE`이 아니라 `WAITING_RESULT_APPROVAL`을 먼저 거칩니다. 저장소가 아직 연결되지 않았다면 같은 자리에서 대신 저장소 연결 승인이 발동합니다 — 두 흐름 모두 §5.3을 참고하세요.
 
-### 5.3 결과 승인(RESULT) 2단계 흐름 — CODE 실행 결과를 main에 반영
+### 5.3 CODE 실행 후 2단계 게이트 — 결과 승인(RESULT) / 저장소 연결 승인(REPOSITORY_BINDING)
 
 §3.5②에서 설명한 2단계 게이트의 실제 호출 예시입니다. 전제: 프로젝트(예: §5.1 ⑤에서 저장소를 연결한 프로젝트 12)에 저장소가 BOUND 상태이고, `resultApprovalRequired` 정책이 `true`(기본값)입니다.
 
@@ -563,6 +621,45 @@ CODE 단계는 GitHub 저장소 연결과 무관하게 동작합니다(Docker �
 ```
 
 거절된 변경은 삭제되지 않고 preview 브랜치에 누적됩니다 — 같은 대화에서 이어서 요청하면 그 위에서 작업이 계속되고, 다음 결과 승인은 (과거 거절분을 포함한) 그 시점 preview 브랜치 전체 상태를 기준으로 main에 반영됩니다. `resultApprovalRequired=false`로 끄면 이 게이트 없이 CODE 완료 시 바로 `DONE`으로 진행하고(현행 유지), 실제 GitHub 반영은 배포(`POST /projects/{id}/deployments`, §5.4) 시점에 이루어집니다.
+
+**저장소 미연결(NOT_BOUND) 프로젝트 — 저장소 연결 승인(§3.5③)**
+
+프로젝트에 아직 저장소가 없으면 위 RESULT 게이트 대신 이쪽이 발동합니다. 반영할 main이 없으니 묻는 것도 "main에 반영할까?"가 아니라 "저장소를 만들어 연결할까?"입니다. 정책으로 끌 수 없으므로 이 상황에서는 항상 발동합니다.
+
+```
+② GET /api/v1/agent/tasks/e5f6a1b2c3d4
+→ status: QUEUED → RUNNING → WAITING_RESULT_APPROVAL
+{ "taskId": "e5f6a1b2c3d4", "status": "WAITING_RESULT_APPROVAL",
+  "previewUrl": "https://qeploy.com/api/v1/previews/205/token.../", "pendingApprovalId": 53 }
+
+③ GET /api/v1/approvals/53
+→ { "approvalId": 53, "type": "REPOSITORY_BINDING", "status": "PENDING",
+    "summary": "[저장소 연결] my-project" }
+```
+`type`으로 두 게이트를 구분하세요 — `status`만 보면 RESULT 승인과 똑같습니다. `summary`의 `my-project`가 기본 저장소 이름 후보(프로젝트 이름을 소문자·하이픈으로 정규화한 값)이며, 같은 안내가 대화 메시지로도 전달됩니다.
+
+```
+④-A 승인(기본 이름 그대로): POST /api/v1/approvals/53/approve
+   (본문 없음)
+
+④-A' 승인(이름 지정): POST /api/v1/approvals/53/approve
+{ "repositoryName": "apgujeong-hyundai" }
+
+→ { "approvalId": 53, "type": "REPOSITORY_BINDING", "status": "APPROVED", "decidedAt": "..." }
+   (저장소 생성·연결 후 작업물을 preview 브랜치에 push, task는 QUEUED로 재개)
+
+④-B 거절: POST /api/v1/approvals/53/reject
+→ { "approvalId": 53, "type": "REPOSITORY_BINDING", "status": "REJECTED", "decidedAt": "..." }
+   (저장소를 만들지 않음. task는 취소되지 않고 그대로 재개되어 DONE으로 끝납니다 —
+    이벤트 스트림에는 RESULT_APPROVED가 아니라 RESULT_DECLINED가 기록됩니다)
+```
+
+```
+⑤ GET /api/v1/projects/{id}/settings/repository   (승인한 경우)
+→ { "connected": true, "repositoryFullName": "octo/apgujeong-hyundai", "bindingStatus": "BOUND", ... }
+```
+
+거절해도 작업 자체는 성공으로 끝나지만, 작업물은 preview 컨테이너에만 남고 TTL(기본 30분) 만료와 함께 사라집니다. 나중에 연결하려면 프로젝트 설정의 저장소 연결(`POST /projects/{id}/repository`)이나 배포 요청을 쓰면 됩니다 — 다만 그 시점의 프리뷰 작업물은 복구되지 않습니다. 한편 승인 대기 중에 다른 경로로 저장소가 이미 연결된 경우, 승인해도 새 저장소를 만들지 않고 기존 연결을 그대로 사용합니다.
 
 ### 5.4 배포 → 실패 분석 → 재시도
 

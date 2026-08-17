@@ -96,6 +96,10 @@ qeploy:
     allowed-origin-patterns: ${QEPLOY_CORS_ALLOWED_ORIGIN_PATTERNS:}
   preview:
     gateway-base-url: ${QEPLOY_PREVIEW_GATEWAY_BASE_URL:http://localhost:8080}
+    # 프리뷰 문서를 iframe 으로 띄울 수 있는 오리진. 기본값은 FE 와 게이트웨이가 같은 오리진이라는
+    # 전제이고, 그렇지 않은 환경(dev 처럼 FE 가 로컬에서 뜨는 경우)만 여기에 오리진을 더한다.
+    # sandbox 지시어는 이 값과 무관하게 항상 붙으므로 부모 토큰 탈취 차단은 그대로 유지된다.
+    frame-ancestors: "${QEPLOY_PREVIEW_FRAME_ANCESTORS:'self'}"
     ttl: ${QEPLOY_PREVIEW_TTL:30m}
     cleanup-interval-ms: ${QEPLOY_PREVIEW_CLEANUP_INTERVAL_MS:60000}
   agent:
@@ -111,6 +115,11 @@ qeploy:
       # write-skew stuck state (structurally prevented by ADR-Y1's lock hierarchy; this is the
       # safety net for anything that slips through anyway).
       sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_SWEEP_INTERVAL_MS:60000}
+      # AbandonedApprovalSweeper: 아무도 결정하지 않은 승인 대기 태스크를 닫기까지 기다리는 시간.
+      # 넉넉해야 한다 — 승인 카드를 띄워둔 채 하루 자리를 비우는 것은 정상이고, 그걸 취소하면
+      # 스윕이 오히려 기능을 망가뜨린다. 0 이하로 두면 스윕이 꺼진다.
+      abandon-ttl: ${QEPLOY_AGENT_APPROVAL_ABANDON_TTL:7d}
+      abandon-sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_ABANDON_SWEEP_INTERVAL_MS:3600000}
   deployment:
     worker:
       poll-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_POLL_INTERVAL_MS:1000}

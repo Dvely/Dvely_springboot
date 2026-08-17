@@ -15,6 +15,7 @@ import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.service.AgentMessageService;
+import com.example.dvely.agent.application.service.RepositoryBindingService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.application.port.out.StandaloneApprovalHandler;
 import com.example.dvely.approval.application.query.ApprovalQueryService;
@@ -50,6 +51,7 @@ class ApprovalCommandServiceTest {
                 messageService,
                 List.of(),
                 mock(ResultApprovalService.class),
+                mock(RepositoryBindingService.class),
                 taskStore
         );
         Approval change = approval(1L, ApprovalType.CHANGE, 21L);
@@ -90,6 +92,7 @@ class ApprovalCommandServiceTest {
                 messageService,
                 List.of(),
                 mock(ResultApprovalService.class),
+                mock(RepositoryBindingService.class),
                 taskStore
         );
         Approval approval = approval(1L, ApprovalType.CHANGE, 21L);
@@ -119,7 +122,7 @@ class ApprovalCommandServiceTest {
         when(handler.supports(ApprovalType.INFRA_OPERATION)).thenReturn(true);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, queryService, orchestrator, messageService, List.of(handler),
-                mock(ResultApprovalService.class), taskStore
+                mock(ResultApprovalService.class), mock(RepositoryBindingService.class), taskStore
         );
         Approval persisted = new Approval(
                 5L, 7L, 11L, null, null, ApprovalType.INFRA_OPERATION,
@@ -151,7 +154,7 @@ class ApprovalCommandServiceTest {
         when(handler.supports(ApprovalType.INFRA_OPERATION)).thenReturn(true);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, queryService, orchestrator, messageService, List.of(handler),
-                mock(ResultApprovalService.class), taskStore
+                mock(ResultApprovalService.class), mock(RepositoryBindingService.class), taskStore
         );
         Approval persisted = new Approval(
                 5L, 7L, 11L, null, null, ApprovalType.INFRA_OPERATION,
@@ -181,7 +184,7 @@ class ApprovalCommandServiceTest {
         StandaloneApprovalHandler infraHandler = mock(StandaloneApprovalHandler.class);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, queryService, orchestrator, messageService, List.of(infraHandler),
-                mock(ResultApprovalService.class), taskStore
+                mock(ResultApprovalService.class), mock(RepositoryBindingService.class), taskStore
         );
         Approval taskApproval = approval(1L, ApprovalType.CHANGE, 21L);
         routingFor(repository, 1L, 7L, "task-1", ApprovalType.CHANGE);
@@ -207,7 +210,7 @@ class ApprovalCommandServiceTest {
         TaskStore taskStore = mock(TaskStore.class);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, queryService, orchestrator, messageService, List.of(),
-                mock(ResultApprovalService.class), taskStore
+                mock(ResultApprovalService.class), mock(RepositoryBindingService.class), taskStore
         );
         Approval persisted = new Approval(
                 5L, 7L, 11L, null, null, ApprovalType.INFRA_OPERATION,
@@ -234,7 +237,7 @@ class ApprovalCommandServiceTest {
         TaskStore taskStore = mock(TaskStore.class);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, queryService, orchestrator, messageService, List.of(),
-                mock(ResultApprovalService.class), taskStore
+                mock(ResultApprovalService.class), mock(RepositoryBindingService.class), taskStore
         );
         Approval approveTarget = approval(1L, ApprovalType.CHANGE, 21L);
         Approval rejectTarget = approval(2L, ApprovalType.CHANGE, 21L);
@@ -268,7 +271,7 @@ class ApprovalCommandServiceTest {
         TaskStore taskStore = mock(TaskStore.class);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, queryService, orchestrator, messageService, List.of(),
-                mock(ResultApprovalService.class), taskStore
+                mock(ResultApprovalService.class), mock(RepositoryBindingService.class), taskStore
         );
         Approval approval = approval(1L, ApprovalType.CHANGE, 21L);
         routingFor(repository, 1L, 7L, "task-1", ApprovalType.CHANGE);
@@ -299,7 +302,7 @@ class ApprovalCommandServiceTest {
         TaskStore taskStore = mock(TaskStore.class);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, mock(ApprovalQueryService.class), mock(AgentOrchestrator.class),
-                mock(AgentMessageService.class), List.of(), mock(ResultApprovalService.class), taskStore
+                mock(AgentMessageService.class), List.of(), mock(ResultApprovalService.class), mock(RepositoryBindingService.class), taskStore
         );
         when(repository.findRoutingInfo(999L, 7L)).thenReturn(Optional.empty());
 
@@ -319,7 +322,7 @@ class ApprovalCommandServiceTest {
         TaskStore taskStore = mock(TaskStore.class);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, queryService, mock(AgentOrchestrator.class), mock(AgentMessageService.class),
-                List.of(), mock(ResultApprovalService.class), taskStore
+                List.of(), mock(ResultApprovalService.class), mock(RepositoryBindingService.class), taskStore
         );
         Approval approval = approval(1L, ApprovalType.CHANGE, 21L);
         routingFor(repository, 1L, 7L, "task-1", ApprovalType.CHANGE);
@@ -349,7 +352,7 @@ class ApprovalCommandServiceTest {
         TaskStore taskStore = mock(TaskStore.class);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, queryService, orchestrator, messageService, List.of(),
-                resultApprovalService, taskStore
+                resultApprovalService, mock(RepositoryBindingService.class), taskStore
         );
         Approval approval = approval(9L, ApprovalType.RESULT, 21L);
         routingFor(repository, 9L, 7L, "task-1", ApprovalType.RESULT);
@@ -400,7 +403,7 @@ class ApprovalCommandServiceTest {
         TaskStore taskStore = mock(TaskStore.class);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, queryService, orchestrator, messageService, List.of(),
-                resultApprovalService, taskStore
+                resultApprovalService, mock(RepositoryBindingService.class), taskStore
         );
         Approval approval = approval(9L, ApprovalType.RESULT, 21L);
         routingFor(repository, 9L, 7L, "task-1", ApprovalType.RESULT);
@@ -430,7 +433,7 @@ class ApprovalCommandServiceTest {
         TaskStore taskStore = mock(TaskStore.class);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, queryService, orchestrator, messageService, List.of(handler),
-                resultApprovalService, taskStore
+                resultApprovalService, mock(RepositoryBindingService.class), taskStore
         );
         Approval approval = approval(9L, ApprovalType.RESULT, 21L);
         routingFor(repository, 9L, 7L, "task-1", ApprovalType.RESULT);
@@ -463,7 +466,7 @@ class ApprovalCommandServiceTest {
         TaskStore taskStore = mock(TaskStore.class);
         ApprovalCommandService service = new ApprovalCommandService(
                 repository, queryService, orchestrator, messageService, List.of(),
-                resultApprovalService, taskStore
+                resultApprovalService, mock(RepositoryBindingService.class), taskStore
         );
         Approval approval = approval(9L, ApprovalType.RESULT, 21L);
         routingFor(repository, 9L, 7L, "task-1", ApprovalType.RESULT);
@@ -480,6 +483,119 @@ class ApprovalCommandServiceTest {
         verify(messageService).appendAssistant(
                 21L,
                 "결과가 승인되어 main에 반영되었습니다.\n- commit: 1234567\n남은 작업을 이어서 진행합니다."
+        );
+    }
+
+    // ── REPOSITORY_BINDING approval branch ─────────────────────────────────────────────────
+
+    @Test
+    void repositoryBindingApprovalUsesTheRequestedNameAndResumesTheTask() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        RepositoryBindingService bindingService = mock(RepositoryBindingService.class);
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(),
+                mock(ResultApprovalService.class), bindingService, taskStore
+        );
+        Approval approval = approval(9L, ApprovalType.REPOSITORY_BINDING, 21L);
+        routingFor(repository, 9L, 7L, "task-1", ApprovalType.REPOSITORY_BINDING);
+        when(repository.findByIdAndOwnerUserIdForUpdate(9L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.save(approval)).thenReturn(approval);
+        when(queryService.toResult(approval)).thenReturn(result(approval));
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_RESULT_APPROVAL));
+        when(bindingService.bind(approval, "apgujeong-hyundai"))
+                .thenReturn(new RepositoryBindingService.BindResult("dldnsgkr/apgujeong-hyundai", true, true));
+
+        service.approve(7L, 9L, "apgujeong-hyundai");
+
+        verify(bindingService).bind(approval, "apgujeong-hyundai");
+        verify(orchestrator).resumeAfterResult("task-1");
+        // Same ordering contract as the RESULT branch: the rollback-able DB precondition is
+        // verified before the irreversible GitHub repository creation inside bind().
+        InOrder order = Mockito.inOrder(taskStore, orchestrator, bindingService);
+        order.verify(taskStore).lockTask("task-1");
+        order.verify(orchestrator).verifyResumableAfterResult("task-1");
+        order.verify(bindingService).bind(approval, "apgujeong-hyundai");
+        order.verify(orchestrator).resumeAfterResult("task-1");
+        // Like RESULT, this is a gate approval — it never joins the plan's allApproved vote.
+        verify(repository, never()).findByTaskIdOrderByIdAscForUpdate(anyString());
+        verify(orchestrator, never()).executeApproved(anyString());
+        verify(messageService).appendAssistant(
+                21L,
+                "GitHub 저장소를 새로 만들어 연결했습니다.\n"
+                        + "- 저장소: https://github.com/dldnsgkr/apgujeong-hyundai\n"
+                        + "- 작업물을 preview 브랜치에 올렸습니다. 프리뷰가 만료돼도 코드는 남습니다."
+        );
+    }
+
+    @Test
+    void repositoryBindingApprovalWithoutABodyFallsBackToTheCandidateName() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        RepositoryBindingService bindingService = mock(RepositoryBindingService.class);
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, mock(AgentMessageService.class), List.of(),
+                mock(ResultApprovalService.class), bindingService, taskStore
+        );
+        Approval approval = approval(9L, ApprovalType.REPOSITORY_BINDING, 21L);
+        routingFor(repository, 9L, 7L, "task-1", ApprovalType.REPOSITORY_BINDING);
+        when(repository.findByIdAndOwnerUserIdForUpdate(9L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.save(approval)).thenReturn(approval);
+        when(queryService.toResult(approval)).thenReturn(result(approval));
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_RESULT_APPROVAL));
+        when(bindingService.bind(approval, null))
+                .thenReturn(new RepositoryBindingService.BindResult("dldnsgkr/test", true, true));
+
+        // The 2-arg overload is what every pre-existing caller (and a body-less POST) funnels
+        // through — the name must arrive as null so the service falls back to the candidate.
+        service.approve(7L, 9L);
+
+        verify(bindingService).bind(approval, null);
+    }
+
+    @Test
+    void repositoryBindingRejectionCompletesTheTaskInsteadOfCancellingIt() {
+        // The behavioural split from every other reject: this approval does not gate execution,
+        // it asks whether to keep an already-successful CODE result. Declining must leave the task
+        // finishing normally — routing it through orchestrator.reject() would flip a completed
+        // piece of work to CANCELLED.
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        RepositoryBindingService bindingService = mock(RepositoryBindingService.class);
+        StandaloneApprovalHandler handler = mock(StandaloneApprovalHandler.class);
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(handler),
+                mock(ResultApprovalService.class), bindingService, taskStore
+        );
+        Approval approval = approval(9L, ApprovalType.REPOSITORY_BINDING, 21L);
+        routingFor(repository, 9L, 7L, "task-1", ApprovalType.REPOSITORY_BINDING);
+        when(repository.findByIdAndOwnerUserIdForUpdate(9L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.save(approval)).thenReturn(approval);
+        when(queryService.toResult(approval)).thenReturn(result(approval));
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_RESULT_APPROVAL));
+
+        service.reject(7L, 9L);
+
+        // Declining resumes the task, but must not emit the RESULT_APPROVED event that
+        // resumeAfterResult() carries — the SSE stream would claim the user approved.
+        verify(orchestrator).declineAfterResult("task-1", "저장소를 연결하지 않기로 하여 남은 작업을 재개합니다.");
+        verify(orchestrator, never()).resumeAfterResult(anyString());
+        verify(orchestrator, never()).reject(anyString(), anyLong());
+        // Declining must not create the repository either.
+        verifyNoInteractions(bindingService);
+        verifyNoInteractions(handler);
+        verify(messageService).appendAssistant(
+                21L,
+                "저장소를 연결하지 않았습니다. 작업물은 프리뷰에만 남아 있으며 프리뷰가 만료되면 사라집니다.\n"
+                        + "나중에 연결하려면 프로젝트 설정에서 저장소를 연결하거나 배포를 요청해주세요."
         );
     }
 
@@ -517,6 +633,7 @@ class ApprovalCommandServiceTest {
                 approval.getType().name(),
                 approval.getStatus().name(),
                 approval.getSummary(),
+                null,
                 approval.getCreatedAt(),
                 approval.getDecidedAt()
         );

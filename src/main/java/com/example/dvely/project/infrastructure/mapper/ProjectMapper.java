@@ -35,10 +35,7 @@ public class ProjectMapper {
         return new ProjectCreateResponse(
                 result.project().projectId(),
                 result.project().name(),
-                result.project().status(),
-                result.generation().taskId(),
-                result.generation().status().name(),
-                result.generation().approvalIds()
+                result.project().status()
         );
     }
 
@@ -94,7 +91,6 @@ public class ProjectMapper {
                 result.deployStatus(),
                 result.currentVersion(),
                 result.repositoryVersion(),
-                result.recentChanges().stream().map(this::toActivityLogResponse).toList(),
                 result.latestCommit() == null ? null : toCommitResponse(result.latestCommit()),
                 toRepositoryHealthResponse(result.repositoryHealth()),
                 result.domainSummary() == null

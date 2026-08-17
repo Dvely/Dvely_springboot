@@ -1,0 +1,142 @@
+name: Deploy to dev EC2
+
+# develop 에 커밋이 올라오면 dev 서버로 배포한다.
+# 운영(deploy-ec2.yml)은 main push 를 받으므로 두 워크플로가 겹치지 않는다.
+# 흐름: 작업 브랜치 → develop(dev 서버에서 확인) → main(운영 배포).
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+# dev 배포끼리만 직렬화한다. 운영 배포(group: deploy-ec2)와는 별개 그룹이라
+# 서로를 기다리지 않는다.
+concurrency:
+  group: deploy-ec2-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # 경로와 pm2 앱 이름을 운영과 동일하게 둔다. 서버가 다르므로 겹쳐도 무관하고,
+  # 같아야 두 워크플로의 배포 스크립트가 한 벌로 유지된다.
+  APP_DIR: /var/www/dvely/backend
+  STAGING_DIR: /var/www/dvely/staging
+  PM2_APP: dvely-backend
+  HEALTH_URL: http://127.0.0.1:8080/actuator/health
+
+jobs:
+  deploy:
+    name: Build and deploy ${{ github.sha }} to dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # dev 는 "여기서 깨지는 것을 보려고" 만든 서버다. 테스트를 강제해 배포를 막으면
+      # 그 목적과 충돌하므로 운영과 동일하게 -x test 로 간다. 검증은 PR 단계의 ci.yml 이 한다.
+      - name: Build bootJar
+        run: ./gradlew clean bootJar -x test --no-daemon
+
+      - name: Resolve jar path
+        run: |
+          set -euo pipefail
+          jar=$(find build/libs -maxdepth 1 -name '*.jar' ! -name '*-plain.jar' | head -1)
+          if [ -z "$jar" ]; then
+            echo "::error::build/libs 에서 부팅 가능한 jar를 찾지 못했습니다."
+            exit 1
+          fi
+          cp "$jar" build/libs/app.jar
+          (cd build/libs && sha256sum app.jar > app.jar.sha256)
+          echo "배포 대상: $jar ($(du -h "$jar" | cut -f1))"
+
+      - name: Upload jar to dev EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEV_EC2_HOST }}
+          username: ${{ secrets.DEV_EC2_USER }}
+          key: ${{ secrets.DEV_EC2_SSH_KEY }}
+          port: ${{ secrets.DEV_EC2_SSH_PORT || 22 }}
+          source: build/libs/app.jar,build/libs/app.jar.sha256
+          target: /var/www/dvely/staging
+          strip_components: 2
+
+      - name: Swap jar and restart pm2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEV_EC2_HOST }}
+          username: ${{ secrets.DEV_EC2_USER }}
+          key: ${{ secrets.DEV_EC2_SSH_KEY }}
+          port: ${{ secrets.DEV_EC2_SSH_PORT || 22 }}
+          envs: APP_DIR,STAGING_DIR,PM2_APP,HEALTH_URL,RELEASE_SHA
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            # 업로드된 jar 가 빌드 산출물 그대로인지 대조한다.
+            cd "${STAGING_DIR}"
+            if ! sha256sum -c --status app.jar.sha256; then
+              echo "::error::jar 체크섬이 일치하지 않습니다. 배포를 중단합니다."
+              exit 1
+            fi
+            if [ ! -s app.jar ]; then
+              echo "::error::배포할 jar가 비어 있습니다."
+              exit 1
+            fi
+
+            # 롤백할 수 있도록 직전 jar 를 남긴다.
+            if [ -f "${APP_DIR}/app.jar" ]; then
+              cp "${APP_DIR}/app.jar" "${APP_DIR}/app.jar.prev"
+            fi
+
+            # cp 가 아니라 mv 를 쓴다. cp 는 기존 파일을 그 자리에서 잘라내며 덮어쓰는데,
+            # 그 파일은 지금 돌고 있는 JVM 이 열어둔 채 nested jar 엔트리를 계속 읽는
+            # 대상이다. mv 는 rename 이라 새 inode 가 걸리고, 옛 inode 는 기존 프로세스가
+            # 놓을 때까지 살아 있어 재시작 직전까지 안전하다.
+            mv -f app.jar "${APP_DIR}/app.jar"
+            rm -f app.jar.sha256
+
+            old_pid=$(pm2 pid "${PM2_APP}" 2>/dev/null || echo 0)
+
+            # restart 가 아니라 startOrRestart + --update-env 인 이유:
+            # `pm2 restart <이름>` 은 프로세스 생성 당시의 env 를 재사용해 ecosystem.config.js
+            # 를 고쳐도 반영되지 않는다. 시크릿을 추가해놓고 배포했는데 여전히 비어 있는
+            # 사고가 여기서 난다.
+            cd "${APP_DIR}"
+            pm2 startOrRestart ecosystem.config.js --update-env
+            pm2 save --force
+
+            # pm2 는 크래시하면 자동 재시작하므로 "떠 있음"만으로는 정상 판단이 안 된다.
+            # Flyway 실패나 빈 생성 오류는 기동 한참 뒤에 터지므로 health 를 폴링한다.
+            healthy=0
+            for _ in $(seq 1 45); do
+              new_pid=$(pm2 pid "${PM2_APP}" 2>/dev/null || echo 0)
+              if [ "${new_pid}" != "${old_pid}" ] && [ "${new_pid}" != "0" ] \
+                 && curl -fsS -o /dev/null "${HEALTH_URL}"; then
+                healthy=1
+                break
+              fi
+              sleep 2
+            done
+
+            if [ "$healthy" -ne 1 ]; then
+              echo "::error::${PM2_APP}가 90초 안에 health 응답을 내지 못했습니다. 최근 로그:"
+              pm2 logs "${PM2_APP}" --lines 80 --nostream || true
+              exit 1
+            fi
+            echo "${RELEASE_SHA} dev 배포 완료 (pid ${new_pid})"
+        env:
+          # 커밋 메시지나 브랜치명은 원격 셸로 넘기지 않는다. 임의 문자열이라 따옴표나
+          # 명령 치환이 섞여 들어갈 수 있다. sha 는 16진수뿐이라 안전하다.
+          RELEASE_SHA: ${{ github.sha }}

@@ -36,6 +36,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class AgentOrchestrator {
 
+    private static final String APPROVAL_HEADLINE = "작업 계획을 만들었습니다. 승인 후 실행합니다.";
+
     private final TaskStore              taskStore;
     private final ProjectRepository      projectRepository;
     private final ConversationRepository conversationRepository;
@@ -69,9 +71,8 @@ public class AgentOrchestrator {
             return new AgentSubmission(taskId, TaskStatus.QUEUED, List.of());
         }
 
-        String approvalSummary = buildApprovalMessage(approvals);
-        taskStore.markWaitingApproval(taskId, approvalSummary);
-        agentMessageService.appendAssistant(conversationId, approvalSummary);
+        taskStore.markWaitingApproval(taskId, buildApprovalSummary(approvals));
+        agentMessageService.appendAssistant(conversationId, buildApprovalChatMessage(approvals));
         return new AgentSubmission(
                 taskId,
                 TaskStatus.WAITING_APPROVAL,
@@ -126,6 +127,18 @@ public class AgentOrchestrator {
     }
 
     /**
+     * {@link #resumeAfterResult}와 상태 전이는 같고 이벤트만 다른 거절 경로 — 게이트를 거절했는데도
+     * 태스크는 계속 진행하는 REPOSITORY_BINDING 거절 전용이다. RESULT 거절은 여기가 아니라
+     * {@link #reject}로 가서 태스크째 취소된다.
+     */
+    public void declineAfterResult(String taskId, String message) {
+        if (!taskStore.resumeAfterResultDecline(taskId, message)) {
+            throw new IllegalStateException(
+                    "결과 승인 대기 상태가 아닌 Agent task입니다. taskId=" + taskId);
+        }
+    }
+
+    /**
      * Review follow-up (BLOCKING-3): the "may this RESULT approval still proceed" half of
      * resuming a task past its result-approval gate, split out from {@link #resumeAfterResult} so
      * {@code ApprovalCommandService} can call this <em>before</em> {@code
@@ -150,9 +163,25 @@ public class AgentOrchestrator {
         }
     }
 
+    /**
+     * 사용자가 직접 취소한 경우. 취소 사실을 대화에 남긴다 — 화면에서는 방금 누른 행동이라
+     * 자명하지만, 나중에 대화를 다시 열었을 때 "여기서 멈췄다"가 남아 있어야 이력이 읽힌다.
+     *
+     * 안내문은 {@link #cancelTaskCascade} 가 아니라 여기서 남긴다. 그 캐스케이드는 승인 거절도
+     * 공유하는데, 거절은 ApprovalCommandService 가 이미 자기 문구를 남기므로 거기에 넣으면 두
+     * 번 나온다.
+     */
     @Transactional
     public boolean cancel(String taskId, Long ownerUserId) {
-        return cancelTaskCascade(taskId, ownerUserId);
+        AgentTask task = taskStore.getOwned(taskId, ownerUserId);
+        if (!cancelTaskCascade(taskId, ownerUserId)) {
+            return false;
+        }
+        agentMessageService.appendAssistant(
+                task == null ? null : task.conversationId(),
+                "작업을 취소했습니다."
+        );
+        return true;
     }
 
     /**
@@ -227,6 +256,40 @@ public class AgentOrchestrator {
         log.warn("[AgentOrchestrator] 고착된 승인 완료 태스크를 스윕으로 복구했습니다 — ADR-Y1 이후 이 로그의 발생은 "
                 + "회귀 신호입니다. taskId={}", taskId);
         agentMessageService.appendAssistant(task.conversationId(), "지연된 승인 처리를 복구해 작업을 시작합니다.");
+    }
+
+    /**
+     * 방치된 승인 대기 태스크를 닫는다. {@code AbandonedApprovalSweeper} 가 후보마다 부른다.
+     *
+     * {@link #recoverStuckApprovedTask} 와 같은 잠금 순서(태스크 행 → 승인 잠금 읽기)를 쓰므로,
+     * 아직 진행 중인 approve/reject 는 이 호출을 경쟁시키는 대신 잠금에서 기다리게 만든다. 잠금을
+     * 잡은 뒤의 상태 재검사가 "그 사이에 결정된 태스크"를 조용한 no-op 으로 만든다.
+     *
+     * 정리는 {@link #cancelTaskCascade} 를 그대로 쓴다. 사용자가 직접 취소했을 때와 같은 결과를
+     * 남겨야 하고("task 터미널 ⇒ PENDING 승인 없음"), 그 불변식과 잠금 규율이 이미 거기 있다.
+     * 소유자는 잠금 아래 읽은 태스크에서 가져오므로 스윕이 남의 태스크를 건드릴 수 없다.
+     *
+     * WAITING_RESULT_APPROVAL 도 대상이다. 그 태스크는 이미 코드를 만들고 프리뷰까지 띄운
+     * 상태지만, 결정이 오지 않으면 프리뷰는 자체 TTL 로 만료되고 태스크만 영구히 남는다. 취소가
+     * 되돌리는 것은 없다 — 이미 한 일은 그대로 두고 대기만 닫는다.
+     */
+    @Transactional
+    public boolean abandonStaleApprovalTask(String taskId) {
+        AgentTask task = taskStore.lockTask(taskId);
+        if (task.status() != TaskStatus.WAITING_APPROVAL
+                && task.status() != TaskStatus.WAITING_RESULT_APPROVAL) {
+            return false; // 스캔과 잠금 사이에 누군가 결정했다 — 정상적인 no-op
+        }
+        if (!cancelTaskCascade(taskId, task.ownerUserId())) {
+            return false;
+        }
+        log.info("[AgentOrchestrator] 결정되지 않은 채 방치된 승인 대기 태스크를 정리했습니다. taskId={} status={}",
+                taskId, task.status());
+        agentMessageService.appendAssistant(
+                task.conversationId(),
+                "오랫동안 결정되지 않아 이 작업을 종료했습니다. 필요하면 다시 요청해주세요."
+        );
+        return true;
     }
 
     /**
@@ -423,8 +486,12 @@ public class AgentOrchestrator {
         return markers + truncated;
     }
 
-    private String buildApprovalMessage(List<Approval> approvals) {
-        StringBuilder message = new StringBuilder("작업 계획을 만들었습니다. 승인 후 실행합니다.");
+    /**
+     * 태스크의 summary. 화면의 승인 카드와 나란히 놓이지 않으므로 지시문을 그대로 담는다 —
+     * 태스크만 조회했을 때 무엇을 기다리는 중인지 알 수 있어야 한다.
+     */
+    private String buildApprovalSummary(List<Approval> approvals) {
+        StringBuilder message = new StringBuilder(APPROVAL_HEADLINE);
         for (Approval approval : approvals) {
             message.append("\n- [")
                     .append(approval.getId())
@@ -432,6 +499,25 @@ public class AgentOrchestrator {
                     .append(approval.getType())
                     .append(": ")
                     .append(approval.getSummary());
+        }
+        return message.toString();
+    }
+
+    /**
+     * 채팅에 남길 안내. 지시문은 담지 않는다.
+     *
+     * 바로 아래에 승인 카드가 붙고 그 카드가 같은 summary 를 그리므로, 여기까지 지시문을 실으면
+     * 같은 내용이 두 번 보인다(사용자 요청 원문까지 치면 세 번이다). 지시문은 카드가 소유하고
+     * 이 메시지는 "어떤 승인이 걸렸는지"만 기록한다 — 카드는 결정하면 사라지지만 이 줄은 대화
+     * 이력으로 남아 승인 ID 와 유형을 되짚을 수 있다.
+     */
+    private String buildApprovalChatMessage(List<Approval> approvals) {
+        StringBuilder message = new StringBuilder(APPROVAL_HEADLINE);
+        for (Approval approval : approvals) {
+            message.append("\n- [")
+                    .append(approval.getId())
+                    .append("] ")
+                    .append(approval.getType());
         }
         return message.toString();
     }

@@ -46,7 +46,6 @@ class GithubPagesDomainHostingAdapterTest {
                 11L,
                 "octo/repo",
                 "octo/repo",
-                "vue",
                 "v3",
                 "https://octo.github.io/repo/"
         );
@@ -75,6 +74,28 @@ class GithubPagesDomainHostingAdapterTest {
                 DeployWorkflowTemplate.fileName(),
                 "main",
                 "v3"
+        );
+    }
+
+    /**
+     * 프레임워크 감지가 실패해도 프로젝트의 콘텐츠 템플릿 값으로 폴백하지 않는다. Context 가
+     * templateType 을 아예 담지 않게 바꾼 것이 그 보장이고, 이 테스트는 그때의 동작을 고정한다 —
+     * 감지 실패는 기본값(./dist)으로 떨어진다.
+     */
+    @Test
+    void undetectedFrameworkFallsBackToDefaultPublishDirNotAContentTemplate() {
+        when(githubRepoPort.detectPackageManager("user-token", "octo/repo"))
+                .thenReturn(PackageManager.NPM);
+        when(githubRepoPort.detectNodeVersion("user-token", "octo/repo")).thenReturn("20");
+        when(githubRepoPort.detectFrameworkType("user-token", "octo/repo")).thenReturn(null);
+
+        adapter.bind(context, "www.example.com");
+
+        verify(githubActionsPort).createOrUpdateWorkflow(
+                org.mockito.ArgumentMatchers.eq("user-token"),
+                org.mockito.ArgumentMatchers.eq("octo/repo"),
+                org.mockito.ArgumentMatchers.eq(DeployWorkflowTemplate.fileName()),
+                contains("publish_dir: ./dist")
         );
     }
 
