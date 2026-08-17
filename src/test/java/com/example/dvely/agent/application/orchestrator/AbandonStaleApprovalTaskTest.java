@@ -96,6 +96,45 @@ class AbandonStaleApprovalTaskTest {
         verify(messageService, never()).appendAssistant(any(), anyString());
     }
 
+    /**
+     * 사용자가 직접 취소한 경우도 대화에 흔적을 남긴다. 화면에서는 방금 누른 행동이라 자명하지만,
+     * 나중에 대화를 다시 열었을 때 "여기서 멈췄다"가 없으면 이력이 읽히지 않는다.
+     */
+    @Test
+    void userCancelLeavesATraceInTheConversation() {
+        when(taskStore.getOwned("task-1", 7L)).thenReturn(new AgentTask(
+                "task-1", 7L, 11L, 21L, TaskStatus.RUNNING, null, null, null, null, Instant.now()
+        ));
+        when(taskStore.cancel("task-1", 7L)).thenReturn(true);
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of());
+
+        assertThat(orchestrator.cancel("task-1", 7L)).isTrue();
+
+        verify(messageService).appendAssistant(21L, "작업을 취소했습니다.");
+    }
+
+    @Test
+    void rejectDoesNotSayCancelled() {
+        // 취소와 거절은 같은 cancelTaskCascade 를 쓴다. 안내문을 그 캐스케이드에 넣으면 거절
+        // 경로에도 붙어, ApprovalCommandService 가 남기는 거절 문구와 두 벌이 된다.
+        when(taskStore.cancel("task-1", 7L)).thenReturn(true);
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of());
+
+        orchestrator.reject("task-1", 7L);
+
+        verify(messageService, never()).appendAssistant(any(), anyString());
+    }
+
+    @Test
+    void cancelSaysNothingWhenThereWasNothingToCancel() {
+        when(taskStore.getOwned("task-1", 7L)).thenReturn(null);
+        when(taskStore.cancel("task-1", 7L)).thenReturn(false);
+
+        assertThat(orchestrator.cancel("task-1", 7L)).isFalse();
+
+        verify(messageService, never()).appendAssistant(any(), anyString());
+    }
+
     private void givenTask(TaskStatus status) {
         when(taskStore.lockTask("task-1")).thenReturn(new AgentTask(
                 "task-1", 7L, 11L, 21L, status, null, null, null, null, Instant.now()
