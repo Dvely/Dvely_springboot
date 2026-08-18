@@ -33,8 +33,43 @@ class AgentMessageServiceTest {
         List<LlmMessage> history = service.getUserIntentHistory(21L);
 
         assertThat(history).extracting(LlmMessage::content)
-                .containsExactly("배경을 하늘색으로 바꿔줘", "글자를 바꿔줘");
+                .containsExactly(
+                        "[참고: 이전 요청]\n배경을 하늘색으로 바꿔줘",
+                        "[지금 처리할 요청]\n글자를 바꿔줘"
+                );
         assertThat(history).extracting(LlmMessage::role).containsOnly("user");
+    }
+
+    @Test
+    void onlyTheNewestRequestIsMarkedAsTheOneToPlan() {
+        // 어시스턴트 발화를 걷어낸 대가로 "이 요청은 이미 처리됐다"는 신호까지 사라진다. 표시가
+        // 없으면 모델에게는 지난 요청도 방금 들어온 요청과 똑같이 미처리로 보이고, 실제로 운영에서
+        // 이미 처리하고 거절까지 끝난 옛 요청의 계획을 다시 냈다(2026-08-18).
+        givenConversation();
+
+        List<LlmMessage> history = service.getUserIntentHistory(21L);
+
+        assertThat(history).hasSize(2);
+        assertThat(history.getLast().content()).startsWith("[지금 처리할 요청]");
+        assertThat(history.getFirst().content()).doesNotContain("[지금 처리할 요청]");
+    }
+
+    @Test
+    void aSingleMessageConversationMarksThatMessageAsCurrent() {
+        when(repository.findAllByConversationIdOrderByCreatedAtAsc(21L)).thenReturn(List.of(
+                new ChatMessage(21L, ChatRole.USER, "포트폴리오 만들어줘", 0)
+        ));
+
+        assertThat(service.getUserIntentHistory(21L))
+                .extracting(LlmMessage::content)
+                .containsExactly("[지금 처리할 요청]\n포트폴리오 만들어줘");
+    }
+
+    @Test
+    void anEmptyConversationYieldsNoPlanningInput() {
+        when(repository.findAllByConversationIdOrderByCreatedAtAsc(21L)).thenReturn(List.of());
+
+        assertThat(service.getUserIntentHistory(21L)).isEmpty();
     }
 
     @Test
@@ -44,7 +79,7 @@ class AgentMessageServiceTest {
 
         assertThat(service.getUserIntentHistory(21L))
                 .extracting(LlmMessage::content)
-                .doesNotContain(PLAN_NOTICE, START_NOTICE);
+                .noneMatch(content -> content.contains(PLAN_NOTICE) || content.contains(START_NOTICE));
     }
 
     @Test

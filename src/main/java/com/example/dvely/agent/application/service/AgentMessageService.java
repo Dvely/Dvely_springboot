@@ -13,6 +13,14 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class AgentMessageService {
 
+    /**
+     * 사용자 발화만 넘기면 어느 것이 지금 처리할 요청인지가 사라진다. 어시스턴트 발화를 걷어낸
+     * 대가로 "이 요청은 이미 처리됐다"는 신호까지 함께 사라지기 때문에, 모델에게는 지난 요청도
+     * 방금 들어온 요청과 똑같이 미처리로 보인다. 그래서 마지막 발화에만 표시를 붙인다.
+     */
+    private static final String CURRENT_REQUEST_LABEL = "[지금 처리할 요청]\n";
+    private static final String PAST_REQUEST_LABEL = "[참고: 이전 요청]\n";
+
     private final ChatMessageRepository chatMessageRepository;
 
     @Transactional
@@ -60,15 +68,30 @@ public class AgentMessageService {
      * 사용자 발화만 넘기면 흉내 낼 대상 자체가 사라진다. 잃는 것은 "에이전트가 직전에 무엇을
      * 만들었는가"인데, 그 정보는 코드 작업 시점에 컨테이너의 실제 파일에서 다시 확인되므로
      * 계획 단계에서 필요하지 않다.
+     *
+     * 다만 하나는 되돌려줘야 한다 — <b>어느 것이 지금 처리할 요청인가</b>. 어시스턴트 발화에는
+     * "작업을 시작합니다" 같은 처리 흔적이 섞여 있어서, 그걸 걷어내면 지난 요청도 방금 들어온
+     * 요청과 똑같이 미처리로 보인다. 실제로 운영에서 모델이 이미 처리하고 거절까지 끝난 옛
+     * 요청을 다시 계획했다(2026-08-18: "지금 프리뷰 서버 상태 확인해줘"에 대해 직전 요청이던
+     * "제목을 '거절 테스트'로 바꿔줘"의 계획을 냈다). 그래서 마지막 발화에만 표시를 붙인다.
      */
     @Transactional(readOnly = true)
     public List<LlmMessage> getUserIntentHistory(Long conversationId) {
-        return chatMessageRepository.findAllByConversationIdOrderByCreatedAtAsc(conversationId)
+        List<ChatMessage> userMessages = chatMessageRepository
+                .findAllByConversationIdOrderByCreatedAtAsc(conversationId)
                 .stream()
                 .filter(message -> message.getRole() == ChatRole.USER)
-                .map(message -> new LlmMessage(
-                        message.getRole().toStorage(),
-                        message.getContent()
+                .toList();
+        if (userMessages.isEmpty()) {
+            return List.of();
+        }
+
+        int last = userMessages.size() - 1;
+        return java.util.stream.IntStream.range(0, userMessages.size())
+                .mapToObj(index -> new LlmMessage(
+                        ChatRole.USER.toStorage(),
+                        (index == last ? CURRENT_REQUEST_LABEL : PAST_REQUEST_LABEL)
+                                + userMessages.get(index).getContent()
                 ))
                 .toList();
     }
