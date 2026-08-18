@@ -17,9 +17,24 @@ public class DeployWorkflowTemplate {
         return LEGACY_WORKFLOW_FILE;
     }
 
+    /**
+     * workflow_run 웹훅이 우리 배포 워크플로의 것인지 판별한다.
+     *
+     * <p>런타임에 실제로 도착하는 {@code workflow_run.name} 은 파일의 {@code name:} 이 아니라
+     * <b>{@code run-name:} 이 적용된 값</b>이다. 아래 {@link #generate} 가 run-name 을 넣는
+     * 순간부터 그렇게 됐는데 이 판별은 여전히 파일 이름만 보고 있었다. 그래서 항상 false 가 되어
+     * 핸들러가 가드에서 조용히 빠져나갔고, 뒤따르는 correlationId 매칭에는 도달조차 못 했다.
+     *
+     * <p>증상이 고약하다 — GitHub 에서는 workflow 도 Pages 도 성공하고 사이트가 실제로 뜨는데,
+     * 우리 배포 이력만 IN_PROGRESS 에 영원히 멈춘다. 경고 로그도 남지 않는다(2026-08-18 운영에서
+     * historyId=1 이 그렇게 멈췄다 — 사이트는 200, DB 는 IN_PROGRESS).
+     *
+     * <p>과거 실행분은 run-name 이 없어 파일 이름으로 오므로 둘 다 받는다.
+     */
     public static boolean isQeployWorkflowName(String workflowName) {
         return WORKFLOW_NAME.equalsIgnoreCase(workflowName)
-                || LEGACY_WORKFLOW_NAME.equalsIgnoreCase(workflowName);
+                || LEGACY_WORKFLOW_NAME.equalsIgnoreCase(workflowName)
+                || correlationIdFromRunTitle(workflowName) != null;
     }
 
     public static String runTitle(String correlationId) {

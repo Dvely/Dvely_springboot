@@ -27,6 +27,9 @@ import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.service.AgentMessageService;
+import com.example.dvely.agent.infrastructure.store.TaskStore;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -42,6 +45,8 @@ class WebhookEventHandlerTest {
     private DeploymentHistoryRepository historyRepository;
     private ChangeService changeService;
     private AuditRecorder auditRecorder;
+    private AgentMessageService agentMessageService;
+    private TaskStore taskStore;
     private WebhookEventHandler handler;
     private LocalDateTime receivedAt;
 
@@ -52,13 +57,17 @@ class WebhookEventHandlerTest {
         historyRepository = mock(DeploymentHistoryRepository.class);
         changeService = mock(ChangeService.class);
         auditRecorder = mock(AuditRecorder.class);
+        agentMessageService = mock(AgentMessageService.class);
+        taskStore = mock(TaskStore.class);
         handler = new WebhookEventHandler(
                 new ObjectMapper(),
                 projectRepository,
                 userRepository,
                 historyRepository,
                 changeService,
-                auditRecorder
+                auditRecorder,
+                agentMessageService,
+                taskStore
         );
         receivedAt = LocalDateTime.of(2026, 6, 14, 20, 0);
     }
@@ -102,7 +111,7 @@ class WebhookEventHandlerTest {
                   "repository": {"full_name": "octo/repo"},
                   "workflow_run": {
                     "id": 901,
-                    "name": "Qeploy Deploy to GitHub Pages",
+                    "name": "Qeploy deployment correlation-51",
                     "display_title": "Qeploy deployment correlation-51",
                     "status": "completed",
                     "conclusion": "failure",
@@ -315,7 +324,7 @@ class WebhookEventHandlerTest {
                   "repository": {"full_name": "octo/repo"},
                   "workflow_run": {
                     "id": 901,
-                    "name": "Qeploy Deploy to GitHub Pages",
+                    "name": "Qeploy deployment correlation-51",
                     "display_title": "Qeploy deployment correlation-51",
                     "status": "completed",
                     "conclusion": "success",
@@ -353,6 +362,86 @@ class WebhookEventHandlerTest {
 
     private byte[] bytes(String payload) {
         return payload.getBytes(StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void deploymentSuccessTellsTheConversationWhereTheSiteIs() {
+        // DeployAgentService 는 "배포 요청을 접수했습니다 — worker 가 비동기로 진행합니다"까지만
+        // 말한다. 그 뒤를 이어받는 곳이 이 핸들러인데 감사 로그와 DB 상태만 갱신하고 있었다.
+        // 그래서 사이트가 실제로 떠도 사용자 화면에는 "접수했습니다"가 마지막 말로 남았다
+        // (2026-08-18 운영 실측).
+        DeploymentHistory history = history("workflow-sha");
+        when(historyRepository.findByWorkflowRunId(901L)).thenReturn(Optional.of(history));
+        when(historyRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project()));
+        when(taskStore.get("task-51")).thenReturn(agentTask(21L));
+
+        handler.handle("workflow_run", workflowPayload("workflow-sha"), receivedAt);
+
+        verify(agentMessageService).appendAssistant(
+                21L,
+                "배포가 완료되었습니다.\n"
+                        + "- 주소: https://octo.github.io/repo/\n"
+                        + "- 버전: v7"
+        );
+    }
+
+    @Test
+    void deploymentFailureTellsTheConversationWhy() {
+        DeploymentHistory history = history("workflow-sha");
+        when(historyRepository.findByWorkflowRunId(901L)).thenReturn(Optional.of(history));
+        when(historyRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project()));
+        when(taskStore.get("task-51")).thenReturn(agentTask(21L));
+
+        handler.handle("workflow_run", failedWorkflowPayload(), receivedAt);
+
+        verify(agentMessageService).appendAssistant(
+                21L,
+                "배포가 실패했습니다.\n"
+                        + "- 사유: GitHub Actions workflow conclusion: failure\n"
+                        + "다시 배포를 요청하면 같은 저장소로 재시도합니다."
+        );
+    }
+
+    @Test
+    void aDeploymentWithNoAgentTaskHasNoConversationToTell() {
+        // 에이전트를 거치지 않은 배포도 있다. 알릴 대화가 없으면 조용히 넘어가야 하고, 배포
+        // 자체의 성공/실패 확정을 방해해서는 안 된다.
+        DeploymentHistory history = history("workflow-sha");
+        when(historyRepository.findByWorkflowRunId(901L)).thenReturn(Optional.of(history));
+        when(historyRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project()));
+        when(taskStore.get("task-51")).thenReturn(null);
+
+        handler.handle("workflow_run", workflowPayload("workflow-sha"), receivedAt);
+
+        assertThat(history.getStatus()).isEqualTo(DeployStatus.LIVE);
+        verifyNoInteractions(agentMessageService);
+    }
+
+    private AgentTask agentTask(Long conversationId) {
+        return new AgentTask(
+                "task-51", 1L, 11L, conversationId,
+                com.example.dvely.agent.application.dto.TaskStatus.DONE,
+                null, null, null, null, java.time.Instant.now()
+        );
+    }
+
+    private byte[] failedWorkflowPayload() {
+        return bytes("""
+                {
+                  "repository": {"full_name": "octo/repo"},
+                  "workflow_run": {
+                    "id": 901,
+                    "name": "Qeploy deployment correlation-51",
+                    "display_title": "Qeploy deployment correlation-51",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "head_sha": "workflow-sha"
+                  }
+                }
+                """);
     }
 
     private DeploymentHistory history(String workflowHeadSha) {
