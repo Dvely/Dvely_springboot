@@ -344,6 +344,57 @@ class PreviewSessionServiceTest {
                 new JwtProperties("test-secret-key-that-is-long-enough-32", 3600000L, 7200000L));
     }
 
+    // ── 저장소 연결 승인 유예 ──────────────────────────────────────────────────────────
+
+    @Test
+    void bindingApprovalHoldPushesTheExpiryOut() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository, mock(DockerContainerService.class), mock(TaskStore.class),
+                properties(), gatewayUrlResolver(), accessCookies()
+        );
+        PreviewSessionEntity session = activeSessionExpiringIn(Duration.ofMinutes(30));
+        when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.ACTIVE.name()))
+                .thenReturn(Optional.of(session));
+        when(repository.save(any(PreviewSessionEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.holdForBindingApproval("task-1");
+
+        assertThat(session.getExpiresAt()).isAfter(LocalDateTime.now().plusHours(5));
+    }
+
+    @Test
+    void aPreviewAccessNeverPullsTheHoldBackIn() {
+        // 유예를 걸어도 바로 뒤에 FE 가 프리뷰를 자동으로 띄우면 게이트웨이 접근이 일어난다.
+        // touch 가 만료를 무조건 now+ttl 로 덮어쓰던 시절에는 그 한 번으로 유예가 통째로
+        // 지워졌다 — 유예는 프리뷰를 한 번도 열지 않았을 때만 살아남았다(2026-08-18 운영 실측).
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository, mock(DockerContainerService.class), mock(TaskStore.class),
+                properties(), gatewayUrlResolver(), accessCookies()
+        );
+        PreviewSessionEntity held = activeSessionExpiringIn(Duration.ofHours(6));
+        when(repository.findByIdAndAccessTokenAndStatus(
+                "session-1", "token-1", PreviewSessionStatus.ACTIVE.name()))
+                .thenReturn(Optional.of(held));
+        when(repository.save(any(PreviewSessionEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.resolveGateway("session-1", "token-1");
+
+        assertThat(held.getExpiresAt()).isAfter(LocalDateTime.now().plusHours(5));
+    }
+
+    private PreviewSessionEntity activeSessionExpiringIn(Duration remaining) {
+        return new PreviewSessionEntity(
+                "session-1", "token-1", 1L, 11L, 21L, "task-1", "container-1", 32768,
+                "https://preview.qeploy.test/api/v1/previews/session-1/token-1/",
+                LocalDateTime.now().plus(remaining),
+                PreviewSessionStatus.ACTIVE
+        );
+    }
+
     private PreviewProperties properties() {
         PreviewProperties properties = new PreviewProperties();
         properties.setGatewayBaseUrl("https://preview.qeploy.test");
