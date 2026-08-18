@@ -60,6 +60,29 @@ class DeployWorkflowTemplateTest {
     }
 
     @Test
+    void acceptsTheRunNameThatWebhooksActuallyCarry() {
+        // workflow_run.name 은 파일의 name: 이 아니라 run-name: 이 적용된 값으로 온다. 이걸
+        // 받지 못하면 핸들러가 가드에서 조용히 빠져나가 배포 이력이 IN_PROGRESS 에 영원히 멈춘다
+        // — GitHub 에서는 성공하고 사이트도 뜨는데 경고 로그조차 남지 않는다(2026-08-18 운영 실측).
+        String workflow = DeployWorkflowTemplate.generate("vue", null, PackageManager.NPM, "20");
+        assertThat(workflow).contains("run-name: Qeploy deployment ${{ inputs.deployment_id }}");
+
+        String runName = DeployWorkflowTemplate.runTitle("8354b81f-77c8-479b-8301-b61a906ddb32");
+        assertThat(DeployWorkflowTemplate.isQeployWorkflowName(runName)).isTrue();
+        assertThat(DeployWorkflowTemplate.correlationIdFromRunTitle(runName))
+                .isEqualTo("8354b81f-77c8-479b-8301-b61a906ddb32");
+    }
+
+    @Test
+    void ignoresWorkflowsThatAreNotOurs() {
+        // 저장소에는 우리 것이 아닌 workflow_run 웹훅도 계속 들어온다 — GitHub 이 Pages 를 올릴
+        // 때마다 보내는 "pages build and deployment" 가 대표적이다.
+        assertThat(DeployWorkflowTemplate.isQeployWorkflowName("pages build and deployment")).isFalse();
+        assertThat(DeployWorkflowTemplate.isQeployWorkflowName("CI")).isFalse();
+        assertThat(DeployWorkflowTemplate.isQeployWorkflowName(null)).isFalse();
+    }
+
+    @Test
     void generate_usesRootBasePathWhenGithubPagesHasCustomDomain() {
         String workflow = DeployWorkflowTemplate.generate("vue", null, PackageManager.NPM, "20");
 
