@@ -323,7 +323,12 @@ public class ProjectQueryService {
                 domain.domainId(),
                 domain.hostname(),
                 domain.status() == DomainStatus.CONNECTED ? toHttpsUrl(domain.hostname()) : null,
-                domain.type().name(),
+                // name() 이 아니라 getValue() 다. DomainType 은 @JsonValue 로 소문자를 내보내도록
+                // 정의돼 있고 도메인 목록·상세(/domains)는 그 값을 그대로 쓴다. 여기만 name() 을
+                // 쓰면서 같은 필드가 엔드포인트마다 대소문자가 달라졌다 — 이 응답의 Swagger
+                // allowableValues 도 소문자로 적혀 있으니 문서와도 어긋나 있었다.
+                // FE 의 enum 은 소문자라 이 값이 파싱을 통과하지 못한다.
+                domain.type().getValue(),
                 domain.hostingTarget().name(),
                 domain.status().name(),
                 domain.httpsEnforced(),
