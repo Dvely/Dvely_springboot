@@ -13,10 +13,12 @@ spring:
       ddl-auto: validate
 
 cloudflare:
-  api-token:
-  zone-id:
-  managed-domain: qeploy.com
-  managed-target:
+  # 값은 서버 환경변수로만 넣는다 — 이 파일에 적으면 저장소로 새어 나간다.
+  # 비어 있으면 도메인 연결 요청이 Cloudflare 인증에서 실패한다.
+  api-token: ${CLOUDFLARE_API_TOKEN:}
+  zone-id: ${CLOUDFLARE_ZONE_ID:}
+  managed-domain: ${CLOUDFLARE_MANAGED_DOMAIN:qeploy.com}
+  managed-target: ${CLOUDFLARE_MANAGED_TARGET:}
   api-base-url: https://api.cloudflare.com/client/v4
   ttl: 1
   proxied: true
