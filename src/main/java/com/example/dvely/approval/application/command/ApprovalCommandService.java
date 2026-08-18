@@ -81,6 +81,19 @@ public class ApprovalCommandService {
         // the Approval entity, so there is no stale L1-cached instance for this FOR UPDATE fetch
         // to collide with (see ApprovalRouting's javadoc).
         Approval approval = findOwnedForDecide(ownerUserId, approvalId);
+        // REPOSITORY_BINDING 은 승인 대상 작업물이 아직 GitHub 어디에도 없고 프리뷰 컨테이너 안에만
+        // 있는 유일한 승인이다(RESULT 는 게이트가 이미 preview 브랜치에 올려둔 뒤라 컨테이너가
+        // 사라져도 reflect 가 GitHub 에서 머지한다). 컨테이너는 유예가 끝나면 회수되므로 그 뒤의
+        // 승인은 아무것도 할 수 없다.
+        //
+        // 예전에는 그 상태에서 bind 가 예외를 던졌고, 그러면 위 approve() 까지 함께 롤백돼 승인이
+        // PENDING 으로 남았다. 사용자에게는 눌러도 같은 409 만 반복되고 빠져나갈 길이 없는 카드가
+        // 영원히 남는다(2026-08-18 운영에서 승인 15번이 그렇게 갇혔다). 되살릴 수 없다는 사실을
+        // 말하고 닫는 편이 낫다.
+        if (approval.getType() == ApprovalType.REPOSITORY_BINDING
+                && !repositoryBindingService.isPreviewAvailable(approval)) {
+            return closeExpiredRepositoryBinding(approval);
+        }
         approval.approve();
         Approval saved = approvalRepository.save(approval);
 
@@ -130,6 +143,30 @@ public class ApprovalCommandService {
             agentMessageService.appendAssistant(saved.getConversationId(), "모든 승인이 완료되어 작업을 시작합니다.");
             agentOrchestrator.executeApproved(saved.getTaskId());
         }
+        return queryService.toResult(saved);
+    }
+
+    /**
+     * 프리뷰가 회수돼 더는 실행할 수 없는 저장소 연결 승인을 닫는다.
+     *
+     * <p>REJECTED 가 아니라 CANCELLED 인 것은 의도다 — 사용자는 거절한 적이 없고 오히려 승인을
+     * 눌렀다. 닫은 주체는 시스템이므로 감사 기록도 그렇게 남아야 한다.</p>
+     *
+     * <p>태스크는 거절과 같은 경로로 재개한다. 저장소를 만들지 않는다는 결과가 같고, CODE 작업
+     * 자체는 이미 성공했으므로 취소가 아니라 완료로 끝나야 한다.</p>
+     */
+    private ApprovalResult closeExpiredRepositoryBinding(Approval approval) {
+        approval.cancel();
+        Approval saved = approvalRepository.save(approval);
+        agentOrchestrator.declineAfterResult(
+                saved.getTaskId(),
+                "프리뷰가 만료되어 저장소를 연결하지 못한 채 작업을 마칩니다."
+        );
+        agentMessageService.appendAssistant(
+                saved.getConversationId(),
+                "프리뷰가 만료되어 작업물이 사라졌기 때문에 저장소를 연결하지 못했습니다.\n"
+                        + "같은 내용을 다시 요청하면 새로 만들어 연결할 수 있습니다."
+        );
         return queryService.toResult(saved);
     }
 

@@ -97,6 +97,9 @@ public class RepositoryBindingGate {
                 ApprovalType.REPOSITORY_BINDING,
                 "[저장소 연결] " + candidate
         ));
+        // 승인 대상 작업물이 이 컨테이너 안에만 있으므로, 사람이 답할 시간만큼 세션을 붙들어 둔다.
+        // 승인 카드만 보고 결정하는 사용자는 프리뷰를 열지 않아 TTL 이 갱신되지 않는다.
+        previewSessionService.holdForBindingApproval(taskId);
         log.info("[RepositoryBindingGate] 저장소 연결 승인 게이트 발동 | taskId={} approvalId={} projectId={}",
                 taskId, approval.getId(), projectId);
         agentMessageService.appendAssistant(
