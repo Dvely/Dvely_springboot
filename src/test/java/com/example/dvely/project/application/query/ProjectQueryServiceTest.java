@@ -151,6 +151,11 @@ class ProjectQueryServiceTest {
         assertThat(overview.currentVersion()).isEqualTo("v6");
         assertThat(overview.repositoryVersion()).isEqualTo("v8");
         assertThat(overview.domainSummary().hostname()).isEqualTo("www.example.com");
+        // 도메인 목록·상세(/domains)가 내보내는 값과 같은 소문자여야 한다. DomainType 은
+        // @JsonValue 로 소문자를 정의하는데 여기만 name() 을 써서 같은 필드가 엔드포인트마다
+        // 대소문자가 달랐고, 소문자 enum 을 쓰는 FE 에서 개요 응답이 통째로 파싱에 실패했다.
+        // 이 응답의 Swagger allowableValues 도 소문자라 문서와도 어긋나 있었다.
+        assertThat(overview.domainSummary().type()).isEqualTo("custom_domain");
         assertThat(overview.domainSummary().hostingTarget()).isEqualTo("GITHUB_PAGES");
         assertThat(overview.domainSummary().certificateStatus()).isEqualTo("ACTIVE");
         assertThat(overview.domainSummary().httpsEnforced()).isTrue();
