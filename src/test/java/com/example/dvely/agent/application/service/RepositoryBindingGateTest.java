@@ -74,6 +74,22 @@ class RepositoryBindingGateTest {
     }
 
     @Test
+    void holdsThePreviewSessionSoItSurvivesTheWaitForAnAnswer() {
+        // 이 승인의 작업물은 아직 GitHub 어디에도 없고 컨테이너 안에만 있다. 승인 카드만 보고
+        // 결정하는 사용자는 프리뷰를 열지 않으므로 TTL 을 갱신하는 접근이 한 번도 일어나지 않고,
+        // 기본 30분에 회수되면 승인해도 올릴 것이 남지 않는다.
+        AgentPlan plan = codePlan();
+        stubNotBoundProject("my-project");
+        stubPreviewSession();
+        when(taskStore.get("task-1")).thenReturn(task("preview-url"));
+        when(approvalRepository.save(any(Approval.class))).thenReturn(approval(501L));
+
+        gate.requestIfRequired(plan, 0, "task-1", 1L, 11L);
+
+        verify(previewSessionService).holdForBindingApproval("task-1");
+    }
+
+    @Test
     void approvalRowCarriesRepositoryBindingTypeAndTheCandidateName() {
         AgentPlan plan = codePlan();
         stubNotBoundProject("My Project");

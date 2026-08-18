@@ -1,5 +1,6 @@
 package com.example.dvely.approval.application.command;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -506,6 +507,7 @@ class ApprovalCommandServiceTest {
         when(repository.save(approval)).thenReturn(approval);
         when(queryService.toResult(approval)).thenReturn(result(approval));
         when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_RESULT_APPROVAL));
+        when(bindingService.isPreviewAvailable(approval)).thenReturn(true);
         when(bindingService.bind(approval, "apgujeong-hyundai"))
                 .thenReturn(new RepositoryBindingService.BindResult("dldnsgkr/apgujeong-hyundai", true, true));
 
@@ -548,6 +550,7 @@ class ApprovalCommandServiceTest {
         when(repository.save(approval)).thenReturn(approval);
         when(queryService.toResult(approval)).thenReturn(result(approval));
         when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_RESULT_APPROVAL));
+        when(bindingService.isPreviewAvailable(approval)).thenReturn(true);
         when(bindingService.bind(approval, null))
                 .thenReturn(new RepositoryBindingService.BindResult("dldnsgkr/test", true, true));
 
@@ -596,6 +599,49 @@ class ApprovalCommandServiceTest {
                 21L,
                 "저장소를 연결하지 않았습니다. 작업물은 프리뷰에만 남아 있으며 프리뷰가 만료되면 사라집니다.\n"
                         + "나중에 연결하려면 프로젝트 설정에서 저장소를 연결하거나 배포를 요청해주세요."
+        );
+    }
+
+    @Test
+    void repositoryBindingApprovalClosesItselfWhenThePreviewIsAlreadyGone() {
+        // 이 승인의 작업물은 프리뷰 컨테이너 안에만 있다. 컨테이너가 회수된 뒤에는 승인해도 올릴
+        // 것이 없는데, 예전에는 bind()가 던져 approve()까지 롤백되는 바람에 승인이 PENDING 으로
+        // 되돌아갔다 — 사용자에게는 눌러도 같은 409 만 반복되고 빠져나갈 길이 없는 카드가 남는다
+        // (2026-08-18 운영에서 승인 15번이 그렇게 갇혔다).
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        RepositoryBindingService bindingService = mock(RepositoryBindingService.class);
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(),
+                mock(ResultApprovalService.class), bindingService, taskStore
+        );
+        Approval approval = approval(9L, ApprovalType.REPOSITORY_BINDING, 21L);
+        routingFor(repository, 9L, 7L, "task-1", ApprovalType.REPOSITORY_BINDING);
+        when(repository.findByIdAndOwnerUserIdForUpdate(9L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.save(approval)).thenReturn(approval);
+        when(queryService.toResult(approval)).thenReturn(result(approval));
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_RESULT_APPROVAL));
+        when(bindingService.isPreviewAvailable(approval)).thenReturn(false);
+
+        service.approve(7L, 9L, "prod-flow-check");
+
+        // 되살릴 수 없는 승인은 PENDING 으로 남지 않는다. 사용자가 거절한 적은 없으므로 REJECTED
+        // 가 아니라 CANCELLED 다 — 닫은 주체는 시스템이다.
+        assertThat(approval.getStatus()).isEqualTo(ApprovalStatus.CANCELLED);
+        // 빈 저장소만 만들고 끝나는 일이 없어야 한다.
+        verify(bindingService, never()).bind(Mockito.any(), anyString());
+        verify(bindingService, never()).bind(Mockito.any(), Mockito.isNull());
+        // 거절과 같은 재개 경로다. CODE 작업 자체는 성공했으므로 취소가 아니라 완료로 끝난다.
+        verify(orchestrator).declineAfterResult("task-1", "프리뷰가 만료되어 저장소를 연결하지 못한 채 작업을 마칩니다.");
+        verify(orchestrator, never()).resumeAfterResult(anyString());
+        verify(orchestrator, never()).reject(anyString(), anyLong());
+        verify(messageService).appendAssistant(
+                21L,
+                "프리뷰가 만료되어 작업물이 사라졌기 때문에 저장소를 연결하지 못했습니다.\n"
+                        + "같은 내용을 다시 요청하면 새로 만들어 연결할 수 있습니다."
         );
     }
 
