@@ -73,7 +73,14 @@ public class RepositoryBindingService {
                         "저장소 연결에 필요한 PreviewSession이 없습니다. taskId=" + approval.getTaskId()));
 
         String repoName = resolveRepoName(requestedRepoName, project, userId);
-        User user = resolveUser(userId);
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalStateException("유저를 찾을 수 없습니다. userId=" + userId));
+        // 갱신했다면 반환값을 그대로 쓴다. 다시 읽으면 안 된다 — 저장은 REQUIRES_NEW 로 커밋되지만
+        // 이 트랜잭션의 영속성 컨텍스트에는 옛 UserEntity 가 남아 findById 가 갱신 전 토큰을
+        // 돌려준다. 예전에는 그 낡은 토큰이 아래 push 로 그대로 넘어갔다.
+        String userToken = user.isUserAccessTokenExpired()
+                ? authCommandService.refreshGithubUserToken(userId)
+                : user.getGithubUserAccessToken();
         String username = user.getUsername();
         String fullName = username + "/" + repoName;
 
@@ -81,9 +88,11 @@ public class RepositoryBindingService {
         if (githubRepositoryPort.repositoryExists(userId, fullName)) {
             log.info("[RepositoryBindingService] 기존 저장소 재사용: {}", fullName);
         } else {
-            log.info("[RepositoryBindingService] 신규 저장소 생성: {}", fullName);
             fullName = githubRepositoryPort.createRepository(userId, repoName, RepositoryVisibility.PUBLIC);
             created = true;
+            // 생성 뒤에 찍는다. 앞에 두면 실패했을 때도 "생성"이 로그에 남아, 저장소가 만들어진
+            // 것처럼 보인다(2026-08-18 운영에서 실제로 그렇게 읽혔다).
+            log.info("[RepositoryBindingService] 신규 저장소 생성: {}", fullName);
         }
 
         // preview 브랜치 준비·바인딩·저장·감사는 설정 화면의 저장소 연결과 같은 순서라 공용
@@ -110,7 +119,7 @@ public class RepositoryBindingService {
         // .gitignore 작성만 건너뛰어 node_modules/·dist/·.env 가 PUBLIC 저장소로 커밋된다.
         previewBranchPushService.push(
                 previewSession.containerId(),
-                user.getGithubUserAccessToken(),
+                userToken,
                 username,
                 fullName,
                 true,
@@ -129,16 +138,6 @@ public class RepositoryBindingService {
             return candidate;
         }
         return RepositoryNamePolicy.forProject(project.getName(), userId);
-    }
-
-    private User resolveUser(Long userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalStateException("유저를 찾을 수 없습니다. userId=" + userId));
-        if (user.isUserAccessTokenExpired()) {
-            authCommandService.refreshGithubUserToken(userId);
-            user = userRepository.findById(userId).orElseThrow();
-        }
-        return user;
     }
 
     private AuditEvent auditEvent(AuditAction action, Long userId, Long projectId, String repoFullName, Approval approval) {
