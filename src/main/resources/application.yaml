@@ -101,6 +101,9 @@ qeploy:
     # sandbox 지시어는 이 값과 무관하게 항상 붙으므로 부모 토큰 탈취 차단은 그대로 유지된다.
     frame-ancestors: "${QEPLOY_PREVIEW_FRAME_ANCESTORS:'self'}"
     ttl: ${QEPLOY_PREVIEW_TTL:30m}
+    # 저장소 연결 승인이 열린 세션에만 주는 유예. 그 승인의 작업물은 아직 GitHub 에 없고 컨테이너
+    # 안에만 있어서, 기본 TTL 안에 답하지 못하면 승인해도 올릴 것이 남지 않는다.
+    binding-approval-hold: ${QEPLOY_PREVIEW_BINDING_APPROVAL_HOLD:6h}
     cleanup-interval-ms: ${QEPLOY_PREVIEW_CLEANUP_INTERVAL_MS:60000}
   agent:
     worker:

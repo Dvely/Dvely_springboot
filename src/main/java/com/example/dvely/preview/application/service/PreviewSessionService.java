@@ -126,6 +126,31 @@ public class PreviewSessionService {
     }
 
     /**
+     * 저장소 연결 승인이 열린 태스크의 세션 만료를 뒤로 미룬다.
+     *
+     * <p>TTL 은 게이트웨이 접근마다 {@code touch} 로 갱신되는데, 승인 카드만 보고 결정하는
+     * 사용자는 프리뷰를 한 번도 열지 않는다. 그러면 사람이 답하기를 기다리는 동안 아무도 세션을
+     * 건드리지 않아 30분에 회수되고, 아직 GitHub 에 올라가지 않은 작업물이 컨테이너와 함께
+     * 사라진다(2026-08-18 운영에서 실제로 발생 — 승인이 09:04 에 열리고 세션은 09:34 에 만료).</p>
+     *
+     * <p>현재 만료가 이미 더 뒤라면 손대지 않는다 — 사용자가 프리뷰를 계속 보고 있어 TTL 이
+     * 갱신되고 있는 경우 그 갱신을 이 호출이 되돌리면 안 된다.</p>
+     */
+    @Transactional
+    public void holdForBindingApproval(String taskId) {
+        repository.findByTaskIdAndStatus(taskId, PreviewSessionStatus.ACTIVE.name())
+                .ifPresent(session -> {
+                    LocalDateTime until = LocalDateTime.now().plus(properties.getBindingApprovalHold());
+                    if (!until.isAfter(session.getExpiresAt())) {
+                        return;
+                    }
+                    session.touch(until);
+                    repository.save(session);
+                    log.info("[PreviewSession] 저장소 연결 승인 대기로 만료 연장: taskId={} until={}", taskId, until);
+                });
+    }
+
+    /**
      * Resolves the "current preview server" for a project — used by the Cloud Ops Agent
      * (STATUS_CHECK/RESTART, EPIC 15 design D8) where the caller has a projectId from chat context
      * but no taskId (the operational request is not itself a CODE/DEPLOY task). Only the most

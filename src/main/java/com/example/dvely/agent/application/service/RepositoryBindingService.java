@@ -47,6 +47,18 @@ public class RepositoryBindingService {
     private final AuditRecorder auditRecorder;
 
     /**
+     * 이 승인이 아직 실행 가능한가 — 올릴 작업물이 담긴 컨테이너가 살아 있는가.
+     *
+     * <p>{@code bind} 안에서도 같은 것을 확인하지만 거기서는 던지는 것 말고 할 수 있는 일이 없고,
+     * 던지면 승인 트랜잭션이 통째로 롤백돼 승인이 PENDING 으로 되돌아간다. 호출자가 상태를
+     * 바꾸기 전에 물어볼 수 있도록 판단만 따로 노출한다 — 그래야 되살릴 수 없는 승인을 사용자에게
+     * 사유와 함께 닫아줄 수 있다.</p>
+     */
+    public boolean isPreviewAvailable(Approval approval) {
+        return previewSessionService.findByTaskId(approval.getTaskId()).isPresent();
+    }
+
+    /**
      * @param requestedRepoName 승인 요청 본문으로 들어온 저장소 이름. null 이거나 공백이면 게이트가
      *                          승인 요약에 적어 사용자에게 보여준 후보 이름으로 폴백한다.
      */
