@@ -158,11 +158,18 @@ public class AuthCommandService {
     }
 
     /**
-     * GitHub App User Token 갱신
-     * Access Token 만료 시 Refresh Token으로 재발급
+     * GitHub App User Token 갱신.
+     *
+     * 갱신된 액세스 토큰을 돌려주는 것이 중요하다. 저장은 REQUIRES_NEW 로 커밋되지만, 호출자가
+     * 있는 바깥 트랜잭션의 영속성 컨텍스트에는 옛 UserEntity 가 남아 있어 곧바로 findById 해도
+     * 갱신 전 값이 돌아온다. 그 값을 다시 쓰면 두 가지가 깨진다 — 이미 만료된 액세스 토큰으로
+     * GitHub 을 호출하거나, 이미 회전돼 무효가 된 리프레시 토큰으로 또 갱신을 시도해
+     * bad_refresh_token 을 맞는다(2026-08-18 운영 실측: 저장소 연결 승인이 이 경로로 실패했다).
+     *
+     * 그러니 갱신 후에는 다시 읽지 말고 이 반환값을 쓸 것.
      */
     @Transactional
-    public void refreshGithubUserToken(Long userId) {
+    public String refreshGithubUserToken(Long userId) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
 
@@ -175,6 +182,7 @@ public class AuthCommandService {
             LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(tokenInfo.expiresInSeconds());
             githubTokenCleaner.saveAndCommit(userId, tokenInfo.accessToken(), tokenInfo.refreshToken(), expiresAt);
             log.info("GitHub App User Token 갱신 완료: userId={}", userId);
+            return tokenInfo.accessToken();
         } catch (IllegalStateException e) {
             if (e.getMessage() != null && e.getMessage().contains("bad_refresh_token")) {
                 // REQUIRES_NEW 트랜잭션으로 커밋 — 현재 트랜잭션이 롤백되어도 클리어는 유지됨
