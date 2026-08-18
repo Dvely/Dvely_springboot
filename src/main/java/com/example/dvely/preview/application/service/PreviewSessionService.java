@@ -282,8 +282,19 @@ public class PreviewSessionService {
                 });
     }
 
+    /**
+     * 접근이 있었으니 만료를 미룬다 — 단, <em>앞당기지는 않는다.</em>
+     *
+     * <p>예전에는 {@code nextExpiry()} 를 그대로 넣었다. 그러면 이미 걸려 있는 더 먼 만료가
+     * {@code now + ttl} 로 되돌아간다. {@link #holdForBindingApproval} 이 준 유예가 정확히 그
+     * 피해자였다 — 게이트가 승인을 열며 유예를 걸어도, 바로 뒤에 FE 가 프리뷰를 자동으로 띄우면서
+     * 게이트웨이 접근이 한 번 일어나 유예가 통째로 지워졌다. 유예는 프리뷰를 한 번도 열지 않았을
+     * 때만 살아남는 셈이었다(2026-08-18 운영 실측: 유예 로그는 12:13:34 에 찍혔는데 만료는
+     * 12:43 — 30분 뒤였다).</p>
+     */
     private PreviewSessionEntity touch(PreviewSessionEntity session) {
-        session.touch(nextExpiry());
+        LocalDateTime next = nextExpiry();
+        session.touch(next.isAfter(session.getExpiresAt()) ? next : session.getExpiresAt());
         return repository.save(session);
     }
 
