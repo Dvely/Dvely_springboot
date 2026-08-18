@@ -1,5 +1,6 @@
 package com.example.dvely.project.infrastructure.github;
 
+import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.application.port.out.GithubAppPort;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -41,6 +42,9 @@ public class GithubProjectClient implements GithubRepositoryPort {
 
     private final UserRepository userRepository;
     private final GithubAppPort githubAppPort;
+    // 유저 토큰 갱신의 유일한 경로. 여기서 직접 갱신하면 한 요청에 갱신이 둘이 되어
+    // bad_refresh_token 이 난다(getGithubUserAccessToken 참고).
+    private final AuthCommandService authCommandService;
     private final GithubProperties githubProperties;
     private final RestClient restClient = RestClient.create();
 
@@ -334,9 +338,18 @@ public class GithubProjectClient implements GithubRepositoryPort {
             throw new IllegalStateException("GitHub 사용자 리프레시 토큰이 없습니다. GitHub App을 다시 설치하거나 권한을 갱신하세요: " + user.getId());
         }
 
-        GithubAppPort.GithubUserTokenInfo tokenInfo;
+        // 갱신은 AuthCommandService 하나만 한다. 여기서 githubAppPort.refreshUserToken 을 직접
+        // 부르면 한 요청 안에 갱신 경로가 둘이 되는데, GitHub 은 리프레시 토큰을 매번 회전시키므로
+        // 뒤에 도는 쪽이 이미 무효가 된 값을 들고 가 bad_refresh_token 을 맞는다.
+        //
+        // 실제로 그렇게 깨졌다(2026-08-18 운영). RepositoryBindingService 가 먼저 갱신해 커밋까지
+        // 마쳤는데, 그 커밋은 REQUIRES_NEW 라 바깥 트랜잭션의 영속성 컨텍스트에는 옛 UserEntity 가
+        // 남는다. 그래서 여기 넘어온 user 는 여전히 "만료됨"으로 보였고, 낡은 리프레시 토큰으로
+        // 두 번째 갱신을 시도해 실패했다 — 저장소 생성이 그 직전에서 멈췄다.
+        //
+        // AuthCommandService 는 갱신된 액세스 토큰을 직접 돌려준다. 다시 읽지 않는 것이 요점이다.
         try {
-            tokenInfo = githubAppPort.refreshUserToken(refreshToken);
+            return authCommandService.refreshGithubUserToken(user.getId());
         } catch (RuntimeException e) {
             throw new IllegalStateException(
                     "GitHub 사용자 토큰 갱신에 실패했습니다. 새 GitHub 저장소 생성에는 GitHub App user token이 필요하므로 "
@@ -344,11 +357,6 @@ public class GithubProjectClient implements GithubRepositoryPort {
                     e
             );
         }
-
-        LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(tokenInfo.expiresInSeconds());
-        user.updateUserToken(tokenInfo.accessToken(), tokenInfo.refreshToken(), expiresAt);
-        userRepository.save(user);
-        return tokenInfo.accessToken();
     }
 
     private String getInstallationToken(Long installationId) {

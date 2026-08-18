@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -238,20 +239,59 @@ class RepositoryBindingServiceTest {
 
     @Test
     void refreshesAnExpiredGithubTokenBeforePushing() {
+        // 갱신 후 다시 읽지 않고 반환값을 쓴다. 저장은 REQUIRES_NEW 로 커밋되지만 이 트랜잭션의
+        // 영속성 컨텍스트에는 옛 UserEntity 가 남아, findById 를 다시 하면 갱신 전 토큰이
+        // 돌아온다. 예전에는 그 낡은 토큰이 push 로 넘어갔다.
         Approval approval = approval();
         stubNotBoundProject("my-project");
         stubPreviewSession();
         User expired = new User(1L, new GithubId("123"), "octo", null, 100L, "stale-token",
                 "refresh-token", LocalDateTime.now().minusMinutes(1));
-        User refreshed = activeUser();
-        when(userRepository.findById(1L)).thenReturn(Optional.of(expired), Optional.of(refreshed));
+        // 재조회하면 캐시 탓에 또 만료된 유저가 온다 — 실제 운영에서 벌어진 일을 그대로 재현한다.
+        when(userRepository.findById(1L)).thenReturn(Optional.of(expired));
+        when(authCommandService.refreshGithubUserToken(1L)).thenReturn("fresh-token");
         when(githubRepositoryPort.repositoryExists(1L, "octo/my-project")).thenReturn(true);
 
         service.bind(approval, "my-project");
 
         verify(authCommandService).refreshGithubUserToken(1L);
-        // The push must use the token from the reloaded user, not the stale one it started with.
-        verify(previewBranchPushService).push(anyString(), eq("gh-token"), anyString(), anyString(), anyBoolean(), anyString());
+        verify(previewBranchPushService)
+                .push(anyString(), eq("fresh-token"), anyString(), anyString(), anyBoolean(), anyString());
+        verify(previewBranchPushService, never())
+                .push(anyString(), eq("stale-token"), anyString(), anyString(), anyBoolean(), anyString());
+    }
+
+    @Test
+    void doesNotRereadTheUserAfterRefreshing() {
+        // 재조회 자체가 버그의 원인이었다. 한 번만 읽어야 한다.
+        Approval approval = approval();
+        stubNotBoundProject("my-project");
+        stubPreviewSession();
+        User expired = new User(1L, new GithubId("123"), "octo", null, 100L, "stale-token",
+                "refresh-token", LocalDateTime.now().minusMinutes(1));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(expired));
+        when(authCommandService.refreshGithubUserToken(1L)).thenReturn("fresh-token");
+        when(githubRepositoryPort.repositoryExists(1L, "octo/my-project")).thenReturn(true);
+
+        service.bind(approval, "my-project");
+
+        verify(userRepository, times(1)).findById(1L);
+    }
+
+    @Test
+    void doesNotRefreshWhenTheTokenIsStillValid() {
+        // 멀쩡한 토큰을 갱신하면 GitHub 이 리프레시 토큰을 회전시켜 다른 경로가 깨진다.
+        Approval approval = approval();
+        stubNotBoundProject("my-project");
+        stubPreviewSession();
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepositoryPort.repositoryExists(1L, "octo/my-project")).thenReturn(true);
+
+        service.bind(approval, "my-project");
+
+        verify(authCommandService, never()).refreshGithubUserToken(anyLong());
+        verify(previewBranchPushService)
+                .push(anyString(), eq("gh-token"), anyString(), anyString(), anyBoolean(), anyString());
     }
 
     @Test

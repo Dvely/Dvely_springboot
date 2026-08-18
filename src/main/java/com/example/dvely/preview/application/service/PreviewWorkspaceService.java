@@ -28,6 +28,10 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class PreviewWorkspaceService {
 
+    // 토큰이 URL 에서 빠졌으므로 자격 증명 공급이 실패하면 git 이 인증 프롬프트를 띄우며 멈춘다.
+    // 컨테이너 exec 는 입력이 없어 영원히 기다리게 되고 에이전트 스레드가 잡힌다. 즉시 실패시킨다.
+    private static final String GIT_NO_PROMPT = "GIT_TERMINAL_PROMPT=0 ";
+
     private static final String APP_DIR = "/workspace/app";
     private static final String BUILD_LOG_PATH = "/tmp/qeploy-build.log";
 
@@ -61,10 +65,19 @@ public class PreviewWorkspaceService {
         String userToken = user.getGithubUserAccessToken();
         String username  = user.getUsername();
 
-        // 인증 포함 clone URL
-        String cloneUrl = "https://" + username + ":" + userToken + "@github.com/" + sourceRepo + ".git";
+        // clone URL 에 토큰을 넣지 않는다.
+        //
+        // 자격 증명은 아래 credential helper 가 이미 공급하므로 URL 에 넣을 이유가 없고, 넣으면 두
+        // 곳으로 샌다. 하나는 컨테이너의 프로세스 목록이다 — 이 컨테이너는 에이전트가 만든 코드를
+        // 실행하는 곳이라, 그 코드가 clone 중에 ps 를 읽으면 사용자의 GitHub 토큰을 그대로
+        // 가져갈 수 있다. 다른 하나는 서버 로그다 — DockerContainerService#exec 가 명령 전문을
+        // log.debug 로 찍으므로 debug 를 켜는 순간 토큰이 로그에 남는다.
+        //
+        // PreviewBranchPushService 는 원래 이 방식이다(git push 에 URL 을 주지 않는다). 여기만
+        // 어긋나 있었다.
+        String cloneUrl = "https://github.com/" + sourceRepo + ".git";
 
-        // git credential 파일 작성 (토큰 로그 노출 최소화)
+        // git credential 파일 작성 — 토큰이 명령줄에 노출되지 않게 base64 로 파일에만 쓴다.
         dockerService.exec(containerId, "apk add --no-cache git 2>/dev/null || true");
         String cred = "https://" + username + ":" + userToken + "@github.com";
         String credB64 = Base64.getEncoder().encodeToString(cred.getBytes(StandardCharsets.UTF_8));
@@ -83,7 +96,7 @@ public class PreviewWorkspaceService {
             if (!currentRemote.contains(sourceRepo)) {
                 // 다른 repo → 삭제 후 재clone
                 dockerService.exec(containerId, "rm -rf " + APP_DIR);
-                dockerService.exec(containerId, "git clone " + cloneUrl + " " + APP_DIR);
+                dockerService.exec(containerId, GIT_NO_PROMPT + "git clone " + cloneUrl + " " + APP_DIR);
                 log.info("[PreviewWorkspace] 다른 repo 감지, 재clone: {}", sourceRepo);
             } else {
                 dockerService.exec(containerId, "cd " + APP_DIR + " && git fetch origin");
@@ -92,7 +105,7 @@ public class PreviewWorkspaceService {
         } else {
             // 처음 clone
             dockerService.exec(containerId, "mkdir -p /workspace");
-            dockerService.exec(containerId, "git clone " + cloneUrl + " " + APP_DIR);
+            dockerService.exec(containerId, GIT_NO_PROMPT + "git clone " + cloneUrl + " " + APP_DIR);
             log.info("[PreviewWorkspace] 저장소 clone 완료: {}", sourceRepo);
         }
 
