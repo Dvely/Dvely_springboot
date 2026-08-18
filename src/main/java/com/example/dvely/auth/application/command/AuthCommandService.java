@@ -24,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Optional;
 import java.util.UUID;
 
 @Slf4j
@@ -170,6 +171,21 @@ public class AuthCommandService {
      */
     @Transactional
     public String refreshGithubUserToken(Long userId) {
+        // 같은 요청 안에서 다른 경로가 이미 갱신했을 수 있다. 그 갱신은 REQUIRES_NEW 로 커밋되지만
+        // 호출자의 영속성 컨텍스트에는 옛 UserEntity 가 남아 여전히 만료로 보이므로, 커밋된 최신
+        // 상태를 따로 읽어 먼저 확인한다. 이 확인이 없으면 두 번째 호출이 이미 회전돼 무효가 된
+        // 리프레시 토큰을 들고 GitHub 에 가서 bad_refresh_token 을 맞고, 아래 catch 가 사용자의
+        // GitHub 연동을 통째로 지운다.
+        //
+        // 실제로 그렇게 날아갔다(2026-08-18 운영). 프로젝트 개요 조회 하나가 GitHub 을 두 번
+        // 호출하는데(최근 커밋 · 저장소 상태) 둘 다 이 경로를 타서, 화면을 여는 것만으로 연동이
+        // 끊기고 응답은 500 이 됐다.
+        Optional<String> alreadyRefreshed = githubTokenCleaner.readValidAccessToken(userId);
+        if (alreadyRefreshed.isPresent()) {
+            log.info("GitHub App User Token 갱신 생략 — 이미 갱신됨: userId={}", userId);
+            return alreadyRefreshed.get();
+        }
+
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
 
