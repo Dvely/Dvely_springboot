@@ -20,6 +20,10 @@ public record DeploymentStatusResponse(
         @Schema(description = "GitHub Actions 빌드 결론. buildStatus가 completed일 때만 유효. " +
                               "success | failure | cancelled | null")
         String buildConclusion,
+        @Schema(description = "실패 분류. 성공·진행 중이면 null",
+                allowableValues = {"WORKFLOW_FAILED", "RESULT_UNKNOWN", "RETRY_EXHAUSTED"}, nullable = true)
+        String errorCode,
+        @Schema(description = "실패 사유 상세. 성공·진행 중이면 null", nullable = true) String errorMessage,
 
         @Schema(description = "배포 트리거 시각") LocalDateTime triggeredAt,
         @Schema(description = "상태 마지막 변경 시각") LocalDateTime updatedAt

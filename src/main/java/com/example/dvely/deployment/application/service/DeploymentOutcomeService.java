@@ -11,6 +11,7 @@ import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.change.application.service.ChangeService;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
+import com.example.dvely.deployment.domain.value.DeployFailureCode;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
@@ -53,8 +54,9 @@ public class DeploymentOutcomeService {
     }
 
     @Transactional
-    public void applyFailure(DeploymentHistory history, Project project, String reason) {
-        history.fail(reason);
+    public void applyFailure(DeploymentHistory history, Project project,
+                             DeployFailureCode failureCode, String reason) {
+        history.fail(failureCode, reason);
         updateProjectIfLatest(history, project, DeployStatus.FAILED);
         finish(history);
     }

@@ -150,8 +150,7 @@ class InfraOpsAgentServiceTest {
     void statusCheckReportsAllSourcesWhenPresent() {
         stubOwnedProject();
         when(deploymentQueryService.getDeploymentHistories(USER_ID, PROJECT_ID)).thenReturn(List.of(
-                new DeploymentHistoryResult(9L, PROJECT_ID, "GITHUB_PAGES", "v3", "https://x.qeploy.com",
-                        "LIVE", LocalDateTime.now(), LocalDateTime.now(), null)
+                new DeploymentHistoryResult(9L, PROJECT_ID, "GITHUB_PAGES", "v3", "https://x.qeploy.com", "LIVE", null, null, LocalDateTime.now(), LocalDateTime.now(), null)
         ));
         PreviewSessionInfo session = previewSession();
         when(previewSessionService.findActiveByProject(PROJECT_ID, USER_ID)).thenReturn(Optional.of(session));
@@ -279,8 +278,7 @@ class InfraOpsAgentServiceTest {
     void failureAnalysisInvokesU6ServiceWhenLatestDeploymentFailed() {
         stubOwnedProject();
         when(deploymentQueryService.getDeploymentHistories(USER_ID, PROJECT_ID)).thenReturn(List.of(
-                new DeploymentHistoryResult(9L, PROJECT_ID, "GITHUB_PAGES", "v3", null,
-                        "FAILED", LocalDateTime.now(), LocalDateTime.now(), null)
+                new DeploymentHistoryResult(9L, PROJECT_ID, "GITHUB_PAGES", "v3", null, "FAILED", null, null, LocalDateTime.now(), LocalDateTime.now(), null)
         ));
         when(failureAnalysisService.analyze(USER_ID, 9L)).thenReturn(new DeploymentFailureAnalysisResult(
                 9L, "빌드 스크립트 오류입니다.", "log excerpt", "package.json을 확인하세요.", "LLM", LocalDateTime.now()
@@ -298,8 +296,7 @@ class InfraOpsAgentServiceTest {
     void failureAnalysisSkipsU6ServiceWhenLatestDeploymentDidNotFail() {
         stubOwnedProject();
         when(deploymentQueryService.getDeploymentHistories(USER_ID, PROJECT_ID)).thenReturn(List.of(
-                new DeploymentHistoryResult(9L, PROJECT_ID, "GITHUB_PAGES", "v3", "https://x.qeploy.com",
-                        "LIVE", LocalDateTime.now(), LocalDateTime.now(), null)
+                new DeploymentHistoryResult(9L, PROJECT_ID, "GITHUB_PAGES", "v3", "https://x.qeploy.com", "LIVE", null, null, LocalDateTime.now(), LocalDateTime.now(), null)
         ));
         when(previewSessionService.findActiveByProject(PROJECT_ID, USER_ID)).thenReturn(Optional.empty());
         AgentStep step = new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "FAILURE_ANALYSIS"));

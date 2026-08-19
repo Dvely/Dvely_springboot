@@ -6,6 +6,7 @@ import com.example.dvely.auth.domain.value.GithubId;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.application.service.DeploymentOutcomeService;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
+import com.example.dvely.deployment.domain.value.DeployFailureCode;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
@@ -125,8 +126,8 @@ public class WebhookEventHandler {
         if ("success".equals(conclusion)) {
             deploymentOutcomeService.applySuccess(history, project);
         } else {
-            deploymentOutcomeService.applyFailure(
-                    history, project, "GitHub Actions workflow conclusion: " + conclusion);
+            deploymentOutcomeService.applyFailure(history, project,
+                    DeployFailureCode.WORKFLOW_FAILED, "GitHub Actions workflow conclusion: " + conclusion);
         }
     }
 
