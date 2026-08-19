@@ -10,7 +10,7 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.List;
@@ -147,9 +147,7 @@ public class GithubActionsClient implements GithubActionsPort {
     public WorkflowRunStatus getLatestRunStatus(String userToken, String repoFullName,
                                                 String workflowFileName, LocalDateTime afterTime) {
         String[] parts = splitRepo(repoFullName);
-        String createdFilter = afterTime.minusMinutes(1)
-                .atOffset(ZoneOffset.UTC)
-                .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+        String createdFilter = createdFilter(afterTime, ZoneId.systemDefault());
         try {
             WorkflowRunsResponse response = restClient(userToken)
                     .get()
@@ -254,9 +252,7 @@ public class GithubActionsClient implements GithubActionsPort {
                                                  String workflowFileName,
                                                  LocalDateTime afterTime) {
         String[] parts = splitRepo(repoFullName);
-        String createdFilter = afterTime.minusMinutes(1)
-                .atOffset(ZoneOffset.UTC)
-                .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+        String createdFilter = createdFilter(afterTime, ZoneId.systemDefault());
         try {
             return restClient(userToken)
                     .get()
@@ -268,6 +264,29 @@ public class GithubActionsClient implements GithubActionsPort {
             log.warn("workflow run 목록 조회 실패: repo={} correlation 조회 불가", repoFullName);
             return null;
         }
+    }
+
+    /**
+     * GitHub Actions run 목록의 {@code created=>=} 필터 값을 만든다.
+     *
+     * afterTime 은 우리 DB 의 LocalDateTime 이고, 그 값은 호스트 타임존(KST)의 벽시계다.
+     * 여기서 atOffset(UTC) 를 쓰면 그 벽시계에 UTC 라벨만 붙어 실제보다 9시간 미래의 순간이
+     * 된다. GitHub 은 진짜 UTC 로 필터링하므로 우리가 찾으려는 실행은 항상 범위 밖으로
+     * 밀려나고, 결과는 언제나 0건이 된다.
+     *
+     * 실측(2026-08-19 운영): triggeredAt 2026-08-18T14:37:40(KST) 인 배포를
+     *   created>=2026-08-18T14:36:40Z 로 조회 → 0건
+     *   created>=2026-08-18T05:36:40Z 로 조회 → 3건, 첫 건이 completed success
+     * 이 때문에 디스패치 직후 매칭이 늘 실패해 runId 없이 IN_PROGRESS 로 넘어갔고,
+     * 웹훅을 놓친 이력을 회수하려던 워커도 실행을 못 찾아 성공한 배포를 FAILED 로 닫았다.
+     *
+     * 그러니 라벨을 붙이지 말고 벽시계를 그 타임존의 순간으로 해석해야 한다.
+     */
+    static String createdFilter(LocalDateTime afterTime, ZoneId zone) {
+        return afterTime.minusMinutes(1)
+                .atZone(zone)
+                .toOffsetDateTime()
+                .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
     }
 
     private void sleep(long retryIntervalMs) {
