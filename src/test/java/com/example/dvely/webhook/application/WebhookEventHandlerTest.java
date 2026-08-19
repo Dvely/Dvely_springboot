@@ -16,6 +16,7 @@ import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.value.GithubId;
 import com.example.dvely.change.application.service.ChangeService;
+import com.example.dvely.deployment.application.service.DeploymentOutcomeService;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import com.example.dvely.deployment.domain.value.DeployTargetType;
@@ -59,15 +60,22 @@ class WebhookEventHandlerTest {
         auditRecorder = mock(AuditRecorder.class);
         agentMessageService = mock(AgentMessageService.class);
         taskStore = mock(TaskStore.class);
+        // 결과 확정은 DeploymentOutcomeService 가 소유한다. 그 협력자들이 여기 그대로 있으므로
+        // 진짜 인스턴스를 끼워 넣어, 아래 단언들이 웹훅 수신부터 대화 알림까지 한 경로를
+        // 그대로 검증하게 둔다.
         handler = new WebhookEventHandler(
                 new ObjectMapper(),
                 projectRepository,
                 userRepository,
                 historyRepository,
-                changeService,
-                auditRecorder,
-                agentMessageService,
-                taskStore
+                new DeploymentOutcomeService(
+                        historyRepository,
+                        projectRepository,
+                        changeService,
+                        auditRecorder,
+                        agentMessageService,
+                        taskStore
+                )
         );
         receivedAt = LocalDateTime.of(2026, 6, 14, 20, 0);
     }
