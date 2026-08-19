@@ -127,9 +127,29 @@ qeploy:
     worker:
       poll-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_POLL_INTERVAL_MS:1000}
       heartbeat-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_HEARTBEAT_INTERVAL_MS:30000}
+    recovery:
+      # 결과 웹훅을 놓쳐 IN_PROGRESS 에 멈춘 배포를 GitHub 에 직접 물어 회수한다.
+      poll-interval-ms: ${QEPLOY_DEPLOYMENT_RECOVERY_POLL_INTERVAL_MS:60000}
+      batch-size: ${QEPLOY_DEPLOYMENT_RECOVERY_BATCH_SIZE:20}
+      # 웹훅을 놓쳤다고 볼 시각. 정상 배포는 1분 안팎이면 끝난다. 짧게 잡으면 아직 도는
+      # 중인 배포마다 GitHub API 를 헛되이 때린다.
+      grace-minutes: ${QEPLOY_DEPLOYMENT_RECOVERY_GRACE_MINUTES:10}
+      # 결과를 못 얻은 채로 닫을 시각. 여기서 닫힌 배포는 실제로는 성공했을 수도 있으므로
+      # 넉넉해야 한다.
+      abandon-minutes: ${QEPLOY_DEPLOYMENT_RECOVERY_ABANDON_MINUTES:120}
   cloud-connection:
     worker:
       poll-interval-ms: ${QEPLOY_CLOUD_CONNECTION_WORKER_POLL_INTERVAL_MS:1000}
+  domain-binding:
+    verification:
+      # DNS 전파와 호스팅 설정 반영을 기다리는 성격이라 분 단위면 충분하다. 주기를 줄이면
+      # 도메인 수만큼 Cloudflare·GitHub API 를 그만큼 더 때린다.
+      poll-interval-ms: ${QEPLOY_DOMAIN_VERIFICATION_POLL_INTERVAL_MS:60000}
+      batch-size: ${QEPLOY_DOMAIN_VERIFICATION_BATCH_SIZE:20}
+      # 관리형 서브도메인은 우리가 Cloudflare 레코드를 직접 만들므로 몇 분 안에 붙는다.
+      # 커스텀 도메인은 사용자가 자기 registrar 에서 CNAME 을 걸어야 해서 하루를 기다린다.
+      managed-ttl-minutes: ${QEPLOY_DOMAIN_VERIFICATION_MANAGED_TTL_MINUTES:30}
+      custom-ttl-minutes: ${QEPLOY_DOMAIN_VERIFICATION_CUSTOM_TTL_MINUTES:1440}
   webhook:
     worker:
       poll-interval-ms: ${QEPLOY_WEBHOOK_WORKER_POLL_INTERVAL_MS:1000}
