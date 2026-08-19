@@ -2,6 +2,7 @@ package com.example.dvely.deployment.domain.model;
 
 import com.example.dvely.deployment.application.port.out.GithubRepoPort.ReleaseMetadata;
 import com.example.dvely.deployment.domain.value.DeployTargetType;
+import com.example.dvely.deployment.domain.value.DeployFailureCode;
 import com.example.dvely.project.domain.value.DeployStatus;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -29,6 +30,7 @@ public class DeploymentHistory {
     private LocalDateTime mergedAt;
     private final String taskId;
     private String errorMessage;
+    private DeployFailureCode failureCode;
     private int attempt;
     private final int maxAttempts;
     private LocalDateTime nextRunAt;
@@ -116,6 +118,7 @@ public class DeploymentHistory {
         );
     }
 
+    /** 실패 분류가 없던 시절의 이력과 테스트를 위해 남긴다 — failureCode 는 null 이 된다. */
     public DeploymentHistory(Long id,
                              Long ownerUserId,
                              Long projectId,
@@ -143,6 +146,41 @@ public class DeploymentHistory {
                              LocalDateTime triggeredAt,
                              LocalDateTime updatedAt,
                              Long retriedFromHistoryId) {
+        this(id, ownerUserId, projectId, deployTargetType, versionLabel, deployedUrl, status,
+                workflowRunId, correlationId, commitSha, workflowHeadSha, title, description,
+                mergedBy, mergedByAvatarUrl, prNumber, mergedAt, taskId, errorMessage, null,
+                attempt, maxAttempts, nextRunAt, leaseOwner, leaseUntil, triggeredAt, updatedAt,
+                retriedFromHistoryId);
+    }
+
+    public DeploymentHistory(Long id,
+                             Long ownerUserId,
+                             Long projectId,
+                             DeployTargetType deployTargetType,
+                             String versionLabel,
+                             String deployedUrl,
+                             DeployStatus status,
+                             Long workflowRunId,
+                             String correlationId,
+                             String commitSha,
+                             String workflowHeadSha,
+                             String title,
+                             String description,
+                             String mergedBy,
+                             String mergedByAvatarUrl,
+                             Integer prNumber,
+                             LocalDateTime mergedAt,
+                             String taskId,
+                             String errorMessage,
+                             DeployFailureCode failureCode,
+                             int attempt,
+                             int maxAttempts,
+                             LocalDateTime nextRunAt,
+                             String leaseOwner,
+                             LocalDateTime leaseUntil,
+                             LocalDateTime triggeredAt,
+                             LocalDateTime updatedAt,
+                             Long retriedFromHistoryId) {
         this.id = id;
         this.ownerUserId = ownerUserId;
         this.projectId = projectId;
@@ -162,6 +200,7 @@ public class DeploymentHistory {
         this.mergedAt = mergedAt;
         this.taskId = taskId;
         this.errorMessage = errorMessage;
+        this.failureCode = failureCode;
         this.attempt = attempt;
         this.maxAttempts = maxAttempts;
         this.nextRunAt = nextRunAt;
@@ -203,7 +242,7 @@ public class DeploymentHistory {
 
     public void retry(String errorMessage, Duration delay) {
         if (attempt >= maxAttempts) {
-            fail(errorMessage);
+            fail(DeployFailureCode.RETRY_EXHAUSTED, errorMessage);
             return;
         }
         status = DeployStatus.PENDING;
@@ -216,16 +255,18 @@ public class DeploymentHistory {
     public void complete() {
         status = DeployStatus.LIVE;
         errorMessage = null;
+        failureCode = null;
         clearLease();
         updatedAt = LocalDateTime.now();
     }
 
     public void fail() {
-        fail(errorMessage);
+        fail(failureCode, errorMessage);
     }
 
-    public void fail(String errorMessage) {
+    public void fail(DeployFailureCode failureCode, String errorMessage) {
         status = DeployStatus.FAILED;
+        this.failureCode = failureCode;
         this.errorMessage = errorMessage;
         nextRunAt = null;
         clearLease();
@@ -261,6 +302,7 @@ public class DeploymentHistory {
     public LocalDateTime getMergedAt()            { return mergedAt; }
     public String getTaskId()                     { return taskId; }
     public String getErrorMessage()               { return errorMessage; }
+    public DeployFailureCode getFailureCode()     { return failureCode; }
     public int getAttempt()                       { return attempt; }
     public int getMaxAttempts()                   { return maxAttempts; }
     public LocalDateTime getNextRunAt()           { return nextRunAt; }

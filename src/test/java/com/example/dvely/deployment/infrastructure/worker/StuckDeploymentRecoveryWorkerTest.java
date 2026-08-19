@@ -17,6 +17,7 @@ import com.example.dvely.deployment.application.port.out.GithubActionsPort;
 import com.example.dvely.deployment.application.service.DeploymentOutcomeService;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
+import com.example.dvely.deployment.domain.value.DeployFailureCode;
 import com.example.dvely.deployment.domain.value.DeployTargetType;
 import com.example.dvely.deployment.infrastructure.config.StuckDeploymentRecoveryProperties;
 import com.example.dvely.project.domain.model.Project;
@@ -77,7 +78,7 @@ class StuckDeploymentRecoveryWorkerTest {
         worker.recoverStuckDeployments();
 
         verify(outcomeService).applySuccess(history, project);
-        verify(outcomeService, never()).applyFailure(any(), any(), anyString());
+        verify(outcomeService, never()).applyFailure(any(), any(), any(), anyString());
     }
 
     @Test
@@ -93,8 +94,12 @@ class StuckDeploymentRecoveryWorkerTest {
         worker.recoverStuckDeployments();
 
         ArgumentCaptor<String> reason = ArgumentCaptor.forClass(String.class);
-        verify(outcomeService).applyFailure(eq(history), eq(project), reason.capture());
+        ArgumentCaptor<DeployFailureCode> codeCaptor = ArgumentCaptor.forClass(DeployFailureCode.class);
+        verify(outcomeService).applyFailure(eq(history), eq(project), codeCaptor.capture(), reason.capture());
         org.assertj.core.api.Assertions.assertThat(reason.getValue()).contains("failure");
+        // GitHub 이 실패로 끝냈다는 판정을 얻은 경우다 — 아래 RESULT_UNKNOWN 과 구분돼야 한다.
+        org.assertj.core.api.Assertions.assertThat(codeCaptor.getValue())
+                .isEqualTo(DeployFailureCode.WORKFLOW_FAILED);
         verify(outcomeService, never()).applySuccess(any(), any());
     }
 
@@ -128,8 +133,13 @@ class StuckDeploymentRecoveryWorkerTest {
         worker.recoverStuckDeployments();
 
         ArgumentCaptor<String> reason = ArgumentCaptor.forClass(String.class);
-        verify(outcomeService).applyFailure(eq(history), eq(project), reason.capture());
+        ArgumentCaptor<DeployFailureCode> codeCaptor = ArgumentCaptor.forClass(DeployFailureCode.class);
+        verify(outcomeService).applyFailure(eq(history), eq(project), codeCaptor.capture(), reason.capture());
         org.assertj.core.api.Assertions.assertThat(reason.getValue()).contains("확인할 수 없습니다");
+        // 실패했다는 뜻이 아니다. 사이트는 떠 있을 수 있으므로 화면이 실패로 단정하면 안 된다 —
+        // 그래서 WORKFLOW_FAILED 와 다른 분류여야 한다.
+        org.assertj.core.api.Assertions.assertThat(codeCaptor.getValue())
+                .isEqualTo(DeployFailureCode.RESULT_UNKNOWN);
     }
 
     @Test

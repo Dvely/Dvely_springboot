@@ -81,6 +81,8 @@ public class DeploymentController {
                 result.status(),
                 result.buildStatus(),
                 result.buildConclusion(),
+                result.errorCode(),
+                result.errorMessage(),
                 result.triggeredAt(),
                 result.updatedAt()
         );
@@ -211,6 +213,8 @@ public class DeploymentController {
                 result.versionLabel(),
                 result.deployedUrl(),
                 result.status(),
+                result.errorCode(),
+                result.errorMessage(),
                 result.triggeredAt(),
                 result.updatedAt(),
                 result.retriedFromHistoryId()

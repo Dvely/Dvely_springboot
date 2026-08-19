@@ -97,6 +97,8 @@ public class DeploymentQueryService {
                 h.getStatus().name(),
                 run != null ? run.status() : null,
                 run != null ? run.conclusion() : null,
+                h.getFailureCode() == null ? null : h.getFailureCode().name(),
+                h.getErrorMessage(),
                 h.getTriggeredAt(),
                 h.getUpdatedAt()
         );
@@ -119,6 +121,8 @@ public class DeploymentQueryService {
                 h.getVersionLabel(),
                 h.getDeployedUrl(),
                 h.getStatus().name(),
+                h.getFailureCode() == null ? null : h.getFailureCode().name(),
+                h.getErrorMessage(),
                 h.getTriggeredAt(),
                 h.getUpdatedAt(),
                 h.getRetriedFromHistoryId()

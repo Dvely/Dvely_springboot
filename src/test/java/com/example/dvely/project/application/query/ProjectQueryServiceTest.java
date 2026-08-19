@@ -239,17 +239,7 @@ class ProjectQueryServiceTest {
                                                 String url,
                                                 String status,
                                                 LocalDateTime timestamp) {
-        return new DeploymentHistoryResult(
-                id,
-                11L,
-                "LATEST",
-                version,
-                url,
-                status,
-                timestamp,
-                timestamp,
-                null
-        );
+        return new DeploymentHistoryResult(id, 11L, "LATEST", version, url, status, null, null, timestamp, timestamp, null);
     }
 
     private DomainBindingResult domain(Long id,
