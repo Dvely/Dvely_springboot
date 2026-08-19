@@ -3,7 +3,6 @@ package com.example.dvely.auth.application.command;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -43,7 +42,7 @@ class AuthCommandServiceTest {
     @Mock private TokenPort tokenPort;
     @Mock private TokenBlacklistPort tokenBlacklistPort;
     @Mock private OAuthStateManager oAuthStateManager;
-    @Mock private GithubTokenCleaner githubTokenCleaner;
+    @Mock private GithubUserTokenRefresher tokenRefresher;
 
     private AuthCommandService service;
 
@@ -60,7 +59,7 @@ class AuthCommandServiceTest {
                 tokenBlacklistPort,
                 new JwtProperties("test-secret", 3_600_000L, 2_592_000_000L),
                 oAuthStateManager,
-                githubTokenCleaner
+                tokenRefresher
         );
     }
 
@@ -120,37 +119,32 @@ class AuthCommandServiceTest {
         verify(userRepository, never()).save(any());
     }
 
-    // ── 한 요청에서 갱신이 두 번 일어나는 경우 ────────────────────────────────────────
+    // ── 갱신이 겹치는 경우 ──────────────────────────────────────────────────────────
 
     @Test
-    void aSecondRefreshInTheSameRequestReusesTheTokenTheFirstOneCommitted() {
-        // 프로젝트 개요 조회 하나가 GitHub 을 두 번 호출한다(최근 커밋 · 저장소 상태). 두 번째
+    void aSecondRefreshReusesTheTokenTheFirstOneCommitted() {
+        // 프로젝트 개요 조회 하나가 GitHub 을 두 번 호출한다(최근 커밋 · 저장소 상태). 뒤에 오는
         // 호출은 바깥 영속성 컨텍스트의 옛 UserEntity 를 읽어 여전히 만료로 판정하는데, 그대로
         // 갱신하면 이미 회전된 리프레시 토큰을 들고 가 bad_refresh_token 을 맞는다.
-        when(githubTokenCleaner.readValidAccessToken(10L)).thenReturn(Optional.of("fresh-access"));
+        when(tokenRefresher.readValidAccessToken(10L)).thenReturn(Optional.of("fresh-access"));
 
         assertThat(service.refreshGithubUserToken(10L)).isEqualTo("fresh-access");
 
-        // GitHub 을 다시 부르지 않는다 — 부르는 순간 리프레시 토큰이 또 회전한다.
+        // 잠금까지 가지 않는다 — 대부분의 호출이 여기서 끝나야 DB 잠금 경합이 생기지 않는다.
+        verify(tokenRefresher, never()).refreshWithLock(any());
         verify(githubAppPort, never()).refreshUserToken(any());
-        // 그리고 무엇보다 사용자의 GitHub 연동을 지우지 않는다.
-        verify(githubTokenCleaner, never()).clearAndCommit(any());
-        verify(githubTokenCleaner, never()).saveAndCommit(any(), any(), any(), any());
     }
 
     @Test
-    void refreshStillHappensWhenNoOneElseHasRefreshedYet() {
-        when(githubTokenCleaner.readValidAccessToken(10L)).thenReturn(Optional.empty());
-        User user = user(10L, 55L);
-        user.updateUserToken("old-access", "old-refresh", LocalDateTime.now().minusMinutes(1));
-        when(userRepository.findById(10L)).thenReturn(Optional.of(user));
-        when(githubAppPort.refreshUserToken("old-refresh"))
-                .thenReturn(new GithubAppPort.GithubUserTokenInfo("new-access", "new-refresh", 28800L, 15811200L));
+    void aRefreshThatNoOneElseHandledGoesThroughTheLock() {
+        // 빠른 경로에서 못 찾으면 잠금 경로로 넘긴다. 동시에 들어온 두 흐름이 둘 다 여기까지
+        // 올 수 있고, 잠금이 없으면 그 둘이 같은 리프레시 토큰을 들고 GitHub 에 간다(#162).
+        when(tokenRefresher.readValidAccessToken(10L)).thenReturn(Optional.empty());
+        when(tokenRefresher.refreshWithLock(10L)).thenReturn("new-access");
 
         assertThat(service.refreshGithubUserToken(10L)).isEqualTo("new-access");
 
-        verify(githubTokenCleaner).saveAndCommit(eq(10L), eq("new-access"), eq("new-refresh"), any());
-        verify(githubTokenCleaner, never()).clearAndCommit(any());
+        verify(tokenRefresher).refreshWithLock(10L);
     }
 
     private User user(Long id, Long installationId) {

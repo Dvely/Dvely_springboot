@@ -28,6 +28,12 @@ public class UserRepositoryAdapter implements UserRepository {
     }
 
     @Override
+    public Optional<User> findByIdForUpdate(Long id) {
+        return springDataUserRepository.findByIdForUpdate(id)
+                .map(UserEntity::toDomain);
+    }
+
+    @Override
     public Optional<User> findByGithubInstallationId(Long githubInstallationId) {
         return springDataUserRepository.findByGithubInstallationId(githubInstallationId)
                 .map(UserEntity::toDomain);
