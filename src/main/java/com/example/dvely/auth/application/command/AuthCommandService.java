@@ -42,7 +42,7 @@ public class AuthCommandService {
     private final TokenBlacklistPort tokenBlacklistPort;
     private final JwtProperties jwtProperties;
     private final OAuthStateManager oAuthStateManager;
-    private final GithubTokenCleaner githubTokenCleaner;
+    private final GithubUserTokenRefresher tokenRefresher;
 
     /**
      * GitHub OAuth 로그인
@@ -171,42 +171,24 @@ public class AuthCommandService {
      */
     @Transactional
     public String refreshGithubUserToken(Long userId) {
-        // 같은 요청 안에서 다른 경로가 이미 갱신했을 수 있다. 그 갱신은 REQUIRES_NEW 로 커밋되지만
-        // 호출자의 영속성 컨텍스트에는 옛 UserEntity 가 남아 여전히 만료로 보이므로, 커밋된 최신
-        // 상태를 따로 읽어 먼저 확인한다. 이 확인이 없으면 두 번째 호출이 이미 회전돼 무효가 된
-        // 리프레시 토큰을 들고 GitHub 에 가서 bad_refresh_token 을 맞고, 아래 catch 가 사용자의
-        // GitHub 연동을 통째로 지운다.
+        // 빠른 경로 — 다른 흐름이 이미 갱신했으면 잠금까지 가지 않는다. 그 갱신은 별도
+        // 트랜잭션으로 커밋되지만 호출자의 영속성 컨텍스트에는 옛 UserEntity 가 남아 여전히
+        // 만료로 보이므로, 커밋된 최신 상태를 따로 읽어 확인한다.
         //
+        // 이 확인이 없으면 두 번째 호출이 이미 회전돼 무효가 된 리프레시 토큰을 들고 GitHub 에
+        // 가서 bad_refresh_token 을 맞고, 그 catch 가 사용자의 GitHub 연동을 통째로 지운다.
         // 실제로 그렇게 날아갔다(2026-08-18 운영). 프로젝트 개요 조회 하나가 GitHub 을 두 번
-        // 호출하는데(최근 커밋 · 저장소 상태) 둘 다 이 경로를 타서, 화면을 여는 것만으로 연동이
-        // 끊기고 응답은 500 이 됐다.
-        Optional<String> alreadyRefreshed = githubTokenCleaner.readValidAccessToken(userId);
+        // 호출하는데(최근 커밋 · 저장소 상태) 둘 다 이 경로를 탔다.
+        Optional<String> alreadyRefreshed = tokenRefresher.readValidAccessToken(userId);
         if (alreadyRefreshed.isPresent()) {
             log.info("GitHub App User Token 갱신 생략 — 이미 갱신됨: userId={}", userId);
             return alreadyRefreshed.get();
         }
 
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
-
-        if (user.getGithubUserRefreshToken() == null) {
-            throw new ForbiddenException("GitHub App이 연동되지 않았습니다. GitHub App을 다시 설치해 주세요.");
-        }
-
-        try {
-            GithubAppPort.GithubUserTokenInfo tokenInfo = githubAppPort.refreshUserToken(user.getGithubUserRefreshToken());
-            LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(tokenInfo.expiresInSeconds());
-            githubTokenCleaner.saveAndCommit(userId, tokenInfo.accessToken(), tokenInfo.refreshToken(), expiresAt);
-            log.info("GitHub App User Token 갱신 완료: userId={}", userId);
-            return tokenInfo.accessToken();
-        } catch (IllegalStateException e) {
-            if (e.getMessage() != null && e.getMessage().contains("bad_refresh_token")) {
-                // REQUIRES_NEW 트랜잭션으로 커밋 — 현재 트랜잭션이 롤백되어도 클리어는 유지됨
-                githubTokenCleaner.clearAndCommit(userId);
-                throw new ForbiddenException("GitHub App 연동이 만료되었습니다. GitHub App을 다시 설치해 주세요.");
-            }
-            throw e;
-        }
+        // 느린 경로 — 유저 행을 잠그고 갱신한다. 위 확인과 실제 갱신 사이에는 틈이 있어서,
+        // 동시에 들어온 두 흐름이 둘 다 여기까지 올 수 있다. 잠금이 없으면 그 둘이 같은
+        // 리프레시 토큰을 들고 GitHub 에 가고, 뒤에 도착한 쪽이 연동을 지운다(#162).
+        return tokenRefresher.refreshWithLock(userId);
     }
 
     private String issueRefreshToken(Long userId) {
