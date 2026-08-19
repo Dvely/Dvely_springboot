@@ -56,6 +56,9 @@ public interface SpringDataDeploymentHistoryRepository extends JpaRepository<Dep
 
     List<DeploymentHistoryEntity> findByStatusAndLeaseUntilBefore(String status, LocalDateTime now);
 
+    List<DeploymentHistoryEntity> findByStatusAndLeaseUntilIsNullAndUpdatedAtBefore(
+            String status, LocalDateTime updatedBefore, Pageable pageable);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
             update DeploymentHistoryEntity history

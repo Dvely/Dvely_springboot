@@ -1,15 +1,10 @@
 package com.example.dvely.webhook.application;
 
-import com.example.dvely.audit.application.AuditEvent;
-import com.example.dvely.audit.application.AuditRecorder;
-import com.example.dvely.audit.domain.value.AuditAction;
-import com.example.dvely.audit.domain.value.AuditActorType;
-import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.value.GithubId;
-import com.example.dvely.change.application.service.ChangeService;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
+import com.example.dvely.deployment.application.service.DeploymentOutcomeService;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.project.domain.model.Project;
@@ -17,9 +12,6 @@ import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.example.dvely.agent.application.dto.AgentTask;
-import com.example.dvely.agent.application.service.AgentMessageService;
-import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -44,14 +36,7 @@ public class WebhookEventHandler {
     private final ProjectRepository projectRepository;
     private final UserRepository userRepository;
     private final DeploymentHistoryRepository deploymentHistoryRepository;
-    private final ChangeService changeService;
-    private final AuditRecorder auditRecorder;
-    // 배포 결과를 대화로 돌려주기 위해 필요하다. 배포를 시작한 것이 에이전트 태스크이고 사용자가
-    // 그 결과를 기다리는 곳도 그 대화이므로, 감사 로그와 DB 상태만 갱신하고 끝내면 사용자에게는
-    // "접수했습니다"가 마지막 말로 남는다. deployment_histories 는 conversationId 를 갖고 있지
-    // 않아 taskId 로 태스크를 찾아 얻는다.
-    private final AgentMessageService agentMessageService;
-    private final TaskStore taskStore;
+    private final DeploymentOutcomeService deploymentOutcomeService;
 
     @Transactional
     public boolean handle(String eventType, byte[] payload, LocalDateTime receivedAt) {
@@ -131,79 +116,18 @@ public class WebhookEventHandler {
             return;
         }
 
+        // 결과 확정은 DeploymentOutcomeService 하나가 소유한다. 웹훅을 놓쳤을 때
+        // StuckDeploymentRecoveryWorker 가 GitHub 에 직접 물어 같은 확정을 내리므로, 두 경로가
+        // 각자 자기 버전을 갖고 있으면 한쪽만 고쳐져 갈라진다.
+        //
+        // H8 (design §4): 위의 종료 상태 가드가 이미 재전달된 웹훅을 걸러내므로, 이 줄은
+        // 이력당 한 번만 도달한다 — 그 가드 외에 별도 멱등 처리는 필요 없다.
         if ("success".equals(conclusion)) {
-            history.complete();
-            if (history.getTaskId() != null) {
-                changeService.markDeployed(history.getTaskId());
-            }
-            if (isLatestProjectDeployment(history)) {
-                project.updateDeployment(
-                        DeployStatus.LIVE,
-                        history.getDeployedUrl(),
-                        history.getVersionLabel()
-                );
-                projectRepository.save(project);
-            }
+            deploymentOutcomeService.applySuccess(history, project);
         } else {
-            history.fail("GitHub Actions workflow conclusion: " + conclusion);
-            if (isLatestProjectDeployment(history)) {
-                project.updateDeployment(
-                        DeployStatus.FAILED,
-                        history.getDeployedUrl(),
-                        history.getVersionLabel()
-                );
-                projectRepository.save(project);
-            }
+            deploymentOutcomeService.applyFailure(
+                    history, project, "GitHub Actions workflow conclusion: " + conclusion);
         }
-        deploymentHistoryRepository.save(history);
-        notifyDeploymentOutcome(history);
-        // H8 (design §4): the already-terminal-status guard earlier in this method (returns early
-        // when history.getStatus() is already LIVE or FAILED) already handles a re-delivered
-        // webhook against an already-terminal history, so this line is naturally only reached once
-        // per history — no idempotency check needed here beyond that existing guard.
-        // actor SYSTEM (the direct cause is the webhook, not a user action), attributed to the
-        // deployment's owner for traceability (design ADR-A8/H8 note).
-        auditRecorder.record(new AuditEvent(
-                history.getStatus() == DeployStatus.LIVE ? AuditAction.DEPLOYMENT_SUCCEEDED : AuditAction.DEPLOYMENT_FAILED,
-                history.getStatus() == DeployStatus.LIVE ? AuditOutcome.SUCCEEDED : AuditOutcome.FAILED,
-                AuditActorType.SYSTEM,
-                history.getOwnerUserId(),
-                history.getProjectId(),
-                "DEPLOYMENT",
-                String.valueOf(history.getId()),
-                null,
-                null,
-                null,
-                history.getStatus() == DeployStatus.FAILED ? history.getErrorMessage() : null
-        ));
-    }
-
-    /**
-     * 배포 결과를 시작한 대화에 알린다.
-     *
-     * <p>DeployAgentService 는 "배포 요청을 접수했습니다 — worker 가 비동기로 진행합니다"까지만
-     * 말하고 끝난다. 그 뒤를 이어받는 곳이 여기인데 감사 로그와 DB 상태만 갱신하고 있었다. 그래서
-     * 배포가 성공해 사이트가 실제로 떠도 사용자 화면에는 "접수했습니다"가 마지막 말로 남았다.</p>
-     *
-     * <p>에이전트를 거치지 않은 배포는 알릴 대화가 없다. taskId 가 없거나 태스크를 찾지 못하면
-     * 조용히 건너뛴다 — 배포 자체는 이미 성공/실패로 확정됐으므로 여기서 던져 웹훅 처리를
-     * 망가뜨릴 이유가 없다.</p>
-     */
-    private void notifyDeploymentOutcome(DeploymentHistory history) {
-        if (history.getTaskId() == null) {
-            return;
-        }
-        AgentTask task = taskStore.get(history.getTaskId());
-        if (task == null || task.conversationId() == null) {
-            return;
-        }
-        agentMessageService.appendAssistant(task.conversationId(), history.getStatus() == DeployStatus.LIVE
-                ? "배포가 완료되었습니다.\n"
-                        + "- 주소: " + history.getDeployedUrl() + "\n"
-                        + "- 버전: " + history.getVersionLabel()
-                : "배포가 실패했습니다.\n"
-                        + "- 사유: " + history.getErrorMessage() + "\n"
-                        + "다시 배포를 요청하면 같은 저장소로 재시도합니다.");
     }
 
     private void handlePush(JsonNode root, LocalDateTime receivedAt) {

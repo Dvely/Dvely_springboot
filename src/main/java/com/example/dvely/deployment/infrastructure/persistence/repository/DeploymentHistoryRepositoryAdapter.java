@@ -67,6 +67,18 @@ public class DeploymentHistoryRepositoryAdapter implements DeploymentHistoryRepo
     }
 
     @Override
+    public List<DeploymentHistory> findDispatchedAwaitingOutcome(LocalDateTime updatedBefore, int limit) {
+        return springDataRepository.findByStatusAndLeaseUntilIsNullAndUpdatedAtBefore(
+                        DeployStatus.IN_PROGRESS.name(),
+                        updatedBefore,
+                        PageRequest.of(0, limit)
+                )
+                .stream()
+                .map(DeploymentHistoryEntity::toDomain)
+                .toList();
+    }
+
+    @Override
     @Transactional
     public List<Long> claimPending(String workerId, int limit) {
         LocalDateTime now = LocalDateTime.now();
