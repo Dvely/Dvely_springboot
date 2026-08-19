@@ -1,6 +1,7 @@
 package com.example.dvely.deployment.infrastructure.persistence.entity;
 
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
+import com.example.dvely.deployment.domain.value.DeployFailureCode;
 import com.example.dvely.deployment.domain.value.DeployTargetType;
 import com.example.dvely.project.domain.value.DeployStatus;
 import jakarta.persistence.Column;
@@ -81,6 +82,10 @@ public class DeploymentHistoryEntity {
     @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;
 
+    // 실패 분류. 분류를 붙이기 전에 실패한 이력은 null 이다.
+    @Column(name = "failure_code", length = 40)
+    private String failureCode;
+
     @Column(name = "attempt", nullable = false)
     private int attempt;
 
@@ -136,6 +141,7 @@ public class DeploymentHistoryEntity {
         mergedAt = history.getMergedAt();
         taskId = history.getTaskId();
         errorMessage = history.getErrorMessage();
+        failureCode = history.getFailureCode() == null ? null : history.getFailureCode().name();
         attempt = history.getAttempt();
         maxAttempts = history.getMaxAttempts();
         nextRunAt = history.getNextRunAt();
@@ -165,6 +171,7 @@ public class DeploymentHistoryEntity {
                 mergedAt,
                 taskId,
                 errorMessage,
+                failureCode == null ? null : DeployFailureCode.valueOf(failureCode),
                 attempt,
                 maxAttempts,
                 nextRunAt,

@@ -7,6 +7,7 @@ import com.example.dvely.deployment.application.port.out.GithubActionsPort;
 import com.example.dvely.deployment.application.service.DeploymentOutcomeService;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
+import com.example.dvely.deployment.domain.value.DeployFailureCode;
 import com.example.dvely.deployment.infrastructure.config.StuckDeploymentRecoveryProperties;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.project.domain.model.Project;
@@ -83,8 +84,8 @@ public class StuckDeploymentRecoveryWorker {
         }
         log.info("멈춘 배포 회수 — 실패로 확정: historyId={} runId={} conclusion={}",
                 history.getId(), run.runId(), run.conclusion());
-        deploymentOutcomeService.applyFailure(
-                history, project, "GitHub Actions workflow conclusion: " + run.conclusion());
+        deploymentOutcomeService.applyFailure(history, project,
+                DeployFailureCode.WORKFLOW_FAILED, "GitHub Actions workflow conclusion: " + run.conclusion());
     }
 
     /**
@@ -127,8 +128,8 @@ public class StuckDeploymentRecoveryWorker {
         }
         log.warn("멈춘 배포 회수 포기 — 결과 미확인으로 닫는다: historyId={} runId={} 사유={}",
                 history.getId(), history.getWorkflowRunId(), reason);
-        deploymentOutcomeService.applyFailure(
-                history, project, "배포 결과를 확인할 수 없습니다. " + reason);
+        deploymentOutcomeService.applyFailure(history, project,
+                DeployFailureCode.RESULT_UNKNOWN, "배포 결과를 확인할 수 없습니다. " + reason);
     }
 
     private String resolveUserToken(Long ownerUserId) {

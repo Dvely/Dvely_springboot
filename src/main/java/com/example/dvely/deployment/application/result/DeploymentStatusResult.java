@@ -20,6 +20,10 @@ public record DeploymentStatusResult(
         // success | failure | cancelled | null
         String buildConclusion,
 
+        // 실패 사유. 성공·진행 중이면 둘 다 null 이다.
+        String errorCode,
+        String errorMessage,
+
         LocalDateTime triggeredAt,
         LocalDateTime updatedAt
 ) {}
