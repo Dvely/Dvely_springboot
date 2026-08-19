@@ -85,7 +85,37 @@ public class DomainBindingCommandService {
     @Transactional
     public DomainBindingResult checkVerification(Long ownerUserId, Long domainId) {
         DomainBinding domain = resolveDomainOwnedBy(domainId, ownerUserId);
-        Project project = resolveProject(ownerUserId, domain.getProjectId());
+        return verify(domain, resolveProject(ownerUserId, domain.getProjectId()), ownerUserId);
+    }
+
+    /**
+     * 검증 워커 경로. 요청한 사용자가 없으므로 도메인이 속한 프로젝트에서 소유자를 찾아
+     * 같은 검증을 돌린다. 소유권을 확인하는 것이 아니라 검증에 쓸 토큰의 주인을 찾는 것이다.
+     */
+    @Transactional
+    public DomainBindingResult checkVerificationAsSystem(Long domainId) {
+        DomainBinding domain = domainBindingRepository.findById(domainId)
+                .orElseThrow(() -> new NotFoundException("도메인을 찾을 수 없습니다. domainId=" + domainId));
+        Project project = projectRepository.findById(domain.getProjectId())
+                .orElseThrow(() -> new NotFoundException(
+                        "프로젝트를 찾을 수 없습니다. projectId=" + domain.getProjectId()));
+        return verify(domain, project, project.getOwnerUserId());
+    }
+
+    /**
+     * 더 검증해도 소용없는 도메인을 FAILED 로 닫는다. 잘못된 CNAME 을 넣은 커스텀 도메인처럼
+     * 영원히 성공하지 않는 것들이 워커의 외부 API 호출을 무한히 소비하지 않도록 하는 종결점이다.
+     */
+    @Transactional
+    public void abandonVerification(Long domainId) {
+        domainBindingRepository.findById(domainId).ifPresent(domain -> {
+            domain.fail();
+            domainBindingRepository.save(domain);
+        });
+    }
+
+    private DomainBindingResult verify(DomainBinding domain, Project project, Long ownerUserId) {
+        Long domainId = domain.getId();
         User user = resolveUser(ownerUserId);
         DomainHostingAdapter adapter = hostingAdapterRegistry.resolve(domain.getHostingTarget());
         DomainHostingAdapter.VerificationStatus hostingStatus =

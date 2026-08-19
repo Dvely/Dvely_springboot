@@ -2,10 +2,12 @@ package com.example.dvely.domainbinding.infrastructure.persistence.repository;
 
 import com.example.dvely.domainbinding.domain.model.DomainBinding;
 import com.example.dvely.domainbinding.domain.repository.DomainBindingRepository;
+import com.example.dvely.domainbinding.domain.value.DomainStatus;
 import com.example.dvely.domainbinding.infrastructure.persistence.entity.DomainBindingEntity;
 import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 
 @Repository
@@ -34,6 +36,15 @@ public class DomainBindingRepositoryAdapter implements DomainBindingRepository {
     @Override
     public List<DomainBinding> findByProjectIdOrderByCreatedAtDesc(Long projectId) {
         return springDataRepository.findByProjectIdOrderByCreatedAtDesc(projectId)
+                .stream()
+                .map(DomainBindingEntity::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<DomainBinding> findByStatus(DomainStatus status, int limit) {
+        return springDataRepository
+                .findByStatusOrderByCreatedAtAsc(status.name(), PageRequest.of(0, limit))
                 .stream()
                 .map(DomainBindingEntity::toDomain)
                 .toList();
