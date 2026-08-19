@@ -3,6 +3,7 @@ package com.example.dvely.domainbinding.application.command;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -92,7 +93,9 @@ class DomainBindingCommandServiceTest {
                 null,
                 null
         ));
-        when(hostingAdapterRegistry.resolve(DomainHostingTarget.GITHUB_PAGES))
+        // 호스팅 어댑터를 전혀 타지 않는 경로(예: abandonVerification)도 이 클래스에 있으므로
+        // lenient 로 둔다. 그렇지 않으면 그 테스트가 UnnecessaryStubbing 으로 깨진다.
+        lenient().when(hostingAdapterRegistry.resolve(DomainHostingTarget.GITHUB_PAGES))
                 .thenReturn(hostingAdapter);
     }
 
@@ -309,6 +312,120 @@ class DomainBindingCommandServiceTest {
         assertThat(result.httpsEnforced()).isTrue();
         assertThat(result.certificateStatus()).isEqualTo(CertificateStatus.ACTIVE);
         assertThat(result.certificateExpiresAt()).isEqualTo(expiresAt);
+    }
+
+    @Test
+    void systemVerificationFindsTheOwnerFromTheProject() {
+        // 워커에는 요청한 사용자가 없다. 검증에 쓸 GitHub 토큰의 주인을 도메인이 속한
+        // 프로젝트에서 찾아내지 못하면 자동 검증 자체가 성립하지 않는다.
+        Project project = boundProject("https://octo.github.io/repo/");
+        LocalDateTime now = LocalDateTime.now();
+        DomainBinding domain = new DomainBinding(
+                31L,
+                11L,
+                DomainType.MANAGED_SUBDOMAIN,
+                DomainHostingTarget.GITHUB_PAGES,
+                "my-project.qeploy.com",
+                DomainStatus.VERIFYING,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME,
+                "octo.github.io",
+                "record-1",
+                false,
+                CertificateStatus.PENDING,
+                null,
+                now,
+                now,
+                now
+        );
+
+        when(domainBindingRepository.findById(31L)).thenReturn(Optional.of(domain));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(hostingAdapter.verify(any(), any()))
+                .thenReturn(new DomainHostingAdapter.VerificationStatus(
+                        true,
+                        true,
+                        CertificateStatus.PENDING,
+                        null
+                ));
+        when(cloudflareDnsPort.recordExists("my-project.qeploy.com", "record-1")).thenReturn(true);
+        when(domainBindingRepository.save(domain)).thenReturn(domain);
+
+        DomainBindingResult result = commandService.checkVerificationAsSystem(31L);
+
+        assertThat(result.status()).isEqualTo(DomainStatus.CONNECTED);
+    }
+
+    @Test
+    void systemVerificationDoesNotWaitForTheCertificate() {
+        // 관리형 서브도메인은 Cloudflare 프록시 뒤에 있어 GitHub Pages 가 인증서를 발급하지
+        // 못한다. certificateStatus 가 PENDING 인 채로도 CONNECTED 가 되어야 한다 —
+        // 인증서를 기다리면 자동 검증이 영원히 안 끝난다.
+        Project project = boundProject("https://octo.github.io/repo/");
+        LocalDateTime now = LocalDateTime.now();
+        DomainBinding domain = new DomainBinding(
+                31L,
+                11L,
+                DomainType.MANAGED_SUBDOMAIN,
+                DomainHostingTarget.GITHUB_PAGES,
+                "my-project.qeploy.com",
+                DomainStatus.VERIFYING,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME,
+                "octo.github.io",
+                "record-1",
+                false,
+                CertificateStatus.PENDING,
+                null,
+                now,
+                now,
+                now
+        );
+
+        when(domainBindingRepository.findById(31L)).thenReturn(Optional.of(domain));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(hostingAdapter.verify(any(), any()))
+                .thenReturn(new DomainHostingAdapter.VerificationStatus(
+                        true,
+                        false,
+                        CertificateStatus.PENDING,
+                        null
+                ));
+        when(cloudflareDnsPort.recordExists("my-project.qeploy.com", "record-1")).thenReturn(true);
+        when(domainBindingRepository.save(domain)).thenReturn(domain);
+
+        DomainBindingResult result = commandService.checkVerificationAsSystem(31L);
+
+        assertThat(result.status()).isEqualTo(DomainStatus.CONNECTED);
+        assertThat(result.certificateStatus()).isEqualTo(CertificateStatus.PENDING);
+    }
+
+    @Test
+    void abandonVerificationClosesTheDomainAsFailed() {
+        LocalDateTime now = LocalDateTime.now();
+        DomainBinding domain = new DomainBinding(
+                31L,
+                11L,
+                DomainType.CUSTOM_DOMAIN,
+                DomainHostingTarget.GITHUB_PAGES,
+                "www.example.com",
+                DomainStatus.VERIFYING,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME,
+                "octo.github.io",
+                null,
+                false,
+                CertificateStatus.PENDING,
+                null,
+                now,
+                now,
+                now
+        );
+        when(domainBindingRepository.findById(31L)).thenReturn(Optional.of(domain));
+
+        commandService.abandonVerification(31L);
+
+        assertThat(domain.getStatus()).isEqualTo(DomainStatus.FAILED);
+        verify(domainBindingRepository).save(domain);
     }
 
     private DomainBindingCommandService commandService(CloudflareProperties cloudflareProperties) {
