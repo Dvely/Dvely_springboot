@@ -124,7 +124,10 @@ public class DeployWorkflowTemplate {
         w.append("        run: ").append(resolveBuildCommand(type, pm)).append("\n");
         w.append("        env:\n");
         w.append("          BASE_PATH: ${{ steps.base.outputs.path }}\n");
-        w.append("          PUBLIC_URL: ${{ steps.base.outputs.path }}\n\n");
+        w.append("          PUBLIC_URL: ${{ steps.base.outputs.path }}\n");
+        // Next.js 의 basePath 는 trailing slash 가 없어야 한다. 위 두 값은 slash 를 포함하므로
+        // 그대로 쓰면 안 되고, 감싼 config 가 이 값을 읽는다.
+        w.append("          QEPLOY_BASE_PATH: ${{ steps.base.outputs.base }}\n\n");
 
         // ── 7. SPA 라우팅 404 대응 (빌드 결과물 있을 때만) ───────────────────
         w.append("      - name: Copy index.html to 404.html\n");
@@ -210,32 +213,81 @@ public class DeployWorkflowTemplate {
     }
 
     /**
-     * Next.js: 정적 export 를 위해 next.config 가 없으면 자동 생성.
-     * 있으면 경고만 출력 (기존 설정 덮어쓰기 방지).
-     * output: 'export' 와 basePath 가 없으면 빌드 결과물이 ./out 에 생성되지 않음.
+     * Next.js: 정적 export 설정을 배포 시점에 확정한다.
+     *
+     * 예전에는 config 가 없을 때만 만들고, 있으면 경고만 남기고 넘어갔다. 그런데
+     * {@code create-next-app} 은 스캐폴딩 때 {@code next.config.mjs} 를 **항상** 만든다. 그래서
+     * 생성 분기는 현실에서 거의 발화하지 않고, 커밋된 config 가 유일한 진실이 된다. 그 config 에는
+     * {@code output: 'export'} 가 없으므로 {@code next build} 는 {@code .next} 만 만들고
+     * {@code ./out} 은 생기지 않는다 — publish 스텝이 그 디렉터리를 찾다 실패한다. 즉 자산 404
+     * 이전에 **배포 자체가 끝까지 가지 못한다.**
+     *
+     * basePath 도 마찬가지다. 배포 대상 URL 이 결정하는 값이라 빌드 시점에만 알 수 있는데
+     * (커스텀 도메인이 붙으면 {@code /}, 아니면 {@code /{repo}}), 커밋된 값은 그것을 알 수 없다.
+     *
+     * 그래서 **덮어쓰지 않고 감싼다.** 사용자의 config 를 그대로 두고 옆으로 옮긴 뒤, 그것을
+     * 불러와 우리가 소유하는 세 필드만 얹은 config 를 새로 쓴다. 사용자가 적은 다른 설정
+     * (redirects, env, webpack 등)은 그대로 살아남는다. 파싱하지 않으므로 config 가 JS 든 MJS 든
+     * TS 든 형식에 기대지 않는다 — Next 자신이 읽게 두고 결과 객체에만 손댄다.
+     *
+     * 세 필드를 우리가 소유하는 근거는 각각 다르다. {@code output} 과 {@code images.unoptimized}
+     * 는 GitHub Pages 가 정적 호스팅이라는 사실에서 나오고, {@code basePath} 는 배포 URL 에서
+     * 나온다. 셋 다 사용자가 정할 수 있는 값이 아니다.
      */
     private static String nextjsConfigStep() {
         return "      - name: Configure Next.js for static export\n"
              + "        run: |\n"
              + "          BASE=\"${{ steps.base.outputs.base }}\"\n"
-             + "          CONFIG_EXISTS=false\n"
+             + "          USER_CONFIG=\"\"\n"
              + "          for f in next.config.js next.config.mjs next.config.ts; do\n"
-             + "            if [ -f \"$f\" ]; then CONFIG_EXISTS=true; break; fi\n"
+             + "            if [ -f \"$f\" ]; then USER_CONFIG=\"$f\"; break; fi\n"
              + "          done\n"
-             + "          if [ \"$CONFIG_EXISTS\" = \"false\" ]; then\n"
+             + "          if [ -z \"$USER_CONFIG\" ]; then\n"
              + "            {\n"
              + "              echo \"/** @type {import('next').NextConfig} */\"\n"
-             + "              echo \"const nextConfig = {\"\n"
+             + "              echo \"module.exports = {\"\n"
              + "              echo \"  output: 'export',\"\n"
              + "              echo \"  basePath: '$BASE',\"\n"
              + "              echo \"  images: { unoptimized: true },\"\n"
              + "              echo \"};\"\n"
-             + "              echo \"module.exports = nextConfig;\"\n"
              + "            } > next.config.js\n"
-             + "            echo \"next.config.js 생성 완료 (output: export, basePath: $BASE)\"\n"
+             + "            echo \"next.config.js 생성 완료 (output: export, basePath: '$BASE')\"\n"
+             + "            exit 0\n"
+             + "          fi\n"
+             + "          # 사용자의 config 는 지우지 않고 옆으로 옮긴다. 우리 config 가 이것을\n"
+             + "          # 불러와 감싸므로, 사용자가 적은 다른 설정은 그대로 살아남는다.\n"
+             + "          EXT=\"${USER_CONFIG##*.}\"\n"
+             + "          WRAPPED=\"next.config.qeploy-user.$EXT\"\n"
+             + "          mv \"$USER_CONFIG\" \"$WRAPPED\"\n"
+             + "          # ESM 은 확장자를 반드시 적어야 하고, TypeScript 는 반대로 '.ts' 확장자\n"
+             + "          # import 를 허용하지 않는다(allowImportingTsExtensions 없이는 컴파일 오류).\n"
+             + "          if [ \"$EXT\" = \"ts\" ]; then IMPORT_PATH=\"./${WRAPPED%.ts}\"; else IMPORT_PATH=\"./$WRAPPED\"; fi\n"
+             + "          if [ \"$EXT\" = \"mjs\" ] || [ \"$EXT\" = \"ts\" ]; then\n"
+             + "            {\n"
+             + "              echo \"import userConfig from '$IMPORT_PATH';\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"export default {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  output: 'export',\"\n"
+             + "              echo \"  basePath: base,\"\n"
+             + "              echo \"  images: { ...(resolved.images ?? {}), unoptimized: true },\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"next.config.$EXT\"\n"
              + "          else\n"
-             + "            echo \"::warning::next.config 파일이 존재합니다. output: 'export' 와 basePath: '$BASE' 가 설정되어 있는지 확인하세요.\"\n"
-             + "          fi\n\n";
+             + "            {\n"
+             + "              echo \"const userConfig = require('./$WRAPPED');\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"module.exports = {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  output: 'export',\"\n"
+             + "              echo \"  basePath: base,\"\n"
+             + "              echo \"  images: { ...(resolved.images ?? {}), unoptimized: true },\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"next.config.$EXT\"\n"
+             + "          fi\n"
+             + "          echo \"$USER_CONFIG 를 $WRAPPED 로 옮기고 감쌌습니다 (output: export, basePath: '$BASE')\"\n\n";
     }
 
     /**
