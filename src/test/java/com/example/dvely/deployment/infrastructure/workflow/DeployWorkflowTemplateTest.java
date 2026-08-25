@@ -8,6 +8,68 @@ import org.junit.jupiter.api.Test;
 class DeployWorkflowTemplateTest {
 
     /**
+     * Next.js 는 커밋된 config 가 이겨 배포가 끝까지 가지 못했다.
+     *
+     * create-next-app 은 스캐폴딩 때 next.config.mjs 를 항상 만든다. 예전 스텝은 파일이 있으면
+     * 경고만 하고 넘어갔는데, 그 config 에는 output: 'export' 가 없으므로 next build 가
+     * .next 만 만들고 ./out 은 생기지 않는다 — publish 스텝이 그 디렉터리를 찾다 실패한다.
+     * 자산 404 이전에 배포 자체가 실패하는 것이다.
+     */
+    @Test
+    void generate_nextjsWrapsACommittedConfigInsteadOfOnlyWarning() {
+        String workflow = DeployWorkflowTemplate.generate("nextjs", null, PackageManager.NPM, "20");
+
+        // 커밋된 config 를 발견해도 그냥 넘어가지 않는다.
+        assertThat(workflow).doesNotContain("::warning::next.config 파일이 존재합니다");
+        // 사용자의 config 는 지우지 않고 옆으로 옮겨 감싼다 — 다른 설정이 살아남아야 한다.
+        assertThat(workflow).contains("mv \"$USER_CONFIG\" \"$WRAPPED\"");
+        assertThat(workflow).contains("...resolved,");
+        // 우리가 소유하는 세 필드는 배포 시점 값으로 확정한다.
+        assertThat(workflow).contains("output: 'export',");
+        assertThat(workflow).contains("basePath: base,");
+        assertThat(workflow).contains("unoptimized: true");
+    }
+
+    /**
+     * basePath 는 trailing slash 가 없어야 한다. BASE_PATH/PUBLIC_URL 은 slash 를 포함하므로
+     * (Vite --base, CRA homepage 가 그 형태를 요구한다) 그대로 쓰면 경로가 "//" 로 겹친다.
+     */
+    @Test
+    void generate_nextjsReadsTheSlashlessBaseFromItsOwnEnvVar() {
+        String workflow = DeployWorkflowTemplate.generate("nextjs", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("QEPLOY_BASE_PATH: ${{ steps.base.outputs.base }}");
+        assertThat(workflow).contains("process.env.QEPLOY_BASE_PATH");
+        // path 쪽(슬래시 포함)을 basePath 로 읽지 않는다.
+        assertThat(workflow).doesNotContain("basePath: process.env.BASE_PATH");
+    }
+
+    /**
+     * TypeScript config 는 확장자를 떼고 import 해야 한다.
+     *
+     * ESM(.mjs)은 확장자를 반드시 적어야 하는데, TypeScript 는 반대로 '.ts' 확장자 import 를
+     * allowImportingTsExtensions 없이는 허용하지 않는다. 같은 문자열로 둘 다 만들면 한쪽이 깨진다.
+     */
+    @Test
+    void generate_nextjsStripsTheTsExtensionWhenImportingTheWrappedConfig() {
+        String workflow = DeployWorkflowTemplate.generate("nextjs", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("if [ \"$EXT\" = \"ts\" ]; then IMPORT_PATH=\"./${WRAPPED%.ts}\"");
+        assertThat(workflow).contains("import userConfig from '$IMPORT_PATH';");
+    }
+
+    /**
+     * config 가 아예 없는 저장소에서는 예전처럼 새로 만든다. 이 경로는 감싸는 대상이 없다.
+     */
+    @Test
+    void generate_nextjsStillCreatesAConfigWhenTheRepositoryHasNone() {
+        String workflow = DeployWorkflowTemplate.generate("nextjs", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("if [ -z \"$USER_CONFIG\" ]; then");
+        assertThat(workflow).contains("next.config.js 생성 완료");
+    }
+
+    /**
      * publish 디렉터리는 프레임워크 어휘(cra/nextjs/gatsby...)로만 결정된다. 콘텐츠 템플릿
      * 이름(landing, portfolio 등)이 흘러 들어오면 알 수 없는 값이라 기본값으로 떨어지는데,
      * 그 프로젝트가 실제로 Next.js(./out)나 CRA(./build)를 만들었다면 산출물이 빈 채로 배포된다.
