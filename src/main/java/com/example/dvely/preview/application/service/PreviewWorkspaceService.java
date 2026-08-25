@@ -143,8 +143,17 @@ public class PreviewWorkspaceService {
             return;
         }
         log.info("[PreviewWorkspace] npm run build 실행");
-        dockerService.exec(containerId,
+        // 종료 코드를 읽는다. 예전에는 exec 이 stdout 만 돌려줘서 set -o pipefail 을 걸어둬도
+        // 아무 의미가 없었다 — 빌드가 깨져도 호출자는 성공으로 알았고, 컨테이너를 재사용하는
+        // 프리뷰에서는 이전 성공 빌드의 dist 가 남아 있어 detectBuildOutputDir 이 그것을 잡았다.
+        // 그래서 "빌드가 실패했는데 옛 화면이 그대로 보이는" 상태가 됐다.
+        DockerContainerService.ExecResult result = dockerService.execWithExitCode(containerId,
                 "cd " + APP_DIR + " && set -o pipefail; (npm run build) 2>&1 | tee " + BUILD_LOG_PATH);
+        if (!result.succeeded()) {
+            log.warn("[PreviewWorkspace] 빌드 실패 | exitCode={} | log={}",
+                    result.exitCode(), tailBuildLog(containerId, 20));
+            throw new IllegalStateException("프리뷰 빌드에 실패했습니다. exitCode=" + result.exitCode());
+        }
     }
 
     /** 빌드 로그 꼬리. 실패 사유를 사용자에게 그대로 보여주기 위해 컨테이너를 지우기 전에 읽어둔다. */
@@ -175,7 +184,20 @@ public class PreviewWorkspaceService {
      */
     public void startPreviewServer(String containerId) {
         String buildDir = detectBuildOutputDir(containerId);
-        dockerService.exec(containerId, "pkill -f 'npx serve' 2>/dev/null || true");
+        // 패턴이 'npx serve' 였을 때는 아무것도 잡지 못했다. 실행 중 프로세스의 cmdline 은
+        //   npm exec serve -s /workspace/app/dist -l 3000
+        //   node /root/.npm/_npx/<hash>/node_modules/.bin/serve -s ...
+        // 이라 리터럴 'npx serve' 가 없다. 대신 이 pkill 을 실행하는 sh -c 자신의 cmdline 에는
+        // 그 문자열이 들어 있어서 자기 자신에게 SIGTERM 을 보냈다(종료코드 143 실측).
+        //
+        // 그래서 옛 serve 가 포트 3000 을 계속 쥐고, 새 serve 는 EADDRINUSE 로 죽는 대신
+        // 랜덤 포트로 조용히 옮겨 붙는다("Accepting connections at http://localhost:46113").
+        // 게이트웨이는 3000 만 프록시하므로 옛 serve 가, 즉 그 serve 가 붙들고 있는 옛 디렉터리가
+        // 계속 응답한다 — 빌드 산출물 경로가 바뀌면 낡은 화면이 그대로 보인다(2026-08-25 실측).
+        //
+        // [s]erve 는 pkill 자신의 cmdline 에는 '[s]erve -s' 로 남고 정규식 'serve -s' 와는
+        // 매치되지 않아 자기 매치를 피한다. 실측에서 2건을 잡아 0건으로 만들었다.
+        dockerService.exec(containerId, "pkill -f '[s]erve -s' 2>/dev/null || true");
         dockerService.exec(containerId,
                 "nohup npx serve -s " + buildDir + " -l 3000 > /tmp/serve.log 2>&1 &");
 

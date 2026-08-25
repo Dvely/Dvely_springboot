@@ -33,6 +33,88 @@ class PreviewWorkspaceServiceTest {
     // ACTIVE 인데 첫 요청이 502 가 되는 일이 있었다(2026-08-15 dev 실측).
 
     /**
+     * 옛 serve 를 실제로 죽이는지.
+     *
+     * 패턴이 'npx serve' 였을 때는 아무것도 잡지 못했다. 컨테이너 안 프로세스의 cmdline 은
+     * "npm exec serve -s ..." 와 "node .../serve -s ..." 라 리터럴 'npx serve' 가 없고, 대신
+     * pkill 을 실행하는 sh -c 자신의 cmdline 에는 그 문자열이 있어 자기 자신을 죽였다.
+     * 그래서 옛 serve 가 포트 3000 을 계속 쥐고, 새 serve 는 랜덤 포트로 옮겨 붙어
+     * 게이트웨이에는 낡은 디렉터리가 응답했다(2026-08-25 컨테이너 실측).
+     */
+    @Test
+    void theOldServeIsKilledWithAPatternThatActuallyMatchesIt() {
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
+        // 빌드 산출물 디렉터리 감지가 첫 후보에서 걸리게 한다.
+        when(dockerService.exec(eq(CONTAINER_ID), contains("exists"))).thenReturn("exists");
+        when(dockerService.exec(eq(CONTAINER_ID), contains("ready="))).thenReturn("serve_ready=yes");
+
+        service.startPreviewServer(CONTAINER_ID);
+
+        ArgumentCaptor<String> commands = ArgumentCaptor.forClass(String.class);
+        verify(dockerService, org.mockito.Mockito.atLeastOnce())
+                .exec(eq(CONTAINER_ID), commands.capture());
+        String pkill = commands.getAllValues().stream()
+                .filter(c -> c.startsWith("pkill"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("pkill 명령이 없다"));
+
+        // 문자열 모양이 아니라 성질을 본다. pkill -f 는 패턴을 정규식으로 cmdline 전체에
+        // 맞춰보므로, 두 가지가 동시에 성립해야 한다.
+        String pattern = pkill.replaceAll("^pkill -f '(.*?)'.*$", "$1");
+        java.util.regex.Pattern regex = java.util.regex.Pattern.compile(pattern);
+
+        // 1) 컨테이너에서 실제로 도는 프로세스를 잡아야 한다(2026-08-25 실측 cmdline).
+        assertThat(regex.matcher("npm exec serve -s /workspace/app/dist -l 3000").find()).isTrue();
+        assertThat(regex.matcher(
+                "node /root/.npm/_npx/aab42732f01924e5/node_modules/.bin/serve -s /workspace/app/dist -l 3000")
+                .find()).isTrue();
+
+        // 2) 자기 자신은 잡으면 안 된다. 이 pkill 을 실행하는 sh -c 의 cmdline 이 곧 이 명령
+        //    문자열이고, 예전 패턴('npx serve')은 여기에 걸려 스스로에게 SIGTERM 을 보냈다.
+        assertThat(regex.matcher(pkill).find()).isFalse();
+    }
+
+    /**
+     * 빌드 실패가 호출자에게 도달하는지.
+     *
+     * exec 이 종료 코드를 읽지 않던 동안에는 set -o pipefail 도 의미가 없었다. 빌드가 깨져도
+     * 성공으로 반환됐고, 컨테이너를 재사용하는 프리뷰에서는 이전 빌드의 dist 가 남아 있어
+     * detectBuildOutputDir 이 그것을 잡았다 — 실패한 빌드가 옛 화면으로 성공처럼 보였다.
+     */
+    @Test
+    void aFailedBuildReachesTheCaller() {
+        when(dockerService.exec(eq(CONTAINER_ID), contains("package.json"))).thenReturn("yes");
+        when(dockerService.execWithExitCode(eq(CONTAINER_ID), contains("npm run build")))
+                .thenReturn(new DockerContainerService.ExecResult(1, "build failed"));
+        when(dockerService.exec(eq(CONTAINER_ID), contains("tail"))).thenReturn("error TS2304");
+
+        assertThatThrownBy(() -> service.buildIfConfigured(CONTAINER_ID))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("프리뷰 빌드에 실패했습니다");
+    }
+
+    @Test
+    void aSucceededBuildJustReturns() {
+        when(dockerService.exec(eq(CONTAINER_ID), contains("package.json"))).thenReturn("yes");
+        when(dockerService.execWithExitCode(eq(CONTAINER_ID), contains("npm run build")))
+                .thenReturn(new DockerContainerService.ExecResult(0, "built"));
+
+        service.buildIfConfigured(CONTAINER_ID);
+
+        verify(dockerService).execWithExitCode(eq(CONTAINER_ID), contains("npm run build"));
+    }
+
+    @Test
+    void aProjectWithoutABuildScriptIsServedWithoutBuilding() {
+        when(dockerService.exec(eq(CONTAINER_ID), contains("package.json"))).thenReturn("no");
+
+        service.buildIfConfigured(CONTAINER_ID);
+
+        verify(dockerService, org.mockito.Mockito.never())
+                .execWithExitCode(eq(CONTAINER_ID), contains("npm run build"));
+    }
+
+    /**
      * clone 명령줄에 토큰이 실리면 두 곳으로 샌다. 하나는 컨테이너의 프로세스 목록 — 이 컨테이너는
      * 에이전트가 만든 코드를 실행하는 곳이라 그 코드가 ps 로 사용자의 GitHub 토큰을 가져갈 수 있다.
      * 다른 하나는 서버 로그 — DockerContainerService#exec 가 명령 전문을 log.debug 로 찍는다.

@@ -510,6 +510,25 @@ public class DockerContainerService {
     }
 
     public String exec(String containerId, String command) {
+        return execWithExitCode(containerId, command).output();
+    }
+
+    /**
+     * 종료 코드까지 함께 돌려주는 exec.
+     *
+     * {@link #exec} 는 오랫동안 stdout·stderr 만 모으고 종료 코드를 읽지 않았다. 그래서 컨테이너
+     * 안에서 명령이 실패해도 호출자에게는 문자열만 돌아갔고, 실패가 조용히 성공으로 넘어갔다.
+     * 프리뷰 빌드가 그 경로로 무력화됐다 — {@code set -o pipefail} 을 걸어둬도 종료 코드를
+     * 아무도 안 보니 의미가 없었고, 빌드가 깨져도 이전 산출물이 그대로 서빙됐다.
+     *
+     * 그렇다고 {@link #exec} 를 실패 시 던지도록 바꾸지는 않는다. 호출부가 48곳인데 상당수는
+     * 실패해도 되는 명령이다 — 없는 파일을 {@code cat} 하거나, 이미 있는 remote 를
+     * {@code git remote add} 하거나, {@code [ -d ... ] && echo yes || echo no} 로 존재를
+     * 물어보는 식이다. 그런 곳까지 예외로 바꾸면 멀쩡히 돌던 흐름이 깨진다.
+     *
+     * 그래서 실패가 반드시 전달돼야 하는 곳만 이 메서드를 쓴다.
+     */
+    public ExecResult execWithExitCode(String containerId, String command) {
         log.debug("Docker exec: {}", command);
         ExecCreateCmdResponse execCreate = dockerClient.execCreateCmd(containerId)
                 .withAttachStdout(true)
@@ -541,7 +560,19 @@ public class DockerContainerService {
 
         String out = stdout.toString(StandardCharsets.UTF_8);
         String err = stderr.toString(StandardCharsets.UTF_8);
-        return out + (err.isBlank() ? "" : "\n[STDERR]\n" + err);
+        String output = out + (err.isBlank() ? "" : "\n[STDERR]\n" + err);
+
+        // 종료 코드는 exec 이 끝난 뒤에야 확정된다. 아직 running 이면 null 이 오는데, 위에서
+        // awaitCompletion 을 지나온 뒤라 정상 경로에서는 값이 있다.
+        Long exitCode = dockerClient.inspectExecCmd(execCreate.getId()).exec().getExitCodeLong();
+        return new ExecResult(exitCode == null ? -1 : exitCode.intValue(), output);
+    }
+
+    /** exec 결과. exitCode 가 -1 이면 Docker 가 종료 코드를 확정하지 못한 경우다. */
+    public record ExecResult(int exitCode, String output) {
+        public boolean succeeded() {
+            return exitCode == 0;
+        }
     }
 
     /**
