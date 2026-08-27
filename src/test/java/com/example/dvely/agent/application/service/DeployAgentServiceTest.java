@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -50,6 +51,10 @@ class DeployAgentServiceTest {
     @Test
     void deploysApprovedRequestAfterPushingRequestCommitToPreview() {
         DockerContainerService dockerService = mock(DockerContainerService.class);
+        // push 의 각 단계는 이제 종료 코드를 본다(PreviewBranchPushService#execOrThrow).
+        // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
+        lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -109,15 +114,15 @@ class DeployAgentServiceTest {
         );
 
         assertThat(result.summary()).contains("승인된 변경 사항의 배포 요청", "배포 ID: 51");
-        verify(dockerService).exec("container-1", "cd /workspace/app && git checkout -B preview");
-        verify(dockerService).exec(
+        verify(dockerService).execWithExitCode("container-1", "cd /workspace/app && git checkout -B preview");
+        verify(dockerService).execWithExitCode(
                 "container-1",
                 "cd /workspace/app && git diff --cached --quiet || "
                         + "git commit -m 'feat: apply Qeploy Agent task task123'"
         );
-        verify(dockerService).exec("container-1", "cd /workspace/app && git push -u origin preview");
-        verify(dockerService, never()).exec(anyString(), contains("--force"));
-        verify(dockerService, never()).exec(anyString(), contains("origin main"));
+        verify(dockerService).execWithExitCode("container-1", "cd /workspace/app && git push -u origin preview");
+        verify(dockerService, never()).execWithExitCode(anyString(), contains("--force"));
+        verify(dockerService, never()).execWithExitCode(anyString(), contains("origin main"));
         verify(deploymentFacade).deploy(
                 1L,
                 11L,
@@ -137,6 +142,10 @@ class DeployAgentServiceTest {
     @Test
     void recordsRepositoryCreatedAndPreviewBranchPushedWhenANewRepositoryIsCreated() {
         DockerContainerService dockerService = mock(DockerContainerService.class);
+        // push 의 각 단계는 이제 종료 코드를 본다(PreviewBranchPushService#execOrThrow).
+        // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
+        lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -188,6 +197,10 @@ class DeployAgentServiceTest {
     @Test
     void autoBindRepositoryRetriesOnceAfterOptimisticLockingFailureAndSucceeds() {
         DockerContainerService dockerService = mock(DockerContainerService.class);
+        // push 의 각 단계는 이제 종료 코드를 본다(PreviewBranchPushService#execOrThrow).
+        // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
+        lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -230,6 +243,10 @@ class DeployAgentServiceTest {
     @Test
     void autoBindRepositoryReturnsReloadedProjectWithoutResavingWhenAlreadyBoundAfterRace() {
         DockerContainerService dockerService = mock(DockerContainerService.class);
+        // push 의 각 단계는 이제 종료 코드를 본다(PreviewBranchPushService#execOrThrow).
+        // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
+        lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -272,6 +289,10 @@ class DeployAgentServiceTest {
     @Test
     void autoBindRepositoryPropagatesWhenTheRetryAlsoHitsAnOptimisticLockingFailure() {
         DockerContainerService dockerService = mock(DockerContainerService.class);
+        // push 의 각 단계는 이제 종료 코드를 본다(PreviewBranchPushService#execOrThrow).
+        // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
+        lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -315,6 +336,10 @@ class DeployAgentServiceTest {
         // (F2 test above) — the project was deleted entirely between the failed first save and
         // the retry's reload. That must fail fast with a clear message, not NPE or loop.
         DockerContainerService dockerService = mock(DockerContainerService.class);
+        // push 의 각 단계는 이제 종료 코드를 본다(PreviewBranchPushService#execOrThrow).
+        // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
+        lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -353,6 +378,10 @@ class DeployAgentServiceTest {
     @Test
     void deployRetriesOnceAfterOptimisticLockingFailureAndSucceeds() {
         DockerContainerService dockerService = mock(DockerContainerService.class);
+        // push 의 각 단계는 이제 종료 코드를 본다(PreviewBranchPushService#execOrThrow).
+        // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
+        lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -385,6 +414,10 @@ class DeployAgentServiceTest {
     @Test
     void deployPropagatesWhenTheRetryAlsoHitsAnOptimisticLockingFailure() {
         DockerContainerService dockerService = mock(DockerContainerService.class);
+        // push 의 각 단계는 이제 종료 코드를 본다(PreviewBranchPushService#execOrThrow).
+        // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
+        lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
