@@ -34,6 +34,8 @@ public class PreviewBranchPushService {
                      String repoFullName,
                      boolean isNew,
                      String taskId) {
+        // apk 는 이미 git 이 있거나 이미지가 alpine 이 아닐 수 있어 실패를 허용한다. 정말 git 이
+        // 없으면 아래 strict 명령들이 대신 드러낸다.
         dockerService.exec(containerId, "apk add --no-cache git");
         writeGitCredentials(containerId, username, userToken);
         dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
@@ -46,8 +48,8 @@ public class PreviewBranchPushService {
 
         if (!hasGit) {
             if (isNew) writeGitignore(containerId);
-            dockerService.exec(containerId, "cd /workspace/app && git init -b preview");
-            dockerService.exec(containerId, "cd /workspace/app && git remote add origin " + remoteUrl);
+            execOrThrow(containerId, "cd /workspace/app && git init -b preview", "git init");
+            execOrThrow(containerId, "cd /workspace/app && git remote add origin " + remoteUrl, "git remote add");
             // 원격에 이미 preview 가 있으면 그 커밋을 부모로 삼는다. 저장소를 연결할 때
             // preparePreviewBranch 가 기본 브랜치 HEAD 에서 preview 를 갈라두기 때문에, 갓 init 한
             // 로컬 히스토리를 그대로 올리면 두 히스토리에 공통 조상이 없어 push 가 거부된다.
@@ -57,15 +59,40 @@ public class PreviewBranchPushService {
                             + "(git fetch origin preview 2>/dev/null "
                             + "&& git reset --soft FETCH_HEAD) || true");
         } else {
-            dockerService.exec(containerId, "cd /workspace/app && git remote set-url origin " + remoteUrl);
-            dockerService.exec(containerId, "cd /workspace/app && git checkout -B preview");
+            execOrThrow(containerId, "cd /workspace/app && git remote set-url origin " + remoteUrl, "git remote set-url");
+            execOrThrow(containerId, "cd /workspace/app && git checkout -B preview", "git checkout -B preview");
         }
 
-        dockerService.exec(containerId, "cd /workspace/app && git add -A");
-        dockerService.exec(containerId,
+        execOrThrow(containerId, "cd /workspace/app && git add -A", "git add");
+        // 변경이 없으면 git diff --cached --quiet 가 0 으로 끝나 커밋을 건너뛴다. 변경이 있으면
+        // 1 을 주고 커밋이 돌며, 그 커밋이 실패하면 전체가 0 이 아니다 — 그대로 실패로 본다.
+        execOrThrow(containerId,
                 "cd /workspace/app && git diff --cached --quiet || git commit -m 'feat: apply Qeploy Agent task "
-                        + taskId + "'");
-        dockerService.exec(containerId, "cd /workspace/app && git push -u origin preview");
+                        + taskId + "'", "git commit");
+        execOrThrow(containerId, "cd /workspace/app && git push -u origin preview", "git push");
+    }
+
+    /**
+     * 실패하면 던진다.
+     *
+     * push 가 실패해도 조용히 넘어가던 것이 이 메서드가 생긴 이유다. DockerContainerService#exec
+     * 은 종료 코드를 읽지 않아 인증 실패든 보호 브랜치든 그냥 문자열이 돌아왔고, 호출자는
+     * 성공으로 알고 다음으로 갔다. 그 결과 감사 로그에는 PREVIEW_BRANCH_PUSHED 가 성공으로 남고,
+     * 사용자에게는 "작업물을 preview 브랜치에 올렸습니다 — 프리뷰가 만료돼도 코드는 남습니다"가
+     * 표시된다. 실제로는 아무것도 올라가지 않았고, 컨테이너가 만료되면 작업물은 사라진다.
+     *
+     * 예외 메시지에는 명령 전문을 넣지 않는다. 이 클래스는 자격 증명을 다루고, 그 명령줄이
+     * 로그나 사용자 화면으로 흘러가면 안 된다 — 어떤 단계였는지와 git 이 남긴 출력만 남긴다.
+     */
+    private void execOrThrow(String containerId, String command, String step) {
+        DockerContainerService.ExecResult result = dockerService.execWithExitCode(containerId, command);
+        if (result.succeeded()) {
+            return;
+        }
+        String output = result.output() == null ? "" : result.output().trim();
+        String tail = output.length() > 500 ? output.substring(output.length() - 500) : output;
+        throw new IllegalStateException(
+                "preview 브랜치에 올리지 못했습니다(" + step + ", exitCode=" + result.exitCode() + "): " + tail);
     }
 
     private void writeGitCredentials(String containerId, String username, String userToken) {
