@@ -48,3 +48,16 @@ LOCAL 이 나중에 승인을 거치게 바뀌어도 requiresApproval 만 true �
 ## 기술 제약 (코드가 알려준 것 — 되풀이 금지)
 1. 프리뷰 컨테이너는 cap-drop ALL → 그 안에서 docker 못 돌림(DinD 불가). DB 는 형제 컨테이너로.
 2. qeploy-preview 네트워크는 ICC 차단(enable_icc=false, 세션 격리) → 형제 DB 를 그 네트워크에 붙여도 앱이 접속 못 함. → 세션 전용 네트워크를 따로 만들어 앱+DB 만 넣는다.
+
+## 추가 합의 (2026-09-01 밤)
+- **프리뷰 재시작 시 DB**: 프리뷰 세션이 끝나면 LOCAL DB 도 끝난다. acquire() 가 컨테이너가
+  안 돌면 새로 만들므로(PreviewSessionService:11-18), DB 도 다시 만들어야 한다. FE 는
+  "이 DB 는 현재 프리뷰 세션과 함께 사라집니다" 안내 예정 — 실제 동작과 맞음.
+- **EXPIRED 누적**: 목록에서 제외(활성만 반환)로 결정. 행은 감사·이력으로 남기고 워커는
+  상태만 EXPIRED 로 넘긴다. QueryService.list 가 EXPIRED 를 filter 로 뺀다.
+
+## 다음 세션 (아침에 이어감)
+- [ ] PR 올리고 dev 배포 → 엔드포인트 실제 200 확인 → FE 에 알림
+- [ ] FE 사용자 확인(화면 위치=인프라 탭 합의됨, 비밀번호 정책=생성응답만 합의됨) 반영
+- [ ] dev 에서 프리뷰 띄우고 LOCAL DB 실제 생성 e2e 확인
+- [ ] 그다음: RDS 단계 (RdsProvisioner + 승인 흐름을 같은 틀에)
