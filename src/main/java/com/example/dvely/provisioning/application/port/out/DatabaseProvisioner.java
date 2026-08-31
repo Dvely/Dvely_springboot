@@ -25,5 +25,5 @@ public interface DatabaseProvisioner {
      * 그리고 프로젝트가 지워질 때 리소스도 함께 회수하도록 반드시 구현한다. LOCAL 은 컨테이너가
      * 세션과 함께 사라지므로 사실상 no-op 에 가깝다.
      */
-    void deprovision(String resourceId, String containerId);
+    void deprovision(String resourceId);
 }

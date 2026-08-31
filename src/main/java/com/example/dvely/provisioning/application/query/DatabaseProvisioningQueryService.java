@@ -1,0 +1,35 @@
+package com.example.dvely.provisioning.application.query;
+
+import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.provisioning.application.result.ProvisionedDatabaseResult;
+import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepository;
+import java.util.List;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+/**
+ * 프로비저닝 자원 조회. 순수 DB 조회다 — 외부 API(AWS 등)를 때리지 않으므로 FE 가 상시 폴링해도
+ * 안전하다(개요와 다르다). RDS 상태는 워커가 백그라운드로 폴링해 DB 에 갱신해둔 값을 읽는다.
+ */
+@Service
+@RequiredArgsConstructor
+public class DatabaseProvisioningQueryService {
+
+    private final ProvisionedDatabaseRepository databaseRepository;
+    private final ProjectRepository projectRepository;
+
+    @Transactional(readOnly = true)
+    public List<ProvisionedDatabaseResult> list(Long ownerUserId, Long projectId) {
+        ensureOwned(ownerUserId, projectId);
+        return databaseRepository.findByProjectIdOrderByCreatedAtDesc(projectId)
+                .stream().map(ProvisionedDatabaseResult::from).toList();
+    }
+
+    private void ensureOwned(Long ownerUserId, Long projectId) {
+        projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, ownerUserId)
+                .orElseThrow(() -> new NotFoundException(
+                        "프로젝트를 찾을 수 없습니다. projectId=" + projectId));
+    }
+}

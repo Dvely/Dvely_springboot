@@ -58,10 +58,9 @@ public class LocalDbProvisioner implements DatabaseProvisioner {
     }
 
     @Override
-    public void deprovision(String resourceId, String containerId) {
-        // resourceId = DB 컨테이너 ID. 컨테이너를 먼저 지우고 세션 네트워크를 회수한다.
-        dockerService.removeDatabaseContainer(resourceId);
-        dockerService.removeSessionNetwork("qeploy-db-" + containerId);
+    public void deprovision(String resourceId) {
+        // resourceId = DB 컨테이너 ID. 컨테이너와 그 세션 전용 네트워크를 함께 정리한다.
+        dockerService.removeDatabaseContainerWithNetwork(resourceId);
     }
 
     private String image(DatabaseEngine engine) {

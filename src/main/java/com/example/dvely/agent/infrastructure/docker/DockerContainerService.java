@@ -662,6 +662,30 @@ public class DockerContainerService {
         }
     }
 
+    /**
+     * DB 컨테이너와 그것이 붙어 있던 세션 전용 네트워크를 함께 정리한다. resourceId(컨테이너 ID)
+     * 하나만으로 완전 회수가 되도록, 컨테이너를 지우기 전에 붙은 qeploy-db-* 네트워크를 역추적한다.
+     * 워커가 이 메서드로 만료된 LOCAL DB 를 통째로 정리한다.
+     */
+    public void removeDatabaseContainerWithNetwork(String containerId) {
+        String sessionNetwork = null;
+        try {
+            var networks = dockerClient.inspectContainerCmd(containerId).exec()
+                    .getNetworkSettings().getNetworks();
+            if (networks != null) {
+                sessionNetwork = networks.keySet().stream()
+                        .filter(n -> n.startsWith(PROVISION_NETWORK_PREFIX))
+                        .findFirst().orElse(null);
+            }
+        } catch (NotFoundException e) {
+            log.debug("정리 대상 DB 컨테이너가 이미 없음: id={}", containerId);
+        }
+        removeDatabaseContainer(containerId);
+        if (sessionNetwork != null) {
+            removeSessionNetwork(sessionNetwork);
+        }
+    }
+
     /** 세션 네트워크를 제거한다. 붙어 있는 컨테이너를 먼저 정리한 뒤 호출해야 한다. */
     public void removeSessionNetwork(String networkName) {
         try {

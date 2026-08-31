@@ -56,7 +56,7 @@ class LocalDbProvisionerIntegrationTest {
             try { dockerClient.removeContainerCmd(appContainerId).withForce(true).exec(); } catch (RuntimeException ignored) {}
         }
         if (provisioned != null) {
-            try { provisioner.deprovision(provisioned.resourceId(), sessionId); } catch (RuntimeException ignored) {}
+            try { provisioner.deprovision(provisioned.resourceId()); } catch (RuntimeException ignored) {}
         }
     }
 
@@ -75,8 +75,15 @@ class LocalDbProvisionerIntegrationTest {
         // 앱 역할 컨테이너를 같은 세션 네트워크에 붙여 실제로 쿼리한다 — 이게 "READY = 접속 가능".
         String network = "qeploy-db-" + sessionId;
         appContainerId = startAppOn(network);
-        ExecResult query = dockerService.execWithExitCode(appContainerId,
-                "PGPASSWORD='" + provisioned.password() + "' psql -h db -U app -d app -tAc \"SELECT 42\"");
+        // 앱→DB 는 네트워크 너머라, 전체 스위트 부하에서는 DNS 전파·준비에 몇 초 시차가 날 수
+        // 있다. readyProbe(DB 내부 pg_isready)가 통과해도 앱 쪽 첫 붙기는 흔들릴 수 있어 재시도한다.
+        ExecResult query = null;
+        for (int i = 0; i < 15; i++) {
+            query = dockerService.execWithExitCode(appContainerId,
+                    "PGPASSWORD='" + provisioned.password() + "' psql -h db -U app -d app -tAc \"SELECT 42\"");
+            if (query.succeeded() && query.output().contains("42")) break;
+            try { Thread.sleep(1000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+        }
         assertThat(query.succeeded()).isTrue();
         assertThat(query.output()).contains("42");
     }
@@ -106,7 +113,7 @@ class LocalDbProvisionerIntegrationTest {
                 new ProvisionSpec(1L, DatabaseEngine.POSTGRESQL), sessionId);
         String resourceId = provisioned.resourceId();
 
-        provisioner.deprovision(resourceId, sessionId);
+        provisioner.deprovision(resourceId);
         provisioned = null;  // tearDown 재삭제 방지
 
         assertThatThrownBy(() -> dockerClient.inspectContainerCmd(resourceId).exec())
