@@ -18,6 +18,7 @@ import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 /**
  * 실제 Docker 로 LOCAL DB 프로비저닝을 검증한다. 모의로는 "우리가 docker 에 무엇을 보내는지"만
@@ -28,6 +29,13 @@ import org.junit.jupiter.api.Test;
  * <p>실행 중인 Docker 데몬과 postgres:16-alpine 이미지를 전제한다 — 프리뷰 컨테이너 코드가
  * node:20-alpine 을 전제하는 것과 같다.
  */
+// 이 테스트만 저장소에서 유일하게 실행 중인 Docker 데몬을 요구한다(나머지는 전부
+// DockerContainerService 를 모의한다). CI 는 전 테스트를 한 스위트로 돌리는데, 이 테스트는
+// 정확히 그 풀스위트 부하에서 컨테이너·DNS 경합으로 flaky 했다(그래서 앱→DB 쿼리에 재시도
+// 루프가 있다). 매 CI 마다 postgres·mysql 이미지를 pull 하는 비용도 있다. 그래서 기본은
+// 건너뛰고, 로컬에서 -Ddocker.it=true 로 명시적으로 켤 때만 실측한다.
+//   ./gradlew test --tests "*LocalDbProvisionerIntegrationTest" -Ddocker.it=true
+@EnabledIfSystemProperty(named = "docker.it", matches = "true")
 class LocalDbProvisionerIntegrationTest {
 
     private DockerClient dockerClient;
