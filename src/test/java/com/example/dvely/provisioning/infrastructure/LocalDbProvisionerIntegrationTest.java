@@ -14,7 +14,6 @@ import com.github.dockerjava.api.model.Capability;
 import com.github.dockerjava.core.DefaultDockerClientConfig;
 import com.github.dockerjava.core.DockerClientImpl;
 import com.github.dockerjava.okhttp.OkDockerHttpClient;
-import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -68,23 +67,20 @@ class LocalDbProvisionerIntegrationTest {
         }
     }
 
-    private final String sessionId = "itest-" + System.nanoTime();
-
     @Test
     void aProvisionedPostgresActuallyAcceptsConnectionsFromTheAppSibling() {
-        // 세션 네트워크 + DB 컨테이너를 실제로 띄운다.
+        // 프리뷰 앱 역할의 컨테이너를 먼저 띄우고, 그 실제 ID 를 provision 에 넘긴다 — 프로덕션과
+        // 같은 경로다(provision 이 이 컨테이너를 세션 네트워크에 직접 붙인다).
+        appContainerId = startPreviewApp("postgres:16-alpine");
         provisioned = provisioner.provision(
-                new ProvisionSpec(1L, DatabaseEngine.POSTGRESQL), sessionId);
+                new ProvisionSpec(1L, DatabaseEngine.POSTGRESQL), appContainerId);
 
         assertThat(provisioned.host()).isEqualTo("db");
         assertThat(provisioned.port()).isEqualTo(5432);
         assertThat(provisioned.password()).isNotBlank();
 
-        // 앱 역할 컨테이너를 같은 세션 네트워크에 붙여 실제로 쿼리한다 — 이게 "READY = 접속 가능".
-        String network = "qeploy-db-" + sessionId;
-        appContainerId = startAppOn(network);
-        // 앱→DB 는 네트워크 너머라, 전체 스위트 부하에서는 DNS 전파·준비에 몇 초 시차가 날 수
-        // 있다. readyProbe(DB 내부 pg_isready)가 통과해도 앱 쪽 첫 붙기는 흔들릴 수 있어 재시도한다.
+        // provision 이 이미 앱을 세션 네트워크에 붙였다 — 앱에서 바로 DB 로 쿼리한다. 이게 "접속 가능".
+        // 전체 스위트 부하에서는 DNS 전파·준비에 몇 초 시차가 날 수 있어 재시도한다.
         ExecResult query = null;
         for (int i = 0; i < 15; i++) {
             query = dockerService.execWithExitCode(appContainerId,
@@ -96,10 +92,38 @@ class LocalDbProvisionerIntegrationTest {
         assertThat(query.output()).contains("42");
     }
 
+    /**
+     * MySQL 준비 핑은 이제 컨테이너 env 의 MYSQL_PASSWORD 를 셸에서 확장한다(명령줄에 평문 비번을
+     * 안 남기려고). provision 이 정상 리턴한다는 것은 그 env 확장 핑이 통과했다는 뜻이므로, 이
+     * 테스트가 그 경로를 지킨다.
+     */
+    @Test
+    void aProvisionedMysqlBecomesReadyViaEnvExpandedProbe() {
+        appContainerId = startPreviewApp("mysql:8.4");
+        provisioned = provisioner.provision(
+                new ProvisionSpec(1L, DatabaseEngine.MYSQL), appContainerId);
+
+        assertThat(provisioned.host()).isEqualTo("db");
+        assertThat(provisioned.port()).isEqualTo(3306);
+        assertThat(provisioned.password()).isNotBlank();
+
+        // 앱(mysql 클라이언트 보유)에서 실제로 붙어 쿼리한다.
+        ExecResult query = null;
+        for (int i = 0; i < 20; i++) {
+            query = dockerService.execWithExitCode(appContainerId,
+                    "mysql -h db -u app -p'" + provisioned.password() + "' -N -e 'SELECT 42' app 2>/dev/null");
+            if (query.succeeded() && query.output().contains("42")) break;
+            try { Thread.sleep(1000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+        }
+        assertThat(query.succeeded()).isTrue();
+        assertThat(query.output()).contains("42");
+    }
+
     @Test
     void aContainerOnAnotherNetworkCannotReachThisDatabase() {
+        appContainerId = startPreviewApp("postgres:16-alpine");
         provisioned = provisioner.provision(
-                new ProvisionSpec(1L, DatabaseEngine.POSTGRESQL), sessionId);
+                new ProvisionSpec(1L, DatabaseEngine.POSTGRESQL), appContainerId);
 
         // 다른 세션(다른 네트워크)의 컨테이너는 이 DB 이름을 해석조차 못 해야 한다.
         String otherNet = dockerService.createSessionNetwork("other-" + System.nanoTime());
@@ -117,8 +141,9 @@ class LocalDbProvisionerIntegrationTest {
 
     @Test
     void deprovisionRemovesTheContainerAndNetwork() {
+        appContainerId = startPreviewApp("postgres:16-alpine");
         provisioned = provisioner.provision(
-                new ProvisionSpec(1L, DatabaseEngine.POSTGRESQL), sessionId);
+                new ProvisionSpec(1L, DatabaseEngine.POSTGRESQL), appContainerId);
         String resourceId = provisioned.resourceId();
 
         provisioner.deprovision(resourceId);
@@ -128,6 +153,20 @@ class LocalDbProvisionerIntegrationTest {
                 .isInstanceOf(com.github.dockerjava.api.exception.NotFoundException.class);
     }
 
+    /** 프리뷰 앱 역할 — 기본 네트워크에 떠 있는 상태로 만든다. provision 이 세션 네트워크에 붙인다. */
+    private String startPreviewApp(String image) {
+        var c = dockerClient.createContainerCmd(image)
+                .withHostConfig(HostConfig.newHostConfig()
+                        .withCapDrop(Capability.ALL)
+                        .withCapAdd(Capability.CHOWN, Capability.SETUID, Capability.SETGID))
+                .withEntrypoint("sh", "-c")
+                .withCmd("tail -f /dev/null")
+                .exec();
+        dockerClient.startContainerCmd(c.getId()).exec();
+        return c.getId();
+    }
+
+    /** 지정 네트워크에 붙여 띄우는 침입자/보조 컨테이너. */
     private String startAppOn(String network) {
         var c = dockerClient.createContainerCmd("postgres:16-alpine")
                 .withHostConfig(HostConfig.newHostConfig()

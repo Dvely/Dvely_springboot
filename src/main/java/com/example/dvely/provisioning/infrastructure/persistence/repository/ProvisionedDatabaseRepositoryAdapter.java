@@ -10,6 +10,7 @@ import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 @RequiredArgsConstructor
@@ -38,6 +39,19 @@ public class ProvisionedDatabaseRepositoryAdapter implements ProvisionedDatabase
     public List<ProvisionedDatabase> findByProjectIdOrderByCreatedAtDesc(Long projectId) {
         return springDataRepository.findByProjectIdOrderByCreatedAtDesc(projectId)
                 .stream().map(ProvisionedDatabaseEntity::toDomain).toList();
+    }
+
+    @Override
+    public List<ProvisionedDatabase> findActiveByProjectIdOrderByCreatedAtDesc(Long projectId) {
+        return springDataRepository.findByProjectIdAndStatusNotOrderByCreatedAtDesc(
+                        projectId, ProvisionStatus.EXPIRED.name())
+                .stream().map(ProvisionedDatabaseEntity::toDomain).toList();
+    }
+
+    @Override
+    @Transactional
+    public boolean claimForExpiry(Long id, LocalDateTime now) {
+        return springDataRepository.claimExpired(id, now) == 1;
     }
 
     @Override

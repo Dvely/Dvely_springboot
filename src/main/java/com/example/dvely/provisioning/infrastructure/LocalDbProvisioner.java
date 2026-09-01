@@ -47,10 +47,21 @@ public class LocalDbProvisioner implements DatabaseProvisioner {
         try {
             dbContainerId = dockerService.createDatabaseContainer(
                     network, ALIAS, image(spec.engine()),
-                    env(spec.engine(), password), readyProbe(spec.engine(), password));
+                    env(spec.engine(), password), readyProbe(spec.engine()));
         } catch (RuntimeException e) {
             // 컨테이너 준비 실패 시 네트워크가 남지 않도록 정리하고 다시 던진다.
+            // (createDatabaseContainer 는 준비 실패한 컨테이너를 스스로 제거한다.)
             dockerService.removeSessionNetwork(network);
+            throw e;
+        }
+
+        try {
+            // 앱(프리뷰 컨테이너)을 같은 세션 네트워크에 붙여야 ALIAS("db")로 접속할 수 있다.
+            // 이게 없으면 DB 가 READY 여도 앱은 접속하지 못한다.
+            dockerService.connectContainerToNetwork(network, sessionId);
+        } catch (RuntimeException e) {
+            // 연결 실패면 방금 만든 DB 컨테이너와 네트워크를 통째로 회수하고 던진다.
+            dockerService.removeDatabaseContainerWithNetwork(dbContainerId);
             throw e;
         }
 
@@ -89,11 +100,14 @@ public class LocalDbProvisioner implements DatabaseProvisioner {
         };
     }
 
-    private List<String> readyProbe(DatabaseEngine engine, String password) {
+    private List<String> readyProbe(DatabaseEngine engine) {
         return switch (engine) {
             case POSTGRESQL -> List.of("pg_isready", "-U", DB_USER, "-d", DB_NAME);
+            // 비밀번호를 명령줄 리터럴로 넣으면 exec 이 debug 로그·인터럽트 예외에 명령 전문을
+            // 남길 때 함께 샌다. 대신 컨테이너에 이미 있는 MYSQL_PASSWORD 를 셸에서 확장하게 둔다 —
+            // 확장은 컨테이너 안에서 일어나고, 우리가 보는 명령 문자열에는 "$MYSQL_PASSWORD" 만 남는다.
             case MYSQL -> List.of("mysqladmin", "ping", "-h", "localhost",
-                    "-u", DB_USER, "-p" + password);
+                    "-u", DB_USER, "-p\"$MYSQL_PASSWORD\"");
         };
     }
 

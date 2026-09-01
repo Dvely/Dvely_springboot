@@ -652,6 +652,23 @@ public class DockerContainerService {
         throw new IllegalStateException("DB 컨테이너가 " + DB_READY_TIMEOUT_SECONDS + "초 안에 준비되지 않았습니다.");
     }
 
+    /**
+     * 이미 떠 있는 컨테이너(프리뷰 앱)를 세션 전용 네트워크에 추가로 연결한다. 이래야 앱이 그
+     * 네트워크의 DB 별칭("db")을 DNS 로 풀 수 있다 — DB 만 네트워크에 넣고 앱을 안 붙이면
+     * READY 로 떠도 앱은 접속하지 못한다.
+     */
+    public void connectContainerToNetwork(String networkName, String containerId) {
+        try {
+            dockerClient.connectToNetworkCmd()
+                    .withNetworkId(networkName)
+                    .withContainerId(containerId)
+                    .exec();
+            log.info("컨테이너를 세션 네트워크에 연결: container={} network={}", containerId, networkName);
+        } catch (NotModifiedException e) {
+            log.debug("컨테이너가 이미 네트워크에 연결됨: container={} network={}", containerId, networkName);
+        }
+    }
+
     /** DB 컨테이너를 강제 제거한다. 이미 없으면 조용히 넘어간다. */
     public void removeDatabaseContainer(String containerId) {
         try {
@@ -686,9 +703,23 @@ public class DockerContainerService {
         }
     }
 
-    /** 세션 네트워크를 제거한다. 붙어 있는 컨테이너를 먼저 정리한 뒤 호출해야 한다. */
+    /**
+     * 세션 네트워크를 제거한다. 아직 붙어 있는 컨테이너(예: 만료 시점에도 살아 있는 프리뷰 앱)를
+     * 먼저 강제 분리해야 removeNetwork 가 "network has active endpoints" 로 실패하지 않는다.
+     */
     public void removeSessionNetwork(String networkName) {
         try {
+            var attached = dockerClient.inspectNetworkCmd().withNetworkId(networkName).exec().getContainers();
+            if (attached != null) {
+                for (String cid : attached.keySet()) {
+                    try {
+                        dockerClient.disconnectFromNetworkCmd()
+                                .withNetworkId(networkName).withContainerId(cid).withForce(true).exec();
+                    } catch (RuntimeException e) {
+                        log.debug("네트워크 분리 무시(이미 없음): container={} network={}", cid, networkName);
+                    }
+                }
+            }
             dockerClient.removeNetworkCmd(networkName).exec();
             log.info("DB 세션 네트워크 제거: name={}", networkName);
         } catch (NotFoundException e) {

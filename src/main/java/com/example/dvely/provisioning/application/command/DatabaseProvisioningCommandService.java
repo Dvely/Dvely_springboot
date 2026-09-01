@@ -19,7 +19,6 @@ import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * DB 프로비저닝 요청을 받는다.
@@ -38,7 +37,10 @@ public class DatabaseProvisioningCommandService {
     private final PreviewSessionService previewSessionService;
     private final ProvisioningProperties properties;
 
-    @Transactional
+    // 일부러 메서드 전체를 한 트랜잭션으로 묶지 않는다. provisioner.provision() 이 수 분 걸리는
+    // Docker I/O·이미지 pull 이라, 하나의 트랜잭션으로 감싸면 그동안 DB 커넥션을 물고 있어 풀이
+    // 마른다. 또 실패 시 markFailed 를 저장하고 다시 던지는데, 트랜잭션으로 감싸면 그 rethrow 가
+    // 전체를 롤백해 FAILED 감사 행마저 사라진다. 각 save 는 자체 트랜잭션으로 독립 커밋된다.
     public ProvisionSubmitResult provision(Long ownerUserId, Long projectId,
                                            ProvisionMethod method, DatabaseEngine engine) {
         if (method == ProvisionMethod.LOCAL) {
