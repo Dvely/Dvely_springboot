@@ -20,5 +20,6 @@ public enum ApprovalType {
     // Unlike every other type here, approving this one carries a value: the repository name, passed
     // as the optional body of POST /approvals/{id}/approve. Absent a name it falls back to the
     // project-name-derived candidate already shown in the approval summary.
-    REPOSITORY_BINDING
+    REPOSITORY_BINDING,
+    DATABASE_PROVISION
 }

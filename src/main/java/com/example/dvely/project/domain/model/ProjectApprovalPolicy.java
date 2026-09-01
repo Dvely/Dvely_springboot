@@ -65,6 +65,8 @@ public class ProjectApprovalPolicy {
             // 그러면 컨테이너 TTL 만료와 함께 작업물이 사라지는데, 그것이 바로 이 게이트가 막으려는
             // 상황이므로 정책 스위치를 두면 사고를 켜고 끄는 옵션이 된다.
             case REPOSITORY_BINDING -> true;
+            // RDS 등 유료 DB 프로비저닝은 과금이 발생하므로 정책으로 끌 수 없다 — 항상 승인.
+            case DATABASE_PROVISION -> true;
         };
     }
 
