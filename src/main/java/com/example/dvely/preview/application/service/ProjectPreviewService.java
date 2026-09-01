@@ -1,7 +1,6 @@
 package com.example.dvely.preview.application.service;
 
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
-import com.example.dvely.preview.domain.value.PreviewRuntimeType;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.common.exception.PreviewEnvironmentUnavailableException;
 import com.example.dvely.preview.application.result.ProjectPreviewSessionResult;
@@ -120,12 +119,7 @@ public class ProjectPreviewService {
         String containerId;
         int hostPort;
         try {
-            // JAVA_FULLSTACK 은 JVM+gradle 이 무거워 큰 컨테이너가 필요하다. 메모리는 지금(생성
-            // 시점) 정해지고 자동 감지는 클론 후라 늦으므로, 사용자가 설정에서 미리 고른 값만 본다.
-            long memoryBytes = runtimeConfigService.storedRuntimeType(projectId)
-                    .filter(type -> type == PreviewRuntimeType.JAVA_FULLSTACK)
-                    .map(type -> DockerContainerService.JAVA_MEMORY_LIMIT_BYTES)
-                    .orElse(DockerContainerService.MEMORY_LIMIT_BYTES);
+            long memoryBytes = runtimeConfigService.previewContainerMemoryBytes(projectId);
             containerId = dockerService.createAndStartContainer(
                     ownerUserId, sessionId, projectId, null, null, memoryBytes);
             hostPort = dockerService.getMappedPort(containerId);

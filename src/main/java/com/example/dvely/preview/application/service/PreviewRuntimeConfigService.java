@@ -60,6 +60,21 @@ public class PreviewRuntimeConfigService {
     }
 
     /**
+     * 프리뷰 컨테이너를 만들 때 쓸 메모리 상한. JAVA_FULLSTACK 은 JVM+gradle 이 무거워 큰 값이 필요한데,
+     * 메모리는 컨테이너 생성 시점에 정해지고 자동 감지는 클론 후라 늦다. 그래서 '저장된' runtimeType 만
+     * 본다(projectId 가 null 이거나 미저장이면 기본값). 프로젝트 프리뷰와 에이전트 프리뷰가 공유한다.
+     */
+    @Transactional(readOnly = true)
+    public long previewContainerMemoryBytes(Long projectId) {
+        boolean needsJava = projectId != null
+                && storedRuntimeType(projectId)
+                        .filter(type -> type == PreviewRuntimeType.JAVA_FULLSTACK).isPresent();
+        return needsJava
+                ? com.example.dvely.agent.infrastructure.docker.DockerContainerService.JAVA_MEMORY_LIMIT_BYTES
+                : com.example.dvely.agent.infrastructure.docker.DockerContainerService.MEMORY_LIMIT_BYTES;
+    }
+
+    /**
      * 프로비저닝(프리뷰 부팅) 시점에 실제로 쓸 런타임 설정을 해석한다. 저장된 설정이 있으면 그것을,
      * 없으면 컨테이너의 클론 내용으로 자동 감지한 값을 돌려준다. 소유권은 부팅 흐름이 이미 검증했다.
      */

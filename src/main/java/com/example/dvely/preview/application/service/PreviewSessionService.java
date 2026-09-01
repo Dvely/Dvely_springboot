@@ -34,6 +34,7 @@ public class PreviewSessionService {
     private final PreviewProperties properties;
     private final PreviewGatewayUrlResolver gatewayUrlResolver;
     private final PreviewAccessCookies accessCookies;
+    private final PreviewRuntimeConfigService runtimeConfigService;
 
     public PreviewSessionInfo acquire(String taskId) {
         AgentTask task = taskStore.get(taskId);
@@ -52,12 +53,14 @@ public class PreviewSessionService {
 
         String sessionId = UUID.randomUUID().toString();
         String accessToken = UUID.randomUUID().toString().replace("-", "");
+        long memoryBytes = runtimeConfigService.previewContainerMemoryBytes(task.projectId());
         String containerId = dockerService.createAndStartContainer(
                 task.ownerUserId(),
                 sessionId,
                 task.projectId(),
                 task.conversationId(),
-                task.taskId()
+                task.taskId(),
+                memoryBytes
         );
         int hostPort = dockerService.getMappedPort(containerId);
         String publicUrl = gatewayUrlResolver.publicUrl(sessionId, accessToken);
