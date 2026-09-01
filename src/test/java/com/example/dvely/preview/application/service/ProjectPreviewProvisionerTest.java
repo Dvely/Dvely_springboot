@@ -89,7 +89,7 @@ class ProjectPreviewProvisionerTest {
         PreviewDbConnection db = new PreviewDbConnection("MYSQL", "db", 3306, "app", "app", "pw");
         when(databaseProvisioner.provisionForPreview(PROJECT_ID, CONTAINER_ID, "MYSQL")).thenReturn(Optional.of(db));
         List<String> env = List.of("DB_HOST=db", "PORT=3000");
-        when(envComposer.compose(PROJECT_ID, db)).thenReturn(env);
+        when(envComposer.compose(PROJECT_ID, db, 3000)).thenReturn(env);
 
         provisioner.provision(SESSION_ID);
 
@@ -112,7 +112,7 @@ class ProjectPreviewProvisionerTest {
         when(databaseProvisioner.provisionForPreview(PROJECT_ID, CONTAINER_ID, "MYSQL"))
                 .thenThrow(new IllegalStateException("DB 컨테이너가 준비되지 않았습니다."));
         List<String> env = List.of("PORT=3000");
-        when(envComposer.compose(eq(PROJECT_ID), any())).thenReturn(env);
+        when(envComposer.compose(eq(PROJECT_ID), any(), eq(3000))).thenReturn(env);
 
         provisioner.provision(SESSION_ID);
 
@@ -121,22 +121,29 @@ class ProjectPreviewProvisionerTest {
         assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
     }
 
-    /** JAVA_FULLSTACK 실행은 다음 단계다 — 지금은 명확히 실패시켜 정적으로 잘못 서빙되지 않게 한다. */
+    /**
+     * JAVA_FULLSTACK: 정적 FE + Java BE(8080) 를 한 컨테이너에서. DB 를 자동 프로비저닝해 env(8080)
+     * 로 꽂고 startJavaFullstack 을 부른다(내부 nginx 가 3000 에서 라우팅).
+     */
     @Test
-    void javaFullstackFailsClearlyForNow() {
+    void javaFullstackAutoProvisionsDbAndStartsNginxRoutedBackend() {
         PreviewSessionEntity session = provisioningSession();
         when(repository.findById(SESSION_ID)).thenReturn(Optional.of(session));
         when(runtimeConfigService.resolveForProvision(PROJECT_ID, CONTAINER_ID))
                 .thenReturn(new PreviewRuntimeConfigResult(PROJECT_ID,
-                        PreviewRuntimeType.JAVA_FULLSTACK.name(), null, "/api", null, "MYSQL", "DETECTED"));
+                        PreviewRuntimeType.JAVA_FULLSTACK.name(), "./gradlew bootRun", "/api", null, "MYSQL", "STORED"));
+        PreviewDbConnection db = new PreviewDbConnection("MYSQL", "db", 3306, "app", "app", "pw");
+        when(databaseProvisioner.provisionForPreview(PROJECT_ID, CONTAINER_ID, "MYSQL")).thenReturn(Optional.of(db));
+        List<String> env = List.of("SERVER_PORT=8080");
+        when(envComposer.compose(PROJECT_ID, db, 8080)).thenReturn(env);
 
         provisioner.provision(SESSION_ID);
 
-        assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.FAILED.name());
-        assertThat(session.getFailureReason()).contains("아직 지원되지 않습니다");
-        verify(dockerService).removeContainer(CONTAINER_ID);
+        verify(databaseProvisioner).provisionForPreview(PROJECT_ID, CONTAINER_ID, "MYSQL");
+        verify(workspaceService).startJavaFullstack(CONTAINER_ID, "./gradlew bootRun", env, "/api");
         verify(workspaceService, never()).startPreviewServer(anyString());
         verify(workspaceService, never()).startNodeServer(anyString(), any(), any());
+        assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
     }
 
     /**

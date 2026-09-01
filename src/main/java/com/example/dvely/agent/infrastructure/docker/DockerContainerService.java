@@ -64,10 +64,11 @@ public class DockerContainerService {
     // --- Preview container isolation policy (BI-194). Kept as plain constants rather than
     // configuration properties, matching the existing IMAGE/CONTAINER_PORT style above — this
     // becomes a @ConfigurationProperties surface only once a concrete need to tune it appears.
-    private static final long MEMORY_LIMIT_BYTES = 1L << 30; // 1 GiB: dev server + npm install headroom
-    // Swap == memory (no extra swap): letting a container swap past its memory limit would hide
-    // an OOM behind slow disk I/O instead of a clean, visible kill (surfaced via oomKilled below).
-    private static final long MEMORY_SWAP_LIMIT_BYTES = MEMORY_LIMIT_BYTES;
+    public static final long MEMORY_LIMIT_BYTES = 1L << 30; // 1 GiB: dev server + npm install headroom
+    // JAVA_FULLSTACK 은 JVM + gradle 빌드가 무거워 1 GiB 로는 OOM 위험이 크다. 그래서 저장된
+    // runtimeType 이 JAVA_FULLSTACK 인 프로젝트는 이 값으로 컨테이너를 만든다(생성 시점에 정해지므로
+    // 사용자가 설정에서 미리 골라야 이 큰 컨테이너를 받는다 — 자동 감지는 클론 후라 늦다).
+    public static final long JAVA_MEMORY_LIMIT_BYTES = 2L << 30; // 2 GiB
     private static final long NANO_CPUS = 1_000_000_000L; // 1.0 vCPU per session, fair-share
     private static final long PIDS_LIMIT = 256L; // fork-bomb guard; ~4x observed npm install process counts
     private static final String PREVIEW_NETWORK_NAME = "qeploy-preview";
@@ -101,6 +102,21 @@ public class DockerContainerService {
                                           Long projectId,
                                           Long conversationId,
                                           String taskId) {
+        return createAndStartContainer(userId, previewSessionId, projectId,
+                conversationId, taskId, MEMORY_LIMIT_BYTES);
+    }
+
+    /**
+     * 메모리 상한을 지정해 프리뷰 컨테이너를 만든다. JAVA_FULLSTACK 은 JVM+gradle 때문에
+     * {@link #JAVA_MEMORY_LIMIT_BYTES} 를 넘긴다. swap 은 메모리와 같게 둬(추가 swap 없음) OOM 이
+     * 느린 디스크 뒤로 숨지 않고 깨끗하게 kill 되도록 한다.
+     */
+    public String createAndStartContainer(Long userId,
+                                          String previewSessionId,
+                                          Long projectId,
+                                          Long conversationId,
+                                          String taskId,
+                                          long memoryBytes) {
         pullImageIfNeeded();
         ensurePreviewNetwork();
 
@@ -142,8 +158,8 @@ public class DockerContainerService {
                 .withExposedPorts(exposedPort)
                 .withHostConfig(HostConfig.newHostConfig()
                         .withPortBindings(portBindings)
-                        .withMemory(MEMORY_LIMIT_BYTES)
-                        .withMemorySwap(MEMORY_SWAP_LIMIT_BYTES)
+                        .withMemory(memoryBytes)
+                        .withMemorySwap(memoryBytes)
                         .withNanoCPUs(NANO_CPUS)
                         .withPidsLimit(PIDS_LIMIT)
                         .withCapDrop(Capability.ALL)
