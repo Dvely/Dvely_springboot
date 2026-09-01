@@ -395,7 +395,7 @@ public class PreviewWorkspaceService {
         if (result == null || !result.contains("serve_ready=yes")) {
             log.warn("[PreviewWorkspace] 포트 {} 가 {}초 안에 응답하지 않음 | {} | log={}",
                     port, timeoutSeconds, context, result);
-            throw new IllegalStateException(
+            throw new PreviewServeException(
                     "프리뷰 서버가 제한 시간 안에 시작되지 않았습니다(port=" + port + "). " + context);
         }
         log.info("[PreviewWorkspace] 포트 {} 준비 완료 | {} | log={}", port, context, result);

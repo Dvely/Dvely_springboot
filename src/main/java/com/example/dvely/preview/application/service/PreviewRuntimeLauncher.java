@@ -44,6 +44,16 @@ public class PreviewRuntimeLauncher {
                 workspaceService.startNodeServer(containerId, runtime.startCommand(), env);
             }
             case JAVA_FULLSTACK -> {
+                // JAVA 는 큰 컨테이너(2GB)가 필요한데, 그 메모리는 컨테이너 생성 시점에 '저장된'
+                // runtimeType 으로 정해진다(자동 감지는 클론 후라 늦다). 저장 없이 감지만 된 경우
+                // 컨테이너가 1GB 라 gradle 이 OOM 나고, 그게 300초 타임아웃→서버 시작 실패로 이어진다.
+                // 그래서 STORED 일 때만 실행하고, DETECTED 면 안내하며 멈춘다 — 사용자가 설정에서
+                // JAVA_FULLSTACK 을 저장하면 다음 프리뷰가 2GB 로 뜬다.
+                if (!"STORED".equals(runtime.source())) {
+                    throw new PreviewServeException(
+                            "Java 백엔드가 감지됐습니다. 프리뷰로 띄우려면 인프라 탭의 런타임 설정에서 "
+                                    + "JAVA_FULLSTACK 으로 저장해주세요(더 큰 컨테이너가 필요합니다).");
+                }
                 // 정적 FE + Java BE(8080) 를 한 컨테이너에서, 내부 nginx 가 3000 에서 가른다.
                 PreviewDbConnection db = autoProvisionDbBestEffort(projectId, containerId, runtime.dbEngine());
                 List<String> env = envComposer.compose(projectId, db, 8080);

@@ -6,7 +6,6 @@ import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.preview.application.result.PreviewAccessGrant;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
-import com.example.dvely.preview.domain.value.PreviewRuntimeType;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
 import com.example.dvely.preview.infrastructure.config.PreviewGatewayUrlResolver;
 import com.example.dvely.preview.infrastructure.config.PreviewProperties;
@@ -54,13 +53,7 @@ public class PreviewSessionService {
 
         String sessionId = UUID.randomUUID().toString();
         String accessToken = UUID.randomUUID().toString().replace("-", "");
-        // JAVA_FULLSTACK 은 JVM+gradle 이 무거워 큰 컨테이너가 필요하다. 저장된 런타임 타입이
-        // JAVA 인 프로젝트만 큰 메모리로 만든다(자동 감지는 클론 후라 늦다 — 미리 설정해야 받는다).
-        long memoryBytes = task.projectId() != null
-                && runtimeConfigService.storedRuntimeType(task.projectId())
-                        .filter(type -> type == PreviewRuntimeType.JAVA_FULLSTACK).isPresent()
-                ? DockerContainerService.JAVA_MEMORY_LIMIT_BYTES
-                : DockerContainerService.MEMORY_LIMIT_BYTES;
+        long memoryBytes = runtimeConfigService.previewContainerMemoryBytes(task.projectId());
         String containerId = dockerService.createAndStartContainer(
                 task.ownerUserId(),
                 sessionId,

@@ -202,7 +202,7 @@ class PreviewWorkspaceServiceTest {
                 .thenReturn("serve_ready=no\nError: listen EADDRINUSE");
 
         assertThatThrownBy(() -> service.startPreviewServer(CONTAINER_ID))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(PreviewServeException.class)
                 .hasMessageContaining("제한 시간");
     }
 
@@ -213,7 +213,7 @@ class PreviewWorkspaceServiceTest {
         when(dockerService.exec(eq(CONTAINER_ID), contains("serve_ready"))).thenReturn("");
 
         assertThatThrownBy(() -> service.startPreviewServer(CONTAINER_ID))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(PreviewServeException.class);
     }
 
     @Test

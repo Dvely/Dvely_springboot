@@ -15,6 +15,7 @@ import com.example.dvely.agent.infrastructure.llm.OpenAiToolClient;
 import com.example.dvely.common.exception.LlmProviderException;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewRuntimeLauncher;
+import com.example.dvely.preview.application.service.PreviewServeException;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.preview.application.service.PreviewWorkspaceService;
 import java.util.Base64;
@@ -175,10 +176,14 @@ public class CodeAgentService {
                 previewRuntimeLauncher.launch(projectId, containerId);
             } catch (RuntimeException exception) {
                 // 사유는 FE 가 사용자에게 그대로 보여주므로 내부 예외 문구를 넣지 않는다.
-                // 원인은 이 예외가 그대로 전파되며 로그에 남는다.
+                // 원인은 아래 PreviewServeFailedException 의 cause 로 전파되며 로그에 남는다.
                 previewSessionService.markServeFailed(
                         taskId,
                         "빌드는 끝났지만 프리뷰 서버를 시작하지 못했습니다. 다시 시도해주세요.");
+                // 그대로 다시 던진다. 서버가 안 뜬/안 응답한 런타임 실패는 PreviewServeException
+                // 이라 아래 전용 catch 가 빌드실패 분석·재시도를 건너뛴다. 빌드 산출물 자체가 없는
+                // 실패는 IllegalStateException 이라 아래 catch(Exception) 의 빌드실패 경로로 간다
+                // (그건 LLM 이 빌드를 고칠 여지가 있어 재시도가 맞다).
                 throw exception;
             }
             previewSessionService.markServing(taskId);
@@ -209,6 +214,11 @@ public class CodeAgentService {
                     "이미 생성된 파일은 그대로 두고 아직 끝내지 못한 작업만 이어서 진행한 뒤, 마지막에 build를 실행합니다.",
                     e
             );
+        } catch (PreviewServeException e) {
+            // 서버 시작/응답 실패는 빌드 실패가 아니다(코드 재생성으로 안 고쳐진다) — 빌드실패
+            // 분석/재시도로 흘려보내지 않고 그대로 올려, AgentPlanExecutor 가 태스크를 한 번에
+            // 실패로 닫게 한다(재시도로 예산을 태우지 않는다).
+            throw e;
         } catch (Exception e) {
             log.error("[CodeAgent] 실패 | userId={} containerId={}", userId, containerId, e);
             String buildLog = dockerService.exec(

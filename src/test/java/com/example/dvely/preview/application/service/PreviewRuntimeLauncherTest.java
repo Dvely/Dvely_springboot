@@ -1,5 +1,6 @@
 package com.example.dvely.preview.application.service;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -106,6 +107,25 @@ class PreviewRuntimeLauncherTest {
         verify(workspaceService).startJavaFullstack(CONTAINER_ID, "./gradlew bootRun", env, "/api");
         verify(workspaceService, never()).startPreviewServer(any());
         verify(workspaceService, never()).startNodeServer(any(), any(), any());
+    }
+
+    /**
+     * 감지(DETECTED)만 된 JAVA 는 실행하지 않는다 — 컨테이너 메모리는 '저장된' 런타임 타입으로
+     * 생성 시점에 정해지므로, 저장 없이 감지만 되면 컨테이너가 1GB 라 gradle 이 OOM 난다. 그래서
+     * 안내하며 멈추고(설정에서 저장하라고), gradle 도 DB 프로비저닝도 하지 않는다.
+     */
+    @Test
+    void detectedJavaIsNotRunAndAsksToSaveTheRuntime() {
+        when(runtimeConfigService.resolveForProvision(PROJECT_ID, CONTAINER_ID))
+                .thenReturn(new PreviewRuntimeConfigResult(PROJECT_ID,
+                        PreviewRuntimeType.JAVA_FULLSTACK.name(), null, "/api", null, "MYSQL", "DETECTED"));
+
+        assertThatThrownBy(() -> launcher.launch(PROJECT_ID, CONTAINER_ID))
+                .isInstanceOf(PreviewServeException.class)
+                .hasMessageContaining("JAVA_FULLSTACK 으로 저장");
+
+        verify(workspaceService, never()).startJavaFullstack(any(), any(), any(), any());
+        verify(databaseProvisioner, never()).provisionForPreview(any(), any(), any());
     }
 
     private PreviewRuntimeConfigResult nodeConfig(String startCommand) {
