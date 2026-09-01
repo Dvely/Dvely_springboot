@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.dto.AgentStep;
@@ -28,6 +29,10 @@ import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.preview.application.service.PreviewWorkspaceService;
+import com.example.dvely.preview.application.port.out.PreviewDatabaseProvisioner;
+import com.example.dvely.preview.application.service.PreviewEnvComposer;
+import com.example.dvely.preview.application.service.PreviewRuntimeConfigService;
+import com.example.dvely.preview.application.service.PreviewRuntimeLauncher;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -69,17 +74,23 @@ class CodeAgentServiceTest {
         // 워크스페이스 서비스는 실물을 쓴다: 빌드 결과 디렉터리 판별과 serve 기동은 여기 옮겨졌을
         // 뿐 CODE 스텝의 관찰 가능한 동작 그대로이고(같은 dockerService.exec 명령), 이 테스트들이
         // 지키려는 것도 "빌드 안 된 워크스페이스를 서빙하지 않는다"는 그 동작이다.
+        PreviewWorkspaceService previewWorkspaceService = new PreviewWorkspaceService(
+                dockerService, projectRepository, userRepository, authCommandService);
+        // 이 테스트들은 projectId=null 로 실행하므로 런처는 정적 serve 로 라우팅한다(런타임 설정은
+        // 프로젝트 단위라 null 이면 조회하지 않는다). 그래서 실제 런처 + 실물 워크스페이스를 써
+        // "빌드 안 된 워크스페이스를 서빙하지 않는다"는 기존 동작을 그대로 검증한다.
+        PreviewRuntimeLauncher previewRuntimeLauncher = new PreviewRuntimeLauncher(
+                mock(PreviewRuntimeConfigService.class),
+                mock(PreviewDatabaseProvisioner.class),
+                mock(PreviewEnvComposer.class),
+                previewWorkspaceService);
         service = new CodeAgentService(
                 claudeToolClient,
                 openAiToolClient,
                 dockerService,
                 previewSessionService,
-                new PreviewWorkspaceService(
-                        dockerService,
-                        projectRepository,
-                        userRepository,
-                        authCommandService
-                ),
+                previewRuntimeLauncher,
+                previewWorkspaceService,
                 buildFailureAnalyzer,
                 aiProperties
         );

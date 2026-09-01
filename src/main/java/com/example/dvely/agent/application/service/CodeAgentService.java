@@ -14,6 +14,7 @@ import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
 import com.example.dvely.agent.infrastructure.llm.OpenAiToolClient;
 import com.example.dvely.common.exception.LlmProviderException;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
+import com.example.dvely.preview.application.service.PreviewRuntimeLauncher;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.preview.application.service.PreviewWorkspaceService;
 import java.util.Base64;
@@ -58,6 +59,7 @@ public class CodeAgentService {
     private final OpenAiToolClient        openAiToolClient;
     private final DockerContainerService  dockerService;
     private final PreviewSessionService   previewSessionService;
+    private final PreviewRuntimeLauncher   previewRuntimeLauncher;
     private final PreviewWorkspaceService previewWorkspaceService;
     private final BuildFailureAnalyzer    buildFailureAnalyzer;
     private final AiProperties            aiProperties;
@@ -169,7 +171,8 @@ public class CodeAgentService {
             // FE 가 "열면 보인다"는 계약대로 iframe 을 붙일 수 있다. 실패하면 PROVISIONING 인 채
             // 두지 않고 사유와 함께 FAILED 로 닫는다 — 안 그러면 FE 가 준비 중 화면을 무한히 돈다.
             try {
-                previewWorkspaceService.startPreviewServer(containerId);
+                // 에이전트가 만든 코드도 런타임 타입에 맞춰 서빙한다(정적/NODE_SERVER/JAVA).
+                previewRuntimeLauncher.launch(projectId, containerId);
             } catch (RuntimeException exception) {
                 // 사유는 FE 가 사용자에게 그대로 보여주므로 내부 예외 문구를 넣지 않는다.
                 // 원인은 이 예외가 그대로 전파되며 로그에 남는다.

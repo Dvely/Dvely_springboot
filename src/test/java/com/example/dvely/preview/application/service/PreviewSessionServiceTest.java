@@ -3,6 +3,7 @@ package com.example.dvely.preview.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -41,12 +42,12 @@ class PreviewSessionServiceTest {
         DockerContainerService dockerService = mock(DockerContainerService.class);
         TaskStore taskStore = mock(TaskStore.class);
         PreviewSessionService service = new PreviewSessionService(
-                repository, dockerService, taskStore, properties(), gatewayUrlResolver(), accessCookies()
+                repository, dockerService, taskStore, properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         when(taskStore.get("task-1")).thenReturn(task());
         when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.ACTIVE.name()))
                 .thenReturn(Optional.empty());
-        when(dockerService.createAndStartContainer(eq(1L), any(String.class), eq(11L), eq(21L), eq("task-1")))
+        when(dockerService.createAndStartContainer(eq(1L), any(String.class), eq(11L), eq(21L), eq("task-1"), anyLong()))
                 .thenReturn("container-1");
         when(dockerService.getMappedPort("container-1")).thenReturn(32768);
         when(repository.save(any(PreviewSessionEntity.class)))
@@ -65,7 +66,7 @@ class PreviewSessionServiceTest {
         SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
         PreviewSessionService service = new PreviewSessionService(
                 repository, mock(DockerContainerService.class), mock(TaskStore.class),
-                properties(), gatewayUrlResolver(), accessCookies()
+                properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity provisioning = provisioningSession();
         when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.PROVISIONING.name()))
@@ -83,7 +84,7 @@ class PreviewSessionServiceTest {
         SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
         PreviewSessionService service = new PreviewSessionService(
                 repository, mock(DockerContainerService.class), mock(TaskStore.class),
-                properties(), gatewayUrlResolver(), accessCookies()
+                properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity provisioning = provisioningSession();
         when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.PROVISIONING.name()))
@@ -104,7 +105,7 @@ class PreviewSessionServiceTest {
         SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
         PreviewSessionService service = new PreviewSessionService(
                 repository, mock(DockerContainerService.class), mock(TaskStore.class),
-                properties(), gatewayUrlResolver(), accessCookies()
+                properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.ACTIVE.name()))
                 .thenReturn(Optional.empty());
@@ -133,7 +134,7 @@ class PreviewSessionServiceTest {
                 taskStore,
                 properties,
                 gatewayUrlResolver(),
-                accessCookies()
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         when(taskStore.get("task-1")).thenReturn(task());
         when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.ACTIVE.name()))
@@ -168,7 +169,7 @@ class PreviewSessionServiceTest {
                 mock(TaskStore.class),
                 properties(),
                 gatewayUrlResolver(),
-                accessCookies()
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity expired = new PreviewSessionEntity(
                 "session-1",
@@ -210,7 +211,7 @@ class PreviewSessionServiceTest {
                 mock(TaskStore.class),
                 properties(),
                 gatewayUrlResolver(),
-                accessCookies()
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity stuck = new PreviewSessionEntity(
                 "session-2",
@@ -250,7 +251,7 @@ class PreviewSessionServiceTest {
                 mock(TaskStore.class),
                 properties(),
                 gatewayUrlResolver(),
-                accessCookies()
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity session = new PreviewSessionEntity(
                 "session-1", "token", 1L, 11L, 21L, "task-1",
@@ -279,7 +280,7 @@ class PreviewSessionServiceTest {
                 mock(TaskStore.class),
                 properties(),
                 gatewayUrlResolver(),
-                accessCookies()
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         when(repository.findById("missing")).thenReturn(Optional.empty());
 
@@ -297,7 +298,7 @@ class PreviewSessionServiceTest {
                 mock(TaskStore.class),
                 properties(),
                 gatewayUrlResolver(),
-                accessCookies()
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity active = new PreviewSessionEntity(
                 "session-1", "token", 1L, 11L, 21L, "task-1",
@@ -325,7 +326,7 @@ class PreviewSessionServiceTest {
                 mock(TaskStore.class),
                 properties(),
                 gatewayUrlResolver(),
-                accessCookies()
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusOrderByLastAccessedAtDesc(
                 11L, 1L, PreviewSessionStatus.ACTIVE.name()
@@ -351,7 +352,7 @@ class PreviewSessionServiceTest {
         SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
         PreviewSessionService service = new PreviewSessionService(
                 repository, mock(DockerContainerService.class), mock(TaskStore.class),
-                properties(), gatewayUrlResolver(), accessCookies()
+                properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity session = activeSessionExpiringIn(Duration.ofMinutes(30));
         when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.ACTIVE.name()))
@@ -372,7 +373,7 @@ class PreviewSessionServiceTest {
         SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
         PreviewSessionService service = new PreviewSessionService(
                 repository, mock(DockerContainerService.class), mock(TaskStore.class),
-                properties(), gatewayUrlResolver(), accessCookies()
+                properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity held = activeSessionExpiringIn(Duration.ofHours(6));
         when(repository.findByIdAndAccessTokenAndStatus(
@@ -430,7 +431,7 @@ class PreviewSessionServiceTest {
                 mock(TaskStore.class),
                 properties(),
                 gatewayUrlResolver(),
-                accessCookies()
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity session = new PreviewSessionEntity(
                 "session-1", "old-token", 7L, 11L, null, null, "container-1", 32768,
@@ -457,7 +458,7 @@ class PreviewSessionServiceTest {
                 mock(TaskStore.class),
                 properties(),
                 gatewayUrlResolver(),
-                accessCookies()
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         when(repository.findByIdAndOwnerUserId("session-1", 8L)).thenReturn(Optional.empty());
 
