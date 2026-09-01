@@ -201,6 +201,33 @@ public class PreviewWorkspaceService {
         dockerService.exec(containerId,
                 "nohup npx serve -s " + buildDir + " -l 3000 > /tmp/serve.log 2>&1 &");
 
+        awaitServerReady(containerId, "/tmp/serve.log", "buildDir=" + buildDir);
+    }
+
+    /**
+     * NODE_SERVER 런타임: 정적 serve 대신 앱 자체 서버를 3000 에 띄운다. UI 와 API 를 그 한 서버가
+     * 모두 서빙하므로 게이트웨이는 그대로 3000 만 프록시한다.
+     *
+     * env(사용자 PREVIEW env + DB 커넥션 + PORT=3000)는 명령 문자열이 아니라 exec 의 env 로만
+     * 넘긴다(execWithEnv) — DB 비밀번호 같은 값이 로그·예외에 남지 않게. startCommand 가 비면
+     * {@code npm start} 로 실행한다.
+     *
+     * @throws IllegalStateException 제한 시간 안에 3000 이 응답하지 않으면. 호출자가 세션을 FAILED 로 닫는다.
+     */
+    public void startNodeServer(String containerId, String startCommand, List<String> env) {
+        String command = (startCommand == null || startCommand.isBlank()) ? "npm start" : startCommand;
+        dockerService.execWithExitCode(containerId,
+                "cd " + APP_DIR + " && nohup " + command + " > /tmp/preview-server.log 2>&1 &", env);
+
+        awaitServerReady(containerId, "/tmp/preview-server.log", "command=" + command);
+    }
+
+    /**
+     * 3000 이 실제로 응답할 때까지 폴링한다. "프로세스를 띄웠다"와 "포트가 응답한다"는 다르고,
+     * 후자가 돼야 프리뷰를 ACTIVE 로 올릴 수 있다(그러지 않으면 첫 요청이 502). curl 이 없는
+     * 이미지가 있어 node 로 확인한다 — 프리뷰 컨테이너에는 node 가 반드시 있다.
+     */
+    private void awaitServerReady(String containerId, String logPath, String context) {
         String probe = "node -e \"require('http')"
                 + ".get({host:'127.0.0.1',port:3000,timeout:1000},r=>process.exit(0))"
                 + ".on('error',()=>process.exit(1))\" 2>/dev/null";
@@ -210,15 +237,15 @@ public class PreviewWorkspaceService {
                         + "if " + probe + "; then ready=yes; break; fi; sleep 1; "
                         + "done; "
                         + "echo \"serve_ready=$ready\"; "
-                        + "tail -n 20 /tmp/serve.log 2>/dev/null || true");
+                        + "tail -n 20 " + logPath + " 2>/dev/null || true");
 
         if (result == null || !result.contains("serve_ready=yes")) {
-            log.warn("[PreviewWorkspace] 프리뷰 서버가 {}초 안에 응답하지 않음 | buildDir={} | log={}",
-                    SERVE_READY_TIMEOUT_SECONDS, buildDir, result);
+            log.warn("[PreviewWorkspace] 프리뷰 서버가 {}초 안에 응답하지 않음 | {} | log={}",
+                    SERVE_READY_TIMEOUT_SECONDS, context, result);
             throw new IllegalStateException(
-                    "프리뷰 서버가 제한 시간 안에 시작되지 않았습니다. buildDir=" + buildDir);
+                    "프리뷰 서버가 제한 시간 안에 시작되지 않았습니다. " + context);
         }
-        log.info("[PreviewWorkspace] 프리뷰 서버 준비 완료 | buildDir={} | log={}", buildDir, result);
+        log.info("[PreviewWorkspace] 프리뷰 서버 준비 완료 | {} | log={}", context, result);
     }
 
     /**

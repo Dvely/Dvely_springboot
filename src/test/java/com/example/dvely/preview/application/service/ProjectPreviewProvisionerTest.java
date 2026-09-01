@@ -5,18 +5,24 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
+import com.example.dvely.preview.application.port.out.PreviewDatabaseProvisioner;
+import com.example.dvely.preview.application.result.PreviewDbConnection;
+import com.example.dvely.preview.application.result.PreviewRuntimeConfigResult;
+import com.example.dvely.preview.domain.value.PreviewRuntimeType;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
 import com.example.dvely.preview.infrastructure.config.PreviewProperties;
 import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity;
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,10 +38,14 @@ class ProjectPreviewProvisionerTest {
 
     private static final String SESSION_ID = "session-1";
     private static final String CONTAINER_ID = "container-1";
+    private static final Long PROJECT_ID = 11L;
 
     @Mock private SpringDataPreviewSessionRepository repository;
     @Mock private PreviewWorkspaceService workspaceService;
     @Mock private DockerContainerService dockerService;
+    @Mock private PreviewRuntimeConfigService runtimeConfigService;
+    @Mock private PreviewDatabaseProvisioner databaseProvisioner;
+    @Mock private PreviewEnvComposer envComposer;
 
     private ProjectPreviewProvisioner provisioner;
 
@@ -43,25 +53,90 @@ class ProjectPreviewProvisionerTest {
     void setUp() {
         PreviewProperties properties = new PreviewProperties();
         properties.setTtl(Duration.ofMinutes(30));
-        provisioner = new ProjectPreviewProvisioner(repository, workspaceService, dockerService, properties);
+        provisioner = new ProjectPreviewProvisioner(repository, workspaceService, dockerService,
+                properties, runtimeConfigService, databaseProvisioner, envComposer);
         when(repository.save(any(PreviewSessionEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
+        // 기본은 STATIC — 기존 정적 프리뷰 동작을 그대로 검증하는 테스트들이 쓴다.
+        when(runtimeConfigService.resolveForProvision(anyLong(), anyString()))
+                .thenReturn(PreviewRuntimeConfigResult.defaultStatic(PROJECT_ID));
     }
 
     @Test
-    void preparesBuildsAndServesBeforeMarkingTheSessionActive() {
+    void staticRuntimePreparesBuildsAndServesBeforeMarkingTheSessionActive() {
         PreviewSessionEntity session = provisioningSession();
         when(repository.findById(SESSION_ID)).thenReturn(Optional.of(session));
 
         provisioner.provision(SESSION_ID);
 
-        verify(workspaceService).prepareProject(CONTAINER_ID, 1L, 11L);
+        verify(workspaceService).prepareProject(CONTAINER_ID, 1L, PROJECT_ID);
         verify(workspaceService).buildIfConfigured(CONTAINER_ID);
         verify(workspaceService).startPreviewServer(CONTAINER_ID);
+        verify(workspaceService, never()).startNodeServer(anyString(), any(), any());
         assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
-        // 만료는 준비가 끝난 시점부터 다시 센다 — install/build 에 쓴 시간을 사용자가 볼 수 있는
-        // 시간에서 깎지 않기 위해서다.
         assertThat(session.getExpiresAt()).isAfter(LocalDateTime.now().plusMinutes(25));
+    }
+
+    /**
+     * NODE_SERVER: 서버형이므로 DB 를 자동 프로비저닝해 env 로 꽂고, 정적 serve 대신 앱 서버를 띄운다.
+     */
+    @Test
+    void nodeServerRuntimeAutoProvisionsDbAndStartsTheAppServer() {
+        PreviewSessionEntity session = provisioningSession();
+        when(repository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+        when(runtimeConfigService.resolveForProvision(PROJECT_ID, CONTAINER_ID))
+                .thenReturn(nodeConfig("npm start"));
+        PreviewDbConnection db = new PreviewDbConnection("MYSQL", "db", 3306, "app", "app", "pw");
+        when(databaseProvisioner.provisionForPreview(PROJECT_ID, CONTAINER_ID)).thenReturn(Optional.of(db));
+        List<String> env = List.of("DB_HOST=db", "PORT=3000");
+        when(envComposer.compose(PROJECT_ID, db)).thenReturn(env);
+
+        provisioner.provision(SESSION_ID);
+
+        verify(databaseProvisioner).provisionForPreview(PROJECT_ID, CONTAINER_ID);
+        verify(workspaceService).startNodeServer(CONTAINER_ID, "npm start", env);
+        verify(workspaceService, never()).startPreviewServer(anyString());
+        assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
+    }
+
+    /**
+     * DB 자동 프로비저닝 실패는 프리뷰 전체를 죽이지 않는다 — DB 없이(env 에 DB 값 없이) 서버를
+     * 그대로 띄운다. Docker/DB 플레이키 하나가 모든 서버 프리뷰를 막지 않게 하기 위해서다.
+     */
+    @Test
+    void nodeServerStartsWithoutDbWhenAutoProvisionFails() {
+        PreviewSessionEntity session = provisioningSession();
+        when(repository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+        when(runtimeConfigService.resolveForProvision(PROJECT_ID, CONTAINER_ID))
+                .thenReturn(nodeConfig(null));
+        when(databaseProvisioner.provisionForPreview(PROJECT_ID, CONTAINER_ID))
+                .thenThrow(new IllegalStateException("DB 컨테이너가 준비되지 않았습니다."));
+        List<String> env = List.of("PORT=3000");
+        when(envComposer.compose(eq(PROJECT_ID), any())).thenReturn(env);
+
+        provisioner.provision(SESSION_ID);
+
+        // startCommand 가 null 이면 서비스가 npm start 로 실행하므로 여기서는 null 을 그대로 전달한다.
+        verify(workspaceService).startNodeServer(CONTAINER_ID, null, env);
+        assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
+    }
+
+    /** JAVA_FULLSTACK 실행은 다음 단계다 — 지금은 명확히 실패시켜 정적으로 잘못 서빙되지 않게 한다. */
+    @Test
+    void javaFullstackFailsClearlyForNow() {
+        PreviewSessionEntity session = provisioningSession();
+        when(repository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+        when(runtimeConfigService.resolveForProvision(PROJECT_ID, CONTAINER_ID))
+                .thenReturn(new PreviewRuntimeConfigResult(PROJECT_ID,
+                        PreviewRuntimeType.JAVA_FULLSTACK.name(), null, "/api", null, "DETECTED"));
+
+        provisioner.provision(SESSION_ID);
+
+        assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.FAILED.name());
+        assertThat(session.getFailureReason()).contains("아직 지원되지 않습니다");
+        verify(dockerService).removeContainer(CONTAINER_ID);
+        verify(workspaceService, never()).startPreviewServer(anyString());
+        verify(workspaceService, never()).startNodeServer(anyString(), any(), any());
     }
 
     /**
@@ -99,12 +174,17 @@ class ProjectPreviewProvisionerTest {
         verify(dockerService, never()).removeContainer(anyString());
     }
 
+    private PreviewRuntimeConfigResult nodeConfig(String startCommand) {
+        return new PreviewRuntimeConfigResult(PROJECT_ID, PreviewRuntimeType.NODE_SERVER.name(),
+                startCommand, "/api", null, "STORED");
+    }
+
     private PreviewSessionEntity provisioningSession() {
         return new PreviewSessionEntity(
                 SESSION_ID,
                 "token",
                 1L,
-                11L,
+                PROJECT_ID,
                 null,
                 null,
                 CONTAINER_ID,
