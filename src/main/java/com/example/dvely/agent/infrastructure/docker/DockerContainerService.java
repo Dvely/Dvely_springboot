@@ -575,6 +575,167 @@ public class DockerContainerService {
         }
     }
 
+    // ── LOCAL DB 프로비저닝 (세션 전용 네트워크에 DB 컨테이너를 형제로 띄운다) ──────────
+    //
+    // 왜 프리뷰 컨테이너 안이 아니라 형제 컨테이너인가: 프리뷰 컨테이너는 cap-drop ALL 이라
+    // 그 안에서 docker 를 못 돌린다(DinD 불가). 왜 preview 네트워크가 아니라 세션 전용
+    // 네트워크인가: preview 네트워크는 ICC 를 꺼서(enable_icc=false) 앱과 DB 가 서로 못 본다.
+    // 그래서 세션마다 ICC 가 켜진 격리 네트워크를 따로 만들고 그 안에 앱+DB 만 넣는다 —
+    // 세션 간 격리는 유지되고(다른 네트워크는 이 DB 이름을 해석조차 못 함, 2026-09-01 실측),
+    // 세션 안에서만 통신이 허용된다.
+
+    private static final String PROVISION_NETWORK_PREFIX = "qeploy-db-";
+    private static final long DB_MEMORY_LIMIT_BYTES = 512L << 20; // 512 MiB
+    private static final int DB_READY_TIMEOUT_SECONDS = 60;
+
+    /** 세션 전용 네트워크를 만든다(ICC 켜짐 — 세션 안 앱↔DB 통신 허용). 이름으로 세션을 식별한다. */
+    public String createSessionNetwork(String sessionId) {
+        String name = PROVISION_NETWORK_PREFIX + sessionId;
+        try {
+            dockerClient.createNetworkCmd()
+                    .withName(name)
+                    .withDriver("bridge")
+                    // preview 네트워크와 달리 ICC 를 끄지 않는다. 이 네트워크에는 한 세션의 앱과
+                    // DB 만 들어오므로, 그 둘 사이 통신을 막으면 DB 접속 자체가 안 된다. 세션 간
+                    // 격리는 "네트워크가 세션마다 다름"으로 이미 보장된다.
+                    .withLabels(Map.of(AGENT_LABEL, "true", "qeploy.dbSession", sessionId))
+                    .exec();
+            log.info("DB 세션 네트워크 생성: name={}", name);
+        } catch (ConflictException e) {
+            log.debug("DB 세션 네트워크가 이미 존재함: name={}", name);
+        }
+        return name;
+    }
+
+    /**
+     * DB 컨테이너를 세션 네트워크에 형제로 띄우고, 준비될 때까지 기다린 뒤 컨테이너 ID 를 돌려준다.
+     *
+     * networkAlias 로 앱이 접속한다(예: "db"). 준비 확인은 엔진별 핑으로 실제로 연결을 받을 수
+     * 있을 때까지 폴링한다 — "컨테이너가 떴다"와 "접속을 받는다"는 다르고, 후자가 돼야 READY 다.
+     *
+     * @throws IllegalStateException 제한 시간 안에 준비되지 않으면. 호출자가 세션을 FAILED 로 닫는다.
+     */
+    public String createDatabaseContainer(String networkName, String networkAlias, String image,
+                                          List<String> env, List<String> readyProbe) {
+        pullImageIfNeeded(image);
+        CreateContainerResponse container = dockerClient.createContainerCmd(image)
+                .withEnv(env)
+                .withHostConfig(HostConfig.newHostConfig()
+                        .withMemory(DB_MEMORY_LIMIT_BYTES)
+                        .withMemorySwap(DB_MEMORY_LIMIT_BYTES)
+                        .withNanoCPUs(NANO_CPUS)
+                        .withPidsLimit(PIDS_LIMIT)
+                        // DB 엔진은 초기화 때 파일 소유권을 바꿔 권한을 낮춘다. postgres·mysql 이
+                        // 실측에서 이 cap 세트로 정상 기동했다(2026-09-01).
+                        .withCapDrop(Capability.ALL)
+                        .withCapAdd(Capability.CHOWN, Capability.SETUID, Capability.SETGID,
+                                Capability.DAC_OVERRIDE, Capability.FOWNER, Capability.SETFCAP)
+                        .withSecurityOpts(List.of("no-new-privileges"))
+                        .withNetworkMode(networkName))
+                .withAliases(networkAlias)
+                .withLabels(Map.of(AGENT_LABEL, "true"))
+                .exec();
+        dockerClient.startContainerCmd(container.getId()).exec();
+        String id = container.getId();
+        log.info("DB 컨테이너 시작: id={} alias={} image={}", id, networkAlias, image);
+
+        for (int i = 0; i < DB_READY_TIMEOUT_SECONDS; i++) {
+            ExecResult probe = execWithExitCode(id, String.join(" ", readyProbe));
+            if (probe.succeeded()) {
+                log.info("DB 컨테이너 준비 완료: id={} ({}초)", id, i + 1);
+                return id;
+            }
+            sleepSeconds(1);
+        }
+        // 준비 안 됐으면 방금 만든 컨테이너를 남기지 않는다.
+        removeDatabaseContainer(id);
+        throw new IllegalStateException("DB 컨테이너가 " + DB_READY_TIMEOUT_SECONDS + "초 안에 준비되지 않았습니다.");
+    }
+
+    /**
+     * 이미 떠 있는 컨테이너(프리뷰 앱)를 세션 전용 네트워크에 추가로 연결한다. 이래야 앱이 그
+     * 네트워크의 DB 별칭("db")을 DNS 로 풀 수 있다 — DB 만 네트워크에 넣고 앱을 안 붙이면
+     * READY 로 떠도 앱은 접속하지 못한다.
+     */
+    public void connectContainerToNetwork(String networkName, String containerId) {
+        try {
+            dockerClient.connectToNetworkCmd()
+                    .withNetworkId(networkName)
+                    .withContainerId(containerId)
+                    .exec();
+            log.info("컨테이너를 세션 네트워크에 연결: container={} network={}", containerId, networkName);
+        } catch (NotModifiedException e) {
+            log.debug("컨테이너가 이미 네트워크에 연결됨: container={} network={}", containerId, networkName);
+        }
+    }
+
+    /** DB 컨테이너를 강제 제거한다. 이미 없으면 조용히 넘어간다. */
+    public void removeDatabaseContainer(String containerId) {
+        try {
+            dockerClient.removeContainerCmd(containerId).withForce(true).exec();
+            log.info("DB 컨테이너 제거: id={}", containerId);
+        } catch (NotFoundException e) {
+            log.debug("DB 컨테이너가 이미 없음: id={}", containerId);
+        }
+    }
+
+    /**
+     * DB 컨테이너와 그것이 붙어 있던 세션 전용 네트워크를 함께 정리한다. resourceId(컨테이너 ID)
+     * 하나만으로 완전 회수가 되도록, 컨테이너를 지우기 전에 붙은 qeploy-db-* 네트워크를 역추적한다.
+     * 워커가 이 메서드로 만료된 LOCAL DB 를 통째로 정리한다.
+     */
+    public void removeDatabaseContainerWithNetwork(String containerId) {
+        String sessionNetwork = null;
+        try {
+            var networks = dockerClient.inspectContainerCmd(containerId).exec()
+                    .getNetworkSettings().getNetworks();
+            if (networks != null) {
+                sessionNetwork = networks.keySet().stream()
+                        .filter(n -> n.startsWith(PROVISION_NETWORK_PREFIX))
+                        .findFirst().orElse(null);
+            }
+        } catch (NotFoundException e) {
+            log.debug("정리 대상 DB 컨테이너가 이미 없음: id={}", containerId);
+        }
+        removeDatabaseContainer(containerId);
+        if (sessionNetwork != null) {
+            removeSessionNetwork(sessionNetwork);
+        }
+    }
+
+    /**
+     * 세션 네트워크를 제거한다. 아직 붙어 있는 컨테이너(예: 만료 시점에도 살아 있는 프리뷰 앱)를
+     * 먼저 강제 분리해야 removeNetwork 가 "network has active endpoints" 로 실패하지 않는다.
+     */
+    public void removeSessionNetwork(String networkName) {
+        try {
+            var attached = dockerClient.inspectNetworkCmd().withNetworkId(networkName).exec().getContainers();
+            if (attached != null) {
+                for (String cid : attached.keySet()) {
+                    try {
+                        dockerClient.disconnectFromNetworkCmd()
+                                .withNetworkId(networkName).withContainerId(cid).withForce(true).exec();
+                    } catch (RuntimeException e) {
+                        log.debug("네트워크 분리 무시(이미 없음): container={} network={}", cid, networkName);
+                    }
+                }
+            }
+            dockerClient.removeNetworkCmd(networkName).exec();
+            log.info("DB 세션 네트워크 제거: name={}", networkName);
+        } catch (NotFoundException e) {
+            log.debug("DB 세션 네트워크가 이미 없음: name={}", networkName);
+        }
+    }
+
+    private void sleepSeconds(int sec) {
+        try {
+            Thread.sleep(sec * 1000L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("DB 준비 대기 인터럽트", e);
+        }
+    }
+
     /**
      * Restarts a running preview container in place (Cloud Ops Agent RESTART, EPIC 15 design §3.4)
      * — stop with a 5s grace period, then start, reusing the same container rather than recreating
@@ -617,9 +778,13 @@ public class DockerContainerService {
     }
 
     private void pullImageIfNeeded() {
+        pullImageIfNeeded(IMAGE);
+    }
+
+    private void pullImageIfNeeded(String image) {
         try {
-            dockerClient.pullImageCmd(IMAGE).start().awaitCompletion(3, TimeUnit.MINUTES);
-            log.info("Docker 이미지 준비 완료: {}", IMAGE);
+            dockerClient.pullImageCmd(image).start().awaitCompletion(3, TimeUnit.MINUTES);
+            log.info("Docker 이미지 준비 완료: {}", image);
         } catch (Exception e) {
             log.warn("이미지 pull 실패 (로컬에 존재할 수 있음): {}", e.getMessage());
         }
