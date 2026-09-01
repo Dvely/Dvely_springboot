@@ -86,13 +86,21 @@ public class ProjectPreviewProvisioner {
         switch (runtime.runtimeTypeEnum()) {
             case STATIC -> workspaceService.startPreviewServer(containerId);
             case NODE_SERVER -> {
+                // 앱이 3000 에서 UI+API 를 모두 서빙한다.
                 PreviewDbConnection db = autoProvisionDbBestEffort(
                         session.getProjectId(), containerId, runtime.dbEngine());
-                List<String> env = envComposer.compose(session.getProjectId(), db);
+                List<String> env = envComposer.compose(session.getProjectId(), db, 3000);
                 workspaceService.startNodeServer(containerId, runtime.startCommand(), env);
             }
-            case JAVA_FULLSTACK -> throw new IllegalStateException(
-                    "JAVA_FULLSTACK 프리뷰 실행은 아직 지원되지 않습니다(다음 단계).");
+            case JAVA_FULLSTACK -> {
+                // 정적 FE + Java BE(8080) 를 한 컨테이너에서, 내부 nginx 가 3000 에서 가른다.
+                // BE 는 8080 에 붙으므로 env 의 PORT/SERVER_PORT 는 8080 이다.
+                PreviewDbConnection db = autoProvisionDbBestEffort(
+                        session.getProjectId(), containerId, runtime.dbEngine());
+                List<String> env = envComposer.compose(session.getProjectId(), db, 8080);
+                workspaceService.startJavaFullstack(
+                        containerId, runtime.startCommand(), env, runtime.apiPathPrefix());
+            }
         }
     }
 

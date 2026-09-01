@@ -1,6 +1,7 @@
 package com.example.dvely.preview.application.service;
 
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
+import com.example.dvely.preview.domain.value.PreviewRuntimeType;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.common.exception.PreviewEnvironmentUnavailableException;
 import com.example.dvely.preview.application.result.ProjectPreviewSessionResult;
@@ -61,6 +62,7 @@ public class ProjectPreviewService {
     private final PreviewProperties properties;
     private final PreviewGatewayUrlResolver gatewayUrlResolver;
     private final ProjectPreviewProvisioner provisioner;
+    private final PreviewRuntimeConfigService runtimeConfigService;
 
     /**
      * 프로젝트 화면이 열릴 때 부르는 조회. 지금 보여줄 프리뷰가 없으면 비어 있는 값을 준다.
@@ -118,7 +120,14 @@ public class ProjectPreviewService {
         String containerId;
         int hostPort;
         try {
-            containerId = dockerService.createAndStartContainer(ownerUserId, sessionId, projectId, null, null);
+            // JAVA_FULLSTACK 은 JVM+gradle 이 무거워 큰 컨테이너가 필요하다. 메모리는 지금(생성
+            // 시점) 정해지고 자동 감지는 클론 후라 늦으므로, 사용자가 설정에서 미리 고른 값만 본다.
+            long memoryBytes = runtimeConfigService.storedRuntimeType(projectId)
+                    .filter(type -> type == PreviewRuntimeType.JAVA_FULLSTACK)
+                    .map(type -> DockerContainerService.JAVA_MEMORY_LIMIT_BYTES)
+                    .orElse(DockerContainerService.MEMORY_LIMIT_BYTES);
+            containerId = dockerService.createAndStartContainer(
+                    ownerUserId, sessionId, projectId, null, null, memoryBytes);
             hostPort = dockerService.getMappedPort(containerId);
         } catch (RuntimeException exception) {
             // Docker 가 없거나 앱 계정이 소켓에 접근하지 못하는 서버에서는 이 첫 호출이 처음으로

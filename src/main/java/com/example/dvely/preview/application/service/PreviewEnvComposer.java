@@ -29,7 +29,7 @@ public class PreviewEnvComposer {
 
     private final EnvironmentValueResolver environmentValueResolver;
 
-    public List<String> compose(Long projectId, PreviewDbConnection db) {
+    public List<String> compose(Long projectId, PreviewDbConnection db, int appPort) {
         Map<String, String> env = new LinkedHashMap<>();
 
         if (db != null) {
@@ -43,9 +43,11 @@ public class PreviewEnvComposer {
 
         env.putAll(environmentValueResolver.resolve(projectId, EnvironmentScope.PREVIEW));
 
-        // 게이트웨이는 3000 만 프록시한다. 사용자가 PORT 를 다른 값으로 정했더라도 서버가 3000 에
-        // 붙지 않으면 프리뷰가 닿지 않으므로, PORT 는 여기서 3000 으로 강제한다.
-        env.put("PORT", "3000");
+        // 앱 서버가 붙어야 하는 포트를 강제한다. NODE_SERVER 는 게이트웨이가 프록시하는 3000,
+        // JAVA_FULLSTACK 은 내부 nginx 뒤의 8080 이다. 사용자가 PORT 를 다르게 정했더라도 그 포트에
+        // 안 붙으면 프리뷰가 닿지 않으므로 덮는다. PORT(Node 계열)와 SERVER_PORT(Spring) 둘 다 준다.
+        env.put("PORT", String.valueOf(appPort));
+        env.put("SERVER_PORT", String.valueOf(appPort));
 
         List<String> pairs = new ArrayList<>(env.size());
         env.forEach((k, v) -> pairs.add(k + "=" + (v == null ? "" : v)));
