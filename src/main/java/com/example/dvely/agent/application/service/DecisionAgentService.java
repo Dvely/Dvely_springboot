@@ -98,8 +98,9 @@ public class DecisionAgentService {
                  "NODE_SERVER"    (JS/TS backend that serves UI+API from one server: Express, Next.js, NestJS),
                  "JAVA_FULLSTACK" (Java/Spring backend with a separate frontend),
                  "STATIC"         (static frontend only — normally omit the step instead of using this)
-               - "dbEngine": "MYSQL" or "POSTGRESQL" when a database is implied (default "MYSQL");
-                 empty string if the app needs no database
+               - "dbEngine": which engine the auto-provisioned database should use — "MYSQL" (default)
+                 or "POSTGRESQL". A server-type preview ALWAYS gets a database; this only selects the
+                 engine. Leave empty for the default MySQL.
                - "startCommand": the server start command only if the user named one (e.g. "npm start");
                  empty string otherwise
 

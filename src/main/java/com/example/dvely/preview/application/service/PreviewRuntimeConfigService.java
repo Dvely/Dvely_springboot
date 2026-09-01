@@ -49,6 +49,33 @@ public class PreviewRuntimeConfigService {
     }
 
     /**
+     * 부분 갱신(merge). 제공된(non-null) 필드만 덮고 나머지는 기존 값을 보존한다. 채팅
+     * (RUNTIME_SETUP)에서 쓴다 — 그 경로는 runtimeType·startCommand·dbEngine 만 아는데, upsert 는
+     * replace-all 이라 그대로 쓰면 사용자가 인프라 탭에서 설정한 apiPathPrefix·healthPath 를
+     * 지워버린다. runtimeType 이 null 이면(모호/파싱 실패) 기존 타입을 유지해 뜻하지 않은 다운그레이드도
+     * 막는다.
+     */
+    @Transactional
+    public PreviewRuntimeConfigResult patch(Long ownerUserId, Long projectId, PreviewRuntimeType runtimeType,
+                                            String startCommand, String dbEngine) {
+        ensureOwned(ownerUserId, projectId);
+        PreviewRuntimeConfigEntity entity = repository.findByProjectId(projectId).orElse(null);
+        if (entity == null) {
+            entity = PreviewRuntimeConfigEntity.of(projectId,
+                    runtimeType != null ? runtimeType : PreviewRuntimeType.STATIC,
+                    startCommand, null, null, dbEngine);
+        } else {
+            entity.update(
+                    runtimeType != null ? runtimeType : entity.runtimeTypeEnum(),
+                    startCommand != null ? startCommand : entity.getStartCommand(),
+                    entity.getApiPathPrefix(),   // 보존
+                    entity.getHealthPath(),      // 보존
+                    dbEngine != null ? dbEngine : entity.getDbEngine());
+        }
+        return PreviewRuntimeConfigResult.stored(repository.save(entity));
+    }
+
+    /**
      * 저장된 런타임 타입만 읽는다(자동 감지 안 함). 컨테이너를 만들기 전에 메모리를 정하려는 용도다 —
      * JAVA_FULLSTACK 은 JVM+gradle 빌드가 무거워 큰 컨테이너가 필요한데, 메모리는 컨테이너 생성
      * 시점에 정해지고 자동 감지는 클론 후라 늦다. 그래서 "사용자가 설정에서 미리 고른" 값만 여기서
