@@ -12,10 +12,11 @@ public record PreviewRuntimeConfigResponse(
         String startCommand,
         @Schema(description = "JAVA_FULLSTACK 라우팅 접두사") String apiPathPrefix,
         @Schema(description = "준비 확인 경로", nullable = true) String healthPath,
+        @Schema(description = "서버형 자동 프로비저닝 DB 엔진", allowableValues = {"MYSQL", "POSTGRESQL"}) String dbEngine,
         @Schema(description = "값 출처", allowableValues = {"STORED", "DEFAULT", "DETECTED"}) String source
 ) {
     public static PreviewRuntimeConfigResponse from(PreviewRuntimeConfigResult r) {
         return new PreviewRuntimeConfigResponse(r.projectId(), r.runtimeType(), r.startCommand(),
-                r.apiPathPrefix(), r.healthPath(), r.source());
+                r.apiPathPrefix(), r.healthPath(), r.dbEngine(), r.source());
     }
 }

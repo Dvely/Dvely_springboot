@@ -13,20 +13,21 @@ public record PreviewRuntimeConfigResult(
         String startCommand,
         String apiPathPrefix,
         String healthPath,
+        String dbEngine,
         String source
 ) {
     public static PreviewRuntimeConfigResult stored(PreviewRuntimeConfigEntity e) {
         return new PreviewRuntimeConfigResult(e.getProjectId(), e.getRuntimeType(), e.getStartCommand(),
-                e.getApiPathPrefix(), e.getHealthPath(), "STORED");
+                e.getApiPathPrefix(), e.getHealthPath(), e.getDbEngine(), "STORED");
     }
 
     public static PreviewRuntimeConfigResult defaultStatic(Long projectId) {
         return new PreviewRuntimeConfigResult(projectId, PreviewRuntimeType.STATIC.name(),
-                null, "/api", null, "DEFAULT");
+                null, "/api", null, "MYSQL", "DEFAULT");
     }
 
     public static PreviewRuntimeConfigResult detected(Long projectId, PreviewRuntimeType type) {
-        return new PreviewRuntimeConfigResult(projectId, type.name(), null, "/api", null, "DETECTED");
+        return new PreviewRuntimeConfigResult(projectId, type.name(), null, "/api", null, "MYSQL", "DETECTED");
     }
 
     public PreviewRuntimeType runtimeTypeEnum() {

@@ -44,6 +44,6 @@ public class PreviewRuntimeConfigController {
     ) {
         return PreviewRuntimeConfigResponse.from(runtimeConfigService.upsert(
                 ownerUserId, projectId, request.runtimeType(),
-                request.startCommand(), request.apiPathPrefix(), request.healthPath()));
+                request.startCommand(), request.apiPathPrefix(), request.healthPath(), request.dbEngine()));
     }
 }

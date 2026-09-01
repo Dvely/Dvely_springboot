@@ -12,6 +12,7 @@ public record ProvisionedDatabaseResult(
         Long projectId,
         String method,
         String engine,
+        String origin,
         String status,
         String host,
         Integer port,
@@ -26,7 +27,7 @@ public record ProvisionedDatabaseResult(
     public static ProvisionedDatabaseResult from(ProvisionedDatabase d) {
         return new ProvisionedDatabaseResult(
                 d.getId(), d.getProjectId(), d.getMethod().name(), d.getEngine().name(),
-                d.getStatus().name(), d.getHost(), d.getPort(), d.getDatabaseName(),
+                d.getOrigin().name(), d.getStatus().name(), d.getHost(), d.getPort(), d.getDatabaseName(),
                 d.getUsername(), d.getExpiresAt(),
                 d.getFailureCode() == null ? null : d.getFailureCode().name(),
                 d.getErrorMessage(), d.getCreatedAt(), d.getUpdatedAt());

@@ -12,5 +12,5 @@ import java.util.Optional;
  */
 public interface PreviewDatabaseProvisioner {
 
-    Optional<PreviewDbConnection> provisionForPreview(Long projectId, String containerId);
+    Optional<PreviewDbConnection> provisionForPreview(Long projectId, String containerId, String engine);
 }

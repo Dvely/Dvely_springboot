@@ -25,6 +25,7 @@ import org.hibernate.annotations.UpdateTimestamp;
 public class PreviewRuntimeConfigEntity {
 
     private static final String DEFAULT_API_PREFIX = "/api";
+    private static final String DEFAULT_DB_ENGINE = "MYSQL";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -43,6 +44,10 @@ public class PreviewRuntimeConfigEntity {
     @Column(name = "api_path_prefix", nullable = false, length = 64)
     private String apiPathPrefix;
 
+    // 서버형 자동 프로비저닝이 쓸 DB 엔진(MYSQL|POSTGRESQL). 사용자가 고른다. 기본 MYSQL.
+    @Column(name = "db_engine", nullable = false, length = 20)
+    private String dbEngine;
+
     @Column(name = "health_path")
     private String healthPath;
 
@@ -55,28 +60,32 @@ public class PreviewRuntimeConfigEntity {
     private LocalDateTime updatedAt;
 
     private PreviewRuntimeConfigEntity(Long projectId, PreviewRuntimeType runtimeType,
-                                       String startCommand, String apiPathPrefix, String healthPath) {
+                                       String startCommand, String apiPathPrefix, String healthPath,
+                                       String dbEngine) {
         this.projectId = projectId;
         this.runtimeType = runtimeType.name();
         this.startCommand = startCommand;
         this.apiPathPrefix = (apiPathPrefix == null || apiPathPrefix.isBlank())
                 ? DEFAULT_API_PREFIX : apiPathPrefix;
         this.healthPath = healthPath;
+        this.dbEngine = (dbEngine == null || dbEngine.isBlank()) ? DEFAULT_DB_ENGINE : dbEngine;
     }
 
     public static PreviewRuntimeConfigEntity of(Long projectId, PreviewRuntimeType runtimeType,
-                                                String startCommand, String apiPathPrefix, String healthPath) {
-        return new PreviewRuntimeConfigEntity(projectId, runtimeType, startCommand, apiPathPrefix, healthPath);
+                                                String startCommand, String apiPathPrefix, String healthPath,
+                                                String dbEngine) {
+        return new PreviewRuntimeConfigEntity(projectId, runtimeType, startCommand, apiPathPrefix, healthPath, dbEngine);
     }
 
     /** upsert 의 update 쪽. project_id 는 그대로 두고 나머지를 갈아끼운다. */
     public void update(PreviewRuntimeType runtimeType, String startCommand,
-                       String apiPathPrefix, String healthPath) {
+                       String apiPathPrefix, String healthPath, String dbEngine) {
         this.runtimeType = runtimeType.name();
         this.startCommand = startCommand;
         this.apiPathPrefix = (apiPathPrefix == null || apiPathPrefix.isBlank())
                 ? DEFAULT_API_PREFIX : apiPathPrefix;
         this.healthPath = healthPath;
+        this.dbEngine = (dbEngine == null || dbEngine.isBlank()) ? DEFAULT_DB_ENGINE : dbEngine;
     }
 
     public PreviewRuntimeType runtimeTypeEnum() {

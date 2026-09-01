@@ -87,13 +87,13 @@ class ProjectPreviewProvisionerTest {
         when(runtimeConfigService.resolveForProvision(PROJECT_ID, CONTAINER_ID))
                 .thenReturn(nodeConfig("npm start"));
         PreviewDbConnection db = new PreviewDbConnection("MYSQL", "db", 3306, "app", "app", "pw");
-        when(databaseProvisioner.provisionForPreview(PROJECT_ID, CONTAINER_ID)).thenReturn(Optional.of(db));
+        when(databaseProvisioner.provisionForPreview(PROJECT_ID, CONTAINER_ID, "MYSQL")).thenReturn(Optional.of(db));
         List<String> env = List.of("DB_HOST=db", "PORT=3000");
         when(envComposer.compose(PROJECT_ID, db)).thenReturn(env);
 
         provisioner.provision(SESSION_ID);
 
-        verify(databaseProvisioner).provisionForPreview(PROJECT_ID, CONTAINER_ID);
+        verify(databaseProvisioner).provisionForPreview(PROJECT_ID, CONTAINER_ID, "MYSQL");
         verify(workspaceService).startNodeServer(CONTAINER_ID, "npm start", env);
         verify(workspaceService, never()).startPreviewServer(anyString());
         assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
@@ -109,7 +109,7 @@ class ProjectPreviewProvisionerTest {
         when(repository.findById(SESSION_ID)).thenReturn(Optional.of(session));
         when(runtimeConfigService.resolveForProvision(PROJECT_ID, CONTAINER_ID))
                 .thenReturn(nodeConfig(null));
-        when(databaseProvisioner.provisionForPreview(PROJECT_ID, CONTAINER_ID))
+        when(databaseProvisioner.provisionForPreview(PROJECT_ID, CONTAINER_ID, "MYSQL"))
                 .thenThrow(new IllegalStateException("DB 컨테이너가 준비되지 않았습니다."));
         List<String> env = List.of("PORT=3000");
         when(envComposer.compose(eq(PROJECT_ID), any())).thenReturn(env);
@@ -128,7 +128,7 @@ class ProjectPreviewProvisionerTest {
         when(repository.findById(SESSION_ID)).thenReturn(Optional.of(session));
         when(runtimeConfigService.resolveForProvision(PROJECT_ID, CONTAINER_ID))
                 .thenReturn(new PreviewRuntimeConfigResult(PROJECT_ID,
-                        PreviewRuntimeType.JAVA_FULLSTACK.name(), null, "/api", null, "DETECTED"));
+                        PreviewRuntimeType.JAVA_FULLSTACK.name(), null, "/api", null, "MYSQL", "DETECTED"));
 
         provisioner.provision(SESSION_ID);
 
@@ -176,7 +176,7 @@ class ProjectPreviewProvisionerTest {
 
     private PreviewRuntimeConfigResult nodeConfig(String startCommand) {
         return new PreviewRuntimeConfigResult(PROJECT_ID, PreviewRuntimeType.NODE_SERVER.name(),
-                startCommand, "/api", null, "STORED");
+                startCommand, "/api", null, "MYSQL", "STORED");
     }
 
     private PreviewSessionEntity provisioningSession() {

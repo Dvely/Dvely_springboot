@@ -86,7 +86,8 @@ public class ProjectPreviewProvisioner {
         switch (runtime.runtimeTypeEnum()) {
             case STATIC -> workspaceService.startPreviewServer(containerId);
             case NODE_SERVER -> {
-                PreviewDbConnection db = autoProvisionDbBestEffort(session.getProjectId(), containerId);
+                PreviewDbConnection db = autoProvisionDbBestEffort(
+                        session.getProjectId(), containerId, runtime.dbEngine());
                 List<String> env = envComposer.compose(session.getProjectId(), db);
                 workspaceService.startNodeServer(containerId, runtime.startCommand(), env);
             }
@@ -100,9 +101,9 @@ public class ProjectPreviewProvisioner {
      * 띄우고, DB 가 정말 필요한 앱은 자기 오류로 그 사실을 드러낸다. Docker/DB 플레이키 하나가
      * 모든 서버 프리뷰를 못 뜨게 하는 것보다 낫다.
      */
-    private PreviewDbConnection autoProvisionDbBestEffort(Long projectId, String containerId) {
+    private PreviewDbConnection autoProvisionDbBestEffort(Long projectId, String containerId, String dbEngine) {
         try {
-            return databaseProvisioner.provisionForPreview(projectId, containerId).orElse(null);
+            return databaseProvisioner.provisionForPreview(projectId, containerId, dbEngine).orElse(null);
         } catch (RuntimeException exception) {
             log.warn("[ProjectPreview] DB 자동 프로비저닝 실패 — DB 없이 서버 시작: projectId={} 원인={}",
                     projectId, exception.toString());

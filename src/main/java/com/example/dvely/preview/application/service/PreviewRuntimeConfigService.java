@@ -35,15 +35,22 @@ public class PreviewRuntimeConfigService {
 
     @Transactional
     public PreviewRuntimeConfigResult upsert(Long ownerUserId, Long projectId, PreviewRuntimeType runtimeType,
-                                             String startCommand, String apiPathPrefix, String healthPath) {
+                                             String startCommand, String apiPathPrefix, String healthPath,
+                                             String dbEngine) {
         ensureOwned(ownerUserId, projectId);
+        // JAVA_FULLSTACK 실행은 아직 없다(② 예정). 저장을 허용하면 저장은 성공하고 그 다음 프리뷰
+        // 부팅에서야 깨져, 실패 지점이 설정과 멀어져 원인 추적이 어렵다. 그래서 설정 시점에 막는다
+        // (RDS·DOCKER 를 프로비저닝 요청 시점에 막는 것과 같은 취지). ②에서 이 가드를 푼다.
+        if (runtimeType == PreviewRuntimeType.JAVA_FULLSTACK) {
+            throw new IllegalArgumentException("JAVA_FULLSTACK 런타임은 아직 지원되지 않습니다. (곧 지원)");
+        }
         PreviewRuntimeConfigEntity entity = repository.findByProjectId(projectId)
                 .map(existing -> {
-                    existing.update(runtimeType, startCommand, apiPathPrefix, healthPath);
+                    existing.update(runtimeType, startCommand, apiPathPrefix, healthPath, dbEngine);
                     return existing;
                 })
                 .orElseGet(() -> PreviewRuntimeConfigEntity.of(
-                        projectId, runtimeType, startCommand, apiPathPrefix, healthPath));
+                        projectId, runtimeType, startCommand, apiPathPrefix, healthPath, dbEngine));
         return PreviewRuntimeConfigResult.stored(repository.save(entity));
     }
 

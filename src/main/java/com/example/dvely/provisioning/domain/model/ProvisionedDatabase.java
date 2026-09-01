@@ -3,6 +3,7 @@ package com.example.dvely.provisioning.domain.model;
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.provisioning.domain.value.ProvisionMethod;
+import com.example.dvely.provisioning.domain.value.ProvisionOrigin;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import java.time.LocalDateTime;
 
@@ -18,6 +19,7 @@ public class ProvisionedDatabase {
     private final Long projectId;
     private final ProvisionMethod method;
     private final DatabaseEngine engine;
+    private final ProvisionOrigin origin;
     private ProvisionStatus status;
     private String resourceId;      // 컨테이너/인스턴스 식별자 — 정리 대상 지목
     private String host;
@@ -32,7 +34,7 @@ public class ProvisionedDatabase {
     private LocalDateTime updatedAt;
 
     public ProvisionedDatabase(Long id, Long projectId, ProvisionMethod method, DatabaseEngine engine,
-                               ProvisionStatus status, String resourceId, String host, Integer port,
+                               ProvisionOrigin origin, ProvisionStatus status, String resourceId, String host, Integer port,
                                String databaseName, String username, String password,
                                LocalDateTime expiresAt, ProvisionFailureCode failureCode,
                                String errorMessage, LocalDateTime createdAt, LocalDateTime updatedAt) {
@@ -40,6 +42,7 @@ public class ProvisionedDatabase {
         this.projectId = projectId;
         this.method = method;
         this.engine = engine;
+        this.origin = origin;
         this.status = status;
         this.resourceId = resourceId;
         this.host = host;
@@ -54,10 +57,11 @@ public class ProvisionedDatabase {
         this.updatedAt = updatedAt;
     }
 
-    /** 새 프로비저닝 요청 — PENDING 으로 시작. */
-    public static ProvisionedDatabase pending(Long projectId, ProvisionMethod method, DatabaseEngine engine) {
+    /** 새 프로비저닝 요청 — PENDING 으로 시작. origin 으로 수동/자동을 구분한다. */
+    public static ProvisionedDatabase pending(Long projectId, ProvisionMethod method, DatabaseEngine engine,
+                                              ProvisionOrigin origin) {
         LocalDateTime now = LocalDateTime.now();
-        return new ProvisionedDatabase(null, projectId, method, engine, ProvisionStatus.PENDING,
+        return new ProvisionedDatabase(null, projectId, method, engine, origin, ProvisionStatus.PENDING,
                 null, null, null, null, null, null, null, null, null, now, now);
     }
 
@@ -103,6 +107,7 @@ public class ProvisionedDatabase {
     public Long getProjectId() { return projectId; }
     public ProvisionMethod getMethod() { return method; }
     public DatabaseEngine getEngine() { return engine; }
+    public ProvisionOrigin getOrigin() { return origin; }
     public ProvisionStatus getStatus() { return status; }
     public String getResourceId() { return resourceId; }
     public String getHost() { return host; }

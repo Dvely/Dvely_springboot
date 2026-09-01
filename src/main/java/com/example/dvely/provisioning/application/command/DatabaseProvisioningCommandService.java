@@ -16,6 +16,7 @@ import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepos
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.provisioning.domain.value.ProvisionMethod;
+import com.example.dvely.provisioning.domain.value.ProvisionOrigin;
 import com.example.dvely.provisioning.infrastructure.config.ProvisioningProperties;
 import java.time.LocalDateTime;
 import java.util.Optional;
@@ -39,8 +40,8 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class DatabaseProvisioningCommandService implements PreviewDatabaseProvisioner {
 
-    /** 서버형 프리뷰 자동 프로비저닝의 기본 엔진. 2026-09-01 확정. */
-    private static final DatabaseEngine PREVIEW_AUTO_ENGINE = DatabaseEngine.MYSQL;
+    /** 엔진 미지정 시 자동 프로비저닝 기본값. 2026-09-01 확정. 사용자가 런타임 설정에서 고르면 그게 우선. */
+    private static final DatabaseEngine DEFAULT_PREVIEW_ENGINE = DatabaseEngine.MYSQL;
 
     private final ProvisionedDatabaseRepository databaseRepository;
     private final DatabaseProvisionerRegistry provisionerRegistry;
@@ -66,30 +67,37 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
                 .orElseThrow(() -> new NotFoundException(
                         "테스트 DB 는 실행 중인 프리뷰가 있어야 만들 수 있습니다. 먼저 프리뷰를 띄워주세요."));
 
-        ProvisionedDatabase record = provisionOnContainer(projectId, engine, session.containerId());
+        ProvisionedDatabase record = provisionOnContainer(
+                projectId, engine, session.containerId(), ProvisionOrigin.MANUAL);
         return ProvisionSubmitResult.immediate(toCreated(record, record.getPassword()));
     }
 
     /**
      * 서버형 프리뷰 부팅 시 자동 프로비저닝. ACTIVE 게이트를 타지 않고(아직 부팅 중이다) 넘겨받은
-     * 컨테이너 ID 로 바로 형제 DB 를 띄운다. 실패는 던지고, 호출자(프리뷰 프로비저너)가 프리뷰를
-     * FAILED 로 닫는다.
+     * 컨테이너 ID 로 바로 형제 DB 를 띄운다. 엔진은 사용자가 런타임 설정에서 고른 값을 받는다
+     * (없으면 기본 MySQL). origin=PREVIEW_AUTO 로 남겨 목록에서 수동 생성과 구분된다. 실패는
+     * 던지고, 호출자(프리뷰 프로비저너)가 프리뷰를 FAILED 로 닫는다(혹은 best-effort 로 무시).
      */
     @Override
-    public Optional<PreviewDbConnection> provisionForPreview(Long projectId, String containerId) {
-        ProvisionedDatabase record = provisionOnContainer(projectId, PREVIEW_AUTO_ENGINE, containerId);
+    public Optional<PreviewDbConnection> provisionForPreview(Long projectId, String containerId, String engine) {
+        DatabaseEngine resolved = (engine == null || engine.isBlank())
+                ? DEFAULT_PREVIEW_ENGINE : DatabaseEngine.valueOf(engine);
+        ProvisionedDatabase record = provisionOnContainer(
+                projectId, resolved, containerId, ProvisionOrigin.PREVIEW_AUTO);
         return Optional.of(new PreviewDbConnection(record.getEngine().name(), record.getHost(),
                 record.getPort(), record.getDatabaseName(), record.getUsername(), record.getPassword()));
     }
 
     /**
      * pending → provisioning → provision → ready/failed 를 한 컨테이너에 대해 수행하고 그 행을
-     * 돌려준다. 인프라 탭(ACTIVE 게이트)과 자동 프로비저닝이 공유하는 코어다. 트랜잭션으로 감싸지
-     * 않는 이유는 클래스 주석 참고 — 각 save 가 독립 커밋되고, 실패해도 FAILED 행이 남는다.
+     * 돌려준다. 인프라 탭(ACTIVE 게이트, MANUAL)과 자동 프로비저닝(PREVIEW_AUTO)이 공유하는
+     * 코어다. 트랜잭션으로 감싸지 않는 이유는 클래스 주석 참고 — 각 save 가 독립 커밋되고, 실패해도
+     * FAILED 행이 남는다.
      */
-    private ProvisionedDatabase provisionOnContainer(Long projectId, DatabaseEngine engine, String containerId) {
+    private ProvisionedDatabase provisionOnContainer(Long projectId, DatabaseEngine engine,
+                                                     String containerId, ProvisionOrigin origin) {
         ProvisionedDatabase record = databaseRepository.save(
-                ProvisionedDatabase.pending(projectId, ProvisionMethod.LOCAL, engine));
+                ProvisionedDatabase.pending(projectId, ProvisionMethod.LOCAL, engine, origin));
         DatabaseProvisioner provisioner = provisionerRegistry.resolve(ProvisionMethod.LOCAL);
 
         record.markProvisioning();
