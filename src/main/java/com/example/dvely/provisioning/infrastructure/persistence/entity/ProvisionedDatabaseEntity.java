@@ -5,6 +5,7 @@ import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.provisioning.domain.value.ProvisionMethod;
+import com.example.dvely.provisioning.domain.value.ProvisionOrigin;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
@@ -36,6 +37,9 @@ public class ProvisionedDatabaseEntity {
 
     @Column(name = "method", nullable = false, length = 20)
     private String method;
+
+    @Column(name = "origin", nullable = false, length = 20)
+    private String origin;
 
     @Column(name = "engine", nullable = false, length = 20)
     private String engine;
@@ -90,6 +94,7 @@ public class ProvisionedDatabaseEntity {
     public void applyFrom(ProvisionedDatabase d) {
         this.projectId = d.getProjectId();
         this.method = d.getMethod().name();
+        this.origin = d.getOrigin().name();
         this.engine = d.getEngine().name();
         this.status = d.getStatus().name();
         this.resourceId = d.getResourceId();
@@ -106,7 +111,7 @@ public class ProvisionedDatabaseEntity {
     public ProvisionedDatabase toDomain() {
         return new ProvisionedDatabase(
                 id, projectId, ProvisionMethod.valueOf(method), DatabaseEngine.valueOf(engine),
-                ProvisionStatus.valueOf(status), resourceId, host, port, databaseName, username,
+                ProvisionOrigin.valueOf(origin), ProvisionStatus.valueOf(status), resourceId, host, port, databaseName, username,
                 password, expiresAt,
                 failureCode == null ? null : ProvisionFailureCode.valueOf(failureCode),
                 errorMessage, createdAt, updatedAt);

@@ -9,6 +9,8 @@ public record ProvisionedDatabaseResponse(
         @Schema(description = "프로젝트 ID") Long projectId,
         @Schema(description = "방식", allowableValues = {"LOCAL", "RDS", "DOCKER"}) String method,
         @Schema(description = "엔진", allowableValues = {"POSTGRESQL", "MYSQL"}) String engine,
+        @Schema(description = "마련 주체. MANUAL=사용자 생성, PREVIEW_AUTO=서버형 프리뷰가 자동 마련",
+                allowableValues = {"MANUAL", "PREVIEW_AUTO"}) String origin,
         @Schema(description = "상태. 전이(PENDING·PROVISIONING) 있으면 폴링, 종료(READY·FAILED·EXPIRED)면 정지",
                 allowableValues = {"PENDING", "PROVISIONING", "READY", "FAILED", "EXPIRED"}) String status,
         @Schema(description = "접속 호스트. READY 전에는 null", nullable = true) String host,

@@ -1,11 +1,15 @@
 package com.example.dvely.preview.application.service;
 
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
+import com.example.dvely.preview.application.port.out.PreviewDatabaseProvisioner;
+import com.example.dvely.preview.application.result.PreviewDbConnection;
+import com.example.dvely.preview.application.result.PreviewRuntimeConfigResult;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
 import com.example.dvely.preview.infrastructure.config.PreviewProperties;
 import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity;
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
 import java.time.LocalDateTime;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -31,6 +35,9 @@ public class ProjectPreviewProvisioner {
     private final PreviewWorkspaceService workspaceService;
     private final DockerContainerService dockerService;
     private final PreviewProperties properties;
+    private final PreviewRuntimeConfigService runtimeConfigService;
+    private final PreviewDatabaseProvisioner databaseProvisioner;
+    private final PreviewEnvComposer envComposer;
 
     @Async("previewExecutor")
     public void provision(String sessionId) {
@@ -44,7 +51,7 @@ public class ProjectPreviewProvisioner {
         try {
             workspaceService.prepareProject(containerId, session.getOwnerUserId(), session.getProjectId());
             workspaceService.buildIfConfigured(containerId);
-            workspaceService.startPreviewServer(containerId);
+            startByRuntime(session, containerId);
 
             // 만료는 여기서부터 다시 센다 — install/build 에 쓴 시간까지 TTL 에서 깎으면 오래 걸린
             // 프로젝트일수록 정작 볼 수 있는 시간이 짧아진다.
@@ -58,6 +65,49 @@ public class ProjectPreviewProvisioner {
             session.markFailed(failureReason(containerId, exception));
             repository.save(session);
             dockerService.removeContainer(containerId);
+        }
+    }
+
+    /**
+     * 런타임 타입에 따라 프리뷰를 서빙한다. 모든 타입이 포트 3000 에 붙으므로 게이트웨이는 무변경이다.
+     *
+     * <ul>
+     *   <li>STATIC — 지금까지의 동작. 빌드 산출물을 {@code serve -s}.
+     *   <li>NODE_SERVER — 서버형이므로 DB 를 자동 프로비저닝(best-effort)해 env 로 꽂고 앱 서버를 3000 에 실행.
+     *   <li>JAVA_FULLSTACK — 실행은 다음 단계다. 지금은 명확히 실패시켜, 정적으로 조용히 잘못 서빙되지 않게 한다.
+     * </ul>
+     */
+    private void startByRuntime(PreviewSessionEntity session, String containerId) {
+        PreviewRuntimeConfigResult runtime =
+                runtimeConfigService.resolveForProvision(session.getProjectId(), containerId);
+        log.info("[ProjectPreview] 런타임 타입 결정: sessionId={} type={} source={}",
+                session.getId(), runtime.runtimeType(), runtime.source());
+
+        switch (runtime.runtimeTypeEnum()) {
+            case STATIC -> workspaceService.startPreviewServer(containerId);
+            case NODE_SERVER -> {
+                PreviewDbConnection db = autoProvisionDbBestEffort(
+                        session.getProjectId(), containerId, runtime.dbEngine());
+                List<String> env = envComposer.compose(session.getProjectId(), db);
+                workspaceService.startNodeServer(containerId, runtime.startCommand(), env);
+            }
+            case JAVA_FULLSTACK -> throw new IllegalStateException(
+                    "JAVA_FULLSTACK 프리뷰 실행은 아직 지원되지 않습니다(다음 단계).");
+        }
+    }
+
+    /**
+     * 서버형 프리뷰의 DB 자동 프로비저닝. 실패해도 프리뷰 전체를 죽이지 않는다 — DB 없이 서버를
+     * 띄우고, DB 가 정말 필요한 앱은 자기 오류로 그 사실을 드러낸다. Docker/DB 플레이키 하나가
+     * 모든 서버 프리뷰를 못 뜨게 하는 것보다 낫다.
+     */
+    private PreviewDbConnection autoProvisionDbBestEffort(Long projectId, String containerId, String dbEngine) {
+        try {
+            return databaseProvisioner.provisionForPreview(projectId, containerId, dbEngine).orElse(null);
+        } catch (RuntimeException exception) {
+            log.warn("[ProjectPreview] DB 자동 프로비저닝 실패 — DB 없이 서버 시작: projectId={} 원인={}",
+                    projectId, exception.toString());
+            return null;
         }
     }
 

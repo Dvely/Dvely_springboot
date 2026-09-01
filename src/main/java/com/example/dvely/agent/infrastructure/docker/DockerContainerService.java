@@ -529,10 +529,23 @@ public class DockerContainerService {
      * 그래서 실패가 반드시 전달돼야 하는 곳만 이 메서드를 쓴다.
      */
     public ExecResult execWithExitCode(String containerId, String command) {
+        return execWithExitCode(containerId, command, List.of());
+    }
+
+    /**
+     * 환경변수를 함께 넘기는 exec. env 는 {@code KEY=VALUE} 리스트로 exec 프로세스에 주입된다.
+     *
+     * env 를 명령 문자열에 넣지 않고 {@link com.github.dockerjava.api.command.ExecCreateCmd#withEnv}
+     * 로만 전달하는 것이 핵심이다 — 위 {@code log.debug("Docker exec: {}", command)} 와 인터럽트
+     * 예외 메시지에는 command 만 남으므로, DB 비밀번호 같은 값이 로그·예외로 새지 않는다.
+     * (프리뷰 백엔드 런타임에 사용자 env + DB 커넥션을 주입하는 경로가 이걸 쓴다.)
+     */
+    public ExecResult execWithExitCode(String containerId, String command, List<String> env) {
         log.debug("Docker exec: {}", command);
         ExecCreateCmdResponse execCreate = dockerClient.execCreateCmd(containerId)
                 .withAttachStdout(true)
                 .withAttachStderr(true)
+                .withEnv(env == null || env.isEmpty() ? null : List.copyOf(env))
                 .withCmd("sh", "-c", command)
                 .exec();
 

@@ -60,7 +60,7 @@ public class DatabaseProvisioningController {
 
     private ProvisionedDatabaseResponse toResponse(ProvisionedDatabaseResult r) {
         return new ProvisionedDatabaseResponse(
-                r.databaseId(), r.projectId(), r.method(), r.engine(), r.status(),
+                r.databaseId(), r.projectId(), r.method(), r.engine(), r.origin(), r.status(),
                 r.host(), r.port(), r.database(), r.username(),
                 offset(r.expiresAt()), r.errorCode(), r.errorMessage(),
                 offset(r.createdAt()), offset(r.updatedAt()));
