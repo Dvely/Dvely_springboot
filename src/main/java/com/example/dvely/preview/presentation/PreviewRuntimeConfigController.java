@@ -33,9 +33,11 @@ public class PreviewRuntimeConfigController {
         return PreviewRuntimeConfigResponse.from(runtimeConfigService.get(ownerUserId, projectId));
     }
 
-    @Operation(summary = "프리뷰 런타임 설정 저장",
-            description = "NODE_SERVER 는 앱이 3000에서 UI+API를 모두 서빙합니다. startCommand 를 비우면 npm start. "
-                    + "JAVA_FULLSTACK 실행은 다음 단계입니다(저장은 됩니다).")
+    @Operation(summary = "프리뷰 런타임 설정 저장 (전체 교체)",
+            description = "NODE_SERVER 는 앱이 3000에서 UI+API를 모두 서빙합니다. startCommand 를 비우면 npm start.\n\n"
+                    + "이 PUT 은 전체 교체입니다 — 보낸 필드로 설정을 통째로 덮어씁니다. 안 보낸(null) apiPathPrefix "
+                    + "는 기본값 /api 로, healthPath 는 null 로 리셋됩니다. 일부만 바꾸려면 먼저 GET 으로 읽어 "
+                    + "그 값을 그대로 실어 보내세요(read-modify-write). (채팅 RUNTIME_SETUP 경로는 별도로 부분 갱신을 씁니다.)")
     @PutMapping("/api/v1/projects/{projectId}/preview/runtime")
     public PreviewRuntimeConfigResponse update(
             @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,

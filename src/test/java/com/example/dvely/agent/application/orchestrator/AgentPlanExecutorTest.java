@@ -19,6 +19,7 @@ import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
 import com.example.dvely.agent.application.service.InfraOpsAgentService;
+import com.example.dvely.agent.application.service.RuntimeSetupAgentService;
 import com.example.dvely.agent.application.service.RepositoryBindingGate;
 import com.example.dvely.agent.application.service.ResultApprovalGate;
 import com.example.dvely.agent.domain.value.AgentType;
@@ -68,6 +69,7 @@ class AgentPlanExecutorTest {
                 mock(DomainBindAgentService.class),
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
                 taskStore,
                 mock(AgentMessageService.class),
                 mock(BuildFailureRecoveryService.class),
@@ -100,6 +102,7 @@ class AgentPlanExecutorTest {
                 mock(DomainBindAgentService.class),
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
                 taskStore,
                 mock(AgentMessageService.class),
                 mock(BuildFailureRecoveryService.class),
@@ -133,6 +136,7 @@ class AgentPlanExecutorTest {
                 mock(DomainBindAgentService.class),
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
@@ -172,6 +176,7 @@ class AgentPlanExecutorTest {
                 mock(DomainBindAgentService.class),
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
                 taskStore,
                 mock(AgentMessageService.class),
                 mock(BuildFailureRecoveryService.class),
@@ -214,6 +219,7 @@ class AgentPlanExecutorTest {
                 mock(DomainBindAgentService.class),
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
                 taskStore,
                 mock(AgentMessageService.class),
                 mock(BuildFailureRecoveryService.class),
@@ -245,6 +251,7 @@ class AgentPlanExecutorTest {
                 mock(DomainBindAgentService.class),
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
@@ -317,6 +324,7 @@ class AgentPlanExecutorTest {
                 domainService,
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
@@ -341,6 +349,36 @@ class AgentPlanExecutorTest {
     }
 
     @Test
+    void dispatchesRuntimeSetupStepToRuntimeSetupAgentService() {
+        RuntimeSetupAgentService runtimeSetupAgentService = mock(RuntimeSetupAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                mock(CodeAgentService.class),
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                runtimeSetupAgentService,
+                taskStore,
+                messageService,
+                mock(BuildFailureRecoveryService.class),
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class),
+                mock(RepositoryBindingGate.class),
+                mock(AgentExecutionRegistry.class)
+        );
+        AgentStep step = new AgentStep(AgentType.RUNTIME_SETUP,
+                Map.of("runtimeType", "NODE_SERVER", "dbEngine", "MYSQL"));
+        when(runtimeSetupAgentService.execute(step, 1L, 11L))
+                .thenReturn(new CodeAgentService.CodeResult(null, "프리뷰 런타임을 NODE_SERVER 로 설정했습니다."));
+
+        executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L), "task-1", 1L);
+
+        verify(runtimeSetupAgentService).execute(step, 1L, 11L);
+    }
+
+    @Test
     void dispatchesInfraOperateStepToInfraOpsAgentService() {
         InfraOpsAgentService infraOpsAgentService = mock(InfraOpsAgentService.class);
         TaskStore taskStore = taskStore();
@@ -351,6 +389,7 @@ class AgentPlanExecutorTest {
                 mock(DomainBindAgentService.class),
                 mock(ChatAgentService.class),
                 infraOpsAgentService,
+                mock(RuntimeSetupAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
@@ -388,6 +427,7 @@ class AgentPlanExecutorTest {
                 mock(DomainBindAgentService.class),
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
                 taskStore,
                 messageService,
                 recoveryService,
@@ -428,6 +468,7 @@ class AgentPlanExecutorTest {
                 mock(DomainBindAgentService.class),
                 chatService,
                 mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),

@@ -5,5 +5,6 @@ public enum AgentType {
     CODE,
     DEPLOY,
     DOMAIN_BIND,
-    INFRA_OPERATE
+    INFRA_OPERATE,
+    RUNTIME_SETUP
 }
