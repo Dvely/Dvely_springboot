@@ -20,6 +20,7 @@ import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
 import com.example.dvely.agent.application.service.InfraOpsAgentService;
 import com.example.dvely.agent.application.service.RuntimeSetupAgentService;
+import com.example.dvely.agent.application.service.BackendDeployAgentService;
 import com.example.dvely.agent.application.service.RepositoryBindingGate;
 import com.example.dvely.agent.application.service.ResultApprovalGate;
 import com.example.dvely.agent.domain.value.AgentType;
@@ -70,6 +71,7 @@ class AgentPlanExecutorTest {
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
                 mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
                 taskStore,
                 mock(AgentMessageService.class),
                 mock(BuildFailureRecoveryService.class),
@@ -103,6 +105,7 @@ class AgentPlanExecutorTest {
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
                 mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
                 taskStore,
                 mock(AgentMessageService.class),
                 mock(BuildFailureRecoveryService.class),
@@ -137,6 +140,7 @@ class AgentPlanExecutorTest {
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
                 mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
@@ -177,6 +181,7 @@ class AgentPlanExecutorTest {
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
                 mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
                 taskStore,
                 mock(AgentMessageService.class),
                 mock(BuildFailureRecoveryService.class),
@@ -220,6 +225,7 @@ class AgentPlanExecutorTest {
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
                 mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
                 taskStore,
                 mock(AgentMessageService.class),
                 mock(BuildFailureRecoveryService.class),
@@ -252,6 +258,7 @@ class AgentPlanExecutorTest {
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
                 mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
@@ -325,6 +332,7 @@ class AgentPlanExecutorTest {
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
                 mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
@@ -360,6 +368,7 @@ class AgentPlanExecutorTest {
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
                 runtimeSetupAgentService,
+                mock(BackendDeployAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
@@ -390,6 +399,7 @@ class AgentPlanExecutorTest {
                 mock(ChatAgentService.class),
                 infraOpsAgentService,
                 mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),
@@ -428,6 +438,7 @@ class AgentPlanExecutorTest {
                 mock(ChatAgentService.class),
                 mock(InfraOpsAgentService.class),
                 mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
                 taskStore,
                 messageService,
                 recoveryService,
@@ -469,6 +480,7 @@ class AgentPlanExecutorTest {
                 chatService,
                 mock(InfraOpsAgentService.class),
                 mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
                 taskStore,
                 messageService,
                 mock(BuildFailureRecoveryService.class),

@@ -13,6 +13,7 @@ import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
 import com.example.dvely.agent.application.service.InfraOpsAgentService;
 import com.example.dvely.agent.application.service.RuntimeSetupAgentService;
+import com.example.dvely.agent.application.service.BackendDeployAgentService;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.application.service.RepositoryBindingGate;
 import com.example.dvely.agent.application.service.ResultApprovalGate;
@@ -38,6 +39,7 @@ public class AgentPlanExecutor {
     private final ChatAgentService       chatAgentService;
     private final InfraOpsAgentService   infraOpsAgentService;
     private final RuntimeSetupAgentService runtimeSetupAgentService;
+    private final BackendDeployAgentService backendDeployAgentService;
     private final TaskStore              taskStore;
     private final AgentMessageService    agentMessageService;
     private final BuildFailureRecoveryService buildFailureRecoveryService;
@@ -204,6 +206,7 @@ public class AgentPlanExecutor {
             case DOMAIN_BIND   -> handleDomainBind(step, userId, taskId, projectId);
             case INFRA_OPERATE -> handleInfraOperate(step, userId, taskId, projectId);
             case RUNTIME_SETUP -> handleRuntimeSetup(step, userId, projectId);
+            case BACKEND_DEPLOY -> handleBackendDeploy(step, userId, projectId);
             case CHAT          -> handleChat(step, aiProvider, modelOptions, taskId);
         };
     }
@@ -246,6 +249,13 @@ public class AgentPlanExecutor {
                 userId, projectId, step.parameters().getOrDefault("runtimeType", ""),
                 step.parameters().getOrDefault("dbEngine", ""));
         return runtimeSetupAgentService.execute(step, userId, projectId);
+    }
+
+    private CodeResult handleBackendDeploy(AgentStep step, Long userId, Long projectId) {
+        log.info("[BACKEND_DEPLOY 에이전트] 운영 백엔드 배포 요청 | userId={} projectId={} instanceType={} dbEngine={}",
+                userId, projectId, step.parameters().getOrDefault("instanceType", ""),
+                step.parameters().getOrDefault("dbEngine", ""));
+        return backendDeployAgentService.execute(step, userId, projectId);
     }
 
     private CodeResult handleChat(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, AiModelOptions modelOptions, String taskId) {
