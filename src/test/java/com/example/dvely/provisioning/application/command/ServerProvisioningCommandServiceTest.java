@@ -18,7 +18,14 @@ import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.cloudconnection.domain.value.CloudProvider;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.project.domain.model.ProjectCloudConnectionSetting;
+import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
+import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.provisioning.domain.value.ServerStatus;
+import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
+import com.example.dvely.provisioning.infrastructure.S3ArtifactStore;
+import com.example.dvely.provisioning.infrastructure.SsmParameterStore;
+import org.mockito.Mockito;
 import com.example.dvely.provisioning.application.result.ServerProvisionSubmitResult;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
@@ -39,6 +46,10 @@ class ServerProvisioningCommandServiceTest {
     @Mock private ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
     @Mock private CloudConnectionRepository cloudConnectionRepository;
     @Mock private ApprovalRepository approvalRepository;
+    @Mock private ProjectRepository projectRepository;
+    @Mock private Ec2Provisioner ec2;
+    @Mock private SsmParameterStore ssm;
+    @Mock private S3ArtifactStore s3;
 
     @InjectMocks private ServerProvisioningCommandService service;
 
@@ -105,6 +116,42 @@ class ServerProvisioningCommandServiceTest {
         assertThatThrownBy(() -> service.submit(OWNER, PROJECT, null))
                 .isInstanceOf(IllegalStateException.class);
         verify(approvalRepository, never()).save(any());
+    }
+
+    @Test
+    void terminateStopsInstanceAndCleansUp() {
+        ProvisionedServer server = new ProvisionedServer(5L, PROJECT, "t3.micro", ServerStatus.RUNNING,
+                CONN_ID, "i-123", "ec2-host", 8080, 99L, null, null,
+                LocalDateTime.now(), LocalDateTime.now());
+        when(serverRepository.findById(5L)).thenReturn(Optional.of(server));
+        when(projectRepository.findByIdAndOwnerUserId(PROJECT, OWNER))
+                .thenReturn(Optional.of(Mockito.mock(Project.class)));
+        when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+        when(s3.bucketNameFor(any())).thenReturn("bucket");
+        when(s3.jarKeyFor(PROJECT)).thenReturn("10/app.jar");
+
+        service.terminate(OWNER, 5L);
+
+        verify(ec2).terminate(any(), org.mockito.ArgumentMatchers.eq("i-123"));
+        verify(ssm).deleteAllForProject(any(), org.mockito.ArgumentMatchers.eq(PROJECT));
+        verify(s3).deleteJar(any(), org.mockito.ArgumentMatchers.eq("bucket"), org.mockito.ArgumentMatchers.eq("10/app.jar"));
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.TERMINATED);
+    }
+
+    @Test
+    void terminateIsIdempotentWhenAlreadyTerminated() {
+        ProvisionedServer server = new ProvisionedServer(5L, PROJECT, "t3.micro", ServerStatus.TERMINATED,
+                CONN_ID, "i-123", null, 8080, 99L, null, null, LocalDateTime.now(), LocalDateTime.now());
+        when(serverRepository.findById(5L)).thenReturn(Optional.of(server));
+        when(projectRepository.findByIdAndOwnerUserId(PROJECT, OWNER))
+                .thenReturn(Optional.of(Mockito.mock(Project.class)));
+
+        service.terminate(OWNER, 5L);
+
+        verify(ec2, never()).terminate(any(), any());
+        verify(serverRepository, never()).save(any());
     }
 
     private Approval approval(Long id) {
