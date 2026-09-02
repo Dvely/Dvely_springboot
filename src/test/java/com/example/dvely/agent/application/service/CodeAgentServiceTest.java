@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.dto.AgentStep;
@@ -28,6 +29,11 @@ import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.preview.application.service.PreviewWorkspaceService;
+import com.example.dvely.preview.application.port.out.PreviewDatabaseProvisioner;
+import com.example.dvely.preview.application.service.PreviewEnvComposer;
+import com.example.dvely.preview.application.service.PreviewRuntimeConfigService;
+import com.example.dvely.preview.application.service.PreviewRuntimeLauncher;
+import com.example.dvely.preview.application.service.PreviewServeException;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -69,17 +75,23 @@ class CodeAgentServiceTest {
         // 워크스페이스 서비스는 실물을 쓴다: 빌드 결과 디렉터리 판별과 serve 기동은 여기 옮겨졌을
         // 뿐 CODE 스텝의 관찰 가능한 동작 그대로이고(같은 dockerService.exec 명령), 이 테스트들이
         // 지키려는 것도 "빌드 안 된 워크스페이스를 서빙하지 않는다"는 그 동작이다.
+        PreviewWorkspaceService previewWorkspaceService = new PreviewWorkspaceService(
+                dockerService, projectRepository, userRepository, authCommandService);
+        // 이 테스트들은 projectId=null 로 실행하므로 런처는 정적 serve 로 라우팅한다(런타임 설정은
+        // 프로젝트 단위라 null 이면 조회하지 않는다). 그래서 실제 런처 + 실물 워크스페이스를 써
+        // "빌드 안 된 워크스페이스를 서빙하지 않는다"는 기존 동작을 그대로 검증한다.
+        PreviewRuntimeLauncher previewRuntimeLauncher = new PreviewRuntimeLauncher(
+                mock(PreviewRuntimeConfigService.class),
+                mock(PreviewDatabaseProvisioner.class),
+                mock(PreviewEnvComposer.class),
+                previewWorkspaceService);
         service = new CodeAgentService(
                 claudeToolClient,
                 openAiToolClient,
                 dockerService,
                 previewSessionService,
-                new PreviewWorkspaceService(
-                        dockerService,
-                        projectRepository,
-                        userRepository,
-                        authCommandService
-                ),
+                previewRuntimeLauncher,
+                previewWorkspaceService,
                 buildFailureAnalyzer,
                 aiProperties
         );
@@ -312,6 +324,27 @@ class CodeAgentServiceTest {
             }
             return "";
         };
+    }
+
+    /**
+     * 빌드는 끝났지만 서버가 응답하지 않는 경우(포트 타임아웃 등)는 빌드 실패가 아니다. 빌드 실패로
+     * 오진해 LLM 루프를 재시도하면 gradle 타임아웃·DB 플레이크·포트 미응답을 고치지도 못하면서
+     * 예산만 태운다. 그래서 PreviewServeException 으로 나가 빌드실패 분석/재시도를 건너뛴다.
+     */
+    @Test
+    void serverStartFailureIsAServeFailureNotABuildFailure() {
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(textResponse("완료했습니다."));
+        // dist 는 있지만(빌드 산출물 존재) 포트가 안 열린다 → startPreviewServer 가 폴링 타임아웃.
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(invocation -> {
+            String command = invocation.getArgument(1);
+            return command.contains("serve_ready") ? "serve_ready=no" : "exists";
+        });
+
+        assertThatThrownBy(() -> execute(AiProvider.ANTHROPIC))
+                .isInstanceOf(PreviewServeException.class);
+        verify(previewSessionService).markServeFailed(eq(TASK_ID), anyString());
+        verify(previewSessionService, never()).markServing(anyString());
     }
 
     private CodeAgentService.CodeResult execute(AiProvider provider) {

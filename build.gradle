@@ -57,12 +57,16 @@ dependencies {
 
     // Cloud connection verification
     implementation 'software.amazon.awssdk:sts'
+    implementation 'software.amazon.awssdk:rds'
     implementation 'software.amazon.awssdk:url-connection-client'
     implementation 'com.google.auth:google-auth-library-oauth2-http:1.43.0'
 }
 
 tasks.named('test') {
 	useJUnitPlatform()
+	// LocalDbProvisionerIntegrationTest 는 실행 중인 Docker 데몬을 요구해 기본 비활성이다.
+	// 로컬에서 -Ddocker.it=true 로 켤 때만 그 값을 포크된 테스트 JVM 으로 전달해 실측한다.
+	systemProperty 'docker.it', System.getProperty('docker.it', 'false')
 }
 
 tasks.withType(JavaCompile).configureEach {

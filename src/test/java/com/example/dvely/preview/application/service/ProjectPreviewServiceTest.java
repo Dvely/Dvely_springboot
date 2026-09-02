@@ -3,6 +3,7 @@ package com.example.dvely.preview.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -51,6 +52,7 @@ class ProjectPreviewServiceTest {
     @Mock private ProjectRepository projectRepository;
     @Mock private DockerContainerService dockerService;
     @Mock private ProjectPreviewProvisioner provisioner;
+    @Mock private PreviewRuntimeConfigService runtimeConfigService;
 
     private ProjectPreviewService service;
     private final List<PreviewSessionEntity> saved = new ArrayList<>();
@@ -63,7 +65,10 @@ class ProjectPreviewServiceTest {
         PreviewGatewayUrlResolver gatewayUrlResolver = new PreviewGatewayUrlResolver(
                 properties, new CorsProperties(List.of(), List.of()));
         service = new ProjectPreviewService(
-                repository, projectRepository, dockerService, properties, gatewayUrlResolver, provisioner);
+                repository, projectRepository, dockerService, properties, gatewayUrlResolver,
+                provisioner, runtimeConfigService);
+        // 저장된 런타임 타입 없음 → 기본 메모리로 컨테이너 생성.
+        when(runtimeConfigService.storedRuntimeType(any())).thenReturn(Optional.empty());
         // 목 생성/스터빙을 when(...) 인자 안에서 하면 Mockito 가 중첩 스터빙으로 보고 실패한다.
         Project connected = project("owner/repo");
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(PROJECT_ID, USER_ID))
@@ -139,7 +144,7 @@ class ProjectPreviewServiceTest {
 
         assertThat(outcome.started()).isFalse();
         assertThat(outcome.session().previewUrl()).isNotNull();
-        verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any());
+        verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any(), anyLong());
         verify(provisioner, never()).provision(anyString());
     }
 
@@ -152,7 +157,7 @@ class ProjectPreviewServiceTest {
         ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID);
 
         assertThat(outcome.started()).isTrue();
-        verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any());
+        verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any(), anyLong());
         verify(provisioner, never()).provision(anyString());
     }
 
@@ -160,7 +165,7 @@ class ProjectPreviewServiceTest {
     void startsAProjectScopedSessionWithNoTaskAndHandsItToTheProvisioner() {
         when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusInOrderByLastAccessedAtDesc(
                 eq(PROJECT_ID), eq(USER_ID), any())).thenReturn(Optional.empty());
-        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null)))
+        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
                 .thenReturn("container-new");
         when(dockerService.getMappedPort("container-new")).thenReturn(32770);
         when(repository.findByProjectIdAndOwnerUserIdAndStatusIn(eq(PROJECT_ID), eq(USER_ID), any()))
@@ -184,7 +189,7 @@ class ProjectPreviewServiceTest {
     void aDockerFailureIsReportedAsAnUnavailableEnvironmentInsteadOfAnOpaqueError() {
         when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusInOrderByLastAccessedAtDesc(
                 eq(PROJECT_ID), eq(USER_ID), any())).thenReturn(Optional.empty());
-        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null)))
+        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
                 .thenThrow(new RuntimeException("Cannot connect to the Docker daemon at unix:///var/run/docker.sock"));
 
         assertThatThrownBy(() -> service.provision(PROJECT_ID, USER_ID))
@@ -203,7 +208,7 @@ class ProjectPreviewServiceTest {
         assertThatThrownBy(() -> service.provision(PROJECT_ID, USER_ID))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("저장소");
-        verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any());
+        verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any(), anyLong());
     }
 
     /**
@@ -214,7 +219,7 @@ class ProjectPreviewServiceTest {
     void aLosingConcurrentRequestCancelsItselfAndReleasesItsContainer() {
         when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusInOrderByLastAccessedAtDesc(
                 eq(PROJECT_ID), eq(USER_ID), any())).thenReturn(Optional.empty());
-        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null)))
+        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
                 .thenReturn("container-late");
         when(dockerService.getMappedPort("container-late")).thenReturn(32771);
         PreviewSessionEntity earlier = session(PreviewSessionStatus.PROVISIONING, "container-early", null);

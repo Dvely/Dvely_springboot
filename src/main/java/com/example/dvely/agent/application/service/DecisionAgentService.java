@@ -63,7 +63,7 @@ public class DecisionAgentService {
                  * Empty string if no domain is mentioned
                - "instruction": a complete domain-configuration directive written for a domain agent
 
-            4. CHAT — Anything that does not fit CODE, DEPLOY, DOMAIN_BIND, or INFRA_OPERATE.
+            4. CHAT — Anything that does not fit CODE, DEPLOY, DOMAIN_BIND, INFRA_OPERATE, or RUNTIME_SETUP.
                Parameters:
                - "instruction": a clear restatement of the user's question or request
 
@@ -83,9 +83,31 @@ public class DecisionAgentService {
                  "RESOURCE_CLEANUP"   (remove unused cloud resources)
                - "instruction": a complete natural-language restatement of the operational request
 
+            6. RUNTIME_SETUP — User wants their project to run as a BACKEND / server, not just a static
+               frontend: they mention a server, an API/endpoints, a database, "backend", "백엔드",
+               "서버", "API 도", "DB 붙여줘", full-stack, or a specific backend stack (Express, Next.js,
+               NestJS, Node server, or Java/Spring).
+               Emit this step BEFORE the CODE step: it stores the project's preview runtime so the
+               preview runs the built app as a REAL server (and auto-provisions a database for it),
+               instead of serving static files. Ordering matters — a Java runtime needs a larger
+               container that is sized when CODE creates it, so RUNTIME_SETUP must come first.
+               For a pure static frontend (a plain React/Vue site with no server, API, or DB) do NOT
+               emit this step — STATIC is the default and needs no setup.
+               Parameters:
+               - "runtimeType": exactly one of
+                 "NODE_SERVER"    (JS/TS backend that serves UI+API from one server: Express, Next.js, NestJS),
+                 "JAVA_FULLSTACK" (Java/Spring backend with a separate frontend),
+                 "STATIC"         (static frontend only — normally omit the step instead of using this)
+               - "dbEngine": which engine the auto-provisioned database should use — "MYSQL" (default)
+                 or "POSTGRESQL". A server-type preview ALWAYS gets a database; this only selects the
+                 engine. Leave empty for the default MySQL.
+               - "startCommand": the server start command only if the user named one (e.g. "npm start");
+                 empty string otherwise
+
             Rules:
             - A single message may contain multiple intents — include all of them as separate steps.
             - Order the steps by logical execution sequence (e.g. CODE before DEPLOY).
+            - When the user wants a backend/server/API/DB, put RUNTIME_SETUP BEFORE the CODE step.
             - Each step's instruction must be fully understandable on its own, without access to the
               original user message.
             - Respond ONLY with a valid JSON object. No markdown, no code blocks, no extra text.

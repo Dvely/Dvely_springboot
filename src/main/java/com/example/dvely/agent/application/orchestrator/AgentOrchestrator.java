@@ -462,6 +462,8 @@ public class AgentOrchestrator {
                     .filter(InfraOperation::approvalRequired)
                     .map(op -> ApprovalType.INFRA_OPERATION)
                     .orElse(null);
+            // 프리뷰 런타임 설정은 과금이 없고 되돌릴 수 있는 프로젝트 설정이라 승인 없이 즉시 적용한다.
+            case RUNTIME_SETUP -> null;
             case CHAT -> null;
         };
     }

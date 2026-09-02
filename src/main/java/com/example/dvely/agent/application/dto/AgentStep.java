@@ -18,6 +18,8 @@ public record AgentStep(
                 - CHAT: instruction(질문/요청 내용)
                 - INFRA_OPERATE: operation(STATUS_CHECK|LOG_VIEW|FAILURE_ANALYSIS|RESTART|
                   RESOURCE_SCALING|AUTOSCALING_CHANGE|RESOURCE_CLEANUP), instruction(운영 요청 내용)
+                - RUNTIME_SETUP: runtimeType(STATIC|NODE_SERVER|JAVA_FULLSTACK), dbEngine(MYSQL|POSTGRESQL, 선택),
+                  startCommand(서버 실행 명령, 선택) — 프리뷰를 백엔드로 띄우도록 런타임 설정 저장(CODE 앞에)
                 """,
                 example = "{\"instruction\": \"Create a React todo app\", \"targetFile\": \"\"}")
         Map<String, String> parameters

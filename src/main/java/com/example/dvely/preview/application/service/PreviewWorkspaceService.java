@@ -201,24 +201,204 @@ public class PreviewWorkspaceService {
         dockerService.exec(containerId,
                 "nohup npx serve -s " + buildDir + " -l 3000 > /tmp/serve.log 2>&1 &");
 
+        awaitServerReady(containerId, "/tmp/serve.log", "buildDir=" + buildDir);
+    }
+
+    /**
+     * NODE_SERVER 런타임: 정적 serve 대신 앱 자체 서버를 3000 에 띄운다. UI 와 API 를 그 한 서버가
+     * 모두 서빙하므로 게이트웨이는 그대로 3000 만 프록시한다.
+     *
+     * env(사용자 PREVIEW env + DB 커넥션 + PORT=3000)는 명령 문자열이 아니라 exec 의 env 로만
+     * 넘긴다(execWithEnv) — DB 비밀번호 같은 값이 로그·예외에 남지 않게. startCommand 가 비면
+     * {@code npm start} 로 실행한다.
+     *
+     * @throws IllegalStateException 제한 시간 안에 3000 이 응답하지 않으면. 호출자가 세션을 FAILED 로 닫는다.
+     */
+    public void startNodeServer(String containerId, String startCommand, List<String> env) {
+        String command = (startCommand == null || startCommand.isBlank()) ? "npm start" : startCommand;
+        dockerService.execWithExitCode(containerId,
+                "cd " + APP_DIR + " && nohup " + command + " > /tmp/preview-server.log 2>&1 &", env);
+
+        awaitServerReady(containerId, "/tmp/preview-server.log", "command=" + command);
+    }
+
+    /**
+     * 3000 이 실제로 응답할 때까지 폴링한다. "프로세스를 띄웠다"와 "포트가 응답한다"는 다르고,
+     * 후자가 돼야 프리뷰를 ACTIVE 로 올릴 수 있다(그러지 않으면 첫 요청이 502). curl 이 없는
+     * 이미지가 있어 node 로 확인한다 — 프리뷰 컨테이너에는 node 가 반드시 있다.
+     */
+    private void awaitServerReady(String containerId, String logPath, String context) {
+        awaitPortReady(containerId, 3000, SERVE_READY_TIMEOUT_SECONDS, logPath, context);
+    }
+
+    // ── JAVA_FULLSTACK (정적 FE + Java BE 를 한 컨테이너에서, 내부 nginx 로 3000 에서 라우팅) ──
+
+    /** Java BE 가 붙는 포트. 내부 nginx 가 apiPathPrefix 요청을 여기로 프록시한다. */
+    private static final int JAVA_BACKEND_PORT = 8080;
+    /** Java BE 준비 대기(초). gradle 배포 다운로드 + 컴파일 + Spring 기동은 첫 실행에 수 분 걸린다. */
+    private static final int JAVA_READY_TIMEOUT_SECONDS = 300;
+
+    /**
+     * JAVA_FULLSTACK: 정적 FE + Java BE 를 한 컨테이너에서 돌린다.
+     *
+     * <p>node:20-alpine 위에 부팅 때 JDK·nginx 를 apk 로 얹는다(합본 이미지 없이 시작). FE 는
+     * npm build 로 정적 산출물을 만들고, Java BE 는 startCommand(기본 {@code ./gradlew bootRun})로
+     * 8080 에 띄운다. env(사용자 PREVIEW + DB 커넥션 + SERVER_PORT=8080)는 execWithEnv 로만 넘겨
+     * 비밀번호가 로그에 안 남게 한다. 마지막으로 내부 nginx 가 3000 에서 {@code apiPathPrefix}→8080,
+     * 나머지→FE 정적 산출물로 가른다. 게이트웨이는 여전히 3000 만 프록시하므로 무변경이다.</p>
+     *
+     * @throws IllegalStateException 어느 단계든 실패하면. 호출자가 세션을 FAILED 로 닫는다.
+     */
+    public void startJavaFullstack(String containerId, String startCommand, List<String> backendEnv,
+                                   String apiPathPrefix) {
+        String backendDir = detectBackendDir(containerId);
+        String frontendDir = detectFrontendDir(containerId);
+        log.info("[PreviewWorkspace] JAVA_FULLSTACK 시작 | backendDir={} frontendDir={}", backendDir, frontendDir);
+
+        // JDK + nginx. 이미 있으면 no-op, 정말 없으면 아래 strict 단계가 드러낸다.
+        dockerService.exec(containerId, "apk add --no-cache openjdk21 nginx 2>&1 | tail -n 5 || true");
+
+        // FE: 빌드해서 정적 산출물을 만든다.
+        requireExec(containerId, "cd " + frontendDir + " && npm install", "프론트 npm install");
+        requireExec(containerId, "cd " + frontendDir + " && npm run build", "프론트 빌드");
+        String feBuildDir = detectFeBuildDir(containerId, frontendDir);
+
+        // BE: 8080 에 띄운다. env 는 execWithEnv 로만(로그 유출 방지).
+        String command = (startCommand == null || startCommand.isBlank()) ? "./gradlew bootRun" : startCommand;
+        dockerService.execWithExitCode(containerId,
+                "cd " + backendDir + " && nohup " + command + " > /tmp/preview-backend.log 2>&1 &", backendEnv);
+        awaitPortReady(containerId, JAVA_BACKEND_PORT, JAVA_READY_TIMEOUT_SECONDS,
+                "/tmp/preview-backend.log", "java-backend cmd=" + command);
+
+        // nginx: 3000 에서 apiPathPrefix→8080, 나머지→FE 정적.
+        startInternalNginxRouter(containerId, apiPathPrefix, feBuildDir);
+    }
+
+    /**
+     * 내부 nginx 를 3000 에 띄워 {@code apiPathPrefix}→127.0.0.1:8080, 나머지→FE 정적 산출물로 가른다.
+     * nginx 는 이미 설치돼 있다고 전제한다(startJavaFullstack 이 apk 로 얹는다). 게이트웨이가 3000 만
+     * 프록시하므로, 이 라우터가 한 컨테이너 안에서 UI/API 를 나눠 게이트웨이는 무변경으로 둔다.
+     */
+    private static final String NGINX_CONF_PATH = "/tmp/preview-nginx.conf";
+
+    public void startInternalNginxRouter(String containerId, String apiPathPrefix, String feBuildDir) {
+        writeFile(containerId, NGINX_CONF_PATH, nginxConfig(apiPathPrefix, feBuildDir));
+        dockerService.exec(containerId, "pkill -x nginx 2>/dev/null || true");
+        requireExec(containerId, "nginx -c " + NGINX_CONF_PATH, "nginx 시작");
+        awaitPortReady(containerId, 3000, SERVE_READY_TIMEOUT_SECONDS,
+                "/tmp/preview-nginx-error.log", "nginx-3000");
+    }
+
+    /**
+     * 내부 nginx 전체 설정. 프리뷰 컨테이너는 cap-drop ALL 이라 root 라도 DAC_OVERRIDE 가 없어
+     * nginx 소유 기본 경로(/var/lib/nginx, /run/nginx)에 못 쓴다. 그래서 pid·로그·temp 를 전부
+     * world-writable 한 /tmp 로 돌리고, 워커도 {@code user root} 로 돌려(정적 산출물이 root 소유라)
+     * 권한 문제를 피한다. 시작 시 컴파일 기본 error_log 를 못 여는 alert 이 한 줄 뜨지만, 곧 이
+     * 설정의 error_log 로 바꿔 붙으므로 무해하다(nginx 는 정상 기동한다).
+     */
+    private String nginxConfig(String apiPathPrefix, String feBuildDir) {
+        String prefix = (apiPathPrefix == null || apiPathPrefix.isBlank()) ? "/api" : apiPathPrefix;
+        return "user root;\n"
+                + "worker_processes 1;\n"
+                + "pid /tmp/preview-nginx.pid;\n"
+                + "error_log /tmp/preview-nginx-error.log warn;\n"
+                + "events { worker_connections 256; }\n"
+                + "http {\n"
+                + "  include /etc/nginx/mime.types;\n"
+                + "  access_log off;\n"
+                + "  client_body_temp_path /tmp/preview-nginx-client;\n"
+                + "  proxy_temp_path /tmp/preview-nginx-proxy;\n"
+                + "  fastcgi_temp_path /tmp/preview-nginx-fastcgi;\n"
+                + "  uwsgi_temp_path /tmp/preview-nginx-uwsgi;\n"
+                + "  scgi_temp_path /tmp/preview-nginx-scgi;\n"
+                + "  server {\n"
+                + "    listen 3000;\n"
+                + "    location " + prefix + " {\n"
+                + "      proxy_pass http://127.0.0.1:" + JAVA_BACKEND_PORT + ";\n"
+                + "      proxy_http_version 1.1;\n"
+                + "      proxy_set_header Host $host;\n"
+                + "      proxy_set_header X-Forwarded-For $remote_addr;\n"
+                + "    }\n"
+                + "    location / {\n"
+                + "      root " + feBuildDir + ";\n"
+                + "      index index.html;\n"
+                + "      try_files $uri /index.html;\n"
+                + "    }\n"
+                + "  }\n"
+                + "}\n";
+    }
+
+    /** build.gradle(.kts)/pom.xml 이 있는 디렉터리 = Java BE. 못 찾으면 APP_DIR. */
+    private String detectBackendDir(String containerId) {
+        String found = dockerService.exec(containerId,
+                "f=$(find " + APP_DIR + " -maxdepth 2 \\( -name build.gradle -o -name build.gradle.kts "
+                        + "-o -name pom.xml \\) -not -path '*/node_modules/*' | head -1); "
+                        + "[ -n \"$f\" ] && dirname \"$f\" || echo " + APP_DIR).trim();
+        return found.isEmpty() ? APP_DIR : found;
+    }
+
+    /** build 스크립트가 있는 package.json 의 디렉터리 = FE. 못 찾으면 APP_DIR. */
+    private String detectFrontendDir(String containerId) {
+        String script = "node -e \"const {execSync}=require('child_process');"
+                + "const fs=require('fs');"
+                + "const out=execSync(\\\"find " + APP_DIR + " -maxdepth 2 -name package.json -not -path '*/node_modules/*'\\\").toString().trim().split('\\n').filter(Boolean);"
+                + "for(const f of out){try{const p=JSON.parse(fs.readFileSync(f));if(p.scripts&&p.scripts.build){process.stdout.write(require('path').dirname(f));process.exit(0)}}catch(e){}}"
+                + "process.stdout.write('" + APP_DIR + "')\" 2>/dev/null";
+        String found = dockerService.exec(containerId, script).trim();
+        return found.isEmpty() ? APP_DIR : found;
+    }
+
+    /** FE 빌드 산출물 디렉터리(baseDir 아래 dist/build/out). 없으면 baseDir 자체를 정적 루트로. */
+    private String detectFeBuildDir(String containerId, String baseDir) {
+        for (String candidate : List.of(baseDir + "/dist", baseDir + "/build", baseDir + "/out")) {
+            if ("exists".equals(dockerService.exec(containerId,
+                    "[ -d " + candidate + " ] && echo exists || echo missing").trim())) {
+                return candidate;
+            }
+        }
+        return baseDir;
+    }
+
+    /** 실패하면 던지는 exec. env 없는 strict 단계용. */
+    private void requireExec(String containerId, String command, String what) {
+        DockerContainerService.ExecResult r = dockerService.execWithExitCode(containerId, command);
+        if (!r.succeeded()) {
+            throw new IllegalStateException(what + " 실패(exitCode=" + r.exitCode() + ").");
+        }
+    }
+
+    /** base64 로 감싸 셸 따옴표·특수문자 문제 없이 파일을 쓴다. */
+    private void writeFile(String containerId, String path, String content) {
+        String b64 = java.util.Base64.getEncoder()
+                .encodeToString(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        dockerService.exec(containerId, "echo '" + b64 + "' | base64 -d > " + path);
+    }
+
+    /**
+     * 지정 포트가 실제로 응답할 때까지 폴링한다. "프로세스를 띄웠다"와 "포트가 응답한다"는 다르고,
+     * 후자가 돼야 다음 단계로 갈 수 있다(3000 이면 프리뷰 ACTIVE, 8080 이면 nginx 앞단 붙이기).
+     * curl 이 없는 이미지가 있어 node 로 확인한다 — 프리뷰 컨테이너에는 node 가 반드시 있다.
+     */
+    private void awaitPortReady(String containerId, int port, int timeoutSeconds,
+                                String logPath, String context) {
         String probe = "node -e \"require('http')"
-                + ".get({host:'127.0.0.1',port:3000,timeout:1000},r=>process.exit(0))"
+                + ".get({host:'127.0.0.1',port:" + port + ",timeout:1000},r=>process.exit(0))"
                 + ".on('error',()=>process.exit(1))\" 2>/dev/null";
         String result = dockerService.exec(containerId,
                 "ready=no; "
-                        + "for i in $(seq 1 " + SERVE_READY_TIMEOUT_SECONDS + "); do "
+                        + "for i in $(seq 1 " + timeoutSeconds + "); do "
                         + "if " + probe + "; then ready=yes; break; fi; sleep 1; "
                         + "done; "
                         + "echo \"serve_ready=$ready\"; "
-                        + "tail -n 20 /tmp/serve.log 2>/dev/null || true");
+                        + "tail -n 20 " + logPath + " 2>/dev/null || true");
 
         if (result == null || !result.contains("serve_ready=yes")) {
-            log.warn("[PreviewWorkspace] 프리뷰 서버가 {}초 안에 응답하지 않음 | buildDir={} | log={}",
-                    SERVE_READY_TIMEOUT_SECONDS, buildDir, result);
-            throw new IllegalStateException(
-                    "프리뷰 서버가 제한 시간 안에 시작되지 않았습니다. buildDir=" + buildDir);
+            log.warn("[PreviewWorkspace] 포트 {} 가 {}초 안에 응답하지 않음 | {} | log={}",
+                    port, timeoutSeconds, context, result);
+            throw new PreviewServeException(
+                    "프리뷰 서버가 제한 시간 안에 시작되지 않았습니다(port=" + port + "). " + context);
         }
-        log.info("[PreviewWorkspace] 프리뷰 서버 준비 완료 | buildDir={} | log={}", buildDir, result);
+        log.info("[PreviewWorkspace] 포트 {} 준비 완료 | {} | log={}", port, context, result);
     }
 
     /**

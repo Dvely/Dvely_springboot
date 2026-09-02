@@ -26,16 +26,23 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+/**
+ * 프로젝트 프리뷰 준비의 뼈대만 검증한다: prepare→build→(런타임 런처)→ACTIVE, 실패 시 사유+로그를
+ * 남기고 컨테이너 회수, 취소된 세션은 건너뜀. 런타임 타입별 서빙 분기는 PreviewRuntimeLauncher
+ * 로 옮겨졌고 PreviewRuntimeLauncherTest 가 검증한다.
+ */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class ProjectPreviewProvisionerTest {
 
     private static final String SESSION_ID = "session-1";
     private static final String CONTAINER_ID = "container-1";
+    private static final Long PROJECT_ID = 11L;
 
     @Mock private SpringDataPreviewSessionRepository repository;
     @Mock private PreviewWorkspaceService workspaceService;
     @Mock private DockerContainerService dockerService;
+    @Mock private PreviewRuntimeLauncher runtimeLauncher;
 
     private ProjectPreviewProvisioner provisioner;
 
@@ -43,24 +50,23 @@ class ProjectPreviewProvisionerTest {
     void setUp() {
         PreviewProperties properties = new PreviewProperties();
         properties.setTtl(Duration.ofMinutes(30));
-        provisioner = new ProjectPreviewProvisioner(repository, workspaceService, dockerService, properties);
+        provisioner = new ProjectPreviewProvisioner(repository, workspaceService, dockerService,
+                properties, runtimeLauncher);
         when(repository.save(any(PreviewSessionEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     @Test
-    void preparesBuildsAndServesBeforeMarkingTheSessionActive() {
+    void preparesBuildsAndLaunchesRuntimeBeforeMarkingTheSessionActive() {
         PreviewSessionEntity session = provisioningSession();
         when(repository.findById(SESSION_ID)).thenReturn(Optional.of(session));
 
         provisioner.provision(SESSION_ID);
 
-        verify(workspaceService).prepareProject(CONTAINER_ID, 1L, 11L);
+        verify(workspaceService).prepareProject(CONTAINER_ID, 1L, PROJECT_ID);
         verify(workspaceService).buildIfConfigured(CONTAINER_ID);
-        verify(workspaceService).startPreviewServer(CONTAINER_ID);
+        verify(runtimeLauncher).launch(PROJECT_ID, CONTAINER_ID);
         assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
-        // 만료는 준비가 끝난 시점부터 다시 센다 — install/build 에 쓴 시간을 사용자가 볼 수 있는
-        // 시간에서 깎지 않기 위해서다.
         assertThat(session.getExpiresAt()).isAfter(LocalDateTime.now().plusMinutes(25));
     }
 
@@ -69,11 +75,11 @@ class ProjectPreviewProvisionerTest {
      * {@code /preview-sessions/{id}/logs} 가 빈 응답이라 사용자가 원인을 볼 방법이 없다.
      */
     @Test
-    void failedProvisioningKeepsTheReasonWithBuildLogAndReleasesTheContainer() {
+    void failedLaunchKeepsTheReasonWithBuildLogAndReleasesTheContainer() {
         PreviewSessionEntity session = provisioningSession();
         when(repository.findById(SESSION_ID)).thenReturn(Optional.of(session));
         doThrow(new IllegalStateException("빌드 결과 디렉터리를 찾지 못했습니다."))
-                .when(workspaceService).startPreviewServer(CONTAINER_ID);
+                .when(runtimeLauncher).launch(PROJECT_ID, CONTAINER_ID);
         when(workspaceService.tailBuildLog(anyString(), anyInt()))
                 .thenReturn("npm ERR! Missing script: \"build\"");
 
@@ -96,22 +102,14 @@ class ProjectPreviewProvisionerTest {
         provisioner.provision(SESSION_ID);
 
         verify(workspaceService, never()).prepareProject(anyString(), anyLong(), anyLong());
+        verify(runtimeLauncher, never()).launch(any(), anyString());
         verify(dockerService, never()).removeContainer(anyString());
     }
 
     private PreviewSessionEntity provisioningSession() {
         return new PreviewSessionEntity(
-                SESSION_ID,
-                "token",
-                1L,
-                11L,
-                null,
-                null,
-                CONTAINER_ID,
-                32768,
+                SESSION_ID, "token", 1L, PROJECT_ID, null, null, CONTAINER_ID, 32768,
                 "https://preview.qeploy.test/api/v1/previews/session-1/token/",
-                LocalDateTime.now().plusMinutes(30),
-                PreviewSessionStatus.PROVISIONING
-        );
+                LocalDateTime.now().plusMinutes(30), PreviewSessionStatus.PROVISIONING);
     }
 }

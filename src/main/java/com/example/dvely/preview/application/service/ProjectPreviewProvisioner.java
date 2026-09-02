@@ -31,6 +31,7 @@ public class ProjectPreviewProvisioner {
     private final PreviewWorkspaceService workspaceService;
     private final DockerContainerService dockerService;
     private final PreviewProperties properties;
+    private final PreviewRuntimeLauncher runtimeLauncher;
 
     @Async("previewExecutor")
     public void provision(String sessionId) {
@@ -44,7 +45,7 @@ public class ProjectPreviewProvisioner {
         try {
             workspaceService.prepareProject(containerId, session.getOwnerUserId(), session.getProjectId());
             workspaceService.buildIfConfigured(containerId);
-            workspaceService.startPreviewServer(containerId);
+            runtimeLauncher.launch(session.getProjectId(), containerId);
 
             // 만료는 여기서부터 다시 센다 — install/build 에 쓴 시간까지 TTL 에서 깎으면 오래 걸린
             // 프로젝트일수록 정작 볼 수 있는 시간이 짧아진다.
