@@ -36,7 +36,16 @@ public class S3ArtifactStore {
 
     /** 이 연결(계정+리전)에서 쓸 아티팩트 버킷 이름. 전역 유일하도록 계정·리전을 넣는다. */
     public String bucketNameFor(CloudConnection connection) {
-        return "qeploy-artifacts-" + connection.getAccountId() + "-" + connection.getRegion();
+        // accountId 가 비면 "qeploy-artifacts--{region}" 이 돼 전역 버킷 이름이 계정 간 충돌한다
+        // (S3 버킷명은 전역 유일). accountId 없는 연결끼리 같은 이름을 노려 BucketAlreadyExists 로
+        // 깨지거나, 최악엔 남의 버킷에 붙는다. 여기서 막아 그런 버킷을 아예 안 만든다.
+        String accountId = connection.getAccountId();
+        if (accountId == null || accountId.isBlank()) {
+            throw new IllegalStateException(
+                    "클라우드 연결에 AWS 계정 ID가 없어 배포 아티팩트 버킷을 만들 수 없습니다. "
+                            + "클라우드 연결에 12자리 계정 ID를 넣어주세요.");
+        }
+        return "qeploy-artifacts-" + accountId + "-" + connection.getRegion();
     }
 
     /** 프로젝트별 jar 키. IAM 정책이 {projectId}/* 로 인스턴스 접근을 좁히므로 이 접두사를 지킨다. */
