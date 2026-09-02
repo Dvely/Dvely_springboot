@@ -21,6 +21,8 @@ import com.example.dvely.provisioning.domain.repository.ProvisionedServerReposit
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import com.example.dvely.provisioning.infrastructure.Ec2InstanceRoleProvisioner;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
+import com.example.dvely.provisioning.infrastructure.Ec2Provisioner.LaunchSpec;
+import com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties;
 import com.example.dvely.provisioning.infrastructure.S3ArtifactStore;
 import com.example.dvely.provisioning.infrastructure.SsmParameterStore;
 import java.io.IOException;
@@ -48,6 +50,7 @@ class BackendDeployRunnerTest {
     @Mock private Ec2Provisioner ec2;
     @Mock private ProvisionedDatabaseRepository databaseRepository;
     @Mock private EnvironmentVariableRepository environmentVariableRepository;
+    @Mock private Ec2ProvisioningProperties ec2Properties;
 
     @InjectMocks private BackendDeployRunner runner;
 
@@ -143,6 +146,31 @@ class BackendDeployRunnerTest {
         assertThatThrownBy(() -> runner.deploy(building())).isInstanceOf(RuntimeException.class);
 
         verify(ec2).terminate(any(), eq("i-999"));   // 방금 만든 인스턴스를 정리
+    }
+
+    @Test
+    void usesInstanceProfileOverrideAndSkipsIamCreation() throws Exception {
+        // AWS Academy Learner Lab 등 IAM 생성 금지 환경: 오버라이드된 기존 프로파일을 쓰고
+        // roleProvisioner(IAM 생성)를 아예 부르지 않아야 한다.
+        Path jar = Files.createTempFile("test-app", ".jar");
+        when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection()));
+        when(buildService.buildJar(OWNER, PROJECT)).thenReturn(jar);
+        when(s3.bucketNameFor(any())).thenReturn("qeploy-artifacts-x");
+        when(s3.jarKeyFor(PROJECT)).thenReturn("10/app.jar");
+        when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
+        when(environmentVariableRepository.findByProjectIdOrderByScopeAscKeyAsc(PROJECT)).thenReturn(List.of());
+        when(ec2.ensureSecurityGroup(any(), eq(8080))).thenReturn("sg-1");
+        when(ssm.latestAmazonLinux2023Ami(any())).thenReturn("ami-1");
+        when(ec2.launch(any(), any())).thenReturn("i-lab-1");
+        when(ec2Properties.hasInstanceProfileOverride()).thenReturn(true);
+        when(ec2Properties.instanceProfileOverride()).thenReturn("LabInstanceProfile");
+
+        runner.deploy(building());
+
+        verify(roleProvisioner, never()).ensureInstanceProfile(any(), any(), any());
+        ArgumentCaptor<LaunchSpec> spec = ArgumentCaptor.forClass(LaunchSpec.class);
+        verify(ec2).launch(any(), spec.capture());
+        assertThat(spec.getValue().iamInstanceProfileName()).isEqualTo("LabInstanceProfile");
     }
 
     private CloudConnection connection() {
