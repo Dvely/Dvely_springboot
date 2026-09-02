@@ -12,6 +12,9 @@ public interface ProvisionedDatabaseRepository {
 
     Optional<ProvisionedDatabase> findById(Long id);
 
+    /** 승인 대상(RDS)을 그 승인 ID 로 찾는다. 승인 핸들러가 실행 시 대상 행을 집을 때 쓴다. */
+    Optional<ProvisionedDatabase> findByApprovalId(Long approvalId);
+
     List<ProvisionedDatabase> findByProjectIdOrderByCreatedAtDesc(Long projectId);
 
     /** 목록용 — EXPIRED 를 뺀 활성 자원만. DB 단에서 거른다. */

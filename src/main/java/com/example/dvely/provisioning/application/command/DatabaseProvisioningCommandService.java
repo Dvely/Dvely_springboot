@@ -1,6 +1,13 @@
 package com.example.dvely.provisioning.application.command;
 
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.approval.domain.model.Approval;
+import com.example.dvely.approval.domain.repository.ApprovalRepository;
+import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.cloudconnection.domain.model.CloudConnection;
+import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
+import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
+import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
 import com.example.dvely.preview.application.port.out.PreviewDatabaseProvisioner;
 import com.example.dvely.preview.application.result.PreviewDbConnection;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
@@ -47,6 +54,9 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
     private final DatabaseProvisionerRegistry provisionerRegistry;
     private final PreviewSessionService previewSessionService;
     private final ProvisioningProperties properties;
+    private final ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
+    private final CloudConnectionRepository cloudConnectionRepository;
+    private final ApprovalRepository approvalRepository;
 
     // 일부러 메서드 전체를 한 트랜잭션으로 묶지 않는다. provisioner.provision() 이 수 분 걸리는
     // Docker I/O·이미지 pull 이라, 하나의 트랜잭션으로 감싸면 그동안 DB 커넥션을 물고 있어 풀이
@@ -54,12 +64,48 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
     // 전체를 롤백해 FAILED 감사 행마저 사라진다. 각 save 는 자체 트랜잭션으로 독립 커밋된다.
     public ProvisionSubmitResult provision(Long ownerUserId, Long projectId,
                                            ProvisionMethod method, DatabaseEngine engine) {
-        if (method == ProvisionMethod.LOCAL) {
-            return provisionLocal(ownerUserId, projectId, engine);
+        return switch (method) {
+            case LOCAL -> provisionLocal(ownerUserId, projectId, engine);
+            case RDS -> submitRds(ownerUserId, projectId, engine);
+            case DOCKER -> {
+                provisionerRegistry.resolve(method);   // throws (DOCKER 미구현)
+                throw new IllegalStateException(method + " 방식은 아직 지원되지 않습니다.");
+            }
+        };
+    }
+
+    /**
+     * RDS 는 사용자 AWS 계정에 과금 자원을 만든다 — CONNECTED 클라우드 연결이 있어야 하고, 승인을
+     * 거친다. 여기서는 pending 행과 승인을 만들어 requiresApproval 로 돌려주고, 실제 인스턴스 생성은
+     * 승인 시 RdsProvisionApprovalHandler 가 시작한다(생성이 비동기라 즉시 만들 수 없다).
+     */
+    private ProvisionSubmitResult submitRds(Long ownerUserId, Long projectId, DatabaseEngine engine) {
+        resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
+
+        ProvisionedDatabase record = databaseRepository.save(
+                ProvisionedDatabase.pending(projectId, ProvisionMethod.RDS, engine, ProvisionOrigin.MANUAL));
+        Approval approval = approvalRepository.save(Approval.standalone(
+                ownerUserId, projectId, ApprovalType.DATABASE_PROVISION,
+                "RDS " + engine + " 데이터베이스 생성 (과금)"));
+        record.linkApproval(approval.getId());
+        databaseRepository.save(record);
+
+        log.info("RDS 프로비저닝 승인 대기: databaseId={} approvalId={} projectId={}",
+                record.getId(), approval.getId(), projectId);
+        return new ProvisionSubmitResult(true, null, null, java.util.List.of(approval.getId()));
+    }
+
+    /** 프로젝트에 선택된 CONNECTED 클라우드 연결을 돌려준다. 없거나 미연결이면 던진다. */
+    private CloudConnection resolveConnectedCloud(Long ownerUserId, Long projectId) {
+        CloudConnection connection = cloudConnectionSettingRepository.findByProjectId(projectId)
+                .flatMap(setting -> cloudConnectionRepository
+                        .findByIdAndOwnerUserId(setting.getCloudConnectionId(), ownerUserId))
+                .orElseThrow(() -> new NotFoundException(
+                        "RDS 는 연결된 클라우드가 있어야 만들 수 있습니다. 인프라 탭에서 클라우드 연결을 먼저 선택해주세요."));
+        if (connection.getStatus() != CloudConnectionStatus.CONNECTED) {
+            throw new IllegalStateException("클라우드 연결이 CONNECTED 상태가 아닙니다. 연결을 확인한 뒤 다시 시도해주세요.");
         }
-        // RDS·DOCKER 는 승인 흐름(다음 단계). 지금은 레지스트리가 명확히 던지게 한다.
-        provisionerRegistry.resolve(method);   // throws IllegalArgumentException
-        throw new IllegalStateException(method + " 방식은 아직 지원되지 않습니다.");
+        return connection;
     }
 
     private ProvisionSubmitResult provisionLocal(Long ownerUserId, Long projectId, DatabaseEngine engine) {

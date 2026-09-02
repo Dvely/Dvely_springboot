@@ -84,6 +84,12 @@ public class ProvisionedDatabaseEntity {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
+    @Column(name = "approval_id")
+    private Long approvalId;
+
+    @Column(name = "cloud_connection_id")
+    private Long cloudConnectionId;
+
     public static ProvisionedDatabaseEntity from(ProvisionedDatabase d) {
         ProvisionedDatabaseEntity e = new ProvisionedDatabaseEntity();
         e.id = d.getId();
@@ -106,14 +112,23 @@ public class ProvisionedDatabaseEntity {
         this.expiresAt = d.getExpiresAt();
         this.failureCode = d.getFailureCode() == null ? null : d.getFailureCode().name();
         this.errorMessage = d.getErrorMessage();
+        this.approvalId = d.getApprovalId();
+        this.cloudConnectionId = d.getCloudConnectionId();
     }
 
     public ProvisionedDatabase toDomain() {
-        return new ProvisionedDatabase(
+        ProvisionedDatabase domain = new ProvisionedDatabase(
                 id, projectId, ProvisionMethod.valueOf(method), DatabaseEngine.valueOf(engine),
                 ProvisionOrigin.valueOf(origin), ProvisionStatus.valueOf(status), resourceId, host, port, databaseName, username,
                 password, expiresAt,
                 failureCode == null ? null : ProvisionFailureCode.valueOf(failureCode),
                 errorMessage, createdAt, updatedAt);
+        if (approvalId != null) {
+            domain.linkApproval(approvalId);
+        }
+        if (cloudConnectionId != null) {
+            domain.assignCloudConnection(cloudConnectionId);
+        }
+        return domain;
     }
 }

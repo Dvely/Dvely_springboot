@@ -13,6 +13,8 @@ public interface SpringDataProvisionedDatabaseRepository
 
     List<ProvisionedDatabaseEntity> findByProjectIdOrderByCreatedAtDesc(Long projectId);
 
+    java.util.Optional<ProvisionedDatabaseEntity> findByApprovalId(Long approvalId);
+
     // 목록에서 EXPIRED 는 DB 단에서 제외한다(전 행 로드 후 메모리 필터를 피한다).
     List<ProvisionedDatabaseEntity> findByProjectIdAndStatusNotOrderByCreatedAtDesc(
             Long projectId, String status);

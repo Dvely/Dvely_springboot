@@ -36,6 +36,11 @@ public class ProvisionedDatabaseRepositoryAdapter implements ProvisionedDatabase
     }
 
     @Override
+    public Optional<ProvisionedDatabase> findByApprovalId(Long approvalId) {
+        return springDataRepository.findByApprovalId(approvalId).map(ProvisionedDatabaseEntity::toDomain);
+    }
+
+    @Override
     public List<ProvisionedDatabase> findByProjectIdOrderByCreatedAtDesc(Long projectId) {
         return springDataRepository.findByProjectIdOrderByCreatedAtDesc(projectId)
                 .stream().map(ProvisionedDatabaseEntity::toDomain).toList();

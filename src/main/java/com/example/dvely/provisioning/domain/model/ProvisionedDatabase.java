@@ -32,6 +32,8 @@ public class ProvisionedDatabase {
     private String errorMessage;
     private final LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    private Long approvalId;        // RDS 등 승인 대상만. 승인 핸들러가 이 값으로 대상 행을 찾는다.
+    private Long cloudConnectionId; // RDS 만. 생성에 쓴 그 연결 — 상태 워커가 같은 계정으로 조회한다.
 
     public ProvisionedDatabase(Long id, Long projectId, ProvisionMethod method, DatabaseEngine engine,
                                ProvisionOrigin origin, ProvisionStatus status, String resourceId, String host, Integer port,
@@ -86,6 +88,35 @@ public class ProvisionedDatabase {
         this.updatedAt = LocalDateTime.now();
     }
 
+    /**
+     * 비동기 생성 시작(RDS). host 는 아직 없고, 상태 워커가 available 이 되면 markReady 로 채운다.
+     * resourceId(인스턴스 ID)·port·접속계정은 지금 안다 — 워커가 그대로 쓸 수 있게 저장한다.
+     * cloudConnectionId 는 생성에 쓴 그 연결이다 — 워커가 프로젝트의 '현재' 선택이 아니라 이 값으로
+     * 조회해야, 도중에 연결이 바뀌어도 엉뚱한 계정으로 봐서 살아있는 인스턴스를 실패로 오판하지 않는다.
+     */
+    public void beginProvisioning(Long cloudConnectionId, String resourceId, int port,
+                                  String databaseName, String username, String password) {
+        this.status = ProvisionStatus.PROVISIONING;
+        this.cloudConnectionId = cloudConnectionId;
+        this.resourceId = resourceId;
+        this.port = port;
+        this.databaseName = databaseName;
+        this.username = username;
+        this.password = password;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    /**
+     * 승인 대기 중 사용자가 거부함. FAILED 로 두되 failureCode 는 null 로 둔다 — 프로바이더 오류가
+     * 아니므로(생성 자체를 시작하지 않았다), FE 가 문구를 오류가 아닌 "거부됨"으로 구분할 수 있다.
+     */
+    public void markRejected(String reason) {
+        this.status = ProvisionStatus.FAILED;
+        this.failureCode = null;
+        this.errorMessage = reason;
+        this.updatedAt = LocalDateTime.now();
+    }
+
     public void markFailed(ProvisionFailureCode code, String message) {
         this.status = ProvisionStatus.FAILED;
         this.failureCode = code;
@@ -97,6 +128,17 @@ public class ProvisionedDatabase {
     public void markExpired() {
         this.status = ProvisionStatus.EXPIRED;
         this.updatedAt = LocalDateTime.now();
+    }
+
+    /** 이 프로비저닝을 특정 승인에 연결한다(RDS 처럼 승인 후 실행되는 경우). */
+    public void linkApproval(Long approvalId) {
+        this.approvalId = approvalId;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    /** 영속 계층에서 로드 시 cloudConnectionId 를 복원한다(생성은 beginProvisioning 에서 세팅). */
+    public void assignCloudConnection(Long cloudConnectionId) {
+        this.cloudConnectionId = cloudConnectionId;
     }
 
     public boolean isExpiredByTime(LocalDateTime now) {
@@ -120,4 +162,6 @@ public class ProvisionedDatabase {
     public String getErrorMessage() { return errorMessage; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public Long getApprovalId() { return approvalId; }
+    public Long getCloudConnectionId() { return cloudConnectionId; }
 }

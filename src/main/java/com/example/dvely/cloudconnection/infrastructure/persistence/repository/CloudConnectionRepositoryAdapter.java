@@ -40,6 +40,11 @@ public class CloudConnectionRepositoryAdapter implements CloudConnectionReposito
     }
 
     @Override
+    public Optional<CloudConnection> findById(Long id) {
+        return springDataRepository.findById(id).map(CloudConnectionEntity::toDomain);
+    }
+
+    @Override
     public void deleteById(Long id) {
         springDataRepository.deleteById(id);
     }
