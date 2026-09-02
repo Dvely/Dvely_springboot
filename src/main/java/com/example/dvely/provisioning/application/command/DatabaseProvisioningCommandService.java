@@ -8,6 +8,7 @@ import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
+import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.preview.application.port.out.PreviewDatabaseProvisioner;
 import com.example.dvely.preview.application.result.PreviewDbConnection;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
@@ -60,6 +61,7 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
     private final CloudConnectionRepository cloudConnectionRepository;
     private final ApprovalRepository approvalRepository;
     private final RdsProvisioner rdsProvisioner;
+    private final ProjectRepository projectRepository;
 
     // 일부러 메서드 전체를 한 트랜잭션으로 묶지 않는다. provisioner.provision() 이 수 분 걸리는
     // Docker I/O·이미지 pull 이라, 하나의 트랜잭션으로 감싸면 그동안 DB 커넥션을 물고 있어 풀이
@@ -108,6 +110,11 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
     public void deleteDatabase(Long ownerUserId, Long databaseId) {
         ProvisionedDatabase record = databaseRepository.findById(databaseId)
                 .orElseThrow(() -> new NotFoundException("데이터베이스를 찾을 수 없습니다. id=" + databaseId));
+        // 소유권 확인(IDOR 방지) — 모든 method 공통. 이게 없으면 databaseId 만으로 남의 DB 를 지울 수
+        // 있다(특히 LOCAL 은 아래에서 별도 소유권 검사가 없었다). 프로젝트 소유자 == 요청자여야 한다.
+        projectRepository.findByIdAndOwnerUserId(record.getProjectId(), ownerUserId)
+                .orElseThrow(() -> new NotFoundException(
+                        "데이터베이스를 찾을 수 없거나 접근 권한이 없습니다. id=" + databaseId));
         if (record.getStatus() == ProvisionStatus.EXPIRED) {
             return;   // 이미 정리됨
         }
