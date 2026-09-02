@@ -17,8 +17,10 @@ import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.cloudconnection.domain.value.CloudProvider;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.preview.application.service.PreviewSessionService;
+import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.model.ProjectCloudConnectionSetting;
 import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
+import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.provisioning.application.result.ProvisionSubmitResult;
 import com.example.dvely.provisioning.application.service.DatabaseProvisionerRegistry;
 import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
@@ -37,6 +39,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
@@ -50,6 +53,7 @@ class DatabaseProvisioningCommandServiceRdsTest {
     @Mock private CloudConnectionRepository cloudConnectionRepository;
     @Mock private ApprovalRepository approvalRepository;
     @Mock private RdsProvisioner rdsProvisioner;
+    @Mock private ProjectRepository projectRepository;
 
     @InjectMocks private DatabaseProvisioningCommandService service;
 
@@ -115,6 +119,8 @@ class DatabaseProvisioningCommandServiceRdsTest {
                 java.time.LocalDateTime.now(), java.time.LocalDateTime.now());
         row.assignCloudConnection(CONN_ID);
         when(databaseRepository.findById(1L)).thenReturn(Optional.of(row));
+        when(projectRepository.findByIdAndOwnerUserId(PROJECT, OWNER))
+                .thenReturn(Optional.of(Mockito.mock(Project.class)));
         when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
                 .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
 
@@ -133,9 +139,28 @@ class DatabaseProvisioningCommandServiceRdsTest {
                 null, 3306, null, null, null, null, null, null,
                 java.time.LocalDateTime.now(), java.time.LocalDateTime.now());
         when(databaseRepository.findById(1L)).thenReturn(Optional.of(row));
+        when(projectRepository.findByIdAndOwnerUserId(PROJECT, OWNER))
+                .thenReturn(Optional.of(Mockito.mock(Project.class)));
 
         service.deleteDatabase(OWNER, 1L);
 
+        verify(rdsProvisioner, never()).deleteInstance(any(), any());
+        verify(databaseRepository, never()).save(any());
+    }
+
+    @Test
+    void deleteRejectsWhenRequesterDoesNotOwnProject() {
+        // IDOR 방지: 소유하지 않은 프로젝트의 DB 는 못 지운다 — 실제 자원 정리도 안 하고 던진다.
+        ProvisionedDatabase row = new ProvisionedDatabase(1L, PROJECT, ProvisionMethod.RDS,
+                DatabaseEngine.MYSQL, ProvisionOrigin.MANUAL, ProvisionStatus.READY, "qeploy-7-abc",
+                "host", 3306, "app", "qeadmin", "pw", null, null, null,
+                java.time.LocalDateTime.now(), java.time.LocalDateTime.now());
+        row.assignCloudConnection(CONN_ID);
+        when(databaseRepository.findById(1L)).thenReturn(Optional.of(row));
+        when(projectRepository.findByIdAndOwnerUserId(PROJECT, OWNER)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.deleteDatabase(OWNER, 1L))
+                .isInstanceOf(NotFoundException.class);
         verify(rdsProvisioner, never()).deleteInstance(any(), any());
         verify(databaseRepository, never()).save(any());
     }
