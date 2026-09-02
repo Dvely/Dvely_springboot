@@ -21,5 +21,8 @@ public enum ApprovalType {
     // as the optional body of POST /approvals/{id}/approve. Absent a name it falls back to the
     // project-name-derived candidate already shown in the approval summary.
     REPOSITORY_BINDING,
-    DATABASE_PROVISION
+    DATABASE_PROVISION,
+    // EC2 백엔드 서버 프로비저닝(C2). RDS 처럼 사용자 AWS 계정에 과금 자원(인스턴스)을 만든다 —
+    // 정책으로 끌 수 없고 항상 승인. 실제 인스턴스 생성은 승인 후 핸들러가 시작한다(비동기).
+    SERVER_PROVISION
 }

@@ -67,6 +67,8 @@ public class ProjectApprovalPolicy {
             case REPOSITORY_BINDING -> true;
             // RDS 등 유료 DB 프로비저닝은 과금이 발생하므로 정책으로 끌 수 없다 — 항상 승인.
             case DATABASE_PROVISION -> true;
+            // EC2 백엔드 서버도 과금이라 정책으로 끌 수 없다 — 항상 승인(DATABASE_PROVISION 과 동형).
+            case SERVER_PROVISION -> true;
         };
     }
 
