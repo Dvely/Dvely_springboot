@@ -12,6 +12,8 @@ public enum ErrorCode {
     EXPIRED_REFRESH_TOKEN(401, "EXPIRED_REFRESH_TOKEN", "만료된 리프레시 토큰입니다"),
     REVOKED_REFRESH_TOKEN(401, "REVOKED_REFRESH_TOKEN", "이미 사용된 리프레시 토큰입니다"),
     GITHUB_APP_NOT_INSTALLED(403, "GITHUB_APP_NOT_INSTALLED", "GitHub App이 설치되지 않았습니다"),
+    GITHUB_APP_REPOSITORY_ACCESS_DENIED(403, "GITHUB_APP_REPOSITORY_ACCESS_DENIED",
+            "GitHub App이 이 저장소에 접근할 권한이 없습니다. GitHub App 설정에서 이 저장소 접근을 허용한 뒤 다시 시도해주세요"),
 
     // Common
     BAD_REQUEST(400, "BAD_REQUEST", "잘못된 요청입니다"),

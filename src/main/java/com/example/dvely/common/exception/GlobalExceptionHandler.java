@@ -105,6 +105,14 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ErrorCode.FORBIDDEN, e.getMessage()));
     }
 
+    // 403 - GitHub App 이 저장소에 접근 권한 없음 (App 설정에서 저장소 접근 허용 필요)
+    @ExceptionHandler(GithubRepositoryAccessDeniedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleGithubRepoAccessDenied(GithubRepositoryAccessDeniedException e) {
+        log.warn("GitHub repository access denied: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(ApiResponse.error(ErrorCode.GITHUB_APP_REPOSITORY_ACCESS_DENIED, e.getMessage()));
+    }
+
     // 404 - 리소스 없음
     @ExceptionHandler(NotFoundException.class)
     public ResponseEntity<ApiResponse<Void>> handleNotFound(NotFoundException e) {
