@@ -60,6 +60,13 @@ public class BackendDeployRunner {
             return;
         }
         Long ownerUserId = connection.getOwnerUserId();
+        // 계정 ID가 없으면 뒤늦게 S3 버킷 단계에서 깨지는 대신, 무거운 빌드 전에 바로 실패시킨다
+        // (버킷 이름 전역 충돌 방지 — S3ArtifactStore.bucketNameFor 참고).
+        if (connection.getAccountId() == null || connection.getAccountId().isBlank()) {
+            fail(server, ProvisionFailureCode.PROVIDER_ERROR,
+                    "클라우드 연결에 AWS 계정 ID(12자리)가 없습니다. 연결 설정에 계정 ID를 넣어주세요.");
+            return;
+        }
         Path jar = null;
         String instanceId = null;
         try {

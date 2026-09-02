@@ -114,6 +114,25 @@ class BackendDeployRunnerTest {
     }
 
     @Test
+    void blankAccountIdFailsBeforeBuilding() {
+        // accountId 빈 연결(임시자격 폼 버그·API 직접호출로 유입 가능) — 버킷 이름 전역충돌을 막으려
+        // 빌드 전에 실패해야 한다.
+        CloudConnection noAccount = new CloudConnection(CONN_ID, OWNER, CloudProvider.AWS, "production",
+                "", "ap-northeast-2", null, "ACCESS_KEY", "AKIA1234567890ABCDEF",
+                "abcdefghijklmnopqrstuvwxyz1234567890ABCD", null, null, null, null, null,
+                CloudConnectionStatus.CONNECTED, LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now());
+        when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(noAccount));
+
+        runner.deploy(building());
+
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.FAILED);
+        verify(buildService, never()).buildJar(anyLong(), anyLong());
+        verify(ec2, never()).launch(any(), any());
+    }
+
+    @Test
     void rollsBackInstanceWhenPostLaunchStepFails() throws IOException {
         Path jar = Files.createTempFile("test-app", ".jar");
         stubHappyPath(jar);
