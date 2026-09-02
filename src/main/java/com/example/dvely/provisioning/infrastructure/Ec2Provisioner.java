@@ -12,6 +12,13 @@ import org.springframework.stereotype.Component;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.DescribeInstancesRequest;
+import software.amazon.awssdk.services.ec2.model.AuthorizeSecurityGroupIngressRequest;
+import software.amazon.awssdk.services.ec2.model.CreateSecurityGroupRequest;
+import software.amazon.awssdk.services.ec2.model.DescribeSecurityGroupsRequest;
+import software.amazon.awssdk.services.ec2.model.DescribeVpcsRequest;
+import software.amazon.awssdk.services.ec2.model.Filter;
+import software.amazon.awssdk.services.ec2.model.IpPermission;
+import software.amazon.awssdk.services.ec2.model.IpRange;
 import software.amazon.awssdk.services.ec2.model.Ec2Exception;
 import software.amazon.awssdk.services.ec2.model.IamInstanceProfileSpecification;
 import software.amazon.awssdk.services.ec2.model.Instance;
@@ -136,6 +143,47 @@ public class Ec2Provisioner {
             }
             throw e;
         }
+    }
+
+    private static final String SG_NAME = "qeploy-backend-8080";
+
+    /**
+     * 앱 포트(8080)만 인터넷에 여는 보안그룹을 기본 VPC 에 보장하고 그 ID 를 돌려준다(멱등). SSH(22)는
+     * 열지 않는다 — 우리는 인스턴스에 접속하지 않으므로. 이미 있으면 그대로 재사용한다.
+     */
+    public String ensureSecurityGroup(CloudConnection connection, int appPort) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (Ec2Client ec2 = client(access)) {
+            var existing = ec2.describeSecurityGroups(DescribeSecurityGroupsRequest.builder()
+                    .filters(Filter.builder().name("group-name").values(SG_NAME).build())
+                    .build()).securityGroups();
+            if (!existing.isEmpty()) {
+                return existing.get(0).groupId();
+            }
+            String vpcId = defaultVpcId(ec2);
+            String groupId = ec2.createSecurityGroup(CreateSecurityGroupRequest.builder()
+                    .groupName(SG_NAME).description("Qeploy backend app port")
+                    .vpcId(vpcId).build()).groupId();
+            ec2.authorizeSecurityGroupIngress(AuthorizeSecurityGroupIngressRequest.builder()
+                    .groupId(groupId)
+                    .ipPermissions(IpPermission.builder()
+                            .ipProtocol("tcp").fromPort(appPort).toPort(appPort)
+                            .ipRanges(IpRange.builder().cidrIp("0.0.0.0/0").build())
+                            .build())
+                    .build());
+            log.info("EC2 보안그룹 생성: name={} groupId={} port={}", SG_NAME, groupId, appPort);
+            return groupId;
+        }
+    }
+
+    private String defaultVpcId(Ec2Client ec2) {
+        var vpcs = ec2.describeVpcs(DescribeVpcsRequest.builder()
+                .filters(Filter.builder().name("isDefault").values("true").build())
+                .build()).vpcs();
+        if (vpcs.isEmpty()) {
+            throw new IllegalStateException("기본 VPC 를 찾지 못했습니다. 계정에 기본 VPC 가 필요합니다.");
+        }
+        return vpcs.get(0).vpcId();
     }
 
     private Ec2Client client(AwsAccess access) {

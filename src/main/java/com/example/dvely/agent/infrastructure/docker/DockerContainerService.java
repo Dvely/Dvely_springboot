@@ -28,7 +28,13 @@ import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -786,6 +792,30 @@ public class DockerContainerService {
             throw new IllegalStateException("재시작할 컨테이너를 찾을 수 없습니다(이미 정리됨). containerId=" + containerId, e);
         }
         log.info("Docker 컨테이너 재시작: id={}", containerId);
+    }
+
+    /**
+     * 컨테이너 안의 파일 하나를 호스트로 꺼낸다. Docker 의 copy 는 tar 스트림을 주므로, 그 안의 첫
+     * 정규 파일 엔트리를 destFile 로 푼다(빌드 산출물 jar 를 EC2 로 넘기기 전에 컨트롤 플레인으로
+     * 추출하는 용도 — 빌드 컨테이너에는 클라우드 자격을 주지 않기 위함이다).
+     */
+    public void copyFileFromContainer(String containerId, String containerPath, Path destFile) {
+        try (InputStream tar = dockerClient.copyArchiveFromContainerCmd(containerId, containerPath).exec();
+             TarArchiveInputStream tin = new TarArchiveInputStream(tar)) {
+            TarArchiveEntry entry;
+            while ((entry = tin.getNextEntry()) != null) {
+                if (entry.isFile()) {
+                    try (OutputStream out = Files.newOutputStream(destFile)) {
+                        tin.transferTo(out);
+                    }
+                    return;
+                }
+            }
+            throw new IllegalStateException(
+                    "컨테이너에서 파일을 찾지 못했습니다: " + containerId + ":" + containerPath);
+        } catch (IOException e) {
+            throw new RuntimeException("컨테이너 파일 추출 실패: " + containerPath, e);
+        }
     }
 
     public void removeContainer(String containerId) {
