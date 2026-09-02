@@ -96,7 +96,7 @@ public class Ec2InstanceRoleProvisioner {
     private String instancePolicy(Long projectId, String bucket) {
         return """
                 {"Version":"2012-10-17","Statement":[\
-                {"Effect":"Allow","Action":["ssm:GetParameter","ssm:GetParameters"],\
+                {"Effect":"Allow","Action":["ssm:GetParameter","ssm:GetParameters","ssm:GetParametersByPath"],\
                 "Resource":"arn:aws:ssm:*:*:parameter/qeploy/%d/*"},\
                 {"Effect":"Allow","Action":["s3:GetObject"],\
                 "Resource":"arn:aws:s3:::%s/%d/*"}]}""".formatted(projectId, bucket, projectId);

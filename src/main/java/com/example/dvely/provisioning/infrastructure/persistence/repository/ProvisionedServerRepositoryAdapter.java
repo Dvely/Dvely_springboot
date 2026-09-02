@@ -8,7 +8,9 @@ import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
+import java.time.LocalDateTime;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 @RequiredArgsConstructor
@@ -48,5 +50,11 @@ public class ProvisionedServerRepositoryAdapter implements ProvisionedServerRepo
     public List<ProvisionedServer> findByStatus(ServerStatus status, int limit) {
         return springDataRepository.findByStatusOrderByCreatedAtAsc(status.name(), PageRequest.of(0, limit))
                 .stream().map(ProvisionedServerEntity::toDomain).toList();
+    }
+
+    @Override
+    @Transactional
+    public boolean claimForBuild(Long id) {
+        return springDataRepository.claimForBuild(id, LocalDateTime.now()) == 1;
     }
 }

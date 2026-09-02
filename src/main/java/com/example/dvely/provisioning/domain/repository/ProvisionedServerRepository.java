@@ -18,4 +18,7 @@ public interface ProvisionedServerRepository {
 
     /** 워커가 집을 대상(QUEUED·PROVISIONING 등). */
     List<ProvisionedServer> findByStatus(ServerStatus status, int limit);
+
+    /** 원자적 claim: QUEUED 인 행만 BUILDING 으로 넘긴다. 진 워커 하나만 true — 이중 launch(과금) 방지. */
+    boolean claimForBuild(Long id);
 }

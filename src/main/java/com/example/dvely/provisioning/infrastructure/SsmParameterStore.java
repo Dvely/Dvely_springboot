@@ -16,6 +16,7 @@ import software.amazon.awssdk.services.ssm.model.GetParametersByPathRequest;
 import software.amazon.awssdk.services.ssm.model.GetParametersByPathResponse;
 import software.amazon.awssdk.services.ssm.model.ParameterNotFoundException;
 import software.amazon.awssdk.services.ssm.model.ParameterType;
+import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
 import software.amazon.awssdk.services.ssm.model.PutParameterRequest;
 
 /**
@@ -84,6 +85,19 @@ public class SsmParameterStore {
             token = resp.nextToken();
         } while (token != null);
         return names;
+    }
+
+    /**
+     * 리전에 맞는 최신 Amazon Linux 2023 AMI 를 AWS 공개 SSM 파라미터로 조회한다. AMI ID 를 리전별로
+     * 하드코딩하지 않아도 되고, 항상 최신 패치본을 받는다.
+     */
+    public String latestAmazonLinux2023Ami(CloudConnection connection) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (SsmClient ssm = client(access)) {
+            return ssm.getParameter(GetParameterRequest.builder()
+                    .name("/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64")
+                    .build()).parameter().value();
+        }
     }
 
     private SsmClient client(AwsAccess access) {
