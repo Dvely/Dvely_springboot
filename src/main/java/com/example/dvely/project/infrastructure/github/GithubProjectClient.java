@@ -1,5 +1,6 @@
 package com.example.dvely.project.infrastructure.github;
 
+import com.example.dvely.common.exception.GithubRepositoryAccessDeniedException;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.application.port.out.GithubAppPort;
 import com.example.dvely.auth.domain.model.User;
@@ -486,7 +487,15 @@ public class GithubProjectClient implements GithubRepositoryPort {
         return value;
     }
 
-    private IllegalStateException githubResponseFailure(String operation, RestClientResponseException e) {
+    private RuntimeException githubResponseFailure(String operation, RestClientResponseException e) {
+        // 403 은 GitHub App(설치 토큰)이 그 저장소에 접근할 수 없다는 뜻이다("Resource not accessible
+        // by integration"). 일반 실패로 뭉뚱그리면 FE 가 "App 설정에서 저장소 접근 허용"이라는 조치를
+        // 안내할 수 없으므로 전용 예외로 갈라 errorCode 를 내려준다.
+        if (e.getStatusCode().value() == 403) {
+            return new GithubRepositoryAccessDeniedException(
+                    operation + " 실패: GitHub App 이 저장소에 접근할 권한이 없습니다. "
+                            + "GitHub App 설정에서 이 저장소 접근을 허용해주세요. (" + e.getResponseBodyAsString() + ")");
+        }
         return new IllegalStateException(operation + " 실패 (HTTP " + e.getStatusCode() + "): " + e.getResponseBodyAsString(), e);
     }
 
