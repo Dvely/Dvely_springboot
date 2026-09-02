@@ -8,6 +8,12 @@ import com.example.dvely.cloudconnection.domain.repository.CloudConnectionReposi
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
+import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.provisioning.domain.model.ProvisionedServer;
+import com.example.dvely.provisioning.domain.value.ServerStatus;
+import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
+import com.example.dvely.provisioning.infrastructure.S3ArtifactStore;
+import com.example.dvely.provisioning.infrastructure.SsmParameterStore;
 import com.example.dvely.provisioning.application.result.ServerProvisionSubmitResult;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
@@ -35,6 +41,10 @@ public class ServerProvisioningCommandService {
     private final ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
     private final ApprovalRepository approvalRepository;
+    private final ProjectRepository projectRepository;
+    private final Ec2Provisioner ec2;
+    private final SsmParameterStore ssm;
+    private final S3ArtifactStore s3;
 
     public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType) {
         resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
@@ -52,6 +62,36 @@ public class ServerProvisioningCommandService {
         log.info("EC2 서버 프로비저닝 승인 대기: serverId={} approvalId={} projectId={} type={}",
                 record.getId(), approval.getId(), projectId, tier);
         return new ServerProvisionSubmitResult(true, record.getId(), List.of(approval.getId()));
+    }
+
+    /**
+     * 서버를 종료한다 — 인스턴스 terminate + SSM 파라미터·S3 아티팩트 정리 후 TERMINATED. 잊힌 서버가
+     * 무한정 과금되지 않게 하는 비용 가드레일. 실제 과금 자원은 인스턴스뿐이라 그것부터 확실히 끄고,
+     * 부수 자원(SSM·S3)도 정리한다. 이미 종료된 것은 조용히 지나간다(멱등).
+     */
+    public void terminate(Long ownerUserId, Long serverId) {
+        ProvisionedServer server = serverRepository.findById(serverId)
+                .orElseThrow(() -> new NotFoundException("서버를 찾을 수 없습니다. serverId=" + serverId));
+        // 소유권 확인 — 이 프로젝트가 요청자 것인지.
+        projectRepository.findByIdAndOwnerUserId(server.getProjectId(), ownerUserId)
+                .orElseThrow(() -> new NotFoundException("서버를 찾을 수 없거나 접근 권한이 없습니다. serverId=" + serverId));
+
+        if (server.getStatus() == ServerStatus.TERMINATED) {
+            return;   // 이미 종료됨
+        }
+        if (server.getCloudConnectionId() != null) {
+            cloudConnectionRepository.findById(server.getCloudConnectionId()).ifPresent(connection -> {
+                if (server.getInstanceId() != null) {
+                    ec2.terminate(connection, server.getInstanceId());
+                }
+                ssm.deleteAllForProject(connection, server.getProjectId());
+                s3.deleteJar(connection, s3.bucketNameFor(connection), s3.jarKeyFor(server.getProjectId()));
+            });
+        }
+        server.markTerminated();
+        serverRepository.save(server);
+        log.info("EC2 서버 종료: serverId={} projectId={} instanceId={}",
+                serverId, server.getProjectId(), server.getInstanceId());
     }
 
     private CloudConnection resolveConnectedCloud(Long ownerUserId, Long projectId) {
