@@ -59,6 +59,9 @@ dependencies {
     implementation 'software.amazon.awssdk:sts'
     implementation 'software.amazon.awssdk:rds'
     implementation 'software.amazon.awssdk:ec2'
+    implementation 'software.amazon.awssdk:s3'
+    implementation 'software.amazon.awssdk:iam'
+    implementation 'software.amazon.awssdk:ssm'
     implementation 'software.amazon.awssdk:url-connection-client'
     implementation 'com.google.auth:google-auth-library-oauth2-http:1.43.0'
 }
