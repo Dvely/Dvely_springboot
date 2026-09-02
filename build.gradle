@@ -71,6 +71,14 @@ tasks.named('test') {
 	// LocalDbProvisionerIntegrationTest 는 실행 중인 Docker 데몬을 요구해 기본 비활성이다.
 	// 로컬에서 -Ddocker.it=true 로 켤 때만 그 값을 포크된 테스트 JVM 으로 전달해 실측한다.
 	systemProperty 'docker.it', System.getProperty('docker.it', 'false')
+
+	// 웹훅 배달 워커의 폴링 주기를 테스트 동안 사실상 꺼둔다(기본 1000ms → 1시간). 이 워커는 항상 켜진
+	// @Scheduled 빈이라, 통합 테스트가 심은 PENDING/RETRY_WAIT 행을 테스트가 claimPending 으로 집기
+	// 전에 백그라운드에서 가로채 처리해버려 WebhookDeliveryClaimIntegrationTest 가 간헐적으로 실패했다.
+	// @TestPropertySource 로는 한 클래스의 컨텍스트만 조용해질 뿐 다른 캐시된 컨텍스트의 워커가 같은
+	// 공유 DB 를 계속 폴링해 소용없었다 — 시스템 프로퍼티는 테스트 JVM 의 모든 Spring 컨텍스트에 적용돼
+	// 근본을 막는다. 이 워커 자동 폴링에 의존하는 테스트는 없다(그 클래스는 claimPending 을 직접 부른다).
+	systemProperty 'qeploy.webhook.worker.poll-interval-ms', '3600000'
 }
 
 tasks.withType(JavaCompile).configureEach {
