@@ -2,7 +2,9 @@ package com.example.dvely.provisioning.infrastructure.worker;
 
 import com.example.dvely.provisioning.application.service.BackendDeployRunner;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
+import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepository;
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
+import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,11 +24,18 @@ public class BackendDeployWorker {
     private static final int BATCH = 5;
 
     private final ProvisionedServerRepository serverRepository;
+    private final ProvisionedDatabaseRepository databaseRepository;
     private final BackendDeployRunner deployRunner;
 
     @Scheduled(fixedDelayString = "${qeploy.provisioning.server-deploy-interval-ms:15000}")
     public void processQueued() {
         for (ProvisionedServer queued : serverRepository.findByStatus(ServerStatus.QUEUED, BATCH)) {
+            // 의존성 게이트: 같은 프로젝트의 DB 가 아직 생성 중(PENDING·PROVISIONING)이면 기다린다 —
+            // 서버가 DB 접속정보를 env 로 받아야 하므로, DB 가 READY 된 뒤 배포해야 한다. 다음 주기에
+            // 다시 본다(claim 하지 않으므로 QUEUED 로 남는다).
+            if (hasInProgressDatabase(queued.getProjectId())) {
+                continue;
+            }
             if (!serverRepository.claimForBuild(queued.getId())) {
                 continue;   // 다른 워커/인스턴스가 이미 집었다
             }
@@ -43,5 +52,11 @@ public class BackendDeployWorker {
                         building.getId(), e.toString());
             }
         }
+    }
+
+    private boolean hasInProgressDatabase(Long projectId) {
+        return databaseRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
+                .anyMatch(db -> db.getStatus() == ProvisionStatus.PENDING
+                        || db.getStatus() == ProvisionStatus.PROVISIONING);
     }
 }

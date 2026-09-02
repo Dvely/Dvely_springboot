@@ -63,7 +63,7 @@ public class DecisionAgentService {
                  * Empty string if no domain is mentioned
                - "instruction": a complete domain-configuration directive written for a domain agent
 
-            4. CHAT — Anything that does not fit CODE, DEPLOY, DOMAIN_BIND, INFRA_OPERATE, or RUNTIME_SETUP.
+            4. CHAT — Anything that does not fit CODE, DEPLOY, DOMAIN_BIND, INFRA_OPERATE, RUNTIME_SETUP, or BACKEND_DEPLOY.
                Parameters:
                - "instruction": a clear restatement of the user's question or request
 
@@ -104,10 +104,29 @@ public class DecisionAgentService {
                - "startCommand": the server start command only if the user named one (e.g. "npm start");
                  empty string otherwise
 
+            7. BACKEND_DEPLOY — User wants to deploy their backend to PRODUCTION on their own cloud
+               (a real, always-on server on AWS), NOT a temporary preview and NOT a static site.
+               Triggers: "운영 배포", "실제 서버에 올려줘", "프로덕션 배포", "EC2 에 배포", "AWS 에 올려줘",
+               "백엔드 배포해줘" (in a production sense), "서버 띄워서 실제로 서비스".
+               This provisions a real EC2 instance (billed) and, if a database is needed, an RDS
+               database — both go through an approval the user must confirm.
+               Distinguish carefully:
+               - DEPLOY is for a STATIC frontend to GitHub Pages — not a running server.
+               - RUNTIME_SETUP makes the PREVIEW run as a backend (temporary, for trying it out).
+               - BACKEND_DEPLOY puts the backend on the user's real cloud for production use.
+               Parameters:
+               - "instanceType": EC2 tier only if the user named one (e.g. "t3.small"); empty string
+                 otherwise (defaults to t3.micro, free-tier eligible)
+               - "dbEngine": "MYSQL" (default) or "POSTGRESQL" if the app needs a production database.
+                 A data-storing backend needs one — set it so the deploy also provisions RDS and wires
+                 the app to it. Leave empty only if the app genuinely needs no database.
+
             Rules:
             - A single message may contain multiple intents — include all of them as separate steps.
             - Order the steps by logical execution sequence (e.g. CODE before DEPLOY).
             - When the user wants a backend/server/API/DB, put RUNTIME_SETUP BEFORE the CODE step.
+            - "Preview / 확인 / try it out" for a backend → RUNTIME_SETUP. "Production / 운영 / 실제 배포"
+              of a backend → BACKEND_DEPLOY. Do not use DEPLOY (GitHub Pages) for a server backend.
             - Each step's instruction must be fully understandable on its own, without access to the
               original user message.
             - Respond ONLY with a valid JSON object. No markdown, no code blocks, no extra text.

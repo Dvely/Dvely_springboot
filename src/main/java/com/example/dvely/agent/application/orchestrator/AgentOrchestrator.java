@@ -464,6 +464,9 @@ public class AgentOrchestrator {
                     .orElse(null);
             // 프리뷰 런타임 설정은 과금이 없고 되돌릴 수 있는 프로젝트 설정이라 승인 없이 즉시 적용한다.
             case RUNTIME_SETUP -> null;
+            // BACKEND_DEPLOY 는 스텝 안에서 표준 승인(DATABASE_PROVISION·SERVER_PROVISION)을
+            // 직접 만들므로 플랜 레벨 승인은 없다(RUNTIME_SETUP 과 동일).
+            case BACKEND_DEPLOY -> null;
             case CHAT -> null;
         };
     }
