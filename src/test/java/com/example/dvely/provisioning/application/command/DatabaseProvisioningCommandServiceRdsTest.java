@@ -27,6 +27,8 @@ import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ProvisionMethod;
 import com.example.dvely.provisioning.domain.value.ProvisionOrigin;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
+import com.example.dvely.provisioning.infrastructure.RdsProvisioner;
+import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import com.example.dvely.provisioning.infrastructure.config.ProvisioningProperties;
 import java.time.LocalDateTime;
 import java.util.Optional;
@@ -47,6 +49,7 @@ class DatabaseProvisioningCommandServiceRdsTest {
     @Mock private ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
     @Mock private CloudConnectionRepository cloudConnectionRepository;
     @Mock private ApprovalRepository approvalRepository;
+    @Mock private RdsProvisioner rdsProvisioner;
 
     @InjectMocks private DatabaseProvisioningCommandService service;
 
@@ -102,6 +105,39 @@ class DatabaseProvisioningCommandServiceRdsTest {
                 .isInstanceOf(IllegalStateException.class);
 
         verify(approvalRepository, never()).save(any());
+    }
+
+    @Test
+    void deleteRdsCallsDeleteInstanceAndMarksExpired() {
+        ProvisionedDatabase row = new ProvisionedDatabase(1L, PROJECT, ProvisionMethod.RDS,
+                DatabaseEngine.MYSQL, ProvisionOrigin.MANUAL, ProvisionStatus.READY, "qeploy-7-abc",
+                "host", 3306, "app", "qeadmin", "pw", null, null, null,
+                java.time.LocalDateTime.now(), java.time.LocalDateTime.now());
+        row.assignCloudConnection(CONN_ID);
+        when(databaseRepository.findById(1L)).thenReturn(Optional.of(row));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+
+        service.deleteDatabase(OWNER, 1L);
+
+        verify(rdsProvisioner).deleteInstance(any(), org.mockito.ArgumentMatchers.eq("qeploy-7-abc"));
+        ArgumentCaptor<ProvisionedDatabase> saved = ArgumentCaptor.forClass(ProvisionedDatabase.class);
+        verify(databaseRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(ProvisionStatus.EXPIRED);
+    }
+
+    @Test
+    void deleteIsIdempotentWhenAlreadyExpired() {
+        ProvisionedDatabase row = new ProvisionedDatabase(1L, PROJECT, ProvisionMethod.RDS,
+                DatabaseEngine.MYSQL, ProvisionOrigin.MANUAL, ProvisionStatus.EXPIRED, "qeploy-7-abc",
+                null, 3306, null, null, null, null, null, null,
+                java.time.LocalDateTime.now(), java.time.LocalDateTime.now());
+        when(databaseRepository.findById(1L)).thenReturn(Optional.of(row));
+
+        service.deleteDatabase(OWNER, 1L);
+
+        verify(rdsProvisioner, never()).deleteInstance(any(), any());
+        verify(databaseRepository, never()).save(any());
     }
 
     private Approval approval(Long id) {
