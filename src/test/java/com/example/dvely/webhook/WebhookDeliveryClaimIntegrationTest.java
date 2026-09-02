@@ -42,14 +42,17 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * claim()'s, so the three "── other null-write paths" tests below give it the same real-DB proof
  * rather than assuming V29's column relaxation covers it by association.
  * <p>
- * This class shares the real, always-on {@code WebhookDeliveryWorker} scheduled bean with the rest
- * of the suite (same convention as {@code OrchestrationConcurrencyIntegrationTest} tolerating
- * {@code AgentOrchestrator}'s own scheduler) rather than trying to suppress it — {@code
- * @TestPropertySource}-ing a longer poll interval here would only stop *this test class's own*
- * Spring context's worker instance, not the separately-cached default context's, so it cannot
- * actually guarantee isolation and was dropped as false safety. Instead, every {@code
- * claimPending} call below passes a poll limit far larger than {@code
- * WebhookDeliveryWorker#CLAIM_BATCH_SIZE} (10): {@code findRunnableIds} orders by {@code
+ * The {@code WebhookDeliveryWorker}'s always-on {@code @Scheduled} polling is quieted for the whole
+ * test JVM by {@code build.gradle}'s {@code systemProperty 'qeploy.webhook.worker.poll-interval-ms'
+ * = 3600000}. Without it, the background worker races this test: it claims and processes a freshly
+ * seeded PENDING/RETRY_WAIT row before this test's own {@code claimPending} can, intermittently
+ * failing the assertions (that was the observed CI flake). {@code @TestPropertySource} here was
+ * false safety — it only quiets *this* class's context worker, while other separately-cached
+ * contexts keep polling the shared DB; a JVM-wide system property reaches every Spring context.
+ * No test depends on the worker auto-polling (this class calls {@code claimPending} directly).
+ * <p>
+ * Separately, every {@code claimPending} call below still passes a poll limit far larger than
+ * {@code WebhookDeliveryWorker#CLAIM_BATCH_SIZE} (10): {@code findRunnableIds} orders by {@code
  * receivedAt asc}, so a small limit combined with older leftover claimable rows from earlier runs
  * of this same dedicated schema can silently crowd a freshly seeded row out of the batch — the
  * large limit makes every assertion depend only on this test's own row, not on shared-schema
