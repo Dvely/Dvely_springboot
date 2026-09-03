@@ -155,11 +155,12 @@ public class Ec2Provisioner {
         }
     }
 
-    private static final String SG_NAME = "qeploy-backend-8080";
+    private static final String SG_NAME = "qeploy-backend";
 
     /**
-     * 앱 포트(8080)만 인터넷에 여는 보안그룹을 기본 VPC 에 보장하고 그 ID 를 돌려준다(멱등). SSH(22)는
-     * 열지 않는다 — 우리는 인스턴스에 접속하지 않으므로. 이미 있으면 그대로 재사용한다.
+     * 백엔드 인바운드 보안그룹을 기본 VPC 에 보장하고 그 ID 를 돌려준다(멱등, 이미 있으면 재사용).
+     * 여는 포트: 앱(8080, 직접 접속·헬스체크) + 443(Caddy HTTPS) + 80(Let's Encrypt ACME 챌린지).
+     * SSH(22)는 열지 않는다 — 인스턴스에 접속하지 않는다(재설정이 필요 없게 Caddy on-demand 를 쓴다).
      */
     public String ensureSecurityGroup(CloudConnection connection, int appPort) {
         AwsAccess access = credentialsResolver.resolve(connection);
@@ -176,14 +177,19 @@ public class Ec2Provisioner {
                     .vpcId(vpcId).build()).groupId();
             ec2.authorizeSecurityGroupIngress(AuthorizeSecurityGroupIngressRequest.builder()
                     .groupId(groupId)
-                    .ipPermissions(IpPermission.builder()
-                            .ipProtocol("tcp").fromPort(appPort).toPort(appPort)
-                            .ipRanges(IpRange.builder().cidrIp("0.0.0.0/0").build())
-                            .build())
+                    .ipPermissions(tcpFromAnywhere(appPort), tcpFromAnywhere(443), tcpFromAnywhere(80))
                     .build());
-            log.info("EC2 보안그룹 생성: name={} groupId={} port={}", SG_NAME, groupId, appPort);
+            log.info("EC2 보안그룹 생성: name={} groupId={} ports={},443,80", SG_NAME, groupId, appPort);
             return groupId;
         }
+    }
+
+    /** 임의 출처(0.0.0.0/0)에서 해당 TCP 포트를 여는 인그레스 규칙. */
+    private IpPermission tcpFromAnywhere(int port) {
+        return IpPermission.builder()
+                .ipProtocol("tcp").fromPort(port).toPort(port)
+                .ipRanges(IpRange.builder().cidrIp("0.0.0.0/0").build())
+                .build();
     }
 
     private String defaultVpcId(Ec2Client ec2) {

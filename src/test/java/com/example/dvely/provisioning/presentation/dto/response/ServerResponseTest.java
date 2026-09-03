@@ -18,7 +18,7 @@ class ServerResponseTest {
     void domainUrlAndUrlWhenRunningWithDomain() {
         ServerResponse r = ServerResponse.from(server(ServerStatus.RUNNING, "3.35.182.236"), "be-test.qeploy.com");
         assertThat(r.url()).isEqualTo("http://3.35.182.236:8080");
-        assertThat(r.domainUrl()).isEqualTo("http://be-test.qeploy.com:8080");
+        assertThat(r.domainUrl()).isEqualTo("https://be-test.qeploy.com");
     }
 
     @Test

@@ -181,10 +181,14 @@ public class BackendDeployRunner {
      * 스스로 당겨온다. Amazon Linux 2023(dnf, aws cli v2 기본 포함).
      */
     private String userDataScript(String bucket, String key, Long projectId, int port) {
+        // 앱은 8080(localhost). HTTPS 는 Caddy 리버스프록시가 on-demand TLS 로 종단한다(도메인은 배포
+        // 후에 붙고 인스턴스에 SSH 가 없어 재설정을 못 하므로 on-demand). 남용 방지 ask 는 자기완결적 —
+        // *.qeploy.com 만 인증서 발급 허용(우리가 qeploy.com DNS 를 통제하므로 남의 도메인은 우리 IP 로
+        // 오지 못한다). Caddy·ask 설치 실패해도 앱은 이미 떠 있어 8080 헬스체크는 통과한다(HTTPS 만 없다).
         return """
                 #!/bin/bash
                 set -e
-                dnf install -y java-21-amazon-corretto-headless
+                dnf install -y java-21-amazon-corretto-headless python3
                 mkdir -p /opt/app && cd /opt/app
                 aws s3 cp s3://%s/%s /opt/app/app.jar
                 while read -r name value; do
@@ -192,7 +196,39 @@ public class BackendDeployRunner {
                 done < <(aws ssm get-parameters-by-path --path /qeploy/%d/ --with-decryption --recursive \
                   --query "Parameters[].[Name,Value]" --output text)
                 nohup java -jar /opt/app/app.jar --server.port=%d > /var/log/qeploy-app.log 2>&1 &
-                """.formatted(bucket, key, projectId, port);
+
+                set +e
+                cat > /opt/tls-ask.py <<'PYEOF'
+                import http.server, urllib.parse
+                class H(http.server.BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        q = urllib.parse.urlparse(self.path).query
+                        d = urllib.parse.parse_qs(q).get('domain', [''])[0].lower()
+                        self.send_response(200 if d.endswith('.qeploy.com') else 403)
+                        self.end_headers()
+                    def log_message(self, *a): pass
+                http.server.HTTPServer(('127.0.0.1', 9000), H).serve_forever()
+                PYEOF
+                nohup python3 /opt/tls-ask.py > /var/log/qeploy-tls-ask.log 2>&1 &
+
+                curl -sL "https://caddyserver.com/api/download?os=linux&arch=amd64" -o /usr/bin/caddy
+                chmod +x /usr/bin/caddy
+                cat > /opt/Caddyfile <<CADDYEOF
+                {
+                    email admin@qeploy.com
+                    on_demand_tls {
+                        ask http://127.0.0.1:9000
+                    }
+                }
+                *.qeploy.com {
+                    reverse_proxy 127.0.0.1:%d
+                    tls {
+                        on_demand
+                    }
+                }
+                CADDYEOF
+                nohup /usr/bin/caddy run --config /opt/Caddyfile --adapter caddyfile > /var/log/qeploy-caddy.log 2>&1 &
+                """.formatted(bucket, key, projectId, port, port);
     }
 
     private ProvisionFailureCode classify(RuntimeException e) {
