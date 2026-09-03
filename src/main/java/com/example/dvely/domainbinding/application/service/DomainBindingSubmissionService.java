@@ -83,13 +83,15 @@ public class DomainBindingSubmissionService {
 
     /**
      * 경로마다 HTTPS 실상이 다르다 — 승인 요약이 실제와 어긋나지 않게(FE 가 이 문장을 그대로 그린다).
-     * GitHub Pages 는 Cloudflare 엣지 인증서로 https 가 되고, AWS 백엔드는 지금 DNS-only(EIP:8080 http)
-     * 라 https 가 없다(프록시+Origin Rule 붙는 B 이후 바뀐다).
+     * GitHub Pages 는 Cloudflare 엣지 인증서로, AWS 백엔드는 인스턴스의 Caddy on-demand TLS 로 https 가
+     * 자동 적용된다(관리형은 DNS 를 우리가 걸어 바로, 커스텀은 사용자가 A 레코드를 EIP 로 건 뒤). 이 예측
+     * 문구는 hostingTarget 으로 갈리고, 바인딩 후 실측 {@code httpsEnforced} 로 화면이 갱신된다
+     * (AwsDomainHostingAdapter.verify 가 실제 https 를 프로브).
      */
     private String httpsNote(DomainHostingTarget target) {
         return switch (target) {
             case GITHUB_PAGES -> "HTTPS 강제 적용";
-            case AWS -> "http 직접 연결(HTTPS는 추후)";
+            case AWS -> "HTTPS 자동 적용(Caddy)";
             case GCP -> "미지원";
         };
     }
