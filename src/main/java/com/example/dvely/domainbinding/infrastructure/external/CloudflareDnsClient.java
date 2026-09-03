@@ -38,6 +38,26 @@ public class CloudflareDnsClient implements CloudflareDnsPort {
     }
 
     @Override
+    public String createARecord(String hostname, String ipAddress, boolean proxied) {
+        ensureConfigured();
+        CloudflareRecordResponse response = restClient().post()
+                .uri("/zones/{zoneId}/dns_records", properties.zoneId())
+                .body(Map.of(
+                        "type", "A",
+                        "name", hostname,
+                        "content", ipAddress,
+                        "ttl", properties.ttlOrAuto(),
+                        "proxied", proxied
+                ))
+                .retrieve()
+                .body(CloudflareRecordResponse.class);
+        if (response == null || !response.success() || response.result() == null) {
+            throw new IllegalStateException("Cloudflare A 레코드 생성 실패: " + errorMessage(response));
+        }
+        return response.result().id();
+    }
+
+    @Override
     public boolean recordExists(String hostname, String recordId) {
         ensureConfigured();
         return findRecord(hostname).stream()

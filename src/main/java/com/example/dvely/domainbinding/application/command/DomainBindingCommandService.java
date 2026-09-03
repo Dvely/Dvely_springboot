@@ -20,6 +20,7 @@ import com.example.dvely.domainbinding.domain.model.DomainBinding;
 import com.example.dvely.domainbinding.domain.repository.DomainBindingRepository;
 import com.example.dvely.domainbinding.domain.value.DomainStatus;
 import com.example.dvely.domainbinding.domain.value.DomainType;
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.domain.value.VerificationMethod;
 import com.example.dvely.domainbinding.infrastructure.config.CloudflareProperties;
 import com.example.dvely.project.domain.model.Project;
@@ -50,7 +51,9 @@ public class DomainBindingCommandService {
     public DomainBindingResult bindDomain(Long ownerUserId, Long projectId, BindDomainCommand command) {
         Project project = resolveProject(ownerUserId, projectId);
         DomainHostingAdapter adapter = hostingAdapterRegistry.resolve(command.hostingTarget());
-        User user = resolveUser(ownerUserId);
+        // GitHub Pages(프론트)만 사용자 GitHub 토큰이 필요하다(Pages 커스텀도메인 API). AWS 백엔드는
+        // 그 게이트를 안 거친다 — 안 그러면 GitHub 토큰 없는 사용자가 백엔드 도메인도 못 붙인다.
+        User user = requiresGithubToken(command.hostingTarget()) ? resolveUser(ownerUserId) : null;
         DomainHostingAdapter.Context context = toHostingContext(user, project);
         DomainBindingResult result;
         if (command.type() == DomainType.MANAGED_SUBDOMAIN) {
@@ -188,16 +191,22 @@ public class DomainBindingCommandService {
         ensureHostnameAvailable(hostname);
         String dnsTarget = resolveManagedDnsTarget(adapter, context);
         ensureDnsTargetDoesNotReferenceHostname(hostname, dnsTarget);
+        // 백엔드(AWS)는 대상이 IP(EIP)라 CNAME 을 못 건다 — A 레코드로 EIP 를 가리킨다(현재 DNS-only,
+        // proxied=false → http://label:8080 직결; HTTPS 는 B 후속). 프론트(GitHub Pages)는 그대로 CNAME.
+        boolean backendTarget = command.hostingTarget() == DomainHostingTarget.AWS;
+        VerificationMethod method = backendTarget ? VerificationMethod.A : VerificationMethod.CNAME;
         DomainBinding domain = new DomainBinding(
                 project.getId(),
                 DomainType.MANAGED_SUBDOMAIN,
                 command.hostingTarget(),
                 hostname,
                 DomainStatus.PROVISIONING,
-                VerificationMethod.CNAME,
+                method,
                 dnsTarget
         );
-        String recordId = cloudflareDnsPort.createCnameRecord(hostname, dnsTarget);
+        String recordId = backendTarget
+                ? cloudflareDnsPort.createARecord(hostname, dnsTarget, false)
+                : cloudflareDnsPort.createCnameRecord(hostname, dnsTarget);
         try {
             adapter.bind(context, hostname);
             domain.assignCloudflareRecord(recordId);
@@ -251,6 +260,11 @@ public class DomainBindingCommandService {
                         "Project not found. projectId=" + projectId + ", ownerUserId=" + ownerUserId));
     }
 
+    private boolean requiresGithubToken(DomainHostingTarget target) {
+        // GitHub Pages 어댑터만 사용자 GitHub 토큰으로 Pages 커스텀도메인을 설정한다. AWS 백엔드는 불필요.
+        return target == DomainHostingTarget.GITHUB_PAGES;
+    }
+
     private User resolveUser(Long ownerUserId) {
         User user = userRepository.findById(ownerUserId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다. userId=" + ownerUserId));
@@ -302,7 +316,7 @@ public class DomainBindingCommandService {
 
     private DomainHostingAdapter.Context toHostingContext(User user, Project project) {
         return new DomainHostingAdapter.Context(
-                user.getGithubUserAccessToken(),
+                user == null ? null : user.getGithubUserAccessToken(),
                 project.getId(),
                 project.getSourceRepository(),
                 project.getDeploymentRepository(),
