@@ -89,16 +89,28 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       "Effect": "Allow",
       "Action": "rds:DescribeDBInstances",
       "Resource": "*"                       // Describe 계열은 리소스 스코프 불가(AWS 제약)
+    },
+    {
+      "Sid": "RdsServiceLinkedRole",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "arn:aws:iam::*:role/aws-service-role/rds.amazonaws.com/AWSServiceRoleForRDS",
+      "Condition": { "StringEquals": { "iam:AWSServiceName": "rds.amazonaws.com" } }
+      // RDS 를 처음 쓰는 계정은 첫 CreateDBInstance 가 AWSServiceRoleForRDS(서비스 연결 역할)를
+      // 자동 생성한다. 그 권한이 없으면 "permission to create service linked role" 로 400 실패한다
+      // (실계정 검증 2026-09-03). 조건으로 rds.amazonaws.com SLR 하나로만 좁혀 blast radius 를 막는다.
+      // 이미 RDS 를 써본 계정은 SLR 이 있어 이 액션이 호출되지 않는다.
     }
   ]
 }
 ```
 
-> **런타임 검증 상태(2026-09-03):** 위 액션·리소스 스코프는 실제 호출부(`Ec2Provisioner`,
-> `S3ArtifactStore`, `SsmParameterStore`, `Ec2InstanceRoleProvisioner`, `RdsProvisioner`)와
-> 1:1 대조해 확정했다. 다만 **이 최소권한 키만으로 실배포가 도는지의 e2e 검증은 EC2·IAM 경로가
-> 오늘(A) 진행 중이고, RDS 경로는 아직 미검증이다.** 지난 e2e 는 AWS Academy 의 넓은 키였다 —
-> 그때 RDS 가 된 것은 키가 넓어서였지 이 정책 때문이 아니다.
+> **런타임 검증 상태(2026-09-03):** EC2·IAM·EIP·SSM·S3 경로는 개인 계정 실배포로 검증 완료.
+> RDS 경로 검증 중 두 실계정 함정을 잡았다: (1) RDS 전용 SG(`qeploy-db`)를 명시하지 않으면 기본
+> SG 가 붙어 `qeploy-backend` SG 의 EC2 가 3306 에 못 붙는다 → `ensureDatabaseSecurityGroup`
+> 추가로 해결. (2) 처음 RDS 를 쓰는 계정은 서비스 연결 역할 자동 생성에 `iam:CreateServiceLinkedRole`
+> 이 필요하다 → 위 `RdsServiceLinkedRole` 로 해결. 지난 e2e 는 AWS Academy 의 넓은 키였다 — 그때
+> RDS 가 된 것은 키가 넓어서였지 이 정책 때문이 아니다.
 
 ## 인스턴스 자신이 받는 역할 (우리가 `/qeploy/` 아래 생성)
 
