@@ -15,8 +15,8 @@ public record ServerResponse(
         String host,
         int port,
         @Schema(description = "RUNNING 일 때만 원시 EIP 접속 URL, 아니면 null") String url,
-        @Schema(description = "백엔드에 연결된 도메인 URL(있고 RUNNING 일 때만). 현재 DNS-only http:8080; "
-                + "HTTPS 는 추후. 도메인 없으면 null — 그땐 url(EIP) 사용.") String domainUrl,
+        @Schema(description = "백엔드에 연결된 도메인 URL(있고 RUNNING 일 때만). Caddy 가 443 에서 HTTPS 종단 "
+                + "(https://{host}). 도메인 없으면 null — 그땐 url(EIP:8080) 사용.") String domainUrl,
         String instanceId,
         @Schema(description = "실패 분류. 사용자 거부는 null(=거부됨).") String errorCode,
         String errorMessage,
@@ -31,10 +31,10 @@ public record ServerResponse(
         boolean running = s.getStatus() == ServerStatus.RUNNING;
         String url = running && s.getPublicHost() != null
                 ? "http://" + s.getPublicHost() + ":" + s.getPort() : null;
-        // 도메인이 붙어 있으면 원시 EIP 대신 도메인 URL 도 함께 준다(FE 가 서버 카드에 우선 표시).
-        // 현재 DNS-only 라 http:8080; HTTPS(깔끔한 URL)는 B 이후.
+        // 도메인이 붙어 있으면 원시 EIP 대신 도메인 URL 을 준다(FE 가 서버 카드에 우선 표시). Caddy 가
+        // 인스턴스에서 443 HTTPS 로 종단하므로 포트 없는 https URL 이다.
         String domainUrl = running && domainHostname != null && !domainHostname.isBlank()
-                ? "http://" + domainHostname + ":" + s.getPort() : null;
+                ? "https://" + domainHostname : null;
         return new ServerResponse(
                 s.getId(), s.getProjectId(), s.getStatus().name(), s.getInstanceType(),
                 s.getPublicHost(), s.getPort(), url, domainUrl, s.getInstanceId(),
