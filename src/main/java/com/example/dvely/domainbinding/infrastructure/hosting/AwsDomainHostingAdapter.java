@@ -1,7 +1,7 @@
 package com.example.dvely.domainbinding.infrastructure.hosting;
 
 import com.example.dvely.domainbinding.application.port.out.BackendAddressPort;
-import com.example.dvely.domainbinding.application.port.out.BackendTlsProbePort;
+import com.example.dvely.domainbinding.application.port.out.HttpsProbePort;
 import com.example.dvely.domainbinding.application.port.out.DomainHostingAdapter;
 import com.example.dvely.domainbinding.domain.value.CertificateStatus;
 import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
@@ -23,7 +23,7 @@ import org.springframework.stereotype.Component;
 public class AwsDomainHostingAdapter implements DomainHostingAdapter {
 
     private final BackendAddressPort backendAddressPort;
-    private final BackendTlsProbePort tlsProbePort;
+    private final HttpsProbePort tlsProbePort;
 
     @Override
     public DomainHostingTarget target() {

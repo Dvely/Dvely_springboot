@@ -6,6 +6,7 @@ import com.example.dvely.deployment.domain.value.PackageManager;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.domainbinding.application.port.out.DomainHostingAdapter;
 import com.example.dvely.domainbinding.application.port.out.HostingCustomDomainPort;
+import com.example.dvely.domainbinding.application.port.out.HttpsProbePort;
 import com.example.dvely.domainbinding.domain.value.CertificateStatus;
 import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import java.util.Locale;
@@ -25,6 +26,7 @@ public class GithubPagesDomainHostingAdapter implements DomainHostingAdapter {
     private final HostingCustomDomainPort hostingCustomDomainPort;
     private final GithubActionsPort githubActionsPort;
     private final GithubRepoPort githubRepoPort;
+    private final HttpsProbePort httpsProbePort;
 
     @Override
     public DomainHostingTarget target() {
@@ -56,6 +58,14 @@ public class GithubPagesDomainHostingAdapter implements DomainHostingAdapter {
                 && certificateStatus == CertificateStatus.ACTIVE
                 && !httpsEnforced) {
             hostingCustomDomainPort.setHttpsEnforced(context.userToken(), repository, true);
+            httpsEnforced = true;
+        }
+        // Cloudflare 프록시를 태운 도메인은 GitHub 이 자기 인증서를 검증 못 해 certificateState 가
+        // 영원히 PENDING 이지만, 엣지 인증서로 실제 https 는 된다. 실제 https 프로브가 성공하면
+        // httpsEnforced 를 실상대로 true 로 올린다(상향 보정만). certificateStatus 는 GitHub 관점의
+        // 값이라 그대로 둔다 — 그 필드는 "GitHub 인증서 상태"라는 자기 뜻에 충실해야 하고, 화면엔
+        // httpsEnforced 만 노출한다(프록시라 GitHub setHttpsEnforced API 는 부르지 않는다 — 무의미).
+        if (!httpsEnforced && httpsProbePort.isHttpsServing(hostname)) {
             httpsEnforced = true;
         }
         return new VerificationStatus(

@@ -5,7 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.domainbinding.application.port.out.BackendAddressPort;
-import com.example.dvely.domainbinding.application.port.out.BackendTlsProbePort;
+import com.example.dvely.domainbinding.application.port.out.HttpsProbePort;
 import com.example.dvely.domainbinding.application.port.out.DomainHostingAdapter.Context;
 import com.example.dvely.domainbinding.domain.value.CertificateStatus;
 import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
@@ -20,7 +20,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 class AwsDomainHostingAdapterTest {
 
     @Mock private BackendAddressPort backendAddressPort;
-    @Mock private BackendTlsProbePort tlsProbePort;
+    @Mock private HttpsProbePort tlsProbePort;
     @InjectMocks private AwsDomainHostingAdapter adapter;
 
     private final Context ctx = new Context(null, 7L, null, null, null, null);

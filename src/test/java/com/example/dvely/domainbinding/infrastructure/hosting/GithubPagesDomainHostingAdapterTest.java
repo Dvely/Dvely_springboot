@@ -11,6 +11,7 @@ import com.example.dvely.deployment.domain.value.PackageManager;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.domainbinding.application.port.out.DomainHostingAdapter;
 import com.example.dvely.domainbinding.application.port.out.HostingCustomDomainPort;
+import com.example.dvely.domainbinding.application.port.out.HttpsProbePort;
 import com.example.dvely.domainbinding.domain.value.CertificateStatus;
 import java.time.LocalDate;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +32,9 @@ class GithubPagesDomainHostingAdapterTest {
     @Mock
     private GithubRepoPort githubRepoPort;
 
+    @Mock
+    private HttpsProbePort httpsProbePort;
+
     private GithubPagesDomainHostingAdapter adapter;
     private DomainHostingAdapter.Context context;
 
@@ -39,7 +43,8 @@ class GithubPagesDomainHostingAdapterTest {
         adapter = new GithubPagesDomainHostingAdapter(
                 hostingCustomDomainPort,
                 githubActionsPort,
-                githubRepoPort
+                githubRepoPort,
+                httpsProbePort
         );
         context = new DomainHostingAdapter.Context(
                 "user-token",
@@ -117,5 +122,47 @@ class GithubPagesDomainHostingAdapterTest {
         assertThat(status.httpsEnforced()).isTrue();
         assertThat(status.certificateExpiresAt()).isEqualTo(expiresAt);
         verify(hostingCustomDomainPort).setHttpsEnforced("user-token", "octo/repo", true);
+    }
+
+    @Test
+    void verificationMarksHttpsEnforcedWhenProxiedDomainServesHttpsDespiteGithubPending() {
+        // Cloudflare 프록시 도메인: GitHub 은 자기 인증서를 검증 못 해 상태가 PENDING 으로 남지만
+        // 엣지 인증서로 실제 https 는 된다. 프로브 성공 → httpsEnforced 상향 보정, certificateStatus 는
+        // GitHub 관점(PENDING) 유지, GitHub setHttpsEnforced API 는 호출하지 않는다(프록시라 무의미).
+        when(hostingCustomDomainPort.getSiteStatus("user-token", "octo/repo"))
+                .thenReturn(new HostingCustomDomainPort.SiteStatus(
+                        "www.example.com",
+                        false,
+                        null,      // GitHub 이 인증서를 못 봄 → PENDING
+                        null
+                ));
+        when(httpsProbePort.isHttpsServing("www.example.com")).thenReturn(true);
+
+        var status = adapter.verify(context, "www.example.com");
+
+        assertThat(status.domainConfigured()).isTrue();
+        assertThat(status.httpsEnforced()).isTrue();                       // 실측으로 보정
+        assertThat(status.certificateStatus()).isEqualTo(CertificateStatus.PENDING);  // GitHub 관점 유지
+        verify(hostingCustomDomainPort, org.mockito.Mockito.never())
+                .setHttpsEnforced(org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.anyBoolean());
+    }
+
+    @Test
+    void verificationLeavesHttpsFalseWhenNeitherGithubNorProbeConfirms() {
+        // GitHub 도 아직이고 실제 https 도 아직: 프로브 실패 → httpsEnforced=false 유지.
+        when(hostingCustomDomainPort.getSiteStatus("user-token", "octo/repo"))
+                .thenReturn(new HostingCustomDomainPort.SiteStatus(
+                        "www.example.com",
+                        false,
+                        null,
+                        null
+                ));
+        when(httpsProbePort.isHttpsServing("www.example.com")).thenReturn(false);
+
+        var status = adapter.verify(context, "www.example.com");
+
+        assertThat(status.httpsEnforced()).isFalse();
     }
 }
