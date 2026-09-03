@@ -1,6 +1,7 @@
 package com.example.dvely.provisioning.domain.model;
 
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
+import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import java.time.LocalDateTime;
 
@@ -18,6 +19,9 @@ public class ProvisionedServer {
     private ServerStatus status;
     private Long cloudConnectionId;      // 생성에 쓴 연결. 워커가 같은 계정으로 조회한다.
     private String instanceId;           // EC2 인스턴스 ID — 정리 대상 지목
+    // 실행 형태(NATIVE=java -jar / DOCKER=docker run). 기본 NATIVE. 생성자 밖: elasticIp 와 같은 이유로
+    // 로드·설정 시 세팅(생성자 시그니처 churn 최소화). 모드 선택 배선(요청→submit)은 docker 경로에서.
+    private ServerDeployMode deployMode = ServerDeployMode.NATIVE;
     private String elasticIpAllocationId; // EIP 할당 ID — 종료 시 release 대상(생성자 밖: 로드·연결 시 세팅)
     private String publicHost;           // running 이후 채워짐
     private int port;                    // 앱 포트(기본 8080)
@@ -68,6 +72,13 @@ public class ProvisionedServer {
      * EIP 할당 ID 를 기록한다. 배포에서 EIP 를 연결한 뒤(안정 주소), 그리고 영속 계층 로드 시 복원할 때
      * 부른다. 종료 정리가 이 값으로 release 한다 — 없으면 유휴 EIP 가 계속 과금된다.
      */
+    /** 실행 형태를 지정한다(로드 시 복원, 또는 배포 요청 시 선택). null 이면 NATIVE 유지. */
+    public void assignDeployMode(ServerDeployMode deployMode) {
+        if (deployMode != null) {
+            this.deployMode = deployMode;
+        }
+    }
+
     public void assignElasticIp(String elasticIpAllocationId) {
         this.elasticIpAllocationId = elasticIpAllocationId;   // updatedAt 은 건드리지 않음(로드 복원 겸용)
     }
@@ -134,6 +145,7 @@ public class ProvisionedServer {
     public ServerStatus getStatus() { return status; }
     public Long getCloudConnectionId() { return cloudConnectionId; }
     public String getInstanceId() { return instanceId; }
+    public ServerDeployMode getDeployMode() { return deployMode; }
     public String getElasticIpAllocationId() { return elasticIpAllocationId; }
     public String getPublicHost() { return publicHost; }
     public int getPort() { return port; }
