@@ -48,6 +48,20 @@ qeploy:
       # gpt-4o는 reasoning_effort를 받지 않으므로 기본값은 비어 있다. o-시리즈 등 추론 모델을
       # allowed-models에 추가할 때 함께 등록한다.
       thinking-models: ${QEPLOY_AI_OPENAI_THINKING_MODELS:}
+    glm:
+      # OpenRouter 경유 GLM. OpenRouter 는 OpenAI 챗 컴플리션 형식을 그대로 쓰므로 전송 규격은
+      # openai 와 같고, 키/엔드포인트/모델 슬러그만 다르다.
+      api-key: ${QEPLOY_AI_GLM_API_KEY:${OPENROUTER_API_KEY:}}
+      model: ${QEPLOY_AI_GLM_MODEL:z-ai/glm-4.6}
+      allowed-models: ${QEPLOY_AI_GLM_ALLOWED_MODELS:}
+      # GLM 4.6 은 OpenRouter 의 reasoning 파라미터를 받는다. 목록 밖 모델에 thinking 을 요청하면
+      # 조용히 무시하지 않고 400 으로 거절한다.
+      thinking-models: ${QEPLOY_AI_GLM_THINKING_MODELS:z-ai/glm-4.6}
+      # 챗 컴플리션 전체 URL(호스트 접두사가 아니다). Z.ai 직결이나 자체 게이트웨이로 바꿀 때 쓴다.
+      base-url: ${QEPLOY_AI_GLM_BASE_URL:https://openrouter.ai/api/v1/chat/completions}
+      # OpenRouter 대시보드/랭킹에서 이 서비스 호출을 식별하는 선택 헤더. 비우면 보내지 않는다.
+      referer: ${QEPLOY_AI_GLM_REFERER:}
+      title: ${QEPLOY_AI_GLM_TITLE:}
     code-agent:
       # CODE 스텝 1회 실행에서 허용하는 LLM 왕복 횟수. 소진되면 성공이 아니라 실패로 처리되고
       # 같은 컨테이너에서 이어서 재시도된다(AgentIterationLimitException).

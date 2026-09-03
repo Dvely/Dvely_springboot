@@ -11,12 +11,17 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+/**
+ * The tool-calling half of {@link GlmClient} — what the CODE agent's loop runs GLM through.
+ *
+ * <p>OpenRouter returns OpenAI-shaped {@code tool_calls}, so the transcript CodeAgentService builds
+ * for GLM is byte-for-byte the OpenAI one; that is why the two share a loop rather than each having
+ * their own.</p>
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class OpenAiToolClient implements LlmToolPort {
-
-    private static final String API_URL = "https://api.openai.com/v1/chat/completions";
+public class GlmToolClient implements LlmToolPort {
 
     private final AiProperties aiProperties;
 
@@ -34,16 +39,6 @@ public class OpenAiToolClient implements LlmToolPort {
             List<ToolDefinition> tools,
             AiModelOptions modelOptions) {
         return OpenAiCompatibleChat.completeWithTools(
-                endpoint(), systemPrompt, messages, tools, modelOptions);
-    }
-
-    private OpenAiCompatibleChat.Endpoint endpoint() {
-        return new OpenAiCompatibleChat.Endpoint(
-                OpenAiClient.PROVIDER_NAME,
-                API_URL,
-                aiProperties.getOpenai(),
-                LlmRequestOptions.ReasoningStyle.REASONING_EFFORT,
-                Map.of()
-        );
+                GlmClient.endpoint(aiProperties), systemPrompt, messages, tools, modelOptions);
     }
 }

@@ -66,6 +66,30 @@ class LlmRequestOptionsTest {
         assertThat(reasoningEffortFor(ThinkingLevel.HIGH)).isEqualTo("high");
     }
 
+    @Test
+    void asksOpenRouterForReasoningInItsOwnSpellingRatherThanOpenAis() {
+        // OpenRouter is wire-compatible with OpenAI everywhere else, but reasoning is the one
+        // parameter it defines itself. Sending reasoning_effort there risks the worst outcome
+        // available: a request that is accepted and quietly thinks no harder than before.
+        Map<String, Object> body = new HashMap<>();
+
+        LlmRequestOptions.applyOpenAiCompatible(
+                body, options(ThinkingLevel.HIGH), LlmRequestOptions.ReasoningStyle.OPENROUTER_REASONING);
+
+        assertThat(body).doesNotContainKey("reasoning_effort");
+        assertThat(body).containsEntry("reasoning", Map.of("effort", "high"));
+    }
+
+    @Test
+    void sendsNoReasoningToOpenRouterWhenThinkingIsOff() {
+        Map<String, Object> body = new HashMap<>();
+
+        LlmRequestOptions.applyOpenAiCompatible(
+                body, options(ThinkingLevel.OFF), LlmRequestOptions.ReasoningStyle.OPENROUTER_REASONING);
+
+        assertThat(body).doesNotContainKey("reasoning");
+    }
+
     private int budgetFor(ThinkingLevel level) {
         Map<String, Object> body = new HashMap<>();
         LlmRequestOptions.applyAnthropic(body, options(level), BASE_MAX_TOKENS);

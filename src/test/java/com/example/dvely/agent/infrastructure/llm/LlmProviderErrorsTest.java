@@ -35,6 +35,33 @@ class LlmProviderErrorsTest {
     }
 
     @Test
+    void openRouterReportsAnEmptyBalanceAsA402WithNoMarkerInTheBody() {
+        LlmProviderException exception = translated(
+                HttpClientErrorException.create(HttpStatus.PAYMENT_REQUIRED, "Payment Required",
+                        HttpHeaders.EMPTY,
+                        "{\"error\":{\"message\":\"Requires more credits\"}}".getBytes(StandardCharsets.UTF_8),
+                        StandardCharsets.UTF_8)
+        );
+
+        // Without the status check this falls through to UPSTREAM_ERROR, which is retryable — and
+        // the task would spend its whole retry budget on a call that cannot start succeeding.
+        assertThat(exception.reason()).isEqualTo(Reason.QUOTA_EXCEEDED);
+        assertThat(exception.retryable()).isFalse();
+    }
+
+    @Test
+    void recognisesOpenRoutersInsufficientCreditsWording() {
+        LlmProviderException exception = translated(
+                HttpClientErrorException.create(HttpStatus.TOO_MANY_REQUESTS, "Too Many Requests",
+                        HttpHeaders.EMPTY,
+                        "{\"error\":{\"message\":\"Insufficient credits\"}}".getBytes(StandardCharsets.UTF_8),
+                        StandardCharsets.UTF_8)
+        );
+
+        assertThat(exception.reason()).isEqualTo(Reason.QUOTA_EXCEEDED);
+    }
+
+    @Test
     void openAiReportsAnExhaustedBalanceAsA429WithInsufficientQuota() {
         LlmProviderException exception = translated(
                 HttpClientErrorException.create(HttpStatus.TOO_MANY_REQUESTS, "Too Many Requests",

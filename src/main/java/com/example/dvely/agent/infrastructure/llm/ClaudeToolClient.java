@@ -1,5 +1,6 @@
 package com.example.dvely.agent.infrastructure.llm;
 
+import com.example.dvely.agent.application.port.out.LlmToolPort;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
@@ -19,7 +20,7 @@ import java.util.Map;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class ClaudeToolClient {
+public class ClaudeToolClient implements LlmToolPort {
 
     private static final String API_URL     = "https://api.anthropic.com/v1/messages";
     private static final String API_VERSION = "2023-06-01";
@@ -41,6 +42,7 @@ public class ClaudeToolClient {
         return completeWithTools(systemPrompt, messages, tools, AiModelOptions.defaults());
     }
 
+    @Override
     @SuppressWarnings("unchecked")
     public LlmToolResponse completeWithTools(
             String systemPrompt,
