@@ -19,8 +19,8 @@ import software.amazon.awssdk.services.iam.model.PutRolePolicyRequest;
 
 /**
  * EC2 인스턴스가 달고 뜰 IAM 역할·인스턴스 프로파일을 사용자 계정에 <b>멱등하게</b> 만든다.
- * 사용자가 IAM 을 손수 만들 필요 없이(비전문가 진입장벽 제거) 우리가 {@code /qeploy/} 경로에
- * 최소권한으로 생성한다 — 인스턴스는 자기 프로젝트의 SSM 파라미터·S3 아티팩트만 읽는다.
+ * 사용자가 IAM 을 손수 만들 필요 없이(비전문가 진입장벽 제거) 우리가 {@code qeploy-instance-*}
+ * 이름으로 최소권한으로 생성한다 — 인스턴스는 자기 프로젝트의 SSM 파라미터·S3 아티팩트만 읽는다.
  *
  * <p>같은 프로젝트로 다시 부르면 이미 있는 것을 재사용한다(getRole/getInstanceProfile 로 확인).
  * <b>주의:</b> IAM 은 최종적 일관성이라, 방금 만든 프로파일로 즉시 runInstances 하면 실패할 수 있다 —
@@ -31,8 +31,11 @@ import software.amazon.awssdk.services.iam.model.PutRolePolicyRequest;
 @RequiredArgsConstructor
 public class Ec2InstanceRoleProvisioner {
 
-    private static final String PATH = "/qeploy/";
-
+    // 역할·프로파일은 경로(path) 없이 이름 접두사 qeploy-instance-* 로만 스코프한다.
+    // 경로(/qeploy/)로 만들면 존재 확인용 getRole(name) 이 "아직 없는" 역할을 평면 ARN
+    // (role/qeploy-instance-{id}) 으로 권한평가하는데, 정책이 경로 ARN(role/qeploy/*)만 허용하면
+    // 그 Get 이 iam:GetRole 거부로 막힌다(실계정 A 검증에서 확인). 이름 접두사 스코프는 생성·조회의
+    // ARN 이 항상 평면으로 일치해 이 함정을 없앤다 — 격리 범위는 접두사가 동일하게 보장한다.
     private final AwsCredentialsResolver credentialsResolver;
 
     /** EC2 가 이 역할을 맡을 수 있게 하는 신뢰 정책. */
@@ -62,7 +65,7 @@ public class Ec2InstanceRoleProvisioner {
             // 아래에서 만든다
         }
         iam.createRole(CreateRoleRequest.builder()
-                .roleName(name).path(PATH)
+                .roleName(name)
                 .assumeRolePolicyDocument(TRUST_POLICY)
                 .description("Qeploy backend instance role for project " + projectId)
                 .build());
@@ -86,7 +89,7 @@ public class Ec2InstanceRoleProvisioner {
             // 아래에서 만든다
         }
         iam.createInstanceProfile(CreateInstanceProfileRequest.builder()
-                .instanceProfileName(name).path(PATH).build());
+                .instanceProfileName(name).build());
         iam.addRoleToInstanceProfile(AddRoleToInstanceProfileRequest.builder()
                 .instanceProfileName(name).roleName(name).build());
         log.info("IAM 인스턴스 프로파일 생성: profile={}", name);
