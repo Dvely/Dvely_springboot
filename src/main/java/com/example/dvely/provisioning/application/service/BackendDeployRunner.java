@@ -190,11 +190,15 @@ public class BackendDeployRunner {
      * 부팅 스크립트. 비밀은 담지 않는다 — S3 에서 jar 를, SSM 경로에서 env 를 인스턴스 IAM 역할로
      * 스스로 당겨온다. Amazon Linux 2023(dnf, aws cli v2 기본 포함).
      */
-    private String userDataScript(String bucket, String key, Long projectId, int port, String tlsAskBase) {
-        // 앱은 8080(localhost). HTTPS 는 Caddy 리버스프록시가 on-demand TLS 로 종단한다(도메인은 배포
-        // 후에 붙고 인스턴스에 SSH 가 없어 재설정을 못 하므로 on-demand). 남용 방지 ask 는 자기완결적 —
-        // *.qeploy.com 만 인증서 발급 허용(우리가 qeploy.com DNS 를 통제하므로 남의 도메인은 우리 IP 로
-        // 오지 못한다). Caddy·ask 설치 실패해도 앱은 이미 떠 있어 8080 헬스체크는 통과한다(HTTPS 만 없다).
+    // 앱은 8080(localhost). HTTPS 는 Caddy 리버스프록시가 on-demand TLS 로 종단한다(도메인은 배포
+    // 후에 붙고 인스턴스에 SSH 가 없어 재설정을 못 하므로 on-demand). 남용 방지 ask 는 자기완결적 —
+    // *.qeploy.com 만 인증서 발급 허용(우리가 qeploy.com DNS 를 통제하므로 남의 도메인은 우리 IP 로
+    // 오지 못한다). Caddy·ask 설치 실패해도 앱은 이미 떠 있어 8080 헬스체크는 통과한다(HTTPS 만 없다).
+    //
+    // NATIVE 모드: jar 를 받아 java -jar. DOCKER 모드는 dockerUserDataScript(이미지 load 후 run). HTTPS
+    // 종단(Caddy·ask)은 두 모드 공통(httpsSection) — Caddy 는 localhost:port 로 프록시하므로 실행 형태와
+    // 무관하다.
+    static String userDataScript(String bucket, String key, Long projectId, int port, String tlsAskBase) {
         return """
                 #!/bin/bash
                 set -e
@@ -206,6 +210,38 @@ public class BackendDeployRunner {
                 done < <(aws ssm get-parameters-by-path --path /qeploy/%d/ --with-decryption --recursive \
                   --query "Parameters[].[Name,Value]" --output text)
                 nohup java -jar /opt/app/app.jar --server.port=%d > /var/log/qeploy-app.log 2>&1 &
+                """.formatted(bucket, key, projectId, port)
+                + httpsSection(port, tlsAskBase);
+    }
+
+    /**
+     * DOCKER 모드 user-data. 이미지 tar 를 S3 에서 받아 {@code docker load} 후 {@code run} 한다. 앱은
+     * 컨테이너 안에서 SERVER_PORT(SSM env)로 리슨하고 호스트 port 로 매핑 — Caddy 는 native 와 똑같이
+     * localhost:port 로 프록시한다(HTTPS 공통). 비밀·env 는 SSM 에서 env 파일로 내려 {@code --env-file}
+     * 로 컨테이너에만 주입한다(호스트 셸에 export 하지 않는다).
+     */
+    static String dockerUserDataScript(String bucket, String key, Long projectId, String imageTag,
+                                       int port, String tlsAskBase) {
+        return """
+                #!/bin/bash
+                set -e
+                dnf install -y python3 docker
+                systemctl enable --now docker
+                mkdir -p /opt/app && cd /opt/app
+                aws s3 cp s3://%s/%s /opt/app/image.tar
+                docker load -i /opt/app/image.tar
+                aws ssm get-parameters-by-path --path /qeploy/%d/ --with-decryption --recursive \
+                  --query "Parameters[].[Name,Value]" --output text | while read -r name value; do
+                    echo "$(basename "$name")=$value"
+                  done > /opt/app/app.env
+                docker run -d --restart unless-stopped -p %d:%d --env-file /opt/app/app.env %s
+                """.formatted(bucket, key, projectId, port, port, imageTag)
+                + httpsSection(port, tlsAskBase);
+    }
+
+    /** HTTPS 종단(Caddy on-demand + 남용 방지 ask). NATIVE·DOCKER 공통 — localhost:port 로 프록시. */
+    static String httpsSection(int port, String tlsAskBase) {
+        return """
 
                 set +e
                 cat > /opt/tls-ask.py <<'PYEOF'
@@ -248,7 +284,7 @@ public class BackendDeployRunner {
                 }
                 CADDYEOF
                 nohup /usr/bin/caddy run --config /opt/Caddyfile --adapter caddyfile > /var/log/qeploy-caddy.log 2>&1 &
-                """.formatted(bucket, key, projectId, port, tlsAskBase, port);
+                """.formatted(tlsAskBase, port);
     }
 
     private ProvisionFailureCode classify(RuntimeException e) {
