@@ -2,16 +2,11 @@ package com.example.dvely.provisioning.application.service;
 
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService.ExecResult;
-import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
-import com.example.dvely.auth.domain.model.User;
-import com.example.dvely.auth.domain.repository.UserRepository;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Base64;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -31,13 +26,11 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class BackendJarBuildService {
 
-    private static final String APP_DIR = "/workspace/app";
-    private static final String GIT_NO_PROMPT = "GIT_TERMINAL_PROMPT=0 ";
+    private static final String APP_DIR = BackendSourceClone.APP_DIR;
 
     private final DockerContainerService dockerService;
     private final ProjectRepository projectRepository;
-    private final UserRepository userRepository;
-    private final AuthCommandService authCommandService;
+    private final BackendSourceClone sourceClone;
 
     /** 소스를 빌드해 jar 를 호스트 임시파일로 꺼내 그 경로를 돌려준다. 실패는 BackendBuildException. */
     public Path buildJar(Long ownerUserId, Long projectId) {
@@ -53,7 +46,7 @@ public class BackendJarBuildService {
                 ownerUserId, sessionId, projectId, null, null,
                 DockerContainerService.JAVA_MEMORY_LIMIT_BYTES);
         try {
-            cloneRepo(containerId, ownerUserId, sourceRepo);
+            sourceClone.cloneInto(containerId, ownerUserId, sourceRepo);
             runGradleBuild(containerId);
             String jarPath = locateJar(containerId);
             Path dest = Files.createTempFile("qeploy-app-", ".jar");
@@ -68,40 +61,13 @@ public class BackendJarBuildService {
         }
     }
 
-    private void cloneRepo(String containerId, Long ownerUserId, String sourceRepo) {
-        User user = userRepository.findById(ownerUserId)
-                .orElseThrow(() -> new BackendBuildException("유저를 찾을 수 없습니다: " + ownerUserId));
-        if (user.isUserAccessTokenExpired()) {
-            authCommandService.refreshGithubUserToken(ownerUserId);
-            user = userRepository.findById(ownerUserId).orElseThrow();
-        }
-        String userToken = user.getGithubUserAccessToken();
-        String username = user.getUsername();
-
-        // 토큰을 URL·명령줄에 넣지 않는다(프로세스 목록·로그 유출 방지) — credential helper 파일에만.
-        dockerService.exec(containerId, "apk add --no-cache git openjdk21 2>/dev/null || true");
-        String cred = "https://" + username + ":" + userToken + "@github.com";
-        String credB64 = Base64.getEncoder().encodeToString(cred.getBytes(StandardCharsets.UTF_8));
-        dockerService.exec(containerId,
-                "node -e \"require('fs').writeFileSync('/tmp/.git-credentials', Buffer.from('"
-                        + credB64 + "', 'base64').toString('utf8'))\"");
-        dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
-        dockerService.exec(containerId, "mkdir -p /workspace");
-        // 운영 배포는 기본 브랜치(main 등)를 받는다 — 프리뷰(preview 브랜치)와 다르다.
-        ExecResult clone = dockerService.execWithExitCode(containerId,
-                GIT_NO_PROMPT + "git clone --depth 1 https://github.com/" + sourceRepo + ".git " + APP_DIR);
-        if (!clone.succeeded()) {
-            throw new BackendBuildException("소스 clone 실패: " + tail(clone.output()));
-        }
-    }
-
     private void runGradleBuild(String containerId) {
         String backendDir = detectBackendDir(containerId);
         ExecResult build = dockerService.execWithExitCode(containerId,
                 "cd " + backendDir + " && chmod +x gradlew 2>/dev/null; "
                         + "./gradlew clean build -x test --no-daemon");
         if (!build.succeeded()) {
-            throw new BackendBuildException("gradle 빌드 실패: " + tail(build.output()));
+            throw new BackendBuildException("gradle 빌드 실패: " + BackendSourceClone.tail(build.output()));
         }
     }
 
@@ -138,9 +104,4 @@ public class BackendJarBuildService {
         try { return Files.size(p); } catch (IOException e) { return -1; }
     }
 
-    private String tail(String s) {
-        if (s == null) return "";
-        String t = s.strip();
-        return t.length() > 800 ? t.substring(t.length() - 800) : t;
-    }
 }
