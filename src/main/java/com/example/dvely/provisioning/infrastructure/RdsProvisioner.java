@@ -40,6 +40,7 @@ public class RdsProvisioner implements DatabaseProvisioner {
     private static final String MASTER_USERNAME = "qeadmin";   // RDS 는 admin 등 일부 이름을 예약한다
 
     private final AwsCredentialsResolver credentialsResolver;
+    private final Ec2Provisioner ec2Provisioner;
 
     @Override
     public ProvisionMethod method() {
@@ -71,6 +72,9 @@ public class RdsProvisioner implements DatabaseProvisioner {
     public RdsCreation startCreation(CloudConnection connection, DatabaseEngine engine, Long projectId) {
         String instanceId = "qeploy-" + projectId + "-" + shortRandom();
         String password = randomPassword();
+        // 백엔드 EC2 가 사설로 붙을 수 있게 전용 SG(3306/5432 를 VPC 내부에서 허용)를 명시한다.
+        // 안 붙이면 기본 SG(자기 멤버만 허용)가 잡혀 qeploy-backend SG 의 EC2 가 접속 못 한다.
+        String dbSecurityGroupId = ec2Provisioner.ensureDatabaseSecurityGroup(connection);
         AwsAccess access = credentialsResolver.resolve(connection);
         try (RdsClient rds = client(access)) {
             rds.createDBInstance(CreateDbInstanceRequest.builder()
@@ -81,6 +85,7 @@ public class RdsProvisioner implements DatabaseProvisioner {
                     .masterUserPassword(password)
                     .allocatedStorage(ALLOCATED_STORAGE_GB)
                     .dbName(DB_NAME)
+                    .vpcSecurityGroupIds(dbSecurityGroupId)
                     .publiclyAccessible(false)   // 백엔드가 같은 VPC 에서 사설로 붙는다
                     .build());
         }
