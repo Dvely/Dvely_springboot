@@ -20,6 +20,7 @@ import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepos
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import com.example.dvely.provisioning.infrastructure.Ec2InstanceRoleProvisioner;
+import com.example.dvely.provisioning.application.port.out.FrontendOriginPort;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner.LaunchSpec;
 import com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties;
@@ -51,6 +52,7 @@ class BackendDeployRunnerTest {
     @Mock private ProvisionedDatabaseRepository databaseRepository;
     @Mock private EnvironmentVariableRepository environmentVariableRepository;
     @Mock private Ec2ProvisioningProperties ec2Properties;
+    @Mock private FrontendOriginPort frontendOriginPort;
 
     @InjectMocks private BackendDeployRunner runner;
 

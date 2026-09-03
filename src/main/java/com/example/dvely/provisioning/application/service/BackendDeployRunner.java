@@ -11,6 +11,7 @@ import com.example.dvely.provisioning.domain.repository.ProvisionedServerReposit
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import com.example.dvely.provisioning.infrastructure.Ec2InstanceRoleProvisioner;
+import com.example.dvely.provisioning.application.port.out.FrontendOriginPort;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner.LaunchSpec;
 import com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties;
@@ -50,6 +51,7 @@ public class BackendDeployRunner {
     private final Ec2Provisioner ec2;
     private final ProvisionedDatabaseRepository databaseRepository;
     private final EnvironmentVariableRepository environmentVariableRepository;
+    private final FrontendOriginPort frontendOriginPort;
     private final Ec2ProvisioningProperties ec2Properties;
 
     /** BUILDING 상태로 넘어온 서버를 실제로 배포한다. 성공 시 PROVISIONING, 실패 시 FAILED. */
@@ -162,6 +164,13 @@ public class BackendDeployRunner {
                     env.put("SPRING_DATASOURCE_USERNAME", db.getUsername());
                     env.put("SPRING_DATASOURCE_PASSWORD", db.getPassword());
                 });
+
+        // 프론트↔백엔드 CORS: 프로젝트 프론트 오리진을 넘겨준다. 백엔드(템플릿/사용자 앱)가 이 값을
+        // 읽어 CORS 허용 오리진으로 쓴다 — 없으면 프론트가 백엔드 도메인을 호출할 때 브라우저가 막는다.
+        java.util.List<String> origins = frontendOriginPort.resolveAllowedOrigins(projectId);
+        if (!origins.isEmpty()) {
+            env.put("QEPLOY_ALLOWED_ORIGINS", String.join(",", origins));
+        }
 
         for (EnvironmentVariable v : environmentVariableRepository.findByProjectIdOrderByScopeAscKeyAsc(projectId)) {
             env.put(v.getKey(), v.getValue());   // 사용자 지정 env 가 우선(뒤에 넣어 덮어씀)
