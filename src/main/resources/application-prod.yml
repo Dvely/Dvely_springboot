@@ -58,6 +58,14 @@ qeploy:
       # 조용히 무시하지 않고 400 으로 거절한다.
       thinking-models: ${QEPLOY_AI_GLM_THINKING_MODELS:z-ai/glm-4.6}
       # 챗 컴플리션 전체 URL(호스트 접두사가 아니다). Z.ai 직결이나 자체 게이트웨이로 바꿀 때 쓴다.
+      # Z.ai 직결로 돌릴 경우 두 가지가 함께 바뀐다(2026-09-03 실측):
+      #   - 모델 슬러그에 접두사가 없다. z-ai/glm-4.6 이 아니라 glm-4.6 이다.
+      #   - thinking 표기가 OpenRouter 의 reasoning:{effort} 가 아니라 thinking:{type} 이다.
+      #     그 방언을 붙이기 전까지 Z.ai 배포에서는 thinking-models 를 비워둬야 한다 —
+      #     안 그러면 요청은 통과하는데 사고 깊이만 조용히 무시된다.
+      # 참고: glm-4.7-flash 는 /models 목록에 없지만 실재하며 무료다. 기본적으로 추론을 하고
+      # (reasoning_content 를 채운다) 별도 thinking 파라미터를 받지 않는다. 무료 티어라
+      # 429(code 1305 overloaded)가 잦은데, 이는 재시도 가능 사유로 올바르게 분류된다.
       base-url: ${QEPLOY_AI_GLM_BASE_URL:https://openrouter.ai/api/v1/chat/completions}
       # OpenRouter 대시보드/랭킹에서 이 서비스 호출을 식별하는 선택 헤더. 비우면 보내지 않는다.
       referer: ${QEPLOY_AI_GLM_REFERER:}

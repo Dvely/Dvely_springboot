@@ -4,6 +4,7 @@ import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.port.out.LlmPort;
 import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
+import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,12 +24,8 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class GlmClient implements LlmPort {
 
-    /**
-     * The name that reaches the user in a provider error. It names OpenRouter as well as GLM
-     * because that is where a missing key or an empty balance actually has to be fixed — being told
-     * "GLM 크레딧이 부족합니다" would send an operator to the wrong dashboard.
-     */
-    static final String PROVIDER_NAME = "GLM(OpenRouter)";
+    /** Used when the configured endpoint cannot be parsed for a host. */
+    static final String PROVIDER_NAME = "GLM";
 
     private final AiProperties aiProperties;
 
@@ -44,12 +41,33 @@ public class GlmClient implements LlmPort {
     static OpenAiCompatibleChat.Endpoint endpoint(AiProperties aiProperties) {
         AiProperties.Glm config = aiProperties.getGlm();
         return new OpenAiCompatibleChat.Endpoint(
-                PROVIDER_NAME,
+                providerName(config.getBaseUrl()),
                 config.getBaseUrl(),
                 config,
                 LlmRequestOptions.ReasoningStyle.OPENROUTER_REASONING,
                 attributionHeaders(config)
         );
+    }
+
+    /**
+     * The name that reaches the user in a provider error, derived from the endpoint actually
+     * configured — "GLM(openrouter.ai)", "GLM(api.z.ai)".
+     *
+     * <p>Derived rather than fixed because the whole point of naming the gateway is to send an
+     * operator to the dashboard where a missing key or an empty balance is actually fixed. A
+     * hard-coded "GLM(OpenRouter)" does the opposite the moment {@code base-url} is repointed at
+     * Z.ai — 2026-09-03 실측으로 Z.ai 잔액 부족 응답이 "GLM(OpenRouter) 크레딧이 부족" 으로
+     * 나오는 것을 확인했다.</p>
+     */
+    static String providerName(String baseUrl) {
+        try {
+            String host = URI.create(baseUrl).getHost();
+            return host == null || host.isBlank() ? PROVIDER_NAME : PROVIDER_NAME + "(" + host + ")";
+        } catch (IllegalArgumentException e) {
+            // A malformed base-url is a configuration error the request itself will surface; it
+            // must not turn into a crash while building an error message.
+            return PROVIDER_NAME;
+        }
     }
 
     /** OpenRouter's optional attribution headers, sent only when the deployment configured them. */
