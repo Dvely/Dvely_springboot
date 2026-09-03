@@ -199,6 +199,9 @@ public class Ec2Provisioner {
      * stop·재배포마다 바뀌어 도메인이 깨지므로, 안정 주소가 필요한 백엔드에 EIP 를 붙인다.
      * <b>종료 시 반드시 release 해야 유휴 EIP 과금이 안 붙는다(호출자 책임).</b>
      */
+    private static final int EIP_ASSOCIATE_RETRY = 12;
+    private static final long EIP_ASSOCIATE_DELAY_MS = 4000;
+
     public ElasticIp allocateAndAssociateElasticIp(CloudConnection connection, String instanceId, String nameTag) {
         AwsAccess access = credentialsResolver.resolve(connection);
         try (Ec2Client ec2 = client(access)) {
@@ -211,12 +214,58 @@ public class Ec2Provisioner {
                     .tags(Tag.builder().key("Name").value(nameTag).build(),
                           Tag.builder().key("managed-by").value("qeploy").build())
                     .build());
-            ec2.associateAddress(AssociateAddressRequest.builder()
-                    .allocationId(allocationId).instanceId(instanceId).build());
+            try {
+                associateWithRetry(ec2, allocationId, instanceId);
+            } catch (RuntimeException e) {
+                // associate 가 끝내 실패하면 방금 할당한 EIP 를 즉시 해제한다 — 안 그러면 호출자에게
+                // allocationId 도 못 넘긴 채 미연결 EIP 가 유휴 과금으로 샌다(release 만 로그로 남는
+                // 게 아니라 실제 돈이 붙는다).
+                try {
+                    ec2.releaseAddress(ReleaseAddressRequest.builder().allocationId(allocationId).build());
+                    log.warn("EIP associate 실패 → 방금 할당한 EIP 해제: allocationId={}", allocationId);
+                } catch (RuntimeException releaseErr) {
+                    log.error("EIP associate 실패 후 release 도 실패(수동 정리 필요, 유휴 과금): allocationId={} 원인={}",
+                            allocationId, releaseErr.toString());
+                }
+                throw e;
+            }
             log.info("EIP 할당·연결: allocationId={} publicIp={} instanceId={}",
                     allocationId, alloc.publicIp(), instanceId);
             return new ElasticIp(allocationId, alloc.publicIp());
         }
+    }
+
+    /**
+     * EIP 연결을 재시도한다. runInstances 직후 인스턴스는 잠깐 pending 이라 associate 가 "not in a valid
+     * state"(IncorrectInstanceState)로 거부될 수 있다 — associable 해질 때까지 몇 차례 기다린다.
+     */
+    private void associateWithRetry(Ec2Client ec2, String allocationId, String instanceId) {
+        RuntimeException last = null;
+        for (int attempt = 1; attempt <= EIP_ASSOCIATE_RETRY; attempt++) {
+            try {
+                ec2.associateAddress(AssociateAddressRequest.builder()
+                        .allocationId(allocationId).instanceId(instanceId).build());
+                return;
+            } catch (Ec2Exception e) {
+                String code = e.awsErrorDetails() == null ? "" : e.awsErrorDetails().errorCode();
+                String msg = e.getMessage() == null ? "" : e.getMessage();
+                boolean transientState = "IncorrectInstanceState".equals(code)
+                        || "InvalidInstanceID".equals(code)
+                        || msg.contains("not in a valid state");
+                if (attempt < EIP_ASSOCIATE_RETRY && transientState) {
+                    last = e;
+                    log.debug("EIP associate 대기(인스턴스 pending), 재시도 {}/{}: {}", attempt, EIP_ASSOCIATE_RETRY, code);
+                    sleep(EIP_ASSOCIATE_DELAY_MS);
+                    continue;
+                }
+                throw e;
+            }
+        }
+        throw last;
+    }
+
+    private void sleep(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 
     /**

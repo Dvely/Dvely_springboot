@@ -53,11 +53,12 @@ EIP 는 프로젝트 백엔드에 묶여 **재배포에도 유지**(재배포 �
 
 ## 단계별 계획 (develop-first PR 단위)
 
-- **Phase 1 — EIP(안정 주소)**: `ProvisionedServer.elasticIpAllocationId` + 마이그레이션.
-  `Ec2Provisioner` allocate/associate/disassociate/release + `describeAddresses`. `BackendDeployRunner`
-  launch 후 allocate+associate, publicHost=EIP. `terminate` 에서 release(best-effort).
-  IAM 정책 +`ec2:AllocateAddress/AssociateAddress/DisassociateAddress/ReleaseAddress/DescribeAddresses`
-  (docs + 온보딩 + 사용자 키). **실계정 검증**(EIP 붙은 채 curl, 종료 후 release 확인).
+- **Phase 1 — EIP(안정 주소) [PR #202, 실계정 검증 중]**: `ProvisionedServer.elasticIpAllocationId` +
+  V39 마이그레이션. `Ec2Provisioner` allocate/associate(**pending 재시도**)/release — associate 실패 시
+  method 내 즉시 release(누수 차단). `BackendDeployRunner` launch 후 allocate+associate, 실패 롤백 시
+  release. `terminate` 에서 release(best-effort, 유휴 EIP 과금 경고). IAM 정책 +**최소 3개**
+  `ec2:AllocateAddress/AssociateAddress/ReleaseAddress`(disassociate 는 release 가 자동, describe 는
+  안 부름 — 최소권한). **실계정 검증**(EIP 붙은 채 curl, 종료 후 release + 콘솔 EIP 목록 빔 확인).
 - **Phase 2 — AWS 어댑터 + 커스텀 도메인(MVP)**: `AwsDomainHostingAdapter`(target=AWS). GitHub 토큰
   게이트 우회(비-GITHUB_PAGES). 어댑터가 프로젝트 RUNNING 서버 publicHost(EIP) 조회(port 로
   provisioning 참조). 커스텀 bind: 가이드에 EIP 노출, A-검증. FE 는 이미 있는 AWS 옵션 활성화.
@@ -96,3 +97,19 @@ GitHub Pages 외에 S3(정적, +CloudFront 로 CDN·HTTPS) 또는 EC2 배포**�
 전제를 코드·문서에 명시**해 두어 나중에 프론트 타깃이 들어올 때 혼선이 없게 한다. 프론트 배포 파이프라인
 자체(정적 산출물 → S3 업로드 → CloudFront 무효화)는 별도 설계 필요 — deployment 도메인이 GitHub Pages
 에 하드코딩돼 있어 백엔드 배포처럼 골격을 새로 얹는 접근이 맞다.
+
+## 향후 — 고아 자원 대조 화면 (로드맵, P1~5 이후)
+
+BYOC 신뢰 이슈. 현재 비용은 **추정치**(`ProjectCostBudgetService.estimate.totalMonthlyCost()` — Qeploy 가
+아는 서버·DB 행에서 계산, 실제 AWS 청구를 읽지 않음). 그래서 **할당됐는데 어느 행에도 기록 안 된 자원**
+(예: EIP associate 실패로 샌 미연결 EIP)은 서버 섹션·월 예산 어디에도 안 뜬다 — 사용자는 AWS 콘솔을
+직접 열어야만 안다. **"Qeploy 가 다 껐다는데 청구서엔 찍힌다"** 는 BYOC 신뢰를 가장 빨리 깎는 상황.
+
+→ 언젠가 **"이 클라우드 연결로 Qeploy 가 만든 자원 목록"** 을 태그(`managed-by=qeploy`)로 AWS 에 직접
+물어 보여주고 DB 기록과 대조하는 화면이 필요하다. 고아 자원이 바로 드러난다. FE 자리: 서버 섹션 아래.
+**이 화면은 Describe 계열(DescribeAddresses·DescribeInstances 등)이 다시 필요**해진다 — 지금은 최소권한
+으로 뺐지만, 대조 화면을 만들면 정책에 Describe 를 도로 넣어야 한다. P1~5 가 먼저고, 그게 끝나야 무엇을
+대조할지도 정해진다.
+
+**FE 닫힌 enum 주의(FE 제보):** `resourceCostSchema.resourceType{COMPUTE,STORAGE,NETWORK}` — EIP 는
+NETWORK 로 덮인다(지금 OK). 비용 자원 종류를 늘리면 예산 화면이 빈다 → BE·FE 같이.
