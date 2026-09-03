@@ -57,4 +57,19 @@ public class ProvisionedServerRepositoryAdapter implements ProvisionedServerRepo
     public boolean claimForBuild(Long id) {
         return springDataRepository.claimForBuild(id, LocalDateTime.now()) == 1;
     }
+
+    @Override
+    public List<Long> findDistinctCloudConnectionIds() {
+        return springDataRepository.findDistinctCloudConnectionIds();
+    }
+
+    @Override
+    public boolean existsInFlightByCloudConnectionId(Long cloudConnectionId) {
+        return springDataRepository.countInFlightByCloudConnectionId(cloudConnectionId) > 0;
+    }
+
+    @Override
+    public List<String> findElasticIpAllocationIds(Long cloudConnectionId, ServerStatus status) {
+        return springDataRepository.findElasticIpAllocationIds(cloudConnectionId, status.name());
+    }
 }

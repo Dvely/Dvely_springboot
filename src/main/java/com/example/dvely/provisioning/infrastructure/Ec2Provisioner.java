@@ -11,9 +11,15 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.services.ec2.Ec2Client;
+import software.amazon.awssdk.services.ec2.model.DescribeAddressesRequest;
 import software.amazon.awssdk.services.ec2.model.DescribeInstancesRequest;
 import software.amazon.awssdk.services.ec2.model.AuthorizeSecurityGroupIngressRequest;
+import software.amazon.awssdk.services.ec2.model.AllocateAddressRequest;
+import software.amazon.awssdk.services.ec2.model.AssociateAddressRequest;
 import software.amazon.awssdk.services.ec2.model.CreateSecurityGroupRequest;
+import software.amazon.awssdk.services.ec2.model.CreateTagsRequest;
+import software.amazon.awssdk.services.ec2.model.DomainType;
+import software.amazon.awssdk.services.ec2.model.ReleaseAddressRequest;
 import software.amazon.awssdk.services.ec2.model.DescribeSecurityGroupsRequest;
 import software.amazon.awssdk.services.ec2.model.DescribeVpcsRequest;
 import software.amazon.awssdk.services.ec2.model.Filter;
@@ -184,6 +190,121 @@ public class Ec2Provisioner {
             throw new IllegalStateException("기본 VPC 를 찾지 못했습니다. 계정에 기본 VPC 가 필요합니다.");
         }
         return vpcs.get(0).vpcId();
+    }
+
+    /** 할당·연결한 Elastic IP. publicIp 는 안정 주소가 된다. */
+    public record ElasticIp(String allocationId, String publicIp) {}
+
+    /**
+     * Elastic IP 를 할당해 인스턴스에 연결하고 allocationId·publicIp 를 돌려준다. 자동할당 public IP 는
+     * stop·재배포마다 바뀌어 도메인이 깨지므로, 안정 주소가 필요한 백엔드에 EIP 를 붙인다.
+     * <b>종료 시 반드시 release 해야 유휴 EIP 과금이 안 붙는다(호출자 책임).</b>
+     */
+    private static final int EIP_ASSOCIATE_RETRY = 12;
+    private static final long EIP_ASSOCIATE_DELAY_MS = 4000;
+
+    public ElasticIp allocateAndAssociateElasticIp(CloudConnection connection, String instanceId, String nameTag) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (Ec2Client ec2 = client(access)) {
+            var alloc = ec2.allocateAddress(AllocateAddressRequest.builder()
+                    .domain(DomainType.VPC).build());
+            String allocationId = alloc.allocationId();
+            // allocate 이후 어느 단계(태그·연결)든 실패하면 방금 할당한 EIP 를 즉시 해제한다. 안 그러면
+            // 호출자에게 allocationId 도 못 넘긴 채 미연결 EIP 가 유휴 과금으로 샌다(release 만 로그로
+            // 남는 게 아니라 실제 돈이 붙고, 사용자가 콘솔에서 손으로 지워야 한다).
+            try {
+                // 종료 정리·고아 대조 때 태그로 되짚을 수 있게(allocationId 는 서버 행에 저장하지만 이중 안전).
+                ec2.createTags(CreateTagsRequest.builder()
+                        .resources(allocationId)
+                        .tags(Tag.builder().key("Name").value(nameTag).build(),
+                              Tag.builder().key("managed-by").value("qeploy").build())
+                        .build());
+                associateWithRetry(ec2, allocationId, instanceId);
+            } catch (RuntimeException e) {
+                try {
+                    ec2.releaseAddress(ReleaseAddressRequest.builder().allocationId(allocationId).build());
+                    log.warn("EIP 연결 실패 → 방금 할당한 EIP 해제: allocationId={}", allocationId);
+                } catch (RuntimeException releaseErr) {
+                    log.error("EIP 연결 실패 후 release 도 실패(고아 EIP 남음, 유휴 과금): allocationId={} 원인={}",
+                            allocationId, releaseErr.toString());
+                }
+                throw e;
+            }
+            log.info("EIP 할당·연결: allocationId={} publicIp={} instanceId={}",
+                    allocationId, alloc.publicIp(), instanceId);
+            return new ElasticIp(allocationId, alloc.publicIp());
+        }
+    }
+
+    /**
+     * EIP 연결을 재시도한다. runInstances 직후 인스턴스는 잠깐 pending 이라 associate 가 "not in a valid
+     * state"(IncorrectInstanceState)로 거부될 수 있다 — associable 해질 때까지 몇 차례 기다린다.
+     */
+    private void associateWithRetry(Ec2Client ec2, String allocationId, String instanceId) {
+        RuntimeException last = null;
+        for (int attempt = 1; attempt <= EIP_ASSOCIATE_RETRY; attempt++) {
+            try {
+                ec2.associateAddress(AssociateAddressRequest.builder()
+                        .allocationId(allocationId).instanceId(instanceId).build());
+                return;
+            } catch (Ec2Exception e) {
+                String code = e.awsErrorDetails() == null ? "" : e.awsErrorDetails().errorCode();
+                String msg = e.getMessage() == null ? "" : e.getMessage();
+                boolean transientState = "IncorrectInstanceState".equals(code)
+                        || "InvalidInstanceID".equals(code)
+                        || msg.contains("not in a valid state");
+                if (attempt < EIP_ASSOCIATE_RETRY && transientState) {
+                    last = e;
+                    log.debug("EIP associate 대기(인스턴스 pending), 재시도 {}/{}: {}", attempt, EIP_ASSOCIATE_RETRY, code);
+                    sleep(EIP_ASSOCIATE_DELAY_MS);
+                    continue;
+                }
+                throw e;
+            }
+        }
+        throw last;
+    }
+
+    private void sleep(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
+    /** managed-by=qeploy 태그가 붙은 EIP 한 건. associated=false 면 미연결(고아 후보). */
+    public record QeployEip(String allocationId, String publicIp, boolean associated) {}
+
+    /**
+     * 이 계정에서 우리가 만든(managed-by=qeploy) EIP 목록을 조회한다. 고아 EIP 자동 회수 워커가
+     * 미연결(associated=false)이면서 어느 살아있는 서버도 소유하지 않은 것을 골라 release 하는 데 쓴다.
+     */
+    public java.util.List<QeployEip> listQeployElasticIps(CloudConnection connection) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (Ec2Client ec2 = client(access)) {
+            return ec2.describeAddresses(DescribeAddressesRequest.builder()
+                    .filters(Filter.builder().name("tag:managed-by").values("qeploy").build())
+                    .build()).addresses().stream()
+                    .map(a -> new QeployEip(a.allocationId(), a.publicIp(),
+                            a.associationId() != null && !a.associationId().isBlank()))
+                    .toList();
+        }
+    }
+
+        /**
+     * EIP 를 해제한다(release). 유휴 EIP 과금을 멈추는 유일한 경로 — 종료 정리가 부른다. 인스턴스가
+     * 종료되면 EIP 는 연결만 풀리고 할당은 남아(계속 과금) release 가 필요하다. 이미 없으면 조용히 지나간다.
+     */
+    public void releaseElasticIp(CloudConnection connection, String allocationId) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (Ec2Client ec2 = client(access)) {
+            ec2.releaseAddress(ReleaseAddressRequest.builder().allocationId(allocationId).build());
+            log.info("EIP 해제: allocationId={}", allocationId);
+        } catch (Ec2Exception e) {
+            if (e.awsErrorDetails() != null
+                    && "InvalidAllocationID.NotFound".equals(e.awsErrorDetails().errorCode())) {
+                log.debug("EIP 가 이미 없음: allocationId={}", allocationId);
+                return;
+            }
+            throw e;
+        }
     }
 
     private Ec2Client client(AwsAccess access) {
