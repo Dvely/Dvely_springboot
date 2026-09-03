@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.services.ec2.Ec2Client;
+import software.amazon.awssdk.services.ec2.model.DescribeAddressesRequest;
 import software.amazon.awssdk.services.ec2.model.DescribeInstancesRequest;
 import software.amazon.awssdk.services.ec2.model.AuthorizeSecurityGroupIngressRequest;
 import software.amazon.awssdk.services.ec2.model.AllocateAddressRequest;
@@ -268,7 +269,26 @@ public class Ec2Provisioner {
         try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 
+    /** managed-by=qeploy 태그가 붙은 EIP 한 건. associated=false 면 미연결(고아 후보). */
+    public record QeployEip(String allocationId, String publicIp, boolean associated) {}
+
     /**
+     * 이 계정에서 우리가 만든(managed-by=qeploy) EIP 목록을 조회한다. 고아 EIP 자동 회수 워커가
+     * 미연결(associated=false)이면서 어느 살아있는 서버도 소유하지 않은 것을 골라 release 하는 데 쓴다.
+     */
+    public java.util.List<QeployEip> listQeployElasticIps(CloudConnection connection) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (Ec2Client ec2 = client(access)) {
+            return ec2.describeAddresses(DescribeAddressesRequest.builder()
+                    .filters(Filter.builder().name("tag:managed-by").values("qeploy").build())
+                    .build()).addresses().stream()
+                    .map(a -> new QeployEip(a.allocationId(), a.publicIp(),
+                            a.associationId() != null && !a.associationId().isBlank()))
+                    .toList();
+        }
+    }
+
+        /**
      * EIP 를 해제한다(release). 유휴 EIP 과금을 멈추는 유일한 경로 — 종료 정리가 부른다. 인스턴스가
      * 종료되면 EIP 는 연결만 풀리고 할당은 남아(계속 과금) release 가 필요하다. 이미 없으면 조용히 지나간다.
      */

@@ -59,6 +59,13 @@ EIP 는 프로젝트 백엔드에 묶여 **재배포에도 유지**(재배포 �
   release. `terminate` 에서 release(best-effort, 유휴 EIP 과금 경고). IAM 정책 +**최소 3개**
   `ec2:AllocateAddress/AssociateAddress/ReleaseAddress`(disassociate 는 release 가 자동, describe 는
   안 부름 — 최소권한). **실계정 검증**(EIP 붙은 채 curl, 종료 후 release + 콘솔 EIP 목록 빔 확인).
+- **Phase 1.5 — 고아 EIP 자동청소 [PR #202]**: 코드 가드(allocate 후 실패 시 즉시 release)로도 못
+  막는 잔여(종료 release 실패·크래시)를 자기치유. `OrphanElasticIpSweeper`(@Scheduled, 기본 10분):
+  연결별로 `managed-by=qeploy` 태그 EIP 조회(`Ec2Provisioner.listQeployElasticIps` = describeAddresses)
+  → **미연결 + RUNNING 미소유** EIP release. **인플라이트 배포(QUEUED/BUILDING/PROVISIONING)가 있는
+  연결은 통째로 건너뜀**(방금 할당·연결 전 EIP 오회수 방지 — 재정렬 대신 코스한 안전장치). IAM 에
+  `ec2:DescribeAddresses` 도로 추가(최소권한에서 뺐던 것 — 자동청소의 대가). "사용자가 콘솔에서 EIP 를
+  손으로 지우는 일이 없다"를 참으로 만드는 조각.
 - **Phase 2 — AWS 어댑터 + 커스텀 도메인(MVP)**: `AwsDomainHostingAdapter`(target=AWS). GitHub 토큰
   게이트 우회(비-GITHUB_PAGES). 어댑터가 프로젝트 RUNNING 서버 publicHost(EIP) 조회(port 로
   provisioning 참조). 커스텀 bind: 가이드에 EIP 노출, A-검증. FE 는 이미 있는 AWS 옵션 활성화.

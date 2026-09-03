@@ -23,4 +23,17 @@ public interface SpringDataProvisionedServerRepository
     @Query("update ProvisionedServerEntity e set e.status = 'BUILDING', e.updatedAt = :now"
             + " where e.id = :id and e.status = 'QUEUED'")
     int claimForBuild(@Param("id") Long id, @Param("now") LocalDateTime now);
+
+    @Query("select distinct e.cloudConnectionId from ProvisionedServerEntity e"
+            + " where e.cloudConnectionId is not null")
+    List<Long> findDistinctCloudConnectionIds();
+
+    @Query("select count(e) from ProvisionedServerEntity e where e.cloudConnectionId = :connId"
+            + " and e.status in ('QUEUED', 'BUILDING', 'PROVISIONING')")
+    long countInFlightByCloudConnectionId(@Param("connId") Long connId);
+
+    @Query("select e.elasticIpAllocationId from ProvisionedServerEntity e"
+            + " where e.cloudConnectionId = :connId and e.status = :status"
+            + " and e.elasticIpAllocationId is not null")
+    List<String> findElasticIpAllocationIds(@Param("connId") Long connId, @Param("status") String status);
 }
