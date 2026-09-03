@@ -8,6 +8,7 @@ import com.example.dvely.domainbinding.application.result.VerificationGuideResul
 import com.example.dvely.domainbinding.application.result.VerificationRecordResult;
 import com.example.dvely.domainbinding.domain.model.DomainBinding;
 import com.example.dvely.domainbinding.domain.repository.DomainBindingRepository;
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.domain.value.DomainType;
 import com.example.dvely.domainbinding.infrastructure.config.CloudflareProperties;
 import com.example.dvely.project.domain.model.Project;
@@ -26,6 +27,18 @@ public class DomainBindingQueryService {
     private final ProjectRepository projectRepository;
     private final DomainBindingRepository domainBindingRepository;
     private final CloudflareProperties cloudflareProperties;
+
+    /**
+     * 이 호스트네임이 백엔드(AWS) 도메인으로 등록됐는지. 배포된 인스턴스 Caddy 가 커스텀 도메인 TLS 를
+     * on-demand 발급하기 전 이 값을 물어(ask) 남용을 막는다 — DB 에 등록된 백엔드 도메인만 발급 허용.
+     */
+    public boolean isBackendDomainRegistered(String hostname) {
+        if (hostname == null || hostname.isBlank()) {
+            return false;
+        }
+        return domainBindingRepository.existsByHostnameIgnoreCaseAndHostingTarget(
+                hostname.trim(), DomainHostingTarget.AWS);
+    }
 
     public DomainSearchResult search(String keyword) {
         String label = normalizeLabel(keyword);

@@ -13,4 +13,7 @@ public interface SpringDataDomainBindingRepository extends JpaRepository<DomainB
     List<DomainBindingEntity> findByStatusOrderByCreatedAtAsc(String status, Pageable pageable);
 
     boolean existsByHostnameIgnoreCase(String hostname);
+
+    // hosting_target 는 String 컬럼.
+    boolean existsByHostnameIgnoreCaseAndHostingTarget(String hostname, String hostingTarget);
 }

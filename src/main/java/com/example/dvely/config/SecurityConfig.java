@@ -47,7 +47,8 @@ public class SecurityConfig {
                                 "/api/v1/auth/github/app/callback",
                                 "/api/v1/auth/refresh",
                                 "/api/v1/webhook/github",
-                                "/api/v1/previews/**"
+                                "/api/v1/previews/**",
+                                "/api/v1/tls/allow"
                         ).permitAll()
                         // Swagger UI
                         .requestMatchers(

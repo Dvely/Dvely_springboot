@@ -59,4 +59,10 @@ public class DomainBindingRepositoryAdapter implements DomainBindingRepository {
     public void deleteById(Long id) {
         springDataRepository.deleteById(id);
     }
+
+    @Override
+    public boolean existsByHostnameIgnoreCaseAndHostingTarget(String hostname,
+            com.example.dvely.domainbinding.domain.value.DomainHostingTarget hostingTarget) {
+        return springDataRepository.existsByHostnameIgnoreCaseAndHostingTarget(hostname, hostingTarget.name());
+    }
 }

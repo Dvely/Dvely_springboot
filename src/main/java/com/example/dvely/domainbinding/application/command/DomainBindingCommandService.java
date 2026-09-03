@@ -225,9 +225,12 @@ public class DomainBindingCommandService {
                                                  DomainHostingAdapter.Context context) {
         String hostname = normalizeHostname(command.hostname());
         ensureHostnameAvailable(hostname);
-        VerificationMethod method = command.verificationMethod() == null
-                ? VerificationMethod.CNAME
-                : command.verificationMethod();
+        // 백엔드(AWS)는 대상이 IP(EIP)라 사용자가 A 레코드를 EIP 로 건다 → 검증도 A 가 기본.
+        // 프론트(GitHub Pages 등)는 CNAME 기본. 클라이언트가 명시하면 그게 우선.
+        VerificationMethod method = command.verificationMethod() != null
+                ? command.verificationMethod()
+                : (command.hostingTarget() == DomainHostingTarget.AWS
+                        ? VerificationMethod.A : VerificationMethod.CNAME);
         String dnsTarget = adapter.resolveDnsTarget(context);
         ensureDnsTargetDoesNotReferenceHostname(hostname, dnsTarget);
         adapter.bind(context, hostname);

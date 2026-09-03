@@ -15,9 +15,19 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties(prefix = "qeploy.provisioning.ec2")
 public record Ec2ProvisioningProperties(
-        String instanceProfileOverride
+        String instanceProfileOverride,
+        String tlsAskBaseUrl
 ) {
     public boolean hasInstanceProfileOverride() {
         return instanceProfileOverride != null && !instanceProfileOverride.isBlank();
+    }
+
+    /**
+     * 배포 인스턴스의 Caddy on-demand TLS ask 가 커스텀 도메인 발급 여부를 물어볼 BE 공개 base URL
+     * (예: https://api.qeploy.com). 비면(기본) 커스텀 도메인은 인증서 발급을 못 하고 *.qeploy.com 만
+     * HTTPS 가 붙는다 — 로컬 개발처럼 인스턴스가 BE 에 닿지 못하는 환경 대비 안전한 기본값.
+     */
+    public String tlsAskBaseUrlOrEmpty() {
+        return tlsAskBaseUrl == null ? "" : tlsAskBaseUrl.trim();
     }
 }
