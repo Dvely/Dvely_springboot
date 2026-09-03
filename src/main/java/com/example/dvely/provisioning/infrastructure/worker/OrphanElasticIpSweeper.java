@@ -42,14 +42,19 @@ public class OrphanElasticIpSweeper {
                         serverRepository.findElasticIpAllocationIds(connectionId, ServerStatus.RUNNING));
                 try {
                     List<Ec2Provisioner.QeployEip> eips = ec2.listQeployElasticIps(connection);
+                    int reclaimed = 0;
                     for (Ec2Provisioner.QeployEip eip : eips) {
                         if (eip.associated() || ownedByRunning.contains(eip.allocationId())) {
                             continue;   // 살아있는 자원 — 두 겹으로 지킨다(연결됨 or RUNNING 소유)
                         }
                         ec2.releaseElasticIp(connection, eip.allocationId());
+                        reclaimed++;
                         log.warn("고아 EIP 자동 회수: allocationId={} publicIp={} connectionId={}",
                                 eip.allocationId(), eip.publicIp(), connectionId);
                     }
+                    // 성공 틱은 조용하면 살았는지 안 보인다 — 훑은 결과를 남겨 워커 생존·권한 통과를 드러낸다.
+                    log.info("EIP 고아 청소 훑음: connectionId={} 조회={}건 회수={}건",
+                            connectionId, eips.size(), reclaimed);
                 } catch (RuntimeException e) {
                     // 한 연결이 실패해도(권한·일시 오류) 다음 연결은 계속 훑는다.
                     log.warn("EIP 고아 청소 실패(connectionId={}): {}", connectionId, e.toString());
