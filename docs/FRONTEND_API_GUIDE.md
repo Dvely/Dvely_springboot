@@ -364,7 +364,7 @@ Accept: text/event-stream
 `aiProvider: "GLM"` 은 OpenRouter 를 거쳐 GLM 을 호출합니다. FE 관점에서는 기존 두 제공자와 계약이 완전히 같습니다 — 요청/응답 형태, `model`·`thinking` 규칙, 아래의 AI 제공자 오류 코드가 모두 그대로입니다.
 
 - 기본 모델은 `z-ai/glm-4.6`(OpenRouter 모델 슬러그)이며, `model` 로 다른 값을 보내려면 다른 제공자와 마찬가지로 배포 설정의 허용 목록에 있어야 합니다.
-- `thinking` 을 지원합니다(OpenRouter 의 `reasoning` 파라미터로 전달됩니다).
+- `thinking` 을 지원합니다. 다만 **서버가 어느 게이트웨이를 쓰도록 설정됐는지에 따라 단계의 의미가 달라집니다** — OpenRouter 경유면 `LOW·MEDIUM·HIGH` 가 그대로 전달되고, Z.ai 직결이면 게이트웨이에 단계 개념이 없어 세 값이 모두 같은 "켜짐"으로 처리됩니다. 단계를 노출하는 UI 를 만든다면 이 점을 백엔드와 먼저 확인해주세요.
 - 오류 `message` 의 제공자 이름은 `GLM(OpenRouter)` 로 표기됩니다. 키·크레딧을 확인해야 하는 곳이 OpenRouter 이기 때문입니다.
 
 #### AI 제공자 오류 (#85)

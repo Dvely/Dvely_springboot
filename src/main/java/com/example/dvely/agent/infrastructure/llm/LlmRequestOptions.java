@@ -33,7 +33,20 @@ final class LlmRequestOptions {
         /** OpenAI: {@code "reasoning_effort": "high"}. */
         REASONING_EFFORT,
         /** OpenRouter: {@code "reasoning": {"effort": "high"}}. */
-        OPENROUTER_REASONING
+        OPENROUTER_REASONING,
+        /**
+         * Z.ai: {@code "thinking": {"type": "enabled"}} — on or off, with no effort levels.
+         *
+         * <p>Two things make this one different from the other two. It has no gradations, so LOW,
+         * MEDIUM and HIGH all mean the same "on"; and Z.ai thinks <em>by default</em>, so "off" has
+         * to be said out loud rather than left unsaid.</p>
+         *
+         * <p>2026-09-03 실측 (glm-4.7-flash, reasoning_tokens): {@code disabled} → 0, 0, 0;
+         * {@code enabled} → 540, 411, 298; 파라미터 없음 → 636, 397, 465. OpenRouter 표기
+         * ({@code reasoning:{effort:high}}) 와 OpenAI 표기 ({@code reasoning_effort}) 는 무파라미터
+         * 대역을 벗어나지 못했고 오류도 나지 않았다 — 즉 Z.ai 는 그 둘을 조용히 무시한다.</p>
+         */
+        ZAI_THINKING
     }
 
     private LlmRequestOptions() {
@@ -62,14 +75,28 @@ final class LlmRequestOptions {
     }
 
     /**
-     * Sets the reasoning parameter in whichever spelling {@code style} names, or leaves the body
-     * untouched when thinking is off — models like gpt-4o reject the parameter outright, so absent
-     * has to mean absent.
+     * Sets the reasoning parameter in whichever spelling {@code style} names.
+     *
+     * <p>Thinking-off is not simply "write nothing". For OpenAI and OpenRouter it is — models like
+     * gpt-4o reject the parameter outright, so absent has to mean absent. Z.ai reasons by default
+     * though, so leaving the body untouched there gives a request that asked for no thinking a
+     * fully reasoned answer, and bills for it.</p>
      */
     static void applyOpenAiCompatible(Map<String, Object> body,
                                       AiModelOptions options,
                                       ReasoningStyle style) {
         if (!options.thinking().isEnabled()) {
+            if (style == ReasoningStyle.ZAI_THINKING) {
+                body.put("thinking", Map.of("type", "disabled"));
+            }
+            return;
+        }
+        // Z.ai offers no gradations, so the level only decides on-or-off there. Deliberately not
+        // rejected: refusing LOW/MEDIUM/HIGH would leave Z.ai deployments unable to think at all,
+        // which is worse than a level that lands on the one depth the gateway has. The asymmetry
+        // is documented on the enum constant and in the operator config.
+        if (style == ReasoningStyle.ZAI_THINKING) {
+            body.put("thinking", Map.of("type", "enabled"));
             return;
         }
         String effort = switch (options.thinking()) {
@@ -81,6 +108,7 @@ final class LlmRequestOptions {
         switch (style) {
             case REASONING_EFFORT -> body.put("reasoning_effort", effort);
             case OPENROUTER_REASONING -> body.put("reasoning", Map.of("effort", effort));
+            case ZAI_THINKING -> throw new IllegalStateException("도달할 수 없음: 위에서 처리됨");
         }
     }
 

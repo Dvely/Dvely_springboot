@@ -44,10 +44,39 @@ public class GlmClient implements LlmPort {
                 providerName(config.getBaseUrl()),
                 config.getBaseUrl(),
                 config,
-                LlmRequestOptions.ReasoningStyle.OPENROUTER_REASONING,
+                reasoningStyle(config.getBaseUrl()),
                 attributionHeaders(config),
                 aiProperties.getRetry()
         );
+    }
+
+    /**
+     * Which gateway's thinking spelling to use, decided by the endpoint actually configured.
+     *
+     * <p>OpenRouter and Z.ai are wire-compatible for everything except this one parameter, and each
+     * ignores the other's spelling in silence rather than rejecting it — so picking the wrong one
+     * produces a request that is accepted and simply does not think, which is indistinguishable
+     * from one that did. Derived from the URL for the same reason the provider name is: the
+     * deployment declares its gateway once, in {@code base-url}, and everything else follows.</p>
+     */
+    static LlmRequestOptions.ReasoningStyle reasoningStyle(String baseUrl) {
+        String host = hostOf(baseUrl);
+        boolean zai = host != null && (host.equals("z.ai") || host.endsWith(".z.ai"));
+        return zai
+                ? LlmRequestOptions.ReasoningStyle.ZAI_THINKING
+                : LlmRequestOptions.ReasoningStyle.OPENROUTER_REASONING;
+    }
+
+    /** Host of the configured endpoint, or null when it cannot be parsed. */
+    private static String hostOf(String baseUrl) {
+        try {
+            String host = URI.create(baseUrl).getHost();
+            return host == null || host.isBlank() ? null : host;
+        } catch (IllegalArgumentException e) {
+            // A malformed base-url is a configuration error the request itself will surface; it
+            // must not turn into a crash while choosing a dialect or building an error message.
+            return null;
+        }
     }
 
     /**
@@ -61,14 +90,8 @@ public class GlmClient implements LlmPort {
      * 나오는 것을 확인했다.</p>
      */
     static String providerName(String baseUrl) {
-        try {
-            String host = URI.create(baseUrl).getHost();
-            return host == null || host.isBlank() ? PROVIDER_NAME : PROVIDER_NAME + "(" + host + ")";
-        } catch (IllegalArgumentException e) {
-            // A malformed base-url is a configuration error the request itself will surface; it
-            // must not turn into a crash while building an error message.
-            return PROVIDER_NAME;
-        }
+        String host = hostOf(baseUrl);
+        return host == null ? PROVIDER_NAME : PROVIDER_NAME + "(" + host + ")";
     }
 
     /** OpenRouter's optional attribution headers, sent only when the deployment configured them. */
