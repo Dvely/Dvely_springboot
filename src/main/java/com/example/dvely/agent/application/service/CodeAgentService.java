@@ -3,6 +3,7 @@ package com.example.dvely.agent.application.service;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.exception.AgentIterationLimitException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
+import com.example.dvely.agent.application.port.out.LlmToolPort;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
@@ -11,6 +12,7 @@ import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
+import com.example.dvely.agent.infrastructure.llm.GlmToolClient;
 import com.example.dvely.agent.infrastructure.llm.OpenAiToolClient;
 import com.example.dvely.common.exception.LlmProviderException;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
@@ -44,8 +46,9 @@ public class CodeAgentService {
     private static final int TOOL_RESULT_HEAD_CHARS = 2_000;
 
     // Stop reasons meaning "the model ran out of output budget mid-generation" — Anthropic's
-    // max_tokens and OpenAI's length. The final tool call of such a response can be cut off
-    // mid-arguments, so it must not be executed (see truncatedToolCallIndex).
+    // max_tokens, and the "length" that every provider speaking the OpenAI chat-completions format
+    // reports (OpenAI itself, and GLM through OpenRouter). The final tool call of such a response
+    // can be cut off mid-arguments, so it must not be executed (see truncatedToolCallIndex).
     private static final String CLAUDE_TRUNCATED_STOP_REASON = "max_tokens";
     private static final String OPENAI_TRUNCATED_STOP_REASON = "length";
 
@@ -58,6 +61,7 @@ public class CodeAgentService {
 
     private final ClaudeToolClient        claudeToolClient;
     private final OpenAiToolClient        openAiToolClient;
+    private final GlmToolClient           glmToolClient;
     private final DockerContainerService  dockerService;
     private final PreviewSessionService   previewSessionService;
     private final PreviewRuntimeLauncher   previewRuntimeLauncher;
@@ -164,9 +168,16 @@ public class CodeAgentService {
         }
 
         try {
-            String summary = (provider == AiProvider.OPENAI)
-                    ? runOpenAiLoop(instruction, containerId, modelOptions)
-                    : runClaudeLoop(instruction, containerId, modelOptions);
+            // GLM shares OpenAI's loop rather than getting its own: OpenRouter returns
+            // OpenAI-shaped tool_calls, so the transcript built here is identical down to the
+            // message keys. A second copy would only be a copy that has to stay in step.
+            String summary = switch (provider) {
+                case ANTHROPIC -> runClaudeLoop(instruction, containerId, modelOptions);
+                case OPENAI -> runOpenAiCompatibleLoop(
+                        openAiToolClient, "OpenAI", instruction, containerId, modelOptions);
+                case GLM -> runOpenAiCompatibleLoop(
+                        glmToolClient, "GLM", instruction, containerId, modelOptions);
+            };
 
             // 세션은 PROVISIONING 으로 만들어져 있다. 서버가 실제로 뜬 뒤에만 ACTIVE 로 올려야
             // FE 가 "열면 보인다"는 계약대로 iframe 을 붙일 수 있다. 실패하면 PROVISIONING 인 채
@@ -281,21 +292,25 @@ public class CodeAgentService {
         throw new AgentIterationLimitException(maxIterations, recentTrace(trace));
     }
 
-    // ── OpenAI 루프 ──────────────────────────────────────────────────────────
-    private String runOpenAiLoop(String instruction, String containerId, AiModelOptions modelOptions) {
+    // ── OpenAI 호환 루프 (OpenAI, OpenRouter 경유 GLM) ────────────────────────
+    private String runOpenAiCompatibleLoop(LlmToolPort toolClient,
+                                           String providerLabel,
+                                           String instruction,
+                                           String containerId,
+                                           AiModelOptions modelOptions) {
         int maxIterations = maxIterations();
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", instruction));
         List<String> trace = new ArrayList<>();
 
         for (int i = 0; i < maxIterations; i++) {
-            log.info("[CodeAgent/OpenAI] LLM 호출 (round {}/{})", i + 1, maxIterations);
-            LlmToolResponse response = openAiToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS, modelOptions);
+            log.info("[CodeAgent/{}] LLM 호출 (round {}/{})", providerLabel, i + 1, maxIterations);
+            LlmToolResponse response = toolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS, modelOptions);
 
             messages.add(response.contentBlocks().get(0));
 
             if (!response.hasToolCalls()) {
-                log.info("[CodeAgent/OpenAI] 완료 신호 수신 (round {})", i + 1);
+                log.info("[CodeAgent/{}] 완료 신호 수신 (round {})", providerLabel, i + 1);
                 return (String) response.contentBlocks().get(0).getOrDefault("content", "");
             }
 
@@ -315,7 +330,7 @@ public class CodeAgentService {
                 ));
             }
         }
-        log.warn("[CodeAgent/OpenAI] 최대 반복 횟수({}) 도달", maxIterations);
+        log.warn("[CodeAgent/{}] 최대 반복 횟수({}) 도달", providerLabel, maxIterations);
         throw new AgentIterationLimitException(maxIterations, recentTrace(trace));
     }
 

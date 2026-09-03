@@ -12,6 +12,8 @@ public enum ErrorCode {
     EXPIRED_REFRESH_TOKEN(401, "EXPIRED_REFRESH_TOKEN", "만료된 리프레시 토큰입니다"),
     REVOKED_REFRESH_TOKEN(401, "REVOKED_REFRESH_TOKEN", "이미 사용된 리프레시 토큰입니다"),
     GITHUB_APP_NOT_INSTALLED(403, "GITHUB_APP_NOT_INSTALLED", "GitHub App이 설치되지 않았습니다"),
+    GITHUB_APP_REPOSITORY_ACCESS_DENIED(403, "GITHUB_APP_REPOSITORY_ACCESS_DENIED",
+            "GitHub App이 이 저장소에 접근할 권한이 없습니다. GitHub App 설정에서 이 저장소 접근을 허용한 뒤 다시 시도해주세요"),
 
     // Common
     BAD_REQUEST(400, "BAD_REQUEST", "잘못된 요청입니다"),
@@ -22,7 +24,7 @@ public enum ErrorCode {
     CONFLICT(409, "CONFLICT", "현재 리소스 상태와 요청이 충돌합니다"),
     INTERNAL_SERVER_ERROR(500, "INTERNAL_SERVER_ERROR", "서버 내부 오류가 발생했습니다"),
 
-    // AI 제공자 (Anthropic/OpenAI). 요청 자체는 정상이고 제공자 쪽 상태가 원인이므로 4xx가 아니다 —
+    // AI 제공자 (Anthropic/OpenAI/GLM). 요청 자체는 정상이고 제공자 쪽 상태가 원인이므로 4xx가 아니다 —
     // 클라이언트는 이 코드들을 보고 "다른 제공자로 전환"(UNAVAILABLE)과 "잠시 후 재시도"(나머지)를
     // 구분할 수 있어야 한다.
     AI_PROVIDER_UNAVAILABLE(503, "AI_PROVIDER_UNAVAILABLE", "선택한 AI 제공자를 사용할 수 없습니다"),

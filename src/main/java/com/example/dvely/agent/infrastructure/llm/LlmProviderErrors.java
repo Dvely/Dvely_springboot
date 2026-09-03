@@ -8,19 +8,37 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.ResourceAccessException;
 
 /**
- * Turns the HTTP-level failures of the Anthropic and OpenAI APIs into a single
+ * Turns the HTTP-level failures of the Anthropic, OpenAI and OpenRouter APIs into a single
  * {@link LlmProviderException} the rest of the application can act on.
  *
- * <p>Shared by all four clients in this package rather than repeated in each: the two providers
- * report the same conditions differently — an exhausted balance is a 429 with
- * {@code insufficient_quota} at OpenAI and a 400 mentioning the credit balance at Anthropic — and
- * that mapping is worth having in exactly one place.</p>
+ * <p>Shared by every client in this package rather than repeated in each: the providers report the
+ * same conditions differently — an exhausted balance is a 429 with {@code insufficient_quota} at
+ * OpenAI, a 400 mentioning the credit balance at Anthropic, and a 402 at OpenRouter — and that
+ * mapping is worth having in exactly one place.</p>
  */
 @Slf4j
 final class LlmProviderErrors {
 
-    /** Response-body markers that mean "the account is out of credit", not "slow down". */
-    private static final String[] QUOTA_MARKERS = {"insufficient_quota", "credit balance"};
+    /**
+     * Response-body markers that mean "the account is out of credit", not "slow down".
+     *
+     * <p>Each provider words it differently, and two of them deliver it on a status that means
+     * something else entirely — so the body is what decides. Z.ai is the sharpest case: it answers
+     * an empty balance with <em>429</em>, which without the marker below reads as a rate limit and
+     * is therefore retried, spending the task's whole retry budget on a call that cannot begin to
+     * succeed (2026-09-03 실측: {@code {"error":{"code":"1113","message":"Insufficient balance or
+     * no resource package. Please recharge."}}} with status 429).</p>
+     */
+    private static final String[] QUOTA_MARKERS = {
+            "insufficient_quota",     // OpenAI
+            "credit balance",         // Anthropic
+            "insufficient credits",   // OpenRouter
+            "insufficient balance",   // Z.ai
+            "no resource package"     // Z.ai (잔액이 아니라 패키지 미보유일 때의 표현)
+    };
+
+    /** OpenRouter's status for an account that cannot pay for the call. */
+    private static final int PAYMENT_REQUIRED = 402;
 
     private static final int MAX_LOGGED_BODY_CHARS = 500;
 
@@ -66,6 +84,12 @@ final class LlmProviderErrors {
             }
         }
         int status = e.getStatusCode().value();
+        // OpenRouter answers an empty balance with 402 and no marker in the body; without this it
+        // would fall through to UPSTREAM_ERROR, which is retryable — three more paid-for attempts
+        // at a call that cannot start succeeding.
+        if (status == PAYMENT_REQUIRED) {
+            return Reason.QUOTA_EXCEEDED;
+        }
         if (status == 401 || status == 403) {
             return Reason.AUTH_FAILED;
         }

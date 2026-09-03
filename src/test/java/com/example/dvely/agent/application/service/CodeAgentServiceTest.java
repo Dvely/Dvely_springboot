@@ -23,6 +23,7 @@ import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
+import com.example.dvely.agent.infrastructure.llm.GlmToolClient;
 import com.example.dvely.agent.infrastructure.llm.OpenAiToolClient;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -59,6 +60,7 @@ class CodeAgentServiceTest {
 
     @Mock private ClaudeToolClient claudeToolClient;
     @Mock private OpenAiToolClient openAiToolClient;
+    @Mock private GlmToolClient glmToolClient;
     @Mock private DockerContainerService dockerService;
     @Mock private PreviewSessionService previewSessionService;
     @Mock private UserRepository userRepository;
@@ -88,6 +90,7 @@ class CodeAgentServiceTest {
         service = new CodeAgentService(
                 claudeToolClient,
                 openAiToolClient,
+                glmToolClient,
                 dockerService,
                 previewSessionService,
                 previewRuntimeLauncher,
@@ -148,6 +151,38 @@ class CodeAgentServiceTest {
                 .hasRootCauseInstanceOf(AgentIterationLimitException.class);
 
         verify(openAiToolClient, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList(), any());
+    }
+
+    @Test
+    void glmRunsThroughItsOwnClientOnTheOpenAiShapedLoop() {
+        // GLM reaches OpenRouter, which answers in OpenAI's shape — so it shares that loop, but it
+        // must not share the OpenAI client: routing it there would sign the call with the wrong
+        // key and bill the wrong account.
+        when(glmToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(openAiToolResponse("stop", toolCall("call-1", "execute_command", Map.of("command", "ls"))));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("app");
+
+        assertThatThrownBy(() -> execute(AiProvider.GLM))
+                .isInstanceOf(CodeAgentExecutionException.class)
+                .hasRootCauseInstanceOf(AgentIterationLimitException.class);
+
+        verify(glmToolClient, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList(), any());
+        verify(openAiToolClient, never()).completeWithTools(anyString(), anyList(), anyList(), any());
+        verify(claudeToolClient, never()).completeWithTools(anyString(), anyList(), anyList(), any());
+    }
+
+    @Test
+    void glmFinishesWhenTheModelStopsAskingForTools() {
+        when(glmToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(openAiTextResponse("완료했습니다."));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(invocation -> {
+            String command = invocation.getArgument(1);
+            return command.contains("serve_ready") ? "serve_ready=yes" : "exists";
+        });
+
+        CodeAgentService.CodeResult result = service.execute(step(), AiProvider.GLM, 1L, null, TASK_ID);
+
+        assertThat(result.summary()).isEqualTo("완료했습니다.");
     }
 
     @Test
@@ -376,6 +411,13 @@ class CodeAgentServiceTest {
     private LlmToolResponse openAiToolResponse(String finishReason, ToolCall call) {
         Map<String, Object> message = Map.of("role", "assistant", "tool_calls", List.of(Map.of("id", call.id())));
         return new LlmToolResponse(List.of(call), List.of(message), finishReason);
+    }
+
+    /** The OpenAI-shaped "done, here is the answer" turn: an assistant message, no tool_calls. */
+    private LlmToolResponse openAiTextResponse(String text) {
+        return new LlmToolResponse(
+                List.of(), List.of(Map.of("role", "assistant", "content", text)), "stop"
+        );
     }
 
     private LlmToolResponse textResponse(String text) {

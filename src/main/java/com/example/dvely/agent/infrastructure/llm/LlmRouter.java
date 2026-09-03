@@ -11,11 +11,13 @@ public class LlmRouter {
 
     private final ClaudeClient claudeClient;
     private final OpenAiClient openAiClient;
+    private final GlmClient    glmClient;
 
     public LlmPort route(AiProvider provider) {
         return switch (provider) {
             case ANTHROPIC -> claudeClient;
             case OPENAI    -> openAiClient;
+            case GLM       -> glmClient;
         };
     }
 }

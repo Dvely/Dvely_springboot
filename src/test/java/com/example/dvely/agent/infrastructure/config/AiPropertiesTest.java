@@ -24,7 +24,8 @@ class AiPropertiesTest {
     void bindsCommonApiKeyEnvironmentVariablesAsFallback() throws IOException {
         MockEnvironment environment = new MockEnvironment()
                 .withProperty("ANTHROPIC_API_KEY", "common-anthropic-key")
-                .withProperty("OPENAI_API_KEY", "common-openai-key");
+                .withProperty("OPENAI_API_KEY", "common-openai-key")
+                .withProperty("OPENROUTER_API_KEY", "common-openrouter-key");
         addProfileProperties(environment, "application-dev.yml");
 
         AiProperties properties = Binder.get(environment)
@@ -33,6 +34,9 @@ class AiPropertiesTest {
 
         assertThat(properties.getAnthropic().getApiKey()).isEqualTo("common-anthropic-key");
         assertThat(properties.getOpenai().getApiKey()).isEqualTo("common-openai-key");
+        // GLM is reached through OpenRouter, so the key it falls back to is OpenRouter's, not
+        // one named after the model vendor.
+        assertThat(properties.getGlm().getApiKey()).isEqualTo("common-openrouter-key");
     }
 
     @Test
@@ -41,7 +45,9 @@ class AiPropertiesTest {
                 .withProperty("QEPLOY_AI_ANTHROPIC_API_KEY", "qeploy-anthropic-key")
                 .withProperty("ANTHROPIC_API_KEY", "common-anthropic-key")
                 .withProperty("QEPLOY_AI_OPENAI_API_KEY", "qeploy-openai-key")
-                .withProperty("OPENAI_API_KEY", "common-openai-key");
+                .withProperty("OPENAI_API_KEY", "common-openai-key")
+                .withProperty("QEPLOY_AI_GLM_API_KEY", "qeploy-glm-key")
+                .withProperty("OPENROUTER_API_KEY", "common-openrouter-key");
         addProfileProperties(environment, "application-prod.yml");
 
         AiProperties properties = Binder.get(environment)
@@ -50,6 +56,37 @@ class AiPropertiesTest {
 
         assertThat(properties.getAnthropic().getApiKey()).isEqualTo("qeploy-anthropic-key");
         assertThat(properties.getOpenai().getApiKey()).isEqualTo("qeploy-openai-key");
+        assertThat(properties.getGlm().getApiKey()).isEqualTo("qeploy-glm-key");
+    }
+
+    @Test
+    void bindsTheGlmEndpointSoADeploymentCanPointItSomewhereOtherThanOpenRouter() throws IOException {
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("QEPLOY_AI_GLM_BASE_URL", "https://api.z.ai/api/paas/v4/chat/completions")
+                .withProperty("QEPLOY_AI_GLM_MODEL", "glm-4.6");
+        addProfileProperties(environment, "application-prod.yml");
+
+        AiProperties properties = Binder.get(environment)
+                .bind("qeploy.ai", Bindable.of(AiProperties.class))
+                .orElseThrow(() -> new IllegalStateException("qeploy.ai 설정 바인딩 실패"));
+
+        assertThat(properties.getGlm().getBaseUrl())
+                .isEqualTo("https://api.z.ai/api/paas/v4/chat/completions");
+        assertThat(properties.getGlm().getModel()).isEqualTo("glm-4.6");
+    }
+
+    @Test
+    void defaultsGlmToOpenRouter() throws IOException {
+        MockEnvironment environment = new MockEnvironment();
+        addProfileProperties(environment, "application-prod.yml");
+
+        AiProperties properties = Binder.get(environment)
+                .bind("qeploy.ai", Bindable.of(AiProperties.class))
+                .orElseThrow(() -> new IllegalStateException("qeploy.ai 설정 바인딩 실패"));
+
+        assertThat(properties.getGlm().getBaseUrl())
+                .isEqualTo("https://openrouter.ai/api/v1/chat/completions");
+        assertThat(properties.getGlm().getModel()).isEqualTo("z-ai/glm-4.6");
     }
 
     private void addProfileProperties(MockEnvironment environment, String resourceName) throws IOException {

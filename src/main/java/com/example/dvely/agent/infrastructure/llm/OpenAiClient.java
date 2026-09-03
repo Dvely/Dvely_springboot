@@ -4,17 +4,11 @@ import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.port.out.LlmPort;
 import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestClient;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 @Slf4j
 @Component
@@ -28,51 +22,16 @@ public class OpenAiClient implements LlmPort {
 
     @Override
     public String complete(String systemPrompt, List<LlmMessage> messages, AiModelOptions modelOptions) {
-        LlmProviderErrors.requireApiKey(PROVIDER_NAME, aiProperties.getOpenai().getApiKey());
-
-        List<Map<String, String>> apiMessages = new ArrayList<>();
-        apiMessages.add(Map.of("role", "system", "content", systemPrompt));
-        messages.forEach(m -> apiMessages.add(Map.of("role", m.role(), "content", m.content())));
-
-        Map<String, Object> body = new HashMap<>();
-        body.put("model",    modelOptions.modelOr(aiProperties.getOpenai().getModel()));
-        body.put("messages", apiMessages);
-        LlmRequestOptions.applyOpenAi(body, modelOptions);
-
-        OpenAiResponse response = LlmProviderErrors.translate(PROVIDER_NAME, () -> restClient()
-                .post()
-                .uri(API_URL)
-                .body(body)
-                .retrieve()
-                .body(OpenAiResponse.class));
-
-        if (response == null || response.choices() == null || response.choices().isEmpty()) {
-            throw new IllegalStateException("OpenAI API 응답이 비어있습니다");
-        }
-
-        log.debug("OpenAI 응답 수신: model={}", body.get("model"));
-        return response.choices().get(0).message().content();
+        return OpenAiCompatibleChat.complete(endpoint(), systemPrompt, messages, modelOptions);
     }
 
-    private RestClient restClient() {
-        return RestClient.builder()
-                .defaultHeader("Authorization", "Bearer " + aiProperties.getOpenai().getApiKey())
-                .defaultHeader("content-type",  "application/json")
-                .build();
+    private OpenAiCompatibleChat.Endpoint endpoint() {
+        return new OpenAiCompatibleChat.Endpoint(
+                PROVIDER_NAME,
+                API_URL,
+                aiProperties.getOpenai(),
+                LlmRequestOptions.ReasoningStyle.REASONING_EFFORT,
+                Map.of()
+        );
     }
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    private record OpenAiResponse(
-            @JsonProperty("choices") List<Choice> choices
-    ) {}
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    private record Choice(
-            @JsonProperty("message") Message message
-    ) {}
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    private record Message(
-            @JsonProperty("content") String content
-    ) {}
 }
