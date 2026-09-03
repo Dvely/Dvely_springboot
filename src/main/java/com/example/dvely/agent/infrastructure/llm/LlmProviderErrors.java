@@ -19,9 +19,23 @@ import org.springframework.web.client.ResourceAccessException;
 @Slf4j
 final class LlmProviderErrors {
 
-    /** Response-body markers that mean "the account is out of credit", not "slow down". */
-    private static final String[] QUOTA_MARKERS =
-            {"insufficient_quota", "credit balance", "insufficient credits"};
+    /**
+     * Response-body markers that mean "the account is out of credit", not "slow down".
+     *
+     * <p>Each provider words it differently, and two of them deliver it on a status that means
+     * something else entirely — so the body is what decides. Z.ai is the sharpest case: it answers
+     * an empty balance with <em>429</em>, which without the marker below reads as a rate limit and
+     * is therefore retried, spending the task's whole retry budget on a call that cannot begin to
+     * succeed (2026-09-03 실측: {@code {"error":{"code":"1113","message":"Insufficient balance or
+     * no resource package. Please recharge."}}} with status 429).</p>
+     */
+    private static final String[] QUOTA_MARKERS = {
+            "insufficient_quota",     // OpenAI
+            "credit balance",         // Anthropic
+            "insufficient credits",   // OpenRouter
+            "insufficient balance",   // Z.ai
+            "no resource package"     // Z.ai (잔액이 아니라 패키지 미보유일 때의 표현)
+    };
 
     /** OpenRouter's status for an account that cannot pay for the call. */
     private static final int PAYMENT_REQUIRED = 402;

@@ -50,6 +50,24 @@ class LlmProviderErrorsTest {
     }
 
     @Test
+    void zaiReportsAnEmptyBalanceOnA429ThatWouldOtherwiseReadAsARateLimit() {
+        // 2026-09-03 실측: base-url 을 Z.ai 로 돌린 배포에서 잔액이 없으면 이 응답이 온다.
+        // 상태코드만 보면 RATE_LIMITED(재시도 가능)라, 마커가 없으면 성공할 수 없는 호출에
+        // 태스크 재시도 예산을 전부 태운다 — #85 에서 고친 것과 같은 종류의 낭비다.
+        LlmProviderException exception = translated(
+                HttpClientErrorException.create(HttpStatus.TOO_MANY_REQUESTS, "Too Many Requests",
+                        HttpHeaders.EMPTY,
+                        ("{\"error\":{\"code\":\"1113\",\"message\":\"Insufficient balance or no "
+                                + "resource package. Please recharge.\"}}").getBytes(StandardCharsets.UTF_8),
+                        StandardCharsets.UTF_8)
+        );
+
+        assertThat(exception.reason()).isEqualTo(Reason.QUOTA_EXCEEDED);
+        assertThat(exception.retryable()).isFalse();
+        assertThat(exception.getMessage()).contains("크레딧이 부족");
+    }
+
+    @Test
     void recognisesOpenRoutersInsufficientCreditsWording() {
         LlmProviderException exception = translated(
                 HttpClientErrorException.create(HttpStatus.TOO_MANY_REQUESTS, "Too Many Requests",

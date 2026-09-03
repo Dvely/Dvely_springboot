@@ -84,7 +84,17 @@ public class AiProperties {
     @Setter
     public static class Glm extends Provider {
 
-        /** Full chat-completions URL, not a host prefix — the clients post to it verbatim. */
+        /**
+         * Full chat-completions URL, not a host prefix — the clients post to it verbatim.
+         *
+         * <p>Repointing this at Z.ai's own endpoint
+         * ({@code https://api.z.ai/api/paas/v4/chat/completions}) works, but two things change with
+         * it and neither is inferred automatically: the model slugs are unprefixed there
+         * ({@code glm-4.6}, not {@code z-ai/glm-4.6}), and Z.ai spells extended thinking as
+         * {@code thinking: {type: "enabled"}} rather than OpenRouter's {@code reasoning: {effort}},
+         * so {@link #getThinkingModels()} should be left empty for a Z.ai deployment until that
+         * dialect is implemented — otherwise a thinking request is accepted and silently ignored.</p>
+         */
         private String baseUrl = "https://openrouter.ai/api/v1/chat/completions";
 
         /**

@@ -56,7 +56,23 @@ class GlmClientTest {
     }
 
     @Test
-    void namesOpenRouterInErrorsBecauseThatIsWhereAKeyOrBalanceIsFixed() {
-        assertThat(GlmClient.PROVIDER_NAME).contains("OpenRouter");
+    void namesTheGatewayInErrorsBecauseThatIsWhereAKeyOrBalanceIsFixed() {
+        assertThat(GlmClient.endpoint(new AiProperties()).providerName())
+                .isEqualTo("GLM(openrouter.ai)");
+    }
+
+    @Test
+    void followsTheEndpointWhenNamingTheGateway() {
+        // A fixed "GLM(OpenRouter)" sends the operator to the wrong dashboard the moment base-url
+        // is repointed — 2026-09-03 실측으로 Z.ai 잔액 부족이 OpenRouter 이름으로 보고됐다.
+        AiProperties properties = new AiProperties();
+        properties.getGlm().setBaseUrl("https://api.z.ai/api/paas/v4/chat/completions");
+
+        assertThat(GlmClient.endpoint(properties).providerName()).isEqualTo("GLM(api.z.ai)");
+    }
+
+    @Test
+    void fallsBackToAPlainNameWhenTheEndpointHasNoHost() {
+        assertThat(GlmClient.providerName("not-a-url")).isEqualTo("GLM");
     }
 }
