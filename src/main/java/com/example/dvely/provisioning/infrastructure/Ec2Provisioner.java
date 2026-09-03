@@ -208,23 +208,23 @@ public class Ec2Provisioner {
             var alloc = ec2.allocateAddress(AllocateAddressRequest.builder()
                     .domain(DomainType.VPC).build());
             String allocationId = alloc.allocationId();
-            // 종료 정리 때 태그로도 되짚을 수 있게(allocationId 는 서버 행에 저장하지만 이중 안전).
-            ec2.createTags(CreateTagsRequest.builder()
-                    .resources(allocationId)
-                    .tags(Tag.builder().key("Name").value(nameTag).build(),
-                          Tag.builder().key("managed-by").value("qeploy").build())
-                    .build());
+            // allocate 이후 어느 단계(태그·연결)든 실패하면 방금 할당한 EIP 를 즉시 해제한다. 안 그러면
+            // 호출자에게 allocationId 도 못 넘긴 채 미연결 EIP 가 유휴 과금으로 샌다(release 만 로그로
+            // 남는 게 아니라 실제 돈이 붙고, 사용자가 콘솔에서 손으로 지워야 한다).
             try {
+                // 종료 정리·고아 대조 때 태그로 되짚을 수 있게(allocationId 는 서버 행에 저장하지만 이중 안전).
+                ec2.createTags(CreateTagsRequest.builder()
+                        .resources(allocationId)
+                        .tags(Tag.builder().key("Name").value(nameTag).build(),
+                              Tag.builder().key("managed-by").value("qeploy").build())
+                        .build());
                 associateWithRetry(ec2, allocationId, instanceId);
             } catch (RuntimeException e) {
-                // associate 가 끝내 실패하면 방금 할당한 EIP 를 즉시 해제한다 — 안 그러면 호출자에게
-                // allocationId 도 못 넘긴 채 미연결 EIP 가 유휴 과금으로 샌다(release 만 로그로 남는
-                // 게 아니라 실제 돈이 붙는다).
                 try {
                     ec2.releaseAddress(ReleaseAddressRequest.builder().allocationId(allocationId).build());
-                    log.warn("EIP associate 실패 → 방금 할당한 EIP 해제: allocationId={}", allocationId);
+                    log.warn("EIP 연결 실패 → 방금 할당한 EIP 해제: allocationId={}", allocationId);
                 } catch (RuntimeException releaseErr) {
-                    log.error("EIP associate 실패 후 release 도 실패(수동 정리 필요, 유휴 과금): allocationId={} 원인={}",
+                    log.error("EIP 연결 실패 후 release 도 실패(고아 EIP 남음, 유휴 과금): allocationId={} 원인={}",
                             allocationId, releaseErr.toString());
                 }
                 throw e;
