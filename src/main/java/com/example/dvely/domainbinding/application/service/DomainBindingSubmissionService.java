@@ -88,7 +88,7 @@ public class DomainBindingSubmissionService {
      */
     private String httpsNote(DomainHostingTarget target) {
         return switch (target) {
-            case GITHUB_PAGES -> "HTTPS 자동";
+            case GITHUB_PAGES -> "HTTPS 강제 적용";
             case AWS -> "http 직접 연결(HTTPS는 추후)";
             case GCP -> "미지원";
         };
