@@ -428,6 +428,35 @@ class DomainBindingCommandServiceTest {
         verify(domainBindingRepository).save(domain);
     }
 
+    @org.junit.jupiter.api.Test
+    void releaseBackendDomains_deletesOnlyAwsBindingsPointingAtReleasedIp() {
+        DomainBinding awsMatch = backendBinding(1L, "be.qeploy.com", "1.2.3.4", "rec-1");
+        DomainBinding frontend = new DomainBinding(2L, 7L, DomainType.MANAGED_SUBDOMAIN,
+                DomainHostingTarget.GITHUB_PAGES, "app.qeploy.com", DomainStatus.CONNECTED,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME,
+                "octo.github.io", "rec-2", true, CertificateStatus.ACTIVE, null,
+                LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now());
+        DomainBinding awsOtherIp = backendBinding(3L, "be2.qeploy.com", "9.9.9.9", "rec-3");
+        when(domainBindingRepository.findByProjectIdOrderByCreatedAtDesc(7L))
+                .thenReturn(java.util.List.of(awsMatch, frontend, awsOtherIp));
+
+        commandService.releaseBackendDomains(7L, "1.2.3.4");
+
+        // 매칭(AWS + IP) 만 Cloudflare 레코드·행 삭제. 프론트·다른 IP 는 그대로.
+        verify(cloudflareDnsPort).deleteRecord("be.qeploy.com", "rec-1");
+        verify(domainBindingRepository).deleteById(1L);
+        verify(domainBindingRepository, never()).deleteById(2L);
+        verify(domainBindingRepository, never()).deleteById(3L);
+    }
+
+    private DomainBinding backendBinding(Long id, String hostname, String ip, String recordId) {
+        return new DomainBinding(id, 7L, DomainType.MANAGED_SUBDOMAIN, DomainHostingTarget.AWS,
+                hostname, DomainStatus.CONNECTED,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.A,
+                ip, recordId, false, CertificateStatus.PENDING, null,
+                LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now());
+    }
+
     private DomainBindingCommandService commandService(CloudflareProperties cloudflareProperties) {
         return new DomainBindingCommandService(
                 projectRepository,
