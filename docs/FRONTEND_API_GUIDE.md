@@ -332,7 +332,7 @@ Accept: text/event-stream
 
 | 메서드 | 경로 | 용도 | 요청 | 응답(핵심 필드) | 주요 에러 |
 |---|---|---|---|---|---|
-| POST | `/decision` | 자연어 요청 분석 → 실행 계획 수립 + 비동기 제출 | `{ content, aiProvider(ANTHROPIC\|OPENAI), projectId?, conversationId?, model?, thinking? }` | `{ steps[], reasoning, aiProvider, taskId, status, approvalIds }` | 400, 401, 429/502/503(AI 제공자) |
+| POST | `/decision` | 자연어 요청 분석 → 실행 계획 수립 + 비동기 제출 | `{ content, aiProvider(ANTHROPIC\|OPENAI\|GLM), projectId?, conversationId?, model?, thinking? }` | `{ steps[], reasoning, aiProvider, taskId, status, approvalIds }` | 400, 401, 429/502/503(AI 제공자) |
 | GET | `/tasks/{taskId}` | 태스크 상태 조회 | - | `{ taskId, status, previewUrl, summary, error, question, failureLog, suggestedFix, attempt, maxAttempts, retryable, pendingApprovalId }` | 404 |
 | GET | `/tasks/{taskId}/events` | 영속 이벤트 목록(증분) | query: `afterEventId`(기본 0) | `[{ eventId, taskId, type, status, message, createdAt }]` | 404 |
 | GET | `/tasks/{taskId}/events/stream` | SSE 이벤트 스트림 | query: `afterEventId` | `text/event-stream`(`@RawApiResponse`) | 404(emitter null) |
@@ -358,9 +358,18 @@ Accept: text/event-stream
 
 확정된 설정은 그 태스크의 모든 단계에 그대로 적용됩니다(실행 도중 서버 설정이 바뀌어도 태스크가 모델을 갈아타지 않음). 400 응답의 `message`에 사용 가능한 값이 함께 담기므로 그대로 노출해도 됩니다.
 
+
+#### GLM 제공자
+
+`aiProvider: "GLM"` 은 OpenRouter 를 거쳐 GLM 을 호출합니다. FE 관점에서는 기존 두 제공자와 계약이 완전히 같습니다 — 요청/응답 형태, `model`·`thinking` 규칙, 아래의 AI 제공자 오류 코드가 모두 그대로입니다.
+
+- 기본 모델은 `z-ai/glm-4.6`(OpenRouter 모델 슬러그)이며, `model` 로 다른 값을 보내려면 다른 제공자와 마찬가지로 배포 설정의 허용 목록에 있어야 합니다.
+- `thinking` 을 지원합니다(OpenRouter 의 `reasoning` 파라미터로 전달됩니다).
+- 오류 `message` 의 제공자 이름은 `GLM(OpenRouter)` 로 표기됩니다. 키·크레딧을 확인해야 하는 곳이 OpenRouter 이기 때문입니다.
+
 #### AI 제공자 오류 (#85)
 
-제공자(Anthropic/OpenAI) 쪽 사정으로 실패한 경우는 일반 500이 아니라 아래 코드로 구분되어 옵니다. **요청 자체는 정상이므로 요청 내용을 고쳐 재시도할 대상이 아닙니다.**
+제공자(Anthropic/OpenAI/GLM) 쪽 사정으로 실패한 경우는 일반 500이 아니라 아래 코드로 구분되어 옵니다. **요청 자체는 정상이므로 요청 내용을 고쳐 재시도할 대상이 아닙니다.**
 
 | code | HTTP | 의미 | FE 처리 |
 |---|---|---|---|

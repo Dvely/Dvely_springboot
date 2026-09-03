@@ -85,6 +85,34 @@ class AiModelOptionsResolverTest {
     }
 
     @Test
+    void resolvesGlmAgainstItsOwnConfigurationRatherThanOpenAis() {
+        // GLM travels over OpenRouter, which speaks OpenAI's wire format — so the one thing that
+        // must not be shared with OpenAI is the model allow-list, or a GLM request would be
+        // validated against gpt-4o and rejected.
+        AiModelOptions options = resolver(properties()).resolve(AiProvider.GLM, null, null);
+
+        assertThat(options.model()).isEqualTo("z-ai/glm-4.6");
+    }
+
+    @Test
+    void acceptsThinkingOnGlmWhichOpenRouterExposesAsAReasoningParameter() {
+        AiProperties properties = properties();
+        properties.getGlm().setThinkingModels(List.of("z-ai/glm-4.6"));
+
+        AiModelOptions options = resolver(properties).resolve(AiProvider.GLM, null, ThinkingLevel.HIGH);
+
+        assertThat(options.thinking()).isEqualTo(ThinkingLevel.HIGH);
+    }
+
+    @Test
+    void rejectsAGlmModelTheDeploymentHasNotAllowed() {
+        assertThatThrownBy(() -> resolver(properties()).resolve(AiProvider.GLM, "anthropic/claude-opus-4.5", null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("지원하지 않는 모델")
+                .hasMessageContaining("z-ai/glm-4.6");
+    }
+
+    @Test
     void trimsAModelNameAndTreatsBlankAsAbsent() {
         AiModelOptions options = resolver(properties()).resolve(AiProvider.ANTHROPIC, "   ", null);
 

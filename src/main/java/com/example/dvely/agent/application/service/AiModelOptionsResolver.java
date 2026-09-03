@@ -49,6 +49,7 @@ public class AiModelOptionsResolver {
         return switch (provider) {
             case ANTHROPIC -> aiProperties.getAnthropic();
             case OPENAI -> aiProperties.getOpenai();
+            case GLM -> aiProperties.getGlm();
         };
     }
 

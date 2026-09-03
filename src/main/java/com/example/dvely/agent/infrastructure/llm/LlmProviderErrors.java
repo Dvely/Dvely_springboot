@@ -8,19 +8,23 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.ResourceAccessException;
 
 /**
- * Turns the HTTP-level failures of the Anthropic and OpenAI APIs into a single
+ * Turns the HTTP-level failures of the Anthropic, OpenAI and OpenRouter APIs into a single
  * {@link LlmProviderException} the rest of the application can act on.
  *
- * <p>Shared by all four clients in this package rather than repeated in each: the two providers
- * report the same conditions differently — an exhausted balance is a 429 with
- * {@code insufficient_quota} at OpenAI and a 400 mentioning the credit balance at Anthropic — and
- * that mapping is worth having in exactly one place.</p>
+ * <p>Shared by every client in this package rather than repeated in each: the providers report the
+ * same conditions differently — an exhausted balance is a 429 with {@code insufficient_quota} at
+ * OpenAI, a 400 mentioning the credit balance at Anthropic, and a 402 at OpenRouter — and that
+ * mapping is worth having in exactly one place.</p>
  */
 @Slf4j
 final class LlmProviderErrors {
 
     /** Response-body markers that mean "the account is out of credit", not "slow down". */
-    private static final String[] QUOTA_MARKERS = {"insufficient_quota", "credit balance"};
+    private static final String[] QUOTA_MARKERS =
+            {"insufficient_quota", "credit balance", "insufficient credits"};
+
+    /** OpenRouter's status for an account that cannot pay for the call. */
+    private static final int PAYMENT_REQUIRED = 402;
 
     private static final int MAX_LOGGED_BODY_CHARS = 500;
 
@@ -66,6 +70,12 @@ final class LlmProviderErrors {
             }
         }
         int status = e.getStatusCode().value();
+        // OpenRouter answers an empty balance with 402 and no marker in the body; without this it
+        // would fall through to UPSTREAM_ERROR, which is retryable — three more paid-for attempts
+        // at a call that cannot start succeeding.
+        if (status == PAYMENT_REQUIRED) {
+            return Reason.QUOTA_EXCEEDED;
+        }
         if (status == 401 || status == 403) {
             return Reason.AUTH_FAILED;
         }

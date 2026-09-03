@@ -12,6 +12,7 @@ public class AiProperties {
 
     private Anthropic anthropic = new Anthropic();
     private Openai openai = new Openai();
+    private Glm glm = new Glm();
     private CodeAgent codeAgent = new CodeAgent();
 
     /**
@@ -69,6 +70,33 @@ public class AiProperties {
     public static class Openai extends Provider {
         public Openai() {
             super("gpt-4o");
+        }
+    }
+
+    /**
+     * GLM, reached through OpenRouter rather than Z.ai directly. OpenRouter speaks the OpenAI
+     * chat-completions format, so the only thing that separates this provider from {@link Openai}
+     * at the wire level is where the request is posted and which key signs it — hence the
+     * configurable {@link #baseUrl}, which also lets a deployment point the same provider at Z.ai's
+     * own OpenAI-compatible endpoint, or at a self-hosted gateway, without a code change.
+     */
+    @Getter
+    @Setter
+    public static class Glm extends Provider {
+
+        /** Full chat-completions URL, not a host prefix — the clients post to it verbatim. */
+        private String baseUrl = "https://openrouter.ai/api/v1/chat/completions";
+
+        /**
+         * OpenRouter's optional attribution headers ({@code HTTP-Referer}, {@code X-Title}). They
+         * are what makes calls identifiable on the OpenRouter dashboard and rankings; blank means
+         * the header is simply not sent, which OpenRouter accepts.
+         */
+        private String referer = "";
+        private String title = "";
+
+        public Glm() {
+            super("z-ai/glm-4.6");
         }
     }
 
