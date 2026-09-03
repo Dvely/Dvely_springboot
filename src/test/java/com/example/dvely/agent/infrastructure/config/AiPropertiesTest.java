@@ -89,6 +89,39 @@ class AiPropertiesTest {
         assertThat(properties.getGlm().getModel()).isEqualTo("z-ai/glm-4.6");
     }
 
+    @Test
+    void bindsTheRetryEnvironmentVariablesDocumentedForOperators() throws IOException {
+        // 이 이름들은 deploy/ecosystem.config.js.example 에 그대로 적혀 있다. yml 에 명시적
+        // 플레이스홀더가 없으면 운영자가 넣은 값이 조용히 무시된다.
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("QEPLOY_AI_RETRY_MAX_ATTEMPTS", "5")
+                .withProperty("QEPLOY_AI_RETRY_INITIAL_DELAY_MS", "250")
+                .withProperty("QEPLOY_AI_RETRY_MAX_DELAY_MS", "4000");
+        addProfileProperties(environment, "application-prod.yml");
+
+        AiProperties properties = Binder.get(environment)
+                .bind("qeploy.ai", Bindable.of(AiProperties.class))
+                .orElseThrow(() -> new IllegalStateException("qeploy.ai 설정 바인딩 실패"));
+
+        assertThat(properties.getRetry().getMaxAttempts()).isEqualTo(5);
+        assertThat(properties.getRetry().getInitialDelayMs()).isEqualTo(250);
+        assertThat(properties.getRetry().getMaxDelayMs()).isEqualTo(4000);
+    }
+
+    @Test
+    void defaultsRetryToTheBoundedPolicy() throws IOException {
+        MockEnvironment environment = new MockEnvironment();
+        addProfileProperties(environment, "application-prod.yml");
+
+        AiProperties properties = Binder.get(environment)
+                .bind("qeploy.ai", Bindable.of(AiProperties.class))
+                .orElseThrow(() -> new IllegalStateException("qeploy.ai 설정 바인딩 실패"));
+
+        assertThat(properties.getRetry().getMaxAttempts()).isEqualTo(3);
+        assertThat(properties.getRetry().getInitialDelayMs()).isEqualTo(1000);
+        assertThat(properties.getRetry().getMaxDelayMs()).isEqualTo(8000);
+    }
+
     private void addProfileProperties(MockEnvironment environment, String resourceName) throws IOException {
         new YamlPropertySourceLoader()
                 .load(resourceName, new ClassPathResource(resourceName))

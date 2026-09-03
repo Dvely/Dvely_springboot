@@ -41,7 +41,7 @@ public class ClaudeClient implements LlmPort {
         body.put("messages", apiMessages);
         LlmRequestOptions.applyAnthropic(body, modelOptions, MAX_TOKENS);
 
-        ClaudeResponse response = LlmProviderErrors.translate(PROVIDER_NAME, () -> restClient()
+        ClaudeResponse response = LlmProviderErrors.translate(PROVIDER_NAME, aiProperties.getRetry(), () -> restClient()
                 .post()
                 .uri(API_URL)
                 .body(body)

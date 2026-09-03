@@ -42,6 +42,9 @@ public class ProvisionedServerEntity {
     @Column(name = "instance_id", length = 40)
     private String instanceId;
 
+    @Column(name = "elastic_ip_allocation_id", length = 40)
+    private String elasticIpAllocationId;
+
     @Column(name = "public_host")
     private String publicHost;
 
@@ -78,6 +81,7 @@ public class ProvisionedServerEntity {
         this.status = s.getStatus().name();
         this.cloudConnectionId = s.getCloudConnectionId();
         this.instanceId = s.getInstanceId();
+        this.elasticIpAllocationId = s.getElasticIpAllocationId();
         this.publicHost = s.getPublicHost();
         this.port = s.getPort();
         this.approvalId = s.getApprovalId();
@@ -86,10 +90,12 @@ public class ProvisionedServerEntity {
     }
 
     public ProvisionedServer toDomain() {
-        return new ProvisionedServer(
+        ProvisionedServer server = new ProvisionedServer(
                 id, projectId, instanceType, ServerStatus.valueOf(status), cloudConnectionId,
                 instanceId, publicHost, port, approvalId,
                 failureCode == null ? null : ProvisionFailureCode.valueOf(failureCode),
                 errorMessage, createdAt, updatedAt);
+        server.assignElasticIp(elasticIpAllocationId);
+        return server;
     }
 }

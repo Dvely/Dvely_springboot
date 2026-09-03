@@ -70,6 +70,15 @@ qeploy:
       # OpenRouter 대시보드/랭킹에서 이 서비스 호출을 식별하는 선택 헤더. 비우면 보내지 않는다.
       referer: ${QEPLOY_AI_GLM_REFERER:}
       title: ${QEPLOY_AI_GLM_TITLE:}
+    retry:
+      # 제공자 호출이 일시적으로 실패했을 때(429·5xx·연결 타임아웃) 다시 시도하는 횟수와 간격.
+      # AgentPlanExecutor 는 제공자 예외를 받으면 태스크를 닫으므로, 여기서 흡수하지 못한
+      # 일시 실패는 곧 작업 전체의 실패다. 키 없음·인증 실패·크레딧 부족은 재시도해도 소용없어
+      # 즉시 실패한다. CODE 에이전트는 라운드마다 이 예산을 쓰므로 기본값을 낮게 둔다.
+      max-attempts: ${QEPLOY_AI_RETRY_MAX_ATTEMPTS:3}
+      initial-delay-ms: ${QEPLOY_AI_RETRY_INITIAL_DELAY_MS:1000}
+      # 한 번의 대기 상한. 제공자가 Retry-After 로 더 긴 시간을 요구해도 이 값으로 자른다.
+      max-delay-ms: ${QEPLOY_AI_RETRY_MAX_DELAY_MS:8000}
     code-agent:
       # CODE 스텝 1회 실행에서 허용하는 LLM 왕복 횟수. 소진되면 성공이 아니라 실패로 처리되고
       # 같은 컨테이너에서 이어서 재시도된다(AgentIterationLimitException).
