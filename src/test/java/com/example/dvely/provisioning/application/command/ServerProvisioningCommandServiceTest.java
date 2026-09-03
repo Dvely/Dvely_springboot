@@ -141,6 +141,29 @@ class ServerProvisioningCommandServiceTest {
     }
 
     @Test
+    void terminateReleasesElasticIp() {
+        // EIP 는 인스턴스가 종료돼도 할당이 남아 계속 과금되므로, 종료 정리가 release 해야 한다.
+        ProvisionedServer server = new ProvisionedServer(5L, PROJECT, "t3.micro", ServerStatus.RUNNING,
+                CONN_ID, "i-123", "1.2.3.4", 8080, 99L, null, null,
+                LocalDateTime.now(), LocalDateTime.now());
+        server.assignElasticIp("eipalloc-1");
+        when(serverRepository.findById(5L)).thenReturn(Optional.of(server));
+        when(projectRepository.findByIdAndOwnerUserId(PROJECT, OWNER))
+                .thenReturn(Optional.of(Mockito.mock(Project.class)));
+        when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+        when(s3.bucketNameFor(any())).thenReturn("bucket");
+        when(s3.jarKeyFor(PROJECT)).thenReturn("10/app.jar");
+
+        service.terminate(OWNER, 5L);
+
+        verify(ec2).terminate(any(), org.mockito.ArgumentMatchers.eq("i-123"));
+        verify(ec2).releaseElasticIp(any(), org.mockito.ArgumentMatchers.eq("eipalloc-1"));
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.TERMINATED);
+    }
+
+    @Test
     void terminateMarksTerminatedEvenWhenCleanupFails() {
         // 부수 자원 정리(SSM)가 권한 부족 등으로 실패해도, 인스턴스 종료 후엔 TERMINATED 로 넘어가야 한다 —
         // 정리 실패로 서버가 RUNNING 에 stuck 되면 "껐는데 안 꺼졌다"로 보이고 폴링도 멈춘다(과금 자원이라 특히 나쁨).

@@ -74,6 +74,8 @@ class BackendDeployRunnerTest {
         when(roleProvisioner.ensureInstanceProfile(any(), eq(PROJECT), anyString())).thenReturn("qeploy-instance-10");
         when(ec2.ensureSecurityGroup(any(), eq(8080))).thenReturn("sg-1");
         when(ssm.latestAmazonLinux2023Ami(any())).thenReturn("ami-1");
+        when(ec2.allocateAndAssociateElasticIp(any(), anyString(), anyString()))
+                .thenReturn(new Ec2Provisioner.ElasticIp("eipalloc-1", "1.2.3.4"));
     }
 
     @Test
@@ -88,6 +90,7 @@ class BackendDeployRunnerTest {
         verify(serverRepository).save(saved.capture());
         assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.PROVISIONING);
         assertThat(saved.getValue().getInstanceId()).isEqualTo("i-123");
+        assertThat(saved.getValue().getElasticIpAllocationId()).isEqualTo("eipalloc-1");   // 안정 주소 연결
         assertThat(Files.exists(jar)).isFalse();   // 임시 jar 는 정리된다
     }
 
@@ -146,6 +149,7 @@ class BackendDeployRunnerTest {
         assertThatThrownBy(() -> runner.deploy(building())).isInstanceOf(RuntimeException.class);
 
         verify(ec2).terminate(any(), eq("i-999"));   // 방금 만든 인스턴스를 정리
+        verify(ec2).releaseElasticIp(any(), eq("eipalloc-1"));   // 붙인 EIP 도 release(유휴 과금 방지)
     }
 
     @Test
@@ -162,6 +166,8 @@ class BackendDeployRunnerTest {
         when(ec2.ensureSecurityGroup(any(), eq(8080))).thenReturn("sg-1");
         when(ssm.latestAmazonLinux2023Ami(any())).thenReturn("ami-1");
         when(ec2.launch(any(), any())).thenReturn("i-lab-1");
+        when(ec2.allocateAndAssociateElasticIp(any(), anyString(), anyString()))
+                .thenReturn(new Ec2Provisioner.ElasticIp("eipalloc-lab", "5.6.7.8"));
         when(ec2Properties.hasInstanceProfileOverride()).thenReturn(true);
         when(ec2Properties.instanceProfileOverride()).thenReturn("LabInstanceProfile");
 

@@ -71,6 +71,7 @@ public class BackendDeployRunner {
         }
         Path jar = null;
         String instanceId = null;
+        String eipAllocationId = null;
         try {
             jar = buildService.buildJar(ownerUserId, projectId);
 
@@ -98,6 +99,13 @@ public class BackendDeployRunner {
                     profileName, "qeploy-backend-" + projectId);
             instanceId = launchWithRetry(connection, spec);
 
+            // 안정 주소(EIP) 연결 — 자동할당 public IP 는 stop·재배포마다 바뀌어 도메인이 깨진다.
+            // 종료 시 release 는 terminate 정리가 담당한다(server.elasticIpAllocationId 로).
+            Ec2Provisioner.ElasticIp eip = ec2.allocateAndAssociateElasticIp(
+                    connection, instanceId, "qeploy-backend-" + projectId);
+            eipAllocationId = eip.allocationId();
+            server.assignElasticIp(eipAllocationId);
+
             server.beginProvisioning(instanceId);
             serverRepository.save(server);
             log.info("EC2 배포 시작 완료: serverId={} instanceId={} projectId={}",
@@ -105,9 +113,13 @@ public class BackendDeployRunner {
         } catch (BackendBuildException e) {
             fail(server, ProvisionFailureCode.PROVIDER_ERROR, e.getMessage());
         } catch (RuntimeException e) {
-            // launch 이후(인스턴스 생김) 실패면 과금이라 즉시 롤백한다.
+            // launch 이후(인스턴스 생김) 실패면 과금이라 즉시 롤백한다. EIP 도 붙었으면 release
+            // (연결만 풀려도 할당은 남아 계속 과금).
             if (instanceId != null) {
                 safeTerminate(connection, instanceId);
+            }
+            if (eipAllocationId != null) {
+                safeReleaseEip(connection, eipAllocationId);
             }
             fail(server, classify(e), e.getMessage());
         } finally {
@@ -205,6 +217,15 @@ public class BackendDeployRunner {
             ec2.terminate(connection, instanceId);
         } catch (RuntimeException e) {
             log.error("롤백 terminate 실패(수동 정리 필요): instanceId={} 원인={}", instanceId, e.toString());
+        }
+    }
+
+    private void safeReleaseEip(CloudConnection connection, String allocationId) {
+        try {
+            ec2.releaseElasticIp(connection, allocationId);
+        } catch (RuntimeException e) {
+            log.error("롤백 EIP release 실패(수동 정리 필요, 유휴 EIP 과금 주의): allocationId={} 원인={}",
+                    allocationId, e.toString());
         }
     }
 

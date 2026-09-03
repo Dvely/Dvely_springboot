@@ -40,8 +40,10 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       "Sid": "Ec2RunTerminateTagged",
       "Effect": "Allow",
       "Action": ["ec2:RunInstances", "ec2:TerminateInstances", "ec2:CreateTags",
-                 "ec2:CreateSecurityGroup", "ec2:AuthorizeSecurityGroupIngress"],
-      "Resource": "*"                       // 태그 조건으로 좁힐 예정(managed-by=qeploy)
+                 "ec2:CreateSecurityGroup", "ec2:AuthorizeSecurityGroupIngress",
+                 "ec2:AllocateAddress", "ec2:AssociateAddress", "ec2:ReleaseAddress"],
+      "Resource": "*"                       // 태그 조건으로 좁힐 예정(managed-by=qeploy). EIP=안정 주소,
+                                            // ReleaseAddress 없으면 종료 후 유휴 EIP 가 계속 과금됨
     },
     {
       "Sid": "PassOnlyQeployInstanceRole",
