@@ -109,7 +109,11 @@ public class Ec2Provisioner {
         }
     }
 
-    /** 인스턴스 상태를 조회한다. running 이면 publicDnsName 이 채워져 host 가 나온다. */
+    /**
+     * 인스턴스 상태를 조회한다. running 이면 publicHost 가 나온다 — <b>publicIpAddress(=EIP IP) 우선</b>.
+     * DNS 이름이 아니라 IP 로 두는 이유: 도메인 바인딩이 A 레코드로 이 IP 를 가리켜야 하고(IP 에는 CNAME
+     * 불가), EIP 라 IP 가 안정적이다. url 표시(http://IP:port)에도 문제없다.
+     */
     public Ec2InstanceStatus describe(CloudConnection connection, String instanceId) {
         AwsAccess access = credentialsResolver.resolve(connection);
         try (Ec2Client ec2 = client(access)) {
@@ -121,8 +125,8 @@ public class Ec2Provisioner {
             if (instance == null) {
                 return new Ec2InstanceStatus("terminated", null);
             }
-            String host = (instance.publicDnsName() == null || instance.publicDnsName().isBlank())
-                    ? instance.publicIpAddress() : instance.publicDnsName();
+            String host = (instance.publicIpAddress() == null || instance.publicIpAddress().isBlank())
+                    ? instance.publicDnsName() : instance.publicIpAddress();
             return new Ec2InstanceStatus(instance.state().nameAsString(), host);
         } catch (Ec2Exception e) {
             // InvalidInstanceID.NotFound 등 — 이미 없는 것으로 본다.

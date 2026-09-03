@@ -6,6 +6,7 @@ import com.example.dvely.agent.application.dto.AgentSubmission;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.application.command.dto.BindDomainCommand;
 import com.example.dvely.domainbinding.application.query.DomainBindingQueryService;
 import com.example.dvely.domainbinding.application.result.DomainBindingResult;
@@ -77,7 +78,20 @@ public class DomainBindingSubmissionService {
                 + domain
                 + " / 대상: "
                 + command.hostingTarget().name()
-                + " / HTTPS 강제 적용";
+                + " / " + httpsNote(command.hostingTarget());
+    }
+
+    /**
+     * 경로마다 HTTPS 실상이 다르다 — 승인 요약이 실제와 어긋나지 않게(FE 가 이 문장을 그대로 그린다).
+     * GitHub Pages 는 Cloudflare 엣지 인증서로 https 가 되고, AWS 백엔드는 지금 DNS-only(EIP:8080 http)
+     * 라 https 가 없다(프록시+Origin Rule 붙는 B 이후 바뀐다).
+     */
+    private String httpsNote(DomainHostingTarget target) {
+        return switch (target) {
+            case GITHUB_PAGES -> "HTTPS 강제 적용";
+            case AWS -> "http 직접 연결(HTTPS는 추후)";
+            case GCP -> "미지원";
+        };
     }
 
     private AgentSubmission submitPlan(Long ownerUserId,
