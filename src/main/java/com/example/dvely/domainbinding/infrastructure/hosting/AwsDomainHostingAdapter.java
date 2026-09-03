@@ -1,6 +1,7 @@
 package com.example.dvely.domainbinding.infrastructure.hosting;
 
 import com.example.dvely.domainbinding.application.port.out.BackendAddressPort;
+import com.example.dvely.domainbinding.application.port.out.BackendTlsProbePort;
 import com.example.dvely.domainbinding.application.port.out.DomainHostingAdapter;
 import com.example.dvely.domainbinding.domain.value.CertificateStatus;
 import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
@@ -9,17 +10,20 @@ import org.springframework.stereotype.Component;
 
 /**
  * 도메인을 사용자 AWS 백엔드(EC2)로 연결하는 어댑터. 프론트(GitHub Pages)와 달리 대상이 표준포트+HTTPS
- * 관리형 호스트가 아니라 8080 http 생 EC2 라, 도메인은 CNAME 이 아니라 <b>A 레코드로 EIP(안정 IP)</b>를
- * 가리킨다(관리형 서브도메인 경로에서 커맨드서비스가 A 레코드를 만든다).
+ * 관리형 호스트가 아니라 EC2 라, 도메인은 CNAME 이 아니라 <b>A 레코드로 EIP(안정 IP)</b>를 가리킨다
+ * (관리형 서브도메인 경로에서 커맨드서비스가 A 레코드를 만든다).
  *
- * <p>MVP 는 DNS-only(프록시 off, http://label.qeploy.com:8080). HTTPS 는 후속(B) — Cloudflare 프록시
- * +Origin Rule 로 443→8080 을 감싼다.</p>
+ * <p>HTTPS 는 인스턴스의 <b>Caddy on-demand TLS</b> 가 종단한다(443 https, 80→443 리다이렉트, 인증서는
+ * 첫 요청 때 Let's Encrypt 로 자동 발급 — 남용 방지 ask 게이트가 등록된 도메인만 허용). Caddy 설치는
+ * best-effort 라 "붙었으면 HTTPS"라고 단정하지 않고, {@link #verify}에서 실제 https 응답을 프로브해
+ * {@code httpsEnforced} 를 실상대로 채운다.</p>
  */
 @Component
 @RequiredArgsConstructor
 public class AwsDomainHostingAdapter implements DomainHostingAdapter {
 
     private final BackendAddressPort backendAddressPort;
+    private final BackendTlsProbePort tlsProbePort;
 
     @Override
     public DomainHostingTarget target() {
@@ -43,8 +47,13 @@ public class AwsDomainHostingAdapter implements DomainHostingAdapter {
     @Override
     public VerificationStatus verify(Context context, String hostname) {
         boolean backendRunning = backendAddressPort.resolveRunningBackendIp(context.projectId()).isPresent();
-        // DNS-only http MVP: HTTPS 미적용(B 에서 Cloudflare 프록시+Origin Rule) → cert 는 PENDING.
-        return new VerificationStatus(backendRunning, false, CertificateStatus.PENDING, null);
+        // HTTPS 는 Caddy on-demand 로 자동이지만 설치가 best-effort 라, 실제 https 응답을 프로브해
+        // httpsEnforced 를 실상대로 채운다(하드코딩 X). https 가 유효 인증서로 뜨면 인증서도 ACTIVE.
+        boolean httpsServing = tlsProbePort.isHttpsServing(hostname);
+        CertificateStatus certificateStatus = httpsServing
+                ? CertificateStatus.ACTIVE
+                : CertificateStatus.PENDING;
+        return new VerificationStatus(backendRunning, httpsServing, certificateStatus, null);
     }
 
     @Override
