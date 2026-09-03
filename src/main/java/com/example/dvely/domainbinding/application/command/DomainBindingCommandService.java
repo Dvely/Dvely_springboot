@@ -29,10 +29,12 @@ import com.example.dvely.project.domain.value.DeployStatus;
 import java.net.IDN;
 import java.net.URI;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class DomainBindingCommandService {
 
@@ -239,6 +241,36 @@ public class DomainBindingCommandService {
                 dnsTarget
         );
         return toResult(domainBindingRepository.save(domain));
+    }
+
+    /**
+     * 백엔드 서버 종료로 EIP 가 해제될 때, 그 IP 를 가리키던 이 프로젝트의 백엔드(AWS) 도메인을 정리한다.
+     * <b>보안:</b> 해제된 EIP 는 AWS 풀로 돌아가 남에게 재할당될 수 있어, Cloudflare A 레코드를 남겨두면
+     * 우리 서브도메인이 남의 서버를 가리키는 dangling DNS(서브도메인 탈취)가 된다 — 그래서 레코드를 반드시
+     * 지운다. 시스템 내부 호출(종료 정리)이라 소유권 검사는 상위(terminate)가 이미 했다. 한 도메인 정리가
+     * 실패해도 나머지·종료는 계속한다(best-effort).
+     */
+    @Transactional
+    public void releaseBackendDomains(Long projectId, String ipAddress) {
+        if (ipAddress == null || ipAddress.isBlank()) {
+            return;
+        }
+        domainBindingRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
+                .filter(d -> d.getHostingTarget() == DomainHostingTarget.AWS)
+                .filter(d -> ipAddress.equals(d.getDnsTarget()))
+                .forEach(d -> {
+                    try {
+                        if (d.getCloudflareRecordId() != null && !d.getCloudflareRecordId().isBlank()) {
+                            cloudflareDnsPort.deleteRecord(d.getHostname(), d.getCloudflareRecordId());
+                        }
+                        domainBindingRepository.deleteById(d.getId());
+                        log.info("백엔드 종료로 도메인 정리: hostname={} projectId={} (EIP {} 해제)",
+                                d.getHostname(), projectId, ipAddress);
+                    } catch (RuntimeException e) {
+                        log.warn("백엔드 종료 시 도메인 정리 실패(수동 확인 필요, dangling DNS 위험): hostname={} 원인={}",
+                                d.getHostname(), e.toString());
+                    }
+                });
     }
 
     private boolean isCustomDomainConnected(DomainBinding domain) {

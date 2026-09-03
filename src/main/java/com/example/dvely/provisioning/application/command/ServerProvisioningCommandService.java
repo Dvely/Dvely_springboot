@@ -11,6 +11,7 @@ import com.example.dvely.project.domain.repository.ProjectCloudConnectionSetting
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
+import com.example.dvely.provisioning.application.port.out.ProjectDomainCleanupPort;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
 import com.example.dvely.provisioning.infrastructure.S3ArtifactStore;
 import com.example.dvely.provisioning.infrastructure.SsmParameterStore;
@@ -43,6 +44,7 @@ public class ServerProvisioningCommandService {
     private final ApprovalRepository approvalRepository;
     private final ProjectRepository projectRepository;
     private final Ec2Provisioner ec2;
+    private final ProjectDomainCleanupPort projectDomainCleanupPort;
     private final SsmParameterStore ssm;
     private final S3ArtifactStore s3;
 
@@ -92,6 +94,16 @@ public class ServerProvisioningCommandService {
                     } catch (RuntimeException e) {
                         log.warn("서버 종료 후 EIP release 실패(수동 정리 필요, 유휴 EIP 과금 주의): allocationId={} 원인={}",
                                 server.getElasticIpAllocationId(), e.getMessage());
+                    }
+                }
+                // EIP 가 해제되면 그 IP 를 가리키던 백엔드 도메인은 dangling DNS(서브도메인 탈취) 위험이
+                // 된다 — Cloudflare 레코드를 지운다. best-effort(실패해도 종료는 계속, 경고는 남는다).
+                if (server.getPublicHost() != null) {
+                    try {
+                        projectDomainCleanupPort.releaseBackendDomains(server.getProjectId(), server.getPublicHost());
+                    } catch (RuntimeException e) {
+                        log.warn("서버 종료 후 도메인 정리 실패(수동 확인 필요, dangling DNS 위험): projectId={} ip={} 원인={}",
+                                server.getProjectId(), server.getPublicHost(), e.getMessage());
                     }
                 }
                 // 부수 자원(SSM 파라미터·S3 아티팩트) 정리는 best-effort 다. 과금이 멈추는 시점은 인스턴스
