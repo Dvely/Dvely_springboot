@@ -2,6 +2,7 @@ package com.example.dvely.provisioning.infrastructure.persistence.entity;
 
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
+import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -42,6 +43,9 @@ public class ProvisionedServerEntity {
     @Column(name = "instance_id", length = 40)
     private String instanceId;
 
+    @Column(name = "deploy_mode", nullable = false, length = 20)
+    private String deployMode;
+
     @Column(name = "elastic_ip_allocation_id", length = 40)
     private String elasticIpAllocationId;
 
@@ -81,6 +85,7 @@ public class ProvisionedServerEntity {
         this.status = s.getStatus().name();
         this.cloudConnectionId = s.getCloudConnectionId();
         this.instanceId = s.getInstanceId();
+        this.deployMode = s.getDeployMode().name();
         this.elasticIpAllocationId = s.getElasticIpAllocationId();
         this.publicHost = s.getPublicHost();
         this.port = s.getPort();
@@ -95,6 +100,7 @@ public class ProvisionedServerEntity {
                 instanceId, publicHost, port, approvalId,
                 failureCode == null ? null : ProvisionFailureCode.valueOf(failureCode),
                 errorMessage, createdAt, updatedAt);
+        server.assignDeployMode(deployMode == null ? null : ServerDeployMode.valueOf(deployMode));
         server.assignElasticIp(elasticIpAllocationId);
         return server;
     }
