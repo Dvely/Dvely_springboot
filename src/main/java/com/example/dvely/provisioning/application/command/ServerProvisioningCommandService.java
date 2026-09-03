@@ -82,10 +82,24 @@ public class ServerProvisioningCommandService {
         if (server.getCloudConnectionId() != null) {
             cloudConnectionRepository.findById(server.getCloudConnectionId()).ifPresent(connection -> {
                 if (server.getInstanceId() != null) {
-                    ec2.terminate(connection, server.getInstanceId());
+                    ec2.terminate(connection, server.getInstanceId());   // 과금 자원 — 실패 시 예외 전파(아직 안 꺼진 것)
                 }
-                ssm.deleteAllForProject(connection, server.getProjectId());
-                s3.deleteJar(connection, s3.bucketNameFor(connection), s3.jarKeyFor(server.getProjectId()));
+                // 부수 자원(SSM 파라미터·S3 아티팩트) 정리는 best-effort 다. 과금이 멈추는 시점은 인스턴스
+                // 종료이지 이 정리가 아니다. 여기서 실패했다고 예외를 올려 markTerminated 를 건너뛰면 서버가
+                // RUNNING 으로 남아 "껐는데 안 꺼졌다"로 보인다(폴링도 멈추고 죽은 url 이 산 것처럼 남는다) —
+                // 과금 자원이라 그 혼동이 특히 나쁘다. 정리 실패는 로그로 남기고 종료는 계속 진행한다.
+                try {
+                    ssm.deleteAllForProject(connection, server.getProjectId());
+                } catch (RuntimeException e) {
+                    log.warn("서버 종료 후 SSM 파라미터 정리 실패(수동 정리 필요): projectId={} 원인={}",
+                            server.getProjectId(), e.getMessage());
+                }
+                try {
+                    s3.deleteJar(connection, s3.bucketNameFor(connection), s3.jarKeyFor(server.getProjectId()));
+                } catch (RuntimeException e) {
+                    log.warn("서버 종료 후 S3 아티팩트 정리 실패(수동 정리 필요): projectId={} 원인={}",
+                            server.getProjectId(), e.getMessage());
+                }
             });
         }
         server.markTerminated();
