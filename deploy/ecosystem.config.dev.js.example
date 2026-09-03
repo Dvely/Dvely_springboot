@@ -76,6 +76,11 @@ module.exports = {
         // 고정이다. 둘 중 하나만 채우면 다른 경로에서 조용히 실패하므로 양쪽 다 넣는다.
         QEPLOY_AI_ANTHROPIC_API_KEY: '',
         QEPLOY_AI_OPENAI_API_KEY: '',
+        // GLM 은 기본값이 OpenRouter 기준이다. Z.ai 키를 쓴다면 세 개를 함께 넣어야 한다
+        // (안 그러면 기본 엔드포인트로 나가 401 이 된다).
+        //   QEPLOY_AI_GLM_BASE_URL: 'https://api.z.ai/api/paas/v4/chat/completions',
+        //   QEPLOY_AI_GLM_MODEL: 'glm-4.7-flash',
+        QEPLOY_AI_GLM_API_KEY: '',
 
         // --- 프론트 연동 ---
         // 프론트는 각자 로컬에서 돌린다. allowCredentials(true) 라 와일드카드를 쓸 수 없어

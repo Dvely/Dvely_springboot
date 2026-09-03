@@ -43,7 +43,8 @@ public class OpenAiToolClient implements LlmToolPort {
                 API_URL,
                 aiProperties.getOpenai(),
                 LlmRequestOptions.ReasoningStyle.REASONING_EFFORT,
-                Map.of()
+                Map.of(),
+                aiProperties.getRetry()
         );
     }
 }
