@@ -13,6 +13,7 @@ import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import com.example.dvely.provisioning.infrastructure.Ec2InstanceRoleProvisioner;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner.LaunchSpec;
+import com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties;
 import com.example.dvely.provisioning.infrastructure.S3ArtifactStore;
 import com.example.dvely.provisioning.infrastructure.SsmParameterStore;
 import java.io.IOException;
@@ -49,6 +50,7 @@ public class BackendDeployRunner {
     private final Ec2Provisioner ec2;
     private final ProvisionedDatabaseRepository databaseRepository;
     private final EnvironmentVariableRepository environmentVariableRepository;
+    private final Ec2ProvisioningProperties ec2Properties;
 
     /** BUILDING 상태로 넘어온 서버를 실제로 배포한다. 성공 시 PROVISIONING, 실패 시 FAILED. */
     public void deploy(ProvisionedServer server) {
@@ -60,6 +62,13 @@ public class BackendDeployRunner {
             return;
         }
         Long ownerUserId = connection.getOwnerUserId();
+        // 계정 ID가 없으면 뒤늦게 S3 버킷 단계에서 깨지는 대신, 무거운 빌드 전에 바로 실패시킨다
+        // (버킷 이름 전역 충돌 방지 — S3ArtifactStore.bucketNameFor 참고).
+        if (connection.getAccountId() == null || connection.getAccountId().isBlank()) {
+            fail(server, ProvisionFailureCode.PROVIDER_ERROR,
+                    "클라우드 연결에 AWS 계정 ID(12자리)가 없습니다. 연결 설정에 계정 ID를 넣어주세요.");
+            return;
+        }
         Path jar = null;
         String instanceId = null;
         try {
@@ -72,7 +81,15 @@ public class BackendDeployRunner {
 
             ssm.putAll(connection, projectId, assembleEnv(projectId, server.getPort()));
 
-            String profileName = roleProvisioner.ensureInstanceProfile(connection, projectId, bucket);
+            // IAM 역할 생성이 금지된 환경(AWS Academy Learner Lab 등)에서는 미리 존재하는
+            // 프로파일(예: LabInstanceProfile)을 설정으로 지정해 생성을 건너뛴다. 기본은 자동 생성.
+            String profileName;
+            if (ec2Properties.hasInstanceProfileOverride()) {
+                profileName = ec2Properties.instanceProfileOverride();
+                log.info("[BackendDeploy] 인스턴스 프로파일 오버라이드 사용(생성 건너뜀): {}", profileName);
+            } else {
+                profileName = roleProvisioner.ensureInstanceProfile(connection, projectId, bucket);
+            }
             String sgId = ec2.ensureSecurityGroup(connection, server.getPort());
             String ami = ssm.latestAmazonLinux2023Ami(connection);
             String userData = userDataScript(bucket, key, projectId, server.getPort());

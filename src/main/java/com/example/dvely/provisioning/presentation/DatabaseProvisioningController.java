@@ -17,9 +17,12 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -83,5 +86,17 @@ public class DatabaseProvisioningController {
      */
     private OffsetDateTime offset(LocalDateTime t) {
         return t == null ? null : t.atZone(ZoneId.systemDefault()).toOffsetDateTime();
+    }
+
+    @Operation(summary = "DB 삭제",
+            description = "프로비저닝된 DB 를 삭제합니다. RDS 는 저장된 클라우드 연결로 실제 인스턴스를 삭제하고, "
+                    + "LOCAL 은 컨테이너를 정리한 뒤 상태를 EXPIRED 로 넘깁니다. 멱등입니다.")
+    @DeleteMapping("/api/v1/databases/{databaseId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long databaseId
+    ) {
+        commandService.deleteDatabase(ownerUserId, databaseId);
     }
 }
