@@ -45,7 +45,8 @@ public class GlmClient implements LlmPort {
                 config.getBaseUrl(),
                 config,
                 LlmRequestOptions.ReasoningStyle.OPENROUTER_REASONING,
-                attributionHeaders(config)
+                attributionHeaders(config),
+                aiProperties.getRetry()
         );
     }
 

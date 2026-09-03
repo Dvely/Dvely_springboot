@@ -67,7 +67,7 @@ public class ClaudeToolClient implements LlmToolPort {
         body.put("messages", messages);
         LlmRequestOptions.applyAnthropic(body, modelOptions, MAX_TOKENS);
 
-        String raw = LlmProviderErrors.translate(ClaudeClient.PROVIDER_NAME, () -> restClient()
+        String raw = LlmProviderErrors.translate(ClaudeClient.PROVIDER_NAME, aiProperties.getRetry(), () -> restClient()
                 .post()
                 .uri(API_URL)
                 .body(body)

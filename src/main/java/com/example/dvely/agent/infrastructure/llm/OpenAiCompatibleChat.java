@@ -41,13 +41,15 @@ final class OpenAiCompatibleChat {
      * @param config       the provider's configured key and model
      * @param reasoning    how this provider is asked for reasoning depth
      * @param extraHeaders headers beyond auth and content-type; empty for plain OpenAI
+     * @param retry        how hard to try again when a call fails for a reason that could clear
      */
     record Endpoint(
             String providerName,
             String url,
             AiProperties.Provider config,
             LlmRequestOptions.ReasoningStyle reasoning,
-            Map<String, String> extraHeaders
+            Map<String, String> extraHeaders,
+            AiProperties.Retry retry
     ) {}
 
     /** One-shot completion: a system prompt and a transcript in, the assistant's text out. */
@@ -63,7 +65,7 @@ final class OpenAiCompatibleChat {
 
         Map<String, Object> body = baseBody(endpoint, apiMessages, modelOptions);
 
-        String raw = LlmProviderErrors.translate(endpoint.providerName(), () -> restClient(endpoint)
+        String raw = LlmProviderErrors.translate(endpoint.providerName(), endpoint.retry(), () -> restClient(endpoint)
                 .post()
                 .uri(endpoint.url())
                 .body(body)
@@ -101,7 +103,7 @@ final class OpenAiCompatibleChat {
         Map<String, Object> body = baseBody(endpoint, apiMessages, modelOptions);
         body.put("tools", toolsPayload);
 
-        String raw = LlmProviderErrors.translate(endpoint.providerName(), () -> restClient(endpoint)
+        String raw = LlmProviderErrors.translate(endpoint.providerName(), endpoint.retry(), () -> restClient(endpoint)
                 .post()
                 .uri(endpoint.url())
                 .body(body)

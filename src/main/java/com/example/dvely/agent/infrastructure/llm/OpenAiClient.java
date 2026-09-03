@@ -31,7 +31,8 @@ public class OpenAiClient implements LlmPort {
                 API_URL,
                 aiProperties.getOpenai(),
                 LlmRequestOptions.ReasoningStyle.REASONING_EFFORT,
-                Map.of()
+                Map.of(),
+                aiProperties.getRetry()
         );
     }
 }

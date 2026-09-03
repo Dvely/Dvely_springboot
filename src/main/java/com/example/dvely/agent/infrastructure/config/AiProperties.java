@@ -13,6 +13,7 @@ public class AiProperties {
     private Anthropic anthropic = new Anthropic();
     private Openai openai = new Openai();
     private Glm glm = new Glm();
+    private Retry retry = new Retry();
     private CodeAgent codeAgent = new CodeAgent();
 
     /**
@@ -108,6 +109,40 @@ public class AiProperties {
         public Glm() {
             super("z-ai/glm-4.6");
         }
+    }
+
+    /**
+     * How hard to try again when a provider call fails for a reason that could clear on its own.
+     *
+     * <p>Without this a single 429 or 5xx ends the whole task: {@code AgentPlanExecutor} closes a
+     * task on {@link com.example.dvely.common.exception.LlmProviderException} without retrying, so
+     * the user is told "잠시 후 다시 시도해주세요" by a server that did not itself try again. GLM's
+     * free tier makes it routine rather than rare — {@code glm-4.7-flash} answers
+     * {@code 429 (code 1305 overloaded)} often enough that a 2026-09-03 실측 needed three attempts
+     * to get one response.</p>
+     *
+     * <p>Only {@link com.example.dvely.common.exception.LlmProviderException#retryable()} reasons
+     * are retried. A missing key, a rejected key and an empty balance do not resolve themselves
+     * between attempts, so retrying those only delays the message the user needs to see.</p>
+     */
+    @Getter
+    @Setter
+    public static class Retry {
+
+        /**
+         * Total attempts including the first, so 1 disables retrying. Kept low by default because
+         * the CODE agent spends this budget per round, up to maxIterations rounds.
+         */
+        private int maxAttempts = 3;
+
+        /** Delay before the second attempt; doubles each time, capped by {@link #maxDelayMs}. */
+        private long initialDelayMs = 1_000;
+
+        /**
+         * Ceiling for one wait. Bounds the worst case an operator has to reason about: with the
+         * defaults a call cannot spend more than 1s + 2s waiting before it gives up.
+         */
+        private long maxDelayMs = 8_000;
     }
 
     @Getter
