@@ -8,6 +8,7 @@ import com.example.dvely.deployment.application.query.DeploymentQueryService;
 import com.example.dvely.deployment.application.result.DeploymentHistoryResult;
 import com.example.dvely.domainbinding.application.query.DomainBindingQueryService;
 import com.example.dvely.domainbinding.application.result.DomainBindingResult;
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.domain.value.DomainStatus;
 import com.example.dvely.domainbinding.domain.value.DomainType;
 import com.example.dvely.project.application.port.out.GithubRepositoryPort;
@@ -276,6 +277,7 @@ public class ProjectQueryService {
 
     private DomainBindingResult selectConnectedDomain(List<DomainBindingResult> domains) {
         return domains.stream()
+                .filter(ProjectQueryService::isFrontendDomain)
                 .filter(domain -> domain.status() == DomainStatus.CONNECTED)
                 .min(domainComparator())
                 .orElse(null);
@@ -283,8 +285,18 @@ public class ProjectQueryService {
 
     private DomainBindingResult selectCurrentDomain(List<DomainBindingResult> domains) {
         return domains.stream()
+                .filter(ProjectQueryService::isFrontendDomain)
                 .min(domainComparator())
                 .orElse(null);
+    }
+
+    /**
+     * 프로젝트 개요의 "현재 URL"·domainSummary 는 프론트 도메인만 반영한다. 백엔드(AWS) 도메인이 여기
+     * 잡히면 "이 프로젝트 주소"로 오인되고(백엔드는 API 주소), toHttpsUrl 로 잘못된 https URL 이 생긴다
+     * (백엔드는 현재 http:8080). 백엔드 도메인은 서버 응답(ServerResponse.domainUrl)에서 따로 준다.
+     */
+    private static boolean isFrontendDomain(DomainBindingResult domain) {
+        return domain.hostingTarget() != DomainHostingTarget.AWS;
     }
 
     private Comparator<DomainBindingResult> domainComparator() {
