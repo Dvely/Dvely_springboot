@@ -71,9 +71,35 @@ module.exports = {
 
         // --- 선택: 비우면 코드의 기본값을 쓴다 ---
 
-        // 둘 중 쓰는 provider의 키만 채우면 된다.
+        // 쓰는 provider의 키만 채우면 된다. 비워둔 provider를 요청하면 그 요청만
+        // AI_PROVIDER_UNAVAILABLE로 떨어지고 나머지 provider는 영향받지 않는다.
         QEPLOY_AI_ANTHROPIC_API_KEY: '',
         QEPLOY_AI_OPENAI_API_KEY: '',
+
+        // GLM은 키 하나로 끝나지 않는다. 기본값이 OpenRouter 기준이라, 다른 게이트웨이의
+        // 키를 넣으면 엉뚱한 곳으로 호출이 나가 401이 된다(2026-09-03 실측).
+        //
+        //   OpenRouter를 쓴다면 — 키만 채운다.
+        //     QEPLOY_AI_GLM_API_KEY: 'sk-or-...',
+        //
+        //   Z.ai 직결이라면 — 세 개를 함께 넣는다. 모델 슬러그에 접두사가 없고
+        //   (z-ai/glm-4.6이 아니라 glm-4.6), 엔드포인트도 다르다.
+        //     QEPLOY_AI_GLM_API_KEY: '<z.ai 키>',
+        //     QEPLOY_AI_GLM_BASE_URL: 'https://api.z.ai/api/paas/v4/chat/completions',
+        //     QEPLOY_AI_GLM_MODEL: 'glm-4.7-flash',
+        //
+        // glm-4.7-flash는 Z.ai의 /models 목록에 나오지 않지만 실재하며 무료다. 별도
+        // 파라미터 없이도 기본적으로 추론한다(reasoning_content를 채운다). 다만 무료
+        // 티어라 429(code 1305 overloaded)가 잦다 — 아래 재시도 설정으로 흡수한다.
+        QEPLOY_AI_GLM_API_KEY: '',
+
+        // 제공자 호출이 일시적으로 실패했을 때(429·5xx·연결 타임아웃) 재시도하는 횟수와
+        // 간격. 비우면 코드 기본값(3회, 1s에서 시작해 최대 8s)을 쓴다. 무료 티어처럼
+        // 혼잡이 잦은 게이트웨이를 주력으로 쓴다면 횟수를 올린다.
+        // 키 없음·인증 실패·크레딧 부족은 재시도해도 소용없으므로 즉시 실패한다.
+        // QEPLOY_AI_RETRY_MAX_ATTEMPTS: '3',
+        // QEPLOY_AI_RETRY_INITIAL_DELAY_MS: '1000',
+        // QEPLOY_AI_RETRY_MAX_DELAY_MS: '8000',
 
         // 프론트엔드 오리진. 비우면 CORS가 모두 차단되므로 사실상 필요하다.
         QEPLOY_CORS_ALLOWED_ORIGINS: 'https://qeploy.com',
