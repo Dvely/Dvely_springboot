@@ -21,5 +21,9 @@ public interface DomainBindingRepository {
 
     boolean existsByHostnameIgnoreCase(String hostname);
 
+    /** 이 호스트네임이 특정 호스팅 대상으로 등록돼 있는지. 백엔드(AWS) 도메인의 TLS 발급 허가 판단에 쓴다. */
+    boolean existsByHostnameIgnoreCaseAndHostingTarget(String hostname,
+            com.example.dvely.domainbinding.domain.value.DomainHostingTarget hostingTarget);
+
     void deleteById(Long id);
 }

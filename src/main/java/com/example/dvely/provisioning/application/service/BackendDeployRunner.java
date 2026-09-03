@@ -93,7 +93,8 @@ public class BackendDeployRunner {
             }
             String sgId = ec2.ensureSecurityGroup(connection, server.getPort());
             String ami = ssm.latestAmazonLinux2023Ami(connection);
-            String userData = userDataScript(bucket, key, projectId, server.getPort());
+            String userData = userDataScript(bucket, key, projectId, server.getPort(),
+                    ec2Properties.tlsAskBaseUrlOrEmpty());
 
             LaunchSpec spec = new LaunchSpec(server.getInstanceType(), ami, userData, sgId, null,
                     profileName, "qeploy-backend-" + projectId);
@@ -180,7 +181,7 @@ public class BackendDeployRunner {
      * 부팅 스크립트. 비밀은 담지 않는다 — S3 에서 jar 를, SSM 경로에서 env 를 인스턴스 IAM 역할로
      * 스스로 당겨온다. Amazon Linux 2023(dnf, aws cli v2 기본 포함).
      */
-    private String userDataScript(String bucket, String key, Long projectId, int port) {
+    private String userDataScript(String bucket, String key, Long projectId, int port, String tlsAskBase) {
         // 앱은 8080(localhost). HTTPS 는 Caddy 리버스프록시가 on-demand TLS 로 종단한다(도메인은 배포
         // 후에 붙고 인스턴스에 SSH 가 없어 재설정을 못 하므로 on-demand). 남용 방지 ask 는 자기완결적 —
         // *.qeploy.com 만 인증서 발급 허용(우리가 qeploy.com DNS 를 통제하므로 남의 도메인은 우리 IP 로
@@ -199,12 +200,22 @@ public class BackendDeployRunner {
 
                 set +e
                 cat > /opt/tls-ask.py <<'PYEOF'
-                import http.server, urllib.parse
+                import http.server, urllib.parse, urllib.request
+                ASK_BASE = "%s"
                 class H(http.server.BaseHTTPRequestHandler):
                     def do_GET(self):
                         q = urllib.parse.urlparse(self.path).query
                         d = urllib.parse.parse_qs(q).get('domain', [''])[0].lower()
-                        self.send_response(200 if d.endswith('.qeploy.com') else 403)
+                        if d.endswith('.qeploy.com'):
+                            ok = True
+                        elif ASK_BASE:
+                            try:
+                                ok = urllib.request.urlopen(ASK_BASE + '/api/v1/tls/allow?domain=' + d, timeout=5).status == 200
+                            except Exception:
+                                ok = False
+                        else:
+                            ok = False
+                        self.send_response(200 if ok else 403)
                         self.end_headers()
                     def log_message(self, *a): pass
                 http.server.HTTPServer(('127.0.0.1', 9000), H).serve_forever()
@@ -228,7 +239,7 @@ public class BackendDeployRunner {
                 }
                 CADDYEOF
                 nohup /usr/bin/caddy run --config /opt/Caddyfile --adapter caddyfile > /var/log/qeploy-caddy.log 2>&1 &
-                """.formatted(bucket, key, projectId, port, port);
+                """.formatted(bucket, key, projectId, port, tlsAskBase, port);
     }
 
     private ProvisionFailureCode classify(RuntimeException e) {

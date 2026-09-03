@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.domainbinding.domain.repository.DomainBindingRepository;
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.domain.value.DomainType;
 import com.example.dvely.domainbinding.infrastructure.config.CloudflareProperties;
 import com.example.dvely.project.domain.repository.ProjectRepository;
@@ -38,5 +39,19 @@ class DomainBindingQueryServiceTest {
             assertThat(candidate.hostname()).isEqualTo("sample.qeploy.com");
             assertThat(candidate.available()).isTrue();
         });
+    }
+    @Test
+    void isBackendDomainRegistered_trueOnlyForRegisteredAwsDomain() {
+        DomainBindingQueryService service = new DomainBindingQueryService(
+                projectRepository,
+                domainBindingRepository,
+                new CloudflareProperties(null, null, "qeploy.com", null, null, null, null)
+        );
+        when(domainBindingRepository.existsByHostnameIgnoreCaseAndHostingTarget(
+                "api.example.com", DomainHostingTarget.AWS)).thenReturn(true);
+
+        assertThat(service.isBackendDomainRegistered("api.example.com")).isTrue();
+        assertThat(service.isBackendDomainRegistered("  ")).isFalse();   // 공백 → repo 호출 없이 false
+        assertThat(service.isBackendDomainRegistered(null)).isFalse();
     }
 }
