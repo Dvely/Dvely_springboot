@@ -20,6 +20,7 @@ import com.example.dvely.domainbinding.domain.model.DomainBinding;
 import com.example.dvely.domainbinding.domain.repository.DomainBindingRepository;
 import com.example.dvely.domainbinding.domain.value.DomainStatus;
 import com.example.dvely.domainbinding.domain.value.DomainType;
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.domain.value.VerificationMethod;
 import com.example.dvely.domainbinding.infrastructure.config.CloudflareProperties;
 import com.example.dvely.project.domain.model.Project;
@@ -28,10 +29,12 @@ import com.example.dvely.project.domain.value.DeployStatus;
 import java.net.IDN;
 import java.net.URI;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class DomainBindingCommandService {
 
@@ -50,7 +53,9 @@ public class DomainBindingCommandService {
     public DomainBindingResult bindDomain(Long ownerUserId, Long projectId, BindDomainCommand command) {
         Project project = resolveProject(ownerUserId, projectId);
         DomainHostingAdapter adapter = hostingAdapterRegistry.resolve(command.hostingTarget());
-        User user = resolveUser(ownerUserId);
+        // GitHub Pages(프론트)만 사용자 GitHub 토큰이 필요하다(Pages 커스텀도메인 API). AWS 백엔드는
+        // 그 게이트를 안 거친다 — 안 그러면 GitHub 토큰 없는 사용자가 백엔드 도메인도 못 붙인다.
+        User user = requiresGithubToken(command.hostingTarget()) ? resolveUser(ownerUserId) : null;
         DomainHostingAdapter.Context context = toHostingContext(user, project);
         DomainBindingResult result;
         if (command.type() == DomainType.MANAGED_SUBDOMAIN) {
@@ -188,16 +193,22 @@ public class DomainBindingCommandService {
         ensureHostnameAvailable(hostname);
         String dnsTarget = resolveManagedDnsTarget(adapter, context);
         ensureDnsTargetDoesNotReferenceHostname(hostname, dnsTarget);
+        // 백엔드(AWS)는 대상이 IP(EIP)라 CNAME 을 못 건다 — A 레코드로 EIP 를 가리킨다(현재 DNS-only,
+        // proxied=false → http://label:8080 직결; HTTPS 는 B 후속). 프론트(GitHub Pages)는 그대로 CNAME.
+        boolean backendTarget = command.hostingTarget() == DomainHostingTarget.AWS;
+        VerificationMethod method = backendTarget ? VerificationMethod.A : VerificationMethod.CNAME;
         DomainBinding domain = new DomainBinding(
                 project.getId(),
                 DomainType.MANAGED_SUBDOMAIN,
                 command.hostingTarget(),
                 hostname,
                 DomainStatus.PROVISIONING,
-                VerificationMethod.CNAME,
+                method,
                 dnsTarget
         );
-        String recordId = cloudflareDnsPort.createCnameRecord(hostname, dnsTarget);
+        String recordId = backendTarget
+                ? cloudflareDnsPort.createARecord(hostname, dnsTarget, false)
+                : cloudflareDnsPort.createCnameRecord(hostname, dnsTarget);
         try {
             adapter.bind(context, hostname);
             domain.assignCloudflareRecord(recordId);
@@ -232,6 +243,36 @@ public class DomainBindingCommandService {
         return toResult(domainBindingRepository.save(domain));
     }
 
+    /**
+     * 백엔드 서버 종료로 EIP 가 해제될 때, 그 IP 를 가리키던 이 프로젝트의 백엔드(AWS) 도메인을 정리한다.
+     * <b>보안:</b> 해제된 EIP 는 AWS 풀로 돌아가 남에게 재할당될 수 있어, Cloudflare A 레코드를 남겨두면
+     * 우리 서브도메인이 남의 서버를 가리키는 dangling DNS(서브도메인 탈취)가 된다 — 그래서 레코드를 반드시
+     * 지운다. 시스템 내부 호출(종료 정리)이라 소유권 검사는 상위(terminate)가 이미 했다. 한 도메인 정리가
+     * 실패해도 나머지·종료는 계속한다(best-effort).
+     */
+    @Transactional
+    public void releaseBackendDomains(Long projectId, String ipAddress) {
+        if (ipAddress == null || ipAddress.isBlank()) {
+            return;
+        }
+        domainBindingRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
+                .filter(d -> d.getHostingTarget() == DomainHostingTarget.AWS)
+                .filter(d -> ipAddress.equals(d.getDnsTarget()))
+                .forEach(d -> {
+                    try {
+                        if (d.getCloudflareRecordId() != null && !d.getCloudflareRecordId().isBlank()) {
+                            cloudflareDnsPort.deleteRecord(d.getHostname(), d.getCloudflareRecordId());
+                        }
+                        domainBindingRepository.deleteById(d.getId());
+                        log.info("백엔드 종료로 도메인 정리: hostname={} projectId={} (EIP {} 해제)",
+                                d.getHostname(), projectId, ipAddress);
+                    } catch (RuntimeException e) {
+                        log.warn("백엔드 종료 시 도메인 정리 실패(수동 확인 필요, dangling DNS 위험): hostname={} 원인={}",
+                                d.getHostname(), e.toString());
+                    }
+                });
+    }
+
     private boolean isCustomDomainConnected(DomainBinding domain) {
         if (domain.getVerificationMethod() == VerificationMethod.A) {
             return dnsLookupPort.hasAddressRecordMatching(domain.getHostname(), domain.getDnsTarget());
@@ -249,6 +290,11 @@ public class DomainBindingCommandService {
         return projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, ownerUserId)
                 .orElseThrow(() -> new NotFoundException(
                         "Project not found. projectId=" + projectId + ", ownerUserId=" + ownerUserId));
+    }
+
+    private boolean requiresGithubToken(DomainHostingTarget target) {
+        // GitHub Pages 어댑터만 사용자 GitHub 토큰으로 Pages 커스텀도메인을 설정한다. AWS 백엔드는 불필요.
+        return target == DomainHostingTarget.GITHUB_PAGES;
     }
 
     private User resolveUser(Long ownerUserId) {
@@ -302,7 +348,7 @@ public class DomainBindingCommandService {
 
     private DomainHostingAdapter.Context toHostingContext(User user, Project project) {
         return new DomainHostingAdapter.Context(
-                user.getGithubUserAccessToken(),
+                user == null ? null : user.getGithubUserAccessToken(),
                 project.getId(),
                 project.getSourceRepository(),
                 project.getDeploymentRepository(),

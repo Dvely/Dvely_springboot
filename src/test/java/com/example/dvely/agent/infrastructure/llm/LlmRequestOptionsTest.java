@@ -90,6 +90,57 @@ class LlmRequestOptionsTest {
         assertThat(body).doesNotContainKey("reasoning");
     }
 
+    @Test
+    void asksZaiForThinkingInItsOwnSpellingWhichHasNoEffortLevels() {
+        // 2026-09-03 실측: Z.ai 는 OpenRouter/OpenAI 표기를 거절하지 않고 조용히 무시한다
+        // (reasoning_tokens 가 무파라미터 대역을 벗어나지 못했다). 그래서 표기를 틀리면 요청이
+        // 통과하면서 사고 깊이만 사라진다 — 켜진 요청과 결과가 구분되지 않는 형태다.
+        Map<String, Object> body = new HashMap<>();
+
+        LlmRequestOptions.applyOpenAiCompatible(
+                body, options(ThinkingLevel.HIGH), LlmRequestOptions.ReasoningStyle.ZAI_THINKING);
+
+        assertThat(body).doesNotContainKey("reasoning").doesNotContainKey("reasoning_effort");
+        assertThat(body).containsEntry("thinking", Map.of("type", "enabled"));
+    }
+
+    @Test
+    void everyEnabledLevelLandsOnZaisSingleDepth() {
+        // Z.ai 에는 단계가 없다. 거절하지 않는 이유는 거절하면 Z.ai 배포가 thinking 을 아예 못
+        // 쓰게 되기 때문이고, 이 비대칭은 enum 상수와 운영 설정 주석에 적어 두었다.
+        for (ThinkingLevel level : new ThinkingLevel[] {ThinkingLevel.LOW, ThinkingLevel.MEDIUM, ThinkingLevel.HIGH}) {
+            Map<String, Object> body = new HashMap<>();
+            LlmRequestOptions.applyOpenAiCompatible(
+                    body, options(level), LlmRequestOptions.ReasoningStyle.ZAI_THINKING);
+            assertThat(body).as("level=%s", level)
+                    .containsEntry("thinking", Map.of("type", "enabled"));
+        }
+    }
+
+    @Test
+    void thinkingOffIsSaidOutLoudToZaiBecauseItReasonsByDefault() {
+        // 다른 두 게이트웨이와 다른 지점이다. 아무것도 안 쓰면 Z.ai 는 그냥 추론해버리므로,
+        // thinking 을 끈 요청이 완전히 추론된 답을 받고 그 비용까지 청구된다.
+        // 실측: thinking:{type:disabled} 를 보내면 reasoning_tokens 가 0, 0, 0 으로 떨어진다.
+        Map<String, Object> body = new HashMap<>();
+
+        LlmRequestOptions.applyOpenAiCompatible(
+                body, options(ThinkingLevel.OFF), LlmRequestOptions.ReasoningStyle.ZAI_THINKING);
+
+        assertThat(body).containsEntry("thinking", Map.of("type", "disabled"));
+    }
+
+    @Test
+    void thinkingOffStaysUnsaidForTheGatewaysThatRejectOrIgnoreIt() {
+        for (LlmRequestOptions.ReasoningStyle style : new LlmRequestOptions.ReasoningStyle[] {
+                LlmRequestOptions.ReasoningStyle.REASONING_EFFORT,
+                LlmRequestOptions.ReasoningStyle.OPENROUTER_REASONING}) {
+            Map<String, Object> body = new HashMap<>();
+            LlmRequestOptions.applyOpenAiCompatible(body, options(ThinkingLevel.OFF), style);
+            assertThat(body).as("style=%s", style).isEmpty();
+        }
+    }
+
     private int budgetFor(ThinkingLevel level) {
         Map<String, Object> body = new HashMap<>();
         LlmRequestOptions.applyAnthropic(body, options(level), BASE_MAX_TOKENS);

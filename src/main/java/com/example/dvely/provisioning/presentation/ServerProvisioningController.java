@@ -47,7 +47,9 @@ public class ServerProvisioningController {
             @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
             @PathVariable Long projectId
     ) {
-        return queryService.list(ownerUserId, projectId).stream().map(ServerResponse::from).toList();
+        var result = queryService.list(ownerUserId, projectId);
+        return result.servers().stream()
+                .map(s -> ServerResponse.from(s, result.domainHostname())).toList();
     }
 
     @Operation(summary = "EC2 백엔드 서버 종료",
