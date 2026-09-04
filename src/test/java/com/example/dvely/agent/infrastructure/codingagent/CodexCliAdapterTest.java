@@ -56,7 +56,7 @@ class CodexCliAdapterTest {
 
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
         verify(runner).run(eq("/host/checkout"), any(), argv.capture(), anyList(), eq(Duration.ofMinutes(4)));
-        assertThat(argv.getValue()).containsExactly("codex", "exec", "--model", "gpt-5.6-luna", "Dockerfile 을 최적화해줘");
+        assertThat(argv.getValue()).containsExactly("codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.6-luna", "Dockerfile 을 최적화해줘");
     }
 
     @Test
@@ -139,7 +139,7 @@ class CodexCliAdapterTest {
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
         verify(runner).run(any(), any(), argv.capture(), anyList(), any());
         assertThat(argv.getValue())
-                .containsExactly("codex", "exec", "--model", "gpt-5.6-luna", "Dockerfile 을 최적화해줘");
+                .containsExactly("codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.6-luna", "Dockerfile 을 최적화해줘");
     }
 
     @Test

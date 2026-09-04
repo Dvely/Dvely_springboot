@@ -116,7 +116,13 @@ qeploy:
       # 비우면 CLI 기본 모델을 쓴다. 두 CLI 모두 --model 플래그를 받는다.
       model: ${QEPLOY_CODING_AGENT_CLAUDE_MODEL:}
     codex:
-      argv-prefix: ${QEPLOY_CODING_AGENT_CODEX_ARGV:codex,exec}
+      # --dangerously-bypass-approvals-and-sandbox 는 지름길이 아니라 필수다. Codex 자체 샌드박스는
+      # bubblewrap 을 쓰고 그건 user namespace 를 요구하는데, 우리 컨테이너는 모든 capability 를
+      # 떨구고 no-new-privileges 를 걸어 bubblewrap 이 뜨지 못한다 — 그 상태에서는 에이전트의 셸
+      # 툴 호출이 전부 exit 1 로 죽고, 실측에서 "성공" 을 보고하면서 파일을 하나도 만들지 못했다.
+      # 이 플래그의 문서가 바로 이 경우를 가리킨다("외부에서 이미 샌드박싱된 환경 전용").
+      # 일회용 컨테이너가 그 외부 샌드박스다: 퍼블리시 포트 없음, 메모리·pids 상한, 워크스페이스만 마운트.
+      argv-prefix: ${QEPLOY_CODING_AGENT_CODEX_ARGV:codex,exec,--dangerously-bypass-approvals-and-sandbox}
       # Codex 는 OPENAI_API_KEY 환경변수를 읽지 않는다(codex-cli 0.153.2 실측: 401 Missing bearer).
       # 이 로그인 명령을 먼저 실행하고 키를 stdin 으로 넘긴 뒤에야 codex exec 가 인증된다.
       login-argv: ${QEPLOY_CODING_AGENT_CODEX_LOGIN_ARGV:codex,login,--with-api-key}

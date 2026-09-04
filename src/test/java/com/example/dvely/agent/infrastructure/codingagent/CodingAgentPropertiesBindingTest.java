@@ -42,7 +42,8 @@ class CodingAgentPropertiesBindingTest {
         // The yml value is a comma-separated string; it must arrive as separate argv elements,
         // because a single "claude -p" element would be looked up as one executable of that name.
         assertThat(properties.getClaude().getArgvPrefix()).containsExactly("claude", "-p");
-        assertThat(properties.getCodex().getArgvPrefix()).containsExactly("codex", "exec");
+        assertThat(properties.getCodex().getArgvPrefix())
+                .containsExactly("codex", "exec", "--dangerously-bypass-approvals-and-sandbox");
     }
 
     @Test
