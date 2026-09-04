@@ -30,7 +30,8 @@
 ## 단계 (각 PR 리뷰 가능, CODE 모델 크레딧 없이 손으로 짠 앱으로 e2e 검증)
 
 - **P1 — native-Node 추가**: 빌드 감지(package.json)→`npm ci && npm run build`, user-data 가 node 설치+`node`(또는 `npm start`) 실행. `runtime=NODE`. Java native 와 대칭. *(원하면 P2 뒤로 미뤄도 됨 — Docker가 Node도 커버하므로)*
-- **P2 — Docker 모드 골격(스택 무관 핵심)**: `deploy_mode=DOCKER`. 빌드 컨테이너에서 앱의 `Dockerfile`로 `docker build` → 이미지 `docker save`→S3. user-data 가 Docker 설치+S3에서 `docker load`+`docker run`(포트 매핑, SSM env 주입). **Node·Java·Next 다 동일 경로.** 앱에 Dockerfile 없으면 스택 감지로 기본 Dockerfile 생성(폴백).
+- **P2 — Docker 모드 골격(스택 무관 핵심)** ✅ *완료(#221~#224)*: `deploy_mode=DOCKER`. 빌드 컨테이너에서 앱의 `Dockerfile`로 buildx(`--platform linux/amd64`)→이미지 `docker save`→S3. user-data 가 Docker 설치+S3에서 `docker load`+`docker run`(포트 매핑, SSM env 주입). **Node·Java·Next 다 동일 경로.** 실 EC2 e2e 로 Node 앱 배포 실증. *(docker-java legacy builder 는 크로스빌드 불가 → buildx 필수, e2e 로 발견.)*
+  - **Dockerfile 폴백(자동생성)** ✅ *구현*: 앱에 Dockerfile 없으면 루트 마커로 스택 감지(`DefaultDockerfileFactory`) → 기본 Dockerfile 생성. Gradle·Maven(Spring Boot)·Node·Next 지원, 못 알아보면 명확히 실패. 포트는 `SERVER_PORT`(Spring)+`PORT`(Node 관례) 둘 다 주입. **Node·Gradle 폴백은 실제 최소 앱으로 buildx 빌드+실행 검증**(Maven·Next 는 동일 패턴, 런타임 미검증).
 - **P3 — 이미지 전달 ECR 화(선택 고도화)**: S3 save/load → ECR push/pull. IAM 에 `ecr:*`(scoped) 추가. 대용량 이미지·레이어 캐시에 유리.
 - **P4 — compose 다중 컨테이너**: web+back(+db) 여러 이미지 한 EC2. user-data 가 `docker compose up`. mono 풀스택을 컨테이너 분리로.
 - **P5 — `ProvisionMethod.DOCKER` 활성**: EC2 위 DB 컨테이너(RDS 대안). 승인·상태·정리는 RDS 골격 복제. compose(P4)와 합쳐 "back+web+db 전부 컨테이너 한 EC2" 완성.

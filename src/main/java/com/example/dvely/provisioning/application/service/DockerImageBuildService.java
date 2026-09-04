@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -123,13 +124,57 @@ public class DockerImageBuildService {
         }
     }
 
-    /** 앱 루트에 Dockerfile 이 있어야 한다(없으면 스택 감지·기본 Dockerfile 생성은 후속 조각). */
+    /**
+     * 앱 루트에 Dockerfile 이 있으면 그대로 쓴다(사용자 Dockerfile 우선). 없으면 스택을 감지해 기본
+     * Dockerfile 을 만들어 넣는다(최선노력 폴백). 스택을 못 알아보면 명확한 에러로 실패시킨다 —
+     * 조용히 깨진 이미지를 만들지 않는다.
+     */
     private void ensureDockerfile(String containerId) {
-        ExecResult check = dockerService.execWithExitCode(containerId,
-                "test -f " + APP_DIR + "/Dockerfile");
-        if (!check.succeeded()) {
+        if (dockerService.execWithExitCode(containerId, "test -f " + APP_DIR + "/Dockerfile").succeeded()) {
+            log.info("사용자 제공 Dockerfile 사용: dir={}", APP_DIR);
+            return;
+        }
+        DefaultDockerfileFactory.Stack stack = detectStack(containerId);
+        if (stack == null) {
             throw new BackendBuildException(
-                    "저장소 루트에 Dockerfile 이 없습니다. DOCKER 배포 모드는 Dockerfile 이 필요합니다.");
+                    "저장소 루트에 Dockerfile 이 없고 스택도 감지하지 못했습니다(Gradle·Maven·Node·Next 아님). "
+                            + "Dockerfile 을 추가해 주세요.");
+        }
+        String content = DefaultDockerfileFactory.dockerfileFor(stack);
+        writeFile(containerId, APP_DIR + "/Dockerfile", content);
+        log.info("Dockerfile 자동생성(폴백): stack={} dir={}", stack, APP_DIR);
+    }
+
+    /** 컨테이너 안 앱 루트의 마커 파일로 스택을 감지한다(없으면 null). */
+    private DefaultDockerfileFactory.Stack detectStack(String containerId) {
+        boolean gradle = exists(containerId, APP_DIR + "/build.gradle")
+                || exists(containerId, APP_DIR + "/build.gradle.kts");
+        boolean maven = exists(containerId, APP_DIR + "/pom.xml");
+        boolean packageJson = exists(containerId, APP_DIR + "/package.json");
+        boolean next = exists(containerId, APP_DIR + "/next.config.js")
+                || exists(containerId, APP_DIR + "/next.config.mjs")
+                || exists(containerId, APP_DIR + "/next.config.ts")
+                || (packageJson && grepQuiet(containerId, "\\\"next\\\"", APP_DIR + "/package.json"));
+        return DefaultDockerfileFactory.decide(gradle, maven, packageJson, next);
+    }
+
+    private boolean exists(String containerId, String path) {
+        return dockerService.execWithExitCode(containerId, "test -f " + path).succeeded();
+    }
+
+    /** package.json 에 next 의존성이 있는지(따옴표째 매칭). 파일은 존재가 보장된 뒤에만 호출한다. */
+    private boolean grepQuiet(String containerId, String pattern, String path) {
+        return dockerService.execWithExitCode(containerId,
+                "grep -q " + pattern + " " + path).succeeded();
+    }
+
+    /** 멀티라인 파일을 base64 로 안전하게 기록한다(따옴표·개행이 셸에서 깨지지 않게). */
+    private void writeFile(String containerId, String path, String content) {
+        String b64 = Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
+        ExecResult w = dockerService.execWithExitCode(containerId,
+                "echo " + b64 + " | base64 -d > " + path);
+        if (!w.succeeded()) {
+            throw new BackendBuildException("기본 Dockerfile 기록 실패: " + BackendSourceClone.tail(w.output()));
         }
     }
 
