@@ -5,6 +5,7 @@ import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.application.service.DecisionAgentService;
 import com.example.dvely.agent.domain.value.AiProvider;
+import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.chat.application.result.ConversationResult;
 import com.example.dvely.chat.application.result.MessageResult;
 import com.example.dvely.chat.domain.exception.ConversationNotFoundException;
@@ -32,6 +33,7 @@ public class ChatCommandService {
     private final DecisionAgentService decisionAgentService;
     private final AgentOrchestrator agentOrchestrator;
     private final AgentMessageService agentMessageService;
+    private final AiProperties aiProperties;
 
     @Transactional
     public ConversationResult createConversation(Long userId, Long projectId) {
@@ -107,7 +109,7 @@ public class ChatCommandService {
     public MessageResult sendMessage(Long userId, Long conversationId, String content, AiProvider requestedProvider) {
         Conversation conversation = conversationRepository.findByIdAndUserIdAndDeletedFalse(conversationId, userId)
                 .orElseThrow(() -> new ConversationNotFoundException(conversationId, userId));
-        AiProvider provider = requestedProvider != null ? requestedProvider : AiProvider.ANTHROPIC;
+        AiProvider provider = requestedProvider != null ? requestedProvider : aiProperties.getDefaultProvider();
 
         ChatMessage message = chatMessageRepository.save(
                 new ChatMessage(conversation.getId(), ChatRole.USER, content, 0)
