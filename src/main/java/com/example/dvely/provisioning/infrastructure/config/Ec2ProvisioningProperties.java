@@ -16,10 +16,21 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "qeploy.provisioning.ec2")
 public record Ec2ProvisioningProperties(
         String instanceProfileOverride,
-        String tlsAskBaseUrl
+        String tlsAskBaseUrl,
+        String imageTransfer
 ) {
     public boolean hasInstanceProfileOverride() {
         return instanceProfileOverride != null && !instanceProfileOverride.isBlank();
+    }
+
+    /**
+     * DOCKER 배포 모드에서 이미지를 EC2 로 넘기는 방식. 기본(빈 값/미설정)은 S3(`docker save`→S3→
+     * 인스턴스가 `docker load`) — 추가 IAM 권한이 필요 없어 안전한 기본값이다. {@code ECR} 로 켜면
+     * 사용자 계정 ECR 로 push/pull 한다(레이어 캐시·속도 유리). ECR 은 사용자 BYOC 정책에 ECR 권한
+     * 추가가 필요하므로 명시적으로만 켠다. NATIVE(jar) 모드에는 영향 없다.
+     */
+    public boolean useEcr() {
+        return imageTransfer != null && imageTransfer.trim().equalsIgnoreCase("ECR");
     }
 
     /**

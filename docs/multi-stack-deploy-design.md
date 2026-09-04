@@ -32,7 +32,10 @@
 - **P1 — native-Node 추가**: 빌드 감지(package.json)→`npm ci && npm run build`, user-data 가 node 설치+`node`(또는 `npm start`) 실행. `runtime=NODE`. Java native 와 대칭. *(원하면 P2 뒤로 미뤄도 됨 — Docker가 Node도 커버하므로)*
 - **P2 — Docker 모드 골격(스택 무관 핵심)** ✅ *완료(#221~#224)*: `deploy_mode=DOCKER`. 빌드 컨테이너에서 앱의 `Dockerfile`로 buildx(`--platform linux/amd64`)→이미지 `docker save`→S3. user-data 가 Docker 설치+S3에서 `docker load`+`docker run`(포트 매핑, SSM env 주입). **Node·Java·Next 다 동일 경로.** 실 EC2 e2e 로 Node 앱 배포 실증. *(docker-java legacy builder 는 크로스빌드 불가 → buildx 필수, e2e 로 발견.)*
   - **Dockerfile 폴백(자동생성)** ✅ *구현*: 앱에 Dockerfile 없으면 루트 마커로 스택 감지(`DefaultDockerfileFactory`) → 기본 Dockerfile 생성. Gradle·Maven(Spring Boot)·Node·Next 지원, 못 알아보면 명확히 실패. 포트는 `SERVER_PORT`(Spring)+`PORT`(Node 관례) 둘 다 주입. **Node·Gradle 폴백은 실제 최소 앱으로 buildx 빌드+실행 검증**(Maven·Next 는 동일 패턴, 런타임 미검증).
-- **P3 — 이미지 전달 ECR 화(선택 고도화)**: S3 save/load → ECR push/pull. IAM 에 `ecr:*`(scoped) 추가. 대용량 이미지·레이어 캐시에 유리.
+- **P3 — 이미지 전달 ECR 화(선택 고도화)** 🟡 *구현(기본 비활성)*: S3 save/load → ECR push/pull. `qeploy.provisioning.ec2.image-transfer=ECR` 로 켠다(기본 S3 — 추가 권한 불필요라 안전한 기본). 컨트롤 플레인이 `EcrImageRegistry` 로 저장소 멱등생성→docker login→buildx `--push`, EC2 는 인스턴스 역할로 `get-login-password`→pull. 인스턴스 역할에 ECR pull 권한 추가(useEcr 시), terminate 시 저장소 삭제.
+  - **필요 IAM(사용자 BYOC 정책)**: push=`ecr:CreateRepository`·`GetAuthorizationToken`·`InitiateLayerUpload`·`UploadLayerPart`·`CompleteLayerUpload`·`PutImage`·`BatchCheckLayerAvailability`·`DeleteRepository`. 사용자 계정 정책 변경이라 켜기 전 합의 필요.
+  - **검증**: buildx `--push`→pull→run 메커니즘을 로컬 레지스트리로 실검증(내 코드와 동일 명령), ECR 토큰 디코드·URI 구성 단위테스트. **실 ECR e2e 는 크레딧 확보 시**(get-login-password·repo create/delete 는 미검증).
+  - **한계**: 배포와 종료 사이 `image-transfer` 를 바꾸면 반대편 아티팩트가 남을 수 있다(플래그가 전역이라). 기존 인스턴스 역할은 정책 재부착 안 함 → ECR 권한은 새 프로젝트부터 반영.
 - **P4 — compose 다중 컨테이너**: web+back(+db) 여러 이미지 한 EC2. user-data 가 `docker compose up`. mono 풀스택을 컨테이너 분리로.
 - **P5 — `ProvisionMethod.DOCKER` 활성**: EC2 위 DB 컨테이너(RDS 대안). 승인·상태·정리는 RDS 골격 복제. compose(P4)와 합쳐 "back+web+db 전부 컨테이너 한 EC2" 완성.
 
