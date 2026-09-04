@@ -85,6 +85,8 @@ public class BackendDeployRunner {
         // 띄운다(submit 이 DOCKER 강제). 둘 중 하나라도 있으면 단일 docker run 대신 compose 를 쓴다.
         DatabaseEngine bundledDb = server.getBundledDbEngine();
         boolean web = server.hasWebFrontend();
+        // 웹 전용(독립 프론트 EC2): 백엔드 앱 빌드·이미지를 건너뛰고 프론트 nginx 만 띄운다.
+        boolean webOnly = server.isWebOnly();
         String frontendRepo = server.getFrontendRepo();
         String frontendDir = server.getFrontendDir();
         String apiPrefix = server.getApiPathPrefix();
@@ -99,16 +101,19 @@ public class BackendDeployRunner {
             String userData;
             if (useEcr) {
                 // ECR 전달: S3 를 거치지 않고 컨트롤 플레인이 이미지를 ECR 로 push, EC2 가 pull.
-                ecr.ensureRepository(connection, projectId);
                 EcrImageRegistry.EcrAuth auth = ecr.authorize(connection);
-                String appRef = ecr.imageRefFor(connection, projectId);
-                imageBuildService.buildAndPushImage(ownerUserId, projectId, auth, appRef);
+                String appRef = null;
+                if (!webOnly) {
+                    ecr.ensureRepository(connection, projectId);
+                    appRef = ecr.imageRefFor(connection, projectId);
+                    imageBuildService.buildAndPushImage(ownerUserId, projectId, auth, appRef);
+                }
                 String webRef = null;
                 if (web) {
                     ecr.ensureWebRepository(connection, projectId);
                     webRef = ecr.webImageRefFor(connection, projectId);
                     webImageBuildService.buildAndPushWebImage(ownerUserId, projectId,
-                            frontendRepo, frontendDir, apiPrefix, auth, webRef);   // 토큰은 레지스트리 공용, 재사용
+                            frontendRepo, frontendDir, apiPrefix, auth, webRef, webOnly);   // 토큰은 레지스트리 공용, 재사용
                 }
                 userData = compose
                         ? ecrComposeUserDataScript(connection.getRegion(), auth.registry(), appRef, webRef,
@@ -117,25 +122,29 @@ public class BackendDeployRunner {
                                 projectId, port, tlsAsk);
             } else {
                 // S3 전달. DOCKER=이미지 tar, NATIVE=스택 감지로 Java(jar)/Node(소스 tar). S3 로 올리고
-                // EC2 가 인스턴스 역할로 받는다.
-                String key;
+                // EC2 가 인스턴스 역할로 받는다. 웹 전용이면 앱 산출물은 없다(프론트 nginx 만).
+                String key = null;
                 boolean nativeNode = false;
-                if (docker) {
-                    artifact = imageBuildService.buildImageTar(ownerUserId, projectId);
-                    key = s3.imageKeyFor(projectId);
-                } else {
-                    NativeBuildService.NativeArtifact na = nativeBuildService.build(ownerUserId, projectId);
-                    artifact = na.path();
-                    nativeNode = na.runtime() == NativeBuildService.NativeRuntime.NODE;
-                    key = nativeNode ? s3.nodeSourceKeyFor(projectId) : s3.jarKeyFor(projectId);
+                if (!webOnly) {
+                    if (docker) {
+                        artifact = imageBuildService.buildImageTar(ownerUserId, projectId);
+                        key = s3.imageKeyFor(projectId);
+                    } else {
+                        NativeBuildService.NativeArtifact na = nativeBuildService.build(ownerUserId, projectId);
+                        artifact = na.path();
+                        nativeNode = na.runtime() == NativeBuildService.NativeRuntime.NODE;
+                        key = nativeNode ? s3.nodeSourceKeyFor(projectId) : s3.jarKeyFor(projectId);
+                    }
                 }
                 s3.ensureBucket(connection, bucket);
-                s3.uploadJar(connection, bucket, key, artifact);   // generic: Path→key 멀티파트 업로드
+                if (key != null) {
+                    s3.uploadJar(connection, bucket, key, artifact);   // generic: Path→key 멀티파트 업로드
+                }
                 String webKey = null;
                 if (docker && web) {
                     webKey = s3.webImageKeyFor(projectId);
                     Path webArtifact = webImageBuildService.buildWebImageTar(
-                            ownerUserId, projectId, frontendRepo, frontendDir, apiPrefix);
+                            ownerUserId, projectId, frontendRepo, frontendDir, apiPrefix, webOnly);
                     try {
                         s3.uploadJar(connection, bucket, webKey, webArtifact);
                     } finally {
@@ -143,7 +152,7 @@ public class BackendDeployRunner {
                     }
                 }
                 if (docker) {
-                    String appImageTag = DockerImageBuildService.imageTagFor(projectId);
+                    String appImageTag = webOnly ? null : DockerImageBuildService.imageTagFor(projectId);
                     String webImageTag = web ? WebImageBuildService.webImageTagFor(projectId) : null;
                     userData = compose
                             ? dockerComposeUserDataScript(bucket, key, appImageTag, webKey, webImageTag,
@@ -415,37 +424,58 @@ public class BackendDeployRunner {
     static String dockerComposeUserDataScript(String bucket, String appKey, String appImageTag,
                                               String webKey, String webImageTag, DatabaseEngine dbEngine,
                                               Long projectId, int port, String tlsAskBase) {
-        return """
-                #!/bin/bash
-                set -e
-                dnf install -y python3 docker
-                systemctl enable --now docker
-                mkdir -p /opt/app && cd /opt/app
-                aws s3 cp s3://%s/%s /opt/app/image.tar
-                docker load -i /opt/app/image.tar
-                """.formatted(bucket, appKey)
+        return composeHeader()
+                + s3LoadAppSection(bucket, appKey)
                 + s3LoadWebSection(bucket, webKey)
                 + ssmToEnvFileSection(projectId)
                 + composeUpSection(appImageTag, webImageTag, dbEngine, port)
                 + httpsSection(port, tlsAskBase);
     }
 
-    /** compose(ECR 전달) user-data. 앱[+웹] 이미지는 ECR 에서 pull, 나머지는 S3 버전과 동일. webRef null 이면 웹 없음. */
-    static String ecrComposeUserDataScript(String region, String registry, String appRef, String webRef,
-                                           DatabaseEngine dbEngine, Long projectId, int port, String tlsAskBase) {
+    /** compose user-data 공통 헤더(도커 설치·작업 디렉터리). 앱/웹 로드 섹션이 뒤에 붙는다. */
+    private static String composeHeader() {
         return """
                 #!/bin/bash
                 set -e
                 dnf install -y python3 docker
                 systemctl enable --now docker
                 mkdir -p /opt/app && cd /opt/app
-                aws ecr get-login-password --region %s | docker login --username AWS --password-stdin %s
-                docker pull %s
-                """.formatted(region, registry, appRef)
+                """;
+    }
+
+    /** 앱 이미지를 S3 에서 load(appKey 있으면). 웹 전용(독립 프론트 EC2)이면 appKey=null → 생략. */
+    private static String s3LoadAppSection(String bucket, String appKey) {
+        if (appKey == null) {
+            return "";
+        }
+        return """
+                aws s3 cp s3://%s/%s /opt/app/image.tar
+                docker load -i /opt/app/image.tar
+                """.formatted(bucket, appKey);
+    }
+
+    /** compose(ECR 전달) user-data. 앱[+웹] 이미지는 ECR 에서 pull, 나머지는 S3 버전과 동일. webRef null 이면 웹 없음. */
+    static String ecrComposeUserDataScript(String region, String registry, String appRef, String webRef,
+                                           DatabaseEngine dbEngine, Long projectId, int port, String tlsAskBase) {
+        return composeHeader()
+                + ecrLoginSection(region, registry)
+                + ecrPullSection(appRef)
                 + ecrPullWebSection(webRef)
                 + ssmToEnvFileSection(projectId)
                 + composeUpSection(appRef, webRef, dbEngine, port)
                 + httpsSection(port, tlsAskBase);
+    }
+
+    /** ECR 로그인(항상). 웹 전용이라 app 이 없어도 웹 이미지 pull 에 로그인이 필요하다. */
+    private static String ecrLoginSection(String region, String registry) {
+        return """
+                aws ecr get-login-password --region %s | docker login --username AWS --password-stdin %s
+                """.formatted(region, registry);
+    }
+
+    /** 앱 이미지 pull(appRef 있으면). 웹 전용이면 appRef=null → 생략. */
+    private static String ecrPullSection(String appRef) {
+        return appRef == null ? "" : "docker pull " + appRef + "\n";
     }
 
     /** 웹 이미지도 S3 에서 load(webKey 있으면). 앱 load 뒤에 붙는다. */
@@ -499,24 +529,29 @@ public class BackendDeployRunner {
     private static String composeFile(String appImageRef, String webImageRef, DatabaseEngine dbEngine, int port) {
         boolean hasDb = dbEngine != null;
         boolean hasWeb = webImageRef != null;
+        boolean hasApp = appImageRef != null;   // 웹 전용(독립 프론트 EC2)이면 app 이 없다
         StringBuilder sb = new StringBuilder("services:\n");
         if (hasDb) {
             sb.append(dbServiceYaml(dbEngine));
         }
-        sb.append("  app:\n");
-        sb.append("    image: ").append(appImageRef).append('\n');
-        if (hasDb) {
-            sb.append("    depends_on:\n      db:\n        condition: service_healthy\n");
+        if (hasApp) {
+            sb.append("  app:\n");
+            sb.append("    image: ").append(appImageRef).append('\n');
+            if (hasDb) {
+                sb.append("    depends_on:\n      db:\n        condition: service_healthy\n");
+            }
+            sb.append("    env_file:\n      - .env\n");
+            if (!hasWeb) {   // 웹이 없을 때만 app 이 호스트 포트를 연다(웹이 있으면 nginx 가 연다)
+                sb.append("    ports:\n      - \"").append(port).append(':').append(port).append("\"\n");
+            }
+            sb.append("    restart: unless-stopped\n");
         }
-        sb.append("    env_file:\n      - .env\n");
-        if (!hasWeb) {   // 웹이 없을 때만 app 이 호스트 포트를 연다(웹이 있으면 nginx 가 연다)
-            sb.append("    ports:\n      - \"").append(port).append(':').append(port).append("\"\n");
-        }
-        sb.append("    restart: unless-stopped\n");
         if (hasWeb) {
             sb.append("  web:\n");
             sb.append("    image: ").append(webImageRef).append('\n');
-            sb.append("    depends_on:\n      - app\n");
+            if (hasApp) {   // app 이 있을 때만 그 기동에 의존한다(웹 전용이면 의존 대상 없음)
+                sb.append("    depends_on:\n      - app\n");
+            }
             sb.append("    ports:\n      - \"").append(port).append(":80\"\n");
             sb.append("    restart: unless-stopped\n");
         }

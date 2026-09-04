@@ -32,6 +32,9 @@ public class ProvisionedServer {
     private String frontendRepo;
     private String frontendDir;
     private String apiPathPrefix;
+    // 웹 전용(프론트 전용) 서버 — 백엔드 앱 없이 프론트 nginx 컨테이너만 띄운다(독립 프론트 EC2).
+    // deployMode 와 같은 이유로 생성자 밖 세팅. frontendRepo/frontendDir 과 함께 활성.
+    private boolean webOnly = false;
     private String elasticIpAllocationId; // EIP 할당 ID — 종료 시 release 대상(생성자 밖: 로드·연결 시 세팅)
     private String publicHost;           // running 이후 채워짐
     private int port;                    // 앱 포트(기본 8080)
@@ -110,6 +113,15 @@ public class ProvisionedServer {
             this.frontendDir = blankToNull(web.frontendDir());
             this.apiPathPrefix = blankToNull(web.apiPathPrefix());
         }
+    }
+
+    /** 웹 전용 여부를 지정한다(로드 시 복원, 또는 배포 요청 시 선택). true 면 백엔드 앱 없이 프론트만. */
+    public void assignWebOnly(boolean webOnly) {
+        this.webOnly = webOnly;
+    }
+
+    public boolean isWebOnly() {
+        return webOnly;
     }
 
     private static String blankToNull(String s) {

@@ -56,6 +56,9 @@ public class ProvisionedServerEntity {
     @Column(name = "frontend_dir", length = 255)
     private String frontendDir;
 
+    @Column(name = "web_only", nullable = false)
+    private boolean webOnly;
+
     @Column(name = "api_path_prefix", length = 255)
     private String apiPathPrefix;
 
@@ -103,6 +106,7 @@ public class ProvisionedServerEntity {
         this.frontendRepo = s.getFrontendRepo();
         this.frontendDir = s.getFrontendDir();
         this.apiPathPrefix = s.getApiPathPrefix();
+        this.webOnly = s.isWebOnly();
         this.elasticIpAllocationId = s.getElasticIpAllocationId();
         this.publicHost = s.getPublicHost();
         this.port = s.getPort();
@@ -121,6 +125,7 @@ public class ProvisionedServerEntity {
         server.assignBundledDbEngine(bundledDbEngine == null ? null : DatabaseEngine.valueOf(bundledDbEngine));
         server.assignWebFrontend(new com.example.dvely.provisioning.domain.value.WebFrontendSpec(
                 frontendRepo, frontendDir, apiPathPrefix));
+        server.assignWebOnly(webOnly);
         server.assignElasticIp(elasticIpAllocationId);
         return server;
     }

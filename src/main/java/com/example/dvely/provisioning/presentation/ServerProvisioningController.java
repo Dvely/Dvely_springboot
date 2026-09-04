@@ -43,8 +43,9 @@ public class ServerProvisioningController {
         DatabaseEngine bundledDb = parseBundledDb(request == null ? null : request.bundledDbEngine());
         WebFrontendSpec web = request == null ? new WebFrontendSpec(null, null, null)
                 : new WebFrontendSpec(request.frontendRepo(), request.frontendDir(), request.apiPathPrefix());
+        boolean webOnly = request != null && Boolean.TRUE.equals(request.webOnly());
         return ServerProvisionSubmitResponse.from(
-                commandService.submit(ownerUserId, projectId, instanceType, deployMode, bundledDb, web));
+                commandService.submit(ownerUserId, projectId, instanceType, deployMode, bundledDb, web, webOnly));
     }
 
     /** 요청의 deployMode 문자열 → enum. 생략/공백이면 NATIVE, 알 수 없는 값이면 400(IllegalArgument). */

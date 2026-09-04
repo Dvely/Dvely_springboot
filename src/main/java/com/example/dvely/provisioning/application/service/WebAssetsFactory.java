@@ -69,6 +69,23 @@ final class WebAssetsFactory {
     }
 
     /**
+     * 웹 전용(독립 프론트 EC2)용 nginx.conf — 백엔드 app 이 없으므로 프록시 없이 정적+SPA 폴백만 낸다.
+     * ({@link #nginxConf} 는 프록시 upstream 을 지연 해석해 app 부재로 기동이 깨지진 않지만, 웹 전용은
+     * 애초에 프록시할 대상이 없어 죽은 /api 블록을 안 만드는 게 맞다.)
+     */
+    static String nginxConfStaticOnly() {
+        return """
+                server {
+                    listen 80;
+                    location / {
+                        root /usr/share/nginx/html;
+                        try_files $uri $uri/ /index.html;
+                    }
+                }
+                """;
+    }
+
+    /**
      * 기본 web Dockerfile. 프론트를 빌드해(npm run build) 출력(dist|build|out)을 정규화한 뒤 nginx 로 서빙
      * 하고, 생성한 nginx.conf 를 심는다. 프론트에 자체 Dockerfile 이 있으면 그걸 우선(이건 폴백).
      */

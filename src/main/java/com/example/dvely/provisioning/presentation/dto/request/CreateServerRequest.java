@@ -30,5 +30,10 @@ public record CreateServerRequest(
         @Schema(description = "백엔드 API 프리픽스 — nginx 가 이 경로를 백엔드로 프록시하고 나머지는 프론트 SPA. "
                 + "콤마로 여러 개 가능. 생략 시 /api. 웹 컨테이너를 쓸 때만 의미 있음.",
                 example = "/api", nullable = true)
-        String apiPathPrefix
+        String apiPathPrefix,
+
+        @Schema(description = "웹 전용(독립 프론트 EC2) 여부. true 면 백엔드 앱 없이 프론트 nginx 만 이 EC2 에 띄운다. "
+                + "frontendRepo/frontendDir 필수, DOCKER 모드, 번들 DB 불가. 생략 시 false(백엔드 포함).",
+                example = "false", nullable = true)
+        Boolean webOnly
 ) {}

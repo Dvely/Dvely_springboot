@@ -74,8 +74,9 @@ public class BackendDeployAgentService {
                 dbRequested = true;
             }
 
+            // 에이전트 백엔드 배포 경로는 백엔드를 포함하므로 웹 전용이 아니다(webOnly=false).
             ServerProvisionSubmitResult server =
-                    serverCommandService.submit(userId, projectId, instanceType, deployMode, bundledDb, web);
+                    serverCommandService.submit(userId, projectId, instanceType, deployMode, bundledDb, web, false);
             approvalIds.addAll(server.approvalIds());
 
             log.info("[BACKEND_DEPLOY] 배포 요청 접수 | projectId={} dbRequested={} bundledDb={} web={} approvalIds={}",

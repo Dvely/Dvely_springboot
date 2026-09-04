@@ -71,7 +71,7 @@ class ServerProvisioningCommandServiceTest {
         when(serverRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(approvalRepository.save(any())).thenReturn(approval(99L));
 
-        ServerProvisionSubmitResult result = service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null));
+        ServerProvisionSubmitResult result = service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false);
 
         assertThat(result.requiresApproval()).isTrue();
         assertThat(result.approvalIds()).containsExactly(99L);
@@ -94,7 +94,7 @@ class ServerProvisioningCommandServiceTest {
         when(serverRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(approvalRepository.save(any())).thenReturn(approval(99L));
 
-        service.submit(OWNER, PROJECT, "t3.small", ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null));
+        service.submit(OWNER, PROJECT, "t3.small", ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false);
 
         ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
         verify(serverRepository, times(2)).save(saved.capture());
@@ -105,7 +105,7 @@ class ServerProvisioningCommandServiceTest {
     void submitThrowsWhenNoCloudConnection() {
         when(cloudConnectionSettingRepository.findByProjectId(PROJECT)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null)))
+        assertThatThrownBy(() -> service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false))
                 .isInstanceOf(NotFoundException.class);
         verify(serverRepository, never()).save(any());
         verify(approvalRepository, never()).save(any());
@@ -118,9 +118,57 @@ class ServerProvisioningCommandServiceTest {
         when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
                 .thenReturn(Optional.of(connection(CloudConnectionStatus.BILLING_DISABLED)));
 
-        assertThatThrownBy(() -> service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null)))
+        assertThatThrownBy(() -> service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false))
                 .isInstanceOf(IllegalStateException.class);
         verify(approvalRepository, never()).save(any());
+    }
+
+    @Test
+    void submitWebOnlyCreatesAWebOnlyServer() {
+        when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
+                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+        when(serverRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalRepository.save(any())).thenReturn(approval(99L));
+
+        service.submit(OWNER, PROJECT, null, ServerDeployMode.DOCKER, null,
+                new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, "frontend", null), true);
+
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository, times(2)).save(saved.capture());
+        assertThat(saved.getAllValues().get(0).isWebOnly()).isTrue();
+        assertThat(saved.getAllValues().get(0).hasWebFrontend()).isTrue();
+    }
+
+    @Test
+    void submitWebOnlyWithoutAFrontendSourceIsRejected() {
+        when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
+                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+
+        assertThatThrownBy(() -> service.submit(OWNER, PROJECT, null, ServerDeployMode.DOCKER, null,
+                new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("프론트 소스");
+        verify(serverRepository, never()).save(any());
+        verify(approvalRepository, never()).save(any());
+    }
+
+    @Test
+    void submitWebOnlyWithBundledDbIsRejected() {
+        when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
+                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+
+        assertThatThrownBy(() -> service.submit(OWNER, PROJECT, null, ServerDeployMode.DOCKER,
+                com.example.dvely.provisioning.domain.value.DatabaseEngine.MYSQL,
+                new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, "frontend", null), true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("번들 DB");
+        verify(serverRepository, never()).save(any());
     }
 
     @Test

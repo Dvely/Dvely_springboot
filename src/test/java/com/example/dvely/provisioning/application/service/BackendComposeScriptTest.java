@@ -110,6 +110,46 @@ class BackendComposeScriptTest {
     }
 
     @Test
+    void s3ComposeWebOnlyHasNoAppLoadOrAppServiceJustWebOnHostPort() {
+        // 웹 전용(독립 프론트 EC2): 앱 없음 — appKey/appImageTag=null. 프론트 nginx 만 뜬다.
+        String s = BackendDeployRunner.dockerComposeUserDataScript(
+                "bucket-x", null, null, "5/web.tar", "qeploy-web-5:latest", null, 5L, 8080, "");
+
+        // 앱 이미지 load 없음(웹만 load)
+        assertThat(s).doesNotContain("/opt/app/image.tar");
+        assertThat(s).contains("aws s3 cp s3://bucket-x/5/web.tar /opt/app/web.tar");
+        assertThat(s).contains("docker load -i /opt/app/web.tar");
+        // web 서비스만(app 서비스 없음), web 이 호스트 포트, depends_on 없음
+        assertThat(s).contains("  web:");
+        assertThat(s).contains("image: qeploy-web-5:latest");
+        assertThat(s).contains("\"8080:80\"");
+        assertThat(s).doesNotContain("  app:");
+        assertThat(s).doesNotContain("depends_on");
+        assertThat(s).doesNotContain("mysql");
+        assertThat(s).contains("docker compose -f /opt/app/compose.yml");
+        assertThat(s).startsWith("#!/bin/bash");
+    }
+
+    @Test
+    void ecrComposeWebOnlyLogsInAndPullsWebButNotApp() {
+        String reg = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com";
+        String webRef = reg + "/qeploy-web-5:latest";
+        String s = BackendDeployRunner.ecrComposeUserDataScript(
+                "ap-northeast-2", reg, null, webRef, null, 5L, 8080, "");
+
+        // 로그인은 있어야(웹 pull 에 필요), 앱 pull 은 없어야
+        assertThat(s).contains("docker login --username AWS --password-stdin " + reg);
+        assertThat(s).contains("docker pull " + webRef);
+        assertThat(s).doesNotContain("qeploy-app");
+        assertThat(s).doesNotContain("aws s3 cp");
+        // web 서비스만
+        assertThat(s).contains("image: " + webRef);
+        assertThat(s).doesNotContain("  app:");
+        assertThat(s).doesNotContain("depends_on");
+        assertThat(s).contains("\"8080:80\"");
+    }
+
+    @Test
     void ecrComposeWithWebPullsBothImages() {
         String reg = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com";
         String appRef = reg + "/qeploy-app-5:latest";
