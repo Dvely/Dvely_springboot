@@ -202,6 +202,7 @@ final class OpenAiCompatibleChat {
 
     private static RestClient restClient(Endpoint endpoint) {
         RestClient.Builder builder = RestClient.builder()
+                .requestFactory(LlmHttp.timeoutFactory())
                 .defaultHeader("Authorization", "Bearer " + endpoint.config().getApiKey())
                 .defaultHeader("content-type",  "application/json");
         endpoint.extraHeaders().forEach(builder::defaultHeader);

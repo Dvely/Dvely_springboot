@@ -58,6 +58,7 @@ public class ClaudeClient implements LlmPort {
 
     private RestClient restClient() {
         return RestClient.builder()
+                .requestFactory(LlmHttp.timeoutFactory())
                 .defaultHeader("x-api-key",         aiProperties.getAnthropic().getApiKey())
                 .defaultHeader("anthropic-version",  API_VERSION)
                 .defaultHeader("content-type",       "application/json")
