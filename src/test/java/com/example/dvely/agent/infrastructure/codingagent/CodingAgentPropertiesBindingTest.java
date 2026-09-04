@@ -44,4 +44,18 @@ class CodingAgentPropertiesBindingTest {
         assertThat(properties.getClaude().getArgvPrefix()).containsExactly("claude", "-p");
         assertThat(properties.getCodex().getArgvPrefix()).containsExactly("codex", "exec");
     }
+
+    @Test
+    void bindsCodexLoginCommandBecauseItsKeyDoesNotComeFromTheEnvironment() {
+        assertThat(properties.getCodex().getLoginArgv())
+                .containsExactly("codex", "login", "--with-api-key");
+        // Claude Code takes its key from ANTHROPIC_API_KEY, so it has no login step.
+        assertThat(properties.getClaude().getLoginArgv()).isEmpty();
+    }
+
+    @Test
+    void defaultsCodexToTheCheapestModelTierAndLeavesClaudeOnItsOwnDefault() {
+        assertThat(properties.getCodex().getModel()).isEqualTo("gpt-5.6-luna");
+        assertThat(properties.getClaude().getModel()).isEmpty();
+    }
 }
