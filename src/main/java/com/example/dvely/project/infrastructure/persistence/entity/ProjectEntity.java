@@ -2,6 +2,7 @@ package com.example.dvely.project.infrastructure.persistence.entity;
 
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.value.DeployStatus;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
@@ -100,6 +101,9 @@ public class ProjectEntity {
     @Column(name = "is_deleted", nullable = false)
     private boolean deleted;
 
+    @Column(name = "frontend_hosting_type", nullable = false, length = 20)
+    private String frontendHostingType = FrontendHostingType.GITHUB_PAGES.name();
+
     // I45: optimistic-lock counter. Hibernate manages this column entirely — it's set to 0 on
     // insert and incremented (with a `WHERE version = ?` guard) on every UPDATE automatically.
     // Never assign it from a domain Project in from()/updateFrom() (see those methods' comments)
@@ -178,6 +182,7 @@ public class ProjectEntity {
         entity.repositoryVersion = project.getRepositoryVersion();
         entity.repositoryVersionSyncedAt = project.getRepositoryVersionSyncedAt();
         entity.repositoryConnectedAt = project.getRepositoryConnectedAt();
+        entity.frontendHostingType = project.getFrontendHostingType().name();
         return entity;
     }
 
@@ -205,10 +210,11 @@ public class ProjectEntity {
         this.repositoryVersionSyncedAt = project.getRepositoryVersionSyncedAt();
         this.repositoryConnectedAt = project.getRepositoryConnectedAt();
         this.deleted = project.isDeleted();
+        this.frontendHostingType = project.getFrontendHostingType().name();
     }
 
     public Project toDomain() {
-        return new Project(
+        Project project = new Project(
                 id,
                 ownerUserId,
                 name,
@@ -237,5 +243,10 @@ public class ProjectEntity {
                 updatedAt,
                 version
         );
+        // 프론트 호스팅은 거대 생성자 밖 필드라 복원도 여기서 명시적으로 덮어쓴다. 레거시 행이 NULL
+        // 이면(마이그레이션 DEFAULT 로 실제로는 안 생기지만) changeFrontendHosting 이 기본값으로 떨군다.
+        project.changeFrontendHosting(
+                frontendHostingType == null ? null : FrontendHostingType.valueOf(frontendHostingType));
+        return project;
     }
 }

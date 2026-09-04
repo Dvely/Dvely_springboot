@@ -34,6 +34,7 @@ import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
 import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
@@ -133,6 +134,74 @@ class DeploymentCommandServiceTest {
         verify(deploymentHistoryRepository).save(any(DeploymentHistory.class));
         verify(projectRepository).save(project);
         assertThat(project.getDeployStatus()).isEqualTo(DeployStatus.PENDING);
+    }
+
+    @Test
+    void deploy_withoutHostingTypeKeepsProjectOnGithubPagesAndSucceeds() {
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> persisted(invocation.getArgument(0), 51L));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DeployResult result = service.deploy(1L, 11L, new DeployCommand(DeployTargetType.LATEST, null));
+
+        assertThat(result.status()).isEqualTo("PENDING");
+        assertThat(project.getFrontendHostingType()).isEqualTo(FrontendHostingType.GITHUB_PAGES);
+    }
+
+    @Test
+    void deploy_withExplicitGithubPagesHostingPersistsTheSettingAndSucceeds() {
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> persisted(invocation.getArgument(0), 51L));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DeployResult result = service.deploy(
+                1L, 11L,
+                new DeployCommand(DeployTargetType.LATEST, null, null, FrontendHostingType.GITHUB_PAGES));
+
+        assertThat(result.status()).isEqualTo("PENDING");
+        assertThat(project.getFrontendHostingType()).isEqualTo(FrontendHostingType.GITHUB_PAGES);
+    }
+
+    @Test
+    void deploy_withS3HostingIsRejectedUntilTheS3PathIsImplemented() {
+        // PR1 은 프론트 호스팅 타입 모델·플럼바인만 랜딩한다. S3 실제 배포 경로는 다음 PR — 그 전까지는
+        // 요청을 즉시 거절해, 프로젝트엔 S3 로 저장됐는데 execute 는 Pages 로 배포하는 조용한 불일치를
+        // 원천 차단한다. @Transactional 이라 이력 저장도 일어나지 않는다.
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+
+        assertThatThrownBy(() -> service.deploy(
+                1L, 11L,
+                new DeployCommand(DeployTargetType.LATEST, null, null, FrontendHostingType.S3)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("S3");
+
+        verify(deploymentHistoryRepository, never()).save(any(DeploymentHistory.class));
+        verifyNoInteractions(userRepository, githubPagesPort, githubActionsPort, githubRepoPort);
+    }
+
+    @Test
+    void deploy_withEc2HostingIsAlsoRejectedForNow() {
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+
+        assertThatThrownBy(() -> service.deploy(
+                1L, 11L,
+                new DeployCommand(DeployTargetType.LATEST, null, null, FrontendHostingType.EC2)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("EC2");
+
+        verify(deploymentHistoryRepository, never()).save(any(DeploymentHistory.class));
     }
 
     @Test

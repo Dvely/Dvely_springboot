@@ -29,6 +29,7 @@ import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
 import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import java.time.Duration;
 import java.util.Optional;
@@ -121,6 +122,19 @@ public class DeploymentCommandService {
                                                   Project project,
                                                   DeployCommand command,
                                                   Long retriedFromHistoryId) {
+        // 요청이 프론트 호스팅을 지정하면 프로젝트 설정을 그 값으로 바꾼다(이후 배포·재시도도 따름).
+        if (command.frontendHostingType() != null) {
+            project.changeFrontendHosting(command.frontendHostingType());
+        }
+        // PR1 가드: 프론트 호스팅 타입 모델·플럼바인만 먼저 랜딩하고, S3/EC2 실제 배포 경로는 다음 PR
+        // 이다. 여기서 막지 않으면 프로젝트엔 S3 로 저장되는데 execute 는 여전히 GitHub Pages 로 배포해
+        // "설정과 실제 배포가 어긋나는" 조용한 불일치가 난다. @Transactional 이라 throw 하면 위의
+        // changeFrontendHosting 도 함께 롤백된다.
+        if (project.getFrontendHostingType() != FrontendHostingType.GITHUB_PAGES) {
+            throw new IllegalArgumentException(
+                    "아직 지원되지 않는 프론트 호스팅 방식입니다: " + project.getFrontendHostingType()
+                            + " (현재는 GITHUB_PAGES 만 배포 가능, S3·EC2 는 준비 중)");
+        }
         DeploymentHistory history = deploymentHistoryRepository.save(new DeploymentHistory(
                 ownerUserId,
                 project.getId(),
