@@ -23,6 +23,8 @@ import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ProvisionMethod;
 import com.example.dvely.provisioning.domain.value.ProvisionOrigin;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
+import com.example.dvely.provisioning.infrastructure.DockerDbProvisioner;
+import com.example.dvely.provisioning.infrastructure.DockerDbProvisioner.DockerDbCreation;
 import com.example.dvely.provisioning.infrastructure.RdsProvisioner;
 import com.example.dvely.provisioning.infrastructure.RdsProvisioner.RdsCreation;
 import java.time.LocalDateTime;
@@ -35,14 +37,15 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
-class RdsProvisionApprovalHandlerTest {
+class DatabaseProvisionApprovalHandlerTest {
 
     @Mock private ProvisionedDatabaseRepository databaseRepository;
     @Mock private ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
     @Mock private CloudConnectionRepository cloudConnectionRepository;
     @Mock private RdsProvisioner rdsProvisioner;
+    @Mock private DockerDbProvisioner dockerDbProvisioner;
 
-    @InjectMocks private RdsProvisionApprovalHandler handler;
+    @InjectMocks private DatabaseProvisionApprovalHandler handler;
 
     private static final Long OWNER = 7L;
     private static final Long PROJECT = 10L;
@@ -56,33 +59,43 @@ class RdsProvisionApprovalHandlerTest {
     }
 
     @Test
-    void onApprovedStartsCreationAndMovesToProvisioning() {
-        ProvisionedDatabase pending = pendingRds();
-        when(databaseRepository.findByApprovalId(APPROVAL_ID)).thenReturn(Optional.of(pending));
-        when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
-                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));
-        when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
-                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+    void onApprovedRdsStartsCreationAndMovesToProvisioning() {
+        ProvisionedDatabase pending = pending(ProvisionMethod.RDS);
+        stubConnected(pending);
         when(rdsProvisioner.startCreation(any(), eq(DatabaseEngine.MYSQL), eq(PROJECT)))
                 .thenReturn(new RdsCreation("qeploy-10-abcd1234", 3306, "app", "qeadmin", "secretpw"));
 
         handler.onApproved(approval(ApprovalStatus.APPROVED));
 
-        ArgumentCaptor<ProvisionedDatabase> saved = ArgumentCaptor.forClass(ProvisionedDatabase.class);
-        verify(databaseRepository).save(saved.capture());
-        ProvisionedDatabase result = saved.getValue();
+        ProvisionedDatabase result = savedRecord();
         assertThat(result.getStatus()).isEqualTo(ProvisionStatus.PROVISIONING);
         assertThat(result.getResourceId()).isEqualTo("qeploy-10-abcd1234");
-        assertThat(result.getPort()).isEqualTo(3306);
-        assertThat(result.getUsername()).isEqualTo("qeadmin");
-        assertThat(result.getPassword()).isEqualTo("secretpw");
-        assertThat(result.getHost()).isNull();   // host 는 available 이후에야 채워진다
-        assertThat(result.getCloudConnectionId()).isEqualTo(CONN_ID);   // 생성에 쓴 연결을 기억한다
+        assertThat(result.getHost()).isNull();
+        assertThat(result.getCloudConnectionId()).isEqualTo(CONN_ID);
+        verify(dockerDbProvisioner, never()).startCreation(any(), any(), any());
+    }
+
+    @Test
+    void onApprovedDockerLaunchesEc2DbAndMovesToProvisioning() {
+        ProvisionedDatabase pending = pending(ProvisionMethod.DOCKER);
+        stubConnected(pending);
+        when(dockerDbProvisioner.startCreation(any(), eq(DatabaseEngine.MYSQL), eq(PROJECT)))
+                .thenReturn(new DockerDbCreation("i-0abc123", 3306, "app", "root", "dockerpw"));
+
+        handler.onApproved(approval(ApprovalStatus.APPROVED));
+
+        ProvisionedDatabase result = savedRecord();
+        assertThat(result.getStatus()).isEqualTo(ProvisionStatus.PROVISIONING);
+        assertThat(result.getResourceId()).isEqualTo("i-0abc123");   // EC2 인스턴스 ID
+        assertThat(result.getUsername()).isEqualTo("root");
+        assertThat(result.getPassword()).isEqualTo("dockerpw");
+        assertThat(result.getHost()).isNull();   // 사설 IP self-report 이후에야 채워진다
+        verify(rdsProvisioner, never()).startCreation(any(), any(), any());
     }
 
     @Test
     void onApprovedThrowsWhenConnectionNoLongerConnected() {
-        ProvisionedDatabase pending = pendingRds();
+        ProvisionedDatabase pending = pending(ProvisionMethod.RDS);
         when(databaseRepository.findByApprovalId(APPROVAL_ID)).thenReturn(Optional.of(pending));
         when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
                 .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));
@@ -93,39 +106,45 @@ class RdsProvisionApprovalHandlerTest {
                 .isInstanceOf(IllegalStateException.class);
 
         verify(rdsProvisioner, never()).startCreation(any(), any(), any());
+        verify(dockerDbProvisioner, never()).startCreation(any(), any(), any());
         verify(databaseRepository, never()).save(any());
     }
 
     @Test
-    void onApprovedThrowsWhenNoPendingRow() {
-        when(databaseRepository.findByApprovalId(APPROVAL_ID)).thenReturn(Optional.empty());
-
-        assertThatThrownBy(() -> handler.onApproved(approval(ApprovalStatus.APPROVED)))
-                .isInstanceOf(IllegalStateException.class);
-        verify(rdsProvisioner, never()).startCreation(any(), any(), any());
-    }
-
-    @Test
     void onRejectedMarksPendingRowFailed() {
-        ProvisionedDatabase pending = pendingRds();
+        ProvisionedDatabase pending = pending(ProvisionMethod.DOCKER);
         when(databaseRepository.findByApprovalId(APPROVAL_ID)).thenReturn(Optional.of(pending));
 
         handler.onRejected(approval(ApprovalStatus.REJECTED));
 
-        ArgumentCaptor<ProvisionedDatabase> saved = ArgumentCaptor.forClass(ProvisionedDatabase.class);
-        verify(databaseRepository).save(saved.capture());
-        assertThat(saved.getValue().getStatus()).isEqualTo(ProvisionStatus.FAILED);
-        assertThat(saved.getValue().getFailureCode()).isNull();   // 거부는 프로바이더 오류가 아니다
+        ProvisionedDatabase result = savedRecord();
+        assertThat(result.getStatus()).isEqualTo(ProvisionStatus.FAILED);
+        assertThat(result.getFailureCode()).isNull();
         verify(rdsProvisioner, never()).startCreation(any(), any(), any());
+        verify(dockerDbProvisioner, never()).startCreation(any(), any(), any());
     }
 
-    private ProvisionedDatabase pendingRds() {
-        return ProvisionedDatabase.pending(PROJECT, ProvisionMethod.RDS, DatabaseEngine.MYSQL, ProvisionOrigin.MANUAL);
+    private void stubConnected(ProvisionedDatabase pending) {
+        when(databaseRepository.findByApprovalId(APPROVAL_ID)).thenReturn(Optional.of(pending));
+        when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
+                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+    }
+
+    private ProvisionedDatabase savedRecord() {
+        ArgumentCaptor<ProvisionedDatabase> saved = ArgumentCaptor.forClass(ProvisionedDatabase.class);
+        verify(databaseRepository).save(saved.capture());
+        return saved.getValue();
+    }
+
+    private ProvisionedDatabase pending(ProvisionMethod method) {
+        return ProvisionedDatabase.pending(PROJECT, method, DatabaseEngine.MYSQL, ProvisionOrigin.MANUAL);
     }
 
     private Approval approval(ApprovalStatus status) {
         return new Approval(APPROVAL_ID, OWNER, PROJECT, null, null, ApprovalType.DATABASE_PROVISION,
-                status, "RDS MYSQL 데이터베이스 생성 (과금)", LocalDateTime.now(), LocalDateTime.now());
+                status, "DB 생성 (과금)", LocalDateTime.now(), LocalDateTime.now());
     }
 
     private CloudConnection connection(CloudConnectionStatus status) {

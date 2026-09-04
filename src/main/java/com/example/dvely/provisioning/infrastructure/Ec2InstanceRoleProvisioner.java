@@ -84,6 +84,48 @@ public class Ec2InstanceRoleProvisioner {
         log.info("IAM 인스턴스 역할 정책 반영: role={} projectId={} ecr={} (기존={})", name, projectId, ecr, exists);
     }
 
+    /**
+     * DOCKER DB EC2 용 인스턴스 프로파일을 보장한다. 백엔드 역할과 달리 이 역할은 <b>준비되면 자기 사설
+     * IP 를 SSM 에 self-report(PutParameter)</b> 하는 권한만 갖는다 — 컨트롤 플레인은 사설망의 DB 를 직접
+     * 헬스체크할 수 없어 이 신호로 준비를 판단한다. 이름 접두사 qeploy-instance-* 를 유지해 기존 BYOC IAM
+     * 스코프(role/qeploy-instance-*) 안에서 만들어진다(새 정책 추가 불필요).
+     */
+    public String ensureDbWriterInstanceProfile(CloudConnection connection, Long projectId) {
+        String name = "qeploy-instance-dbw-" + projectId;
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (IamClient iam = client(access)) {
+            boolean exists;
+            try {
+                iam.getRole(r -> r.roleName(name));
+                exists = true;
+            } catch (NoSuchEntityException e) {
+                exists = false;
+            }
+            if (!exists) {
+                iam.createRole(CreateRoleRequest.builder()
+                        .roleName(name)
+                        .assumeRolePolicyDocument(TRUST_POLICY)
+                        .description("Qeploy DB-writer instance role for project " + projectId)
+                        .build());
+                log.info("IAM DB-writer 역할 생성: role={} projectId={}", name, projectId);
+            }
+            iam.putRolePolicy(PutRolePolicyRequest.builder()
+                    .roleName(name).policyName("qeploy-db-writer")
+                    .policyDocument(dbWriterPolicy(projectId))
+                    .build());
+            ensureProfileWithRole(iam, name);
+            return name;
+        }
+    }
+
+    /** DB EC2 준비 self-report 전용 — 자기 프로젝트 경로에 PutParameter 만. */
+    private String dbWriterPolicy(Long projectId) {
+        return """
+                {"Version":"2012-10-17","Statement":[\
+                {"Effect":"Allow","Action":["ssm:PutParameter"],\
+                "Resource":"arn:aws:ssm:*:*:parameter/qeploy/%d/*"}]}""".formatted(projectId);
+    }
+
     private void ensureProfileWithRole(IamClient iam, String name) {
         try {
             GetInstanceProfileResponse profile = iam.getInstanceProfile(

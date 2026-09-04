@@ -40,7 +40,10 @@
   - **번들 DB(back+db) 완료**: DOCKER 배포에 `bundledDbEngine`(MYSQL/POSTGRESQL) — 같은 EC2 에 앱+DB 컨테이너("올인원", RDS 없이). `provisioned_servers.bundled_db_engine`(V41). DB 비번은 배포 시 생성→SSM→`.env`, 앱은 `jdbc:{engine}://db/appdb`. S3·ECR 둘 다. **실 EC2 e2e 검증**(S3·ECR 둘 다).
   - **웹(프론트) 컨테이너 완료**: DOCKER 배포에 `frontendRepo`(split)·`frontendDir`(모노)·`apiPathPrefix`(기본 /api, 콤마 다중) — 같은 EC2 에 프론트 nginx 컨테이너를 함께("back+web+db 전부 컨테이너", 같은 오리진). `provisioned_servers`(V42). 프론트→nginx 이미지(`WebImageBuildService`+`WebAssetsFactory`, `ContainerImageBuilder` 공용). **포트 모델: web 이 호스트 포트, app 은 내부**(nginx 가 프리픽스를 app 으로 프록시[유지]+SPA 폴백, resolver 지연해석). 앱·웹 이미지 둘 다 전달(S3=image.tar+web.tar / ECR=qeploy-app+qeploy-web). convention: API 는 단일(콤마 다중) 프리픽스, 프론트는 상대경로 호출. SSR(런타임 node)은 대상 아님. **보안: 사용자 입력(frontendRepo/dir)을 셸 주입 차단 검증.**
   - **검증**: 생성되는 compose.yml 을 로컬 `docker compose up` 으로 실구동 — 번들 DB=JPA `/db` 200(insert+count), 웹=web+app+db 3서비스 기동+nginx→app 프록시+SPA 폴백+app 내부전용. 생성물이 검증본과 바이트 동일함을 테스트로 못박음. compose 플러그인 다운로드·SSM→.env 는 EC2 실 e2e 로 검증(번들 DB).
-- **P5 — `ProvisionMethod.DOCKER`(독립 DB 자원) 활성**: DB 도메인의 독립 DB 컨테이너(RDS 대안, 자체 EC2/승인/상태워커). 위 번들 DB 와 별개 — 번들은 앱과 한 인스턴스, 이건 DB 단독 자원. 아직 "곧 지원".
+- **P5 — `ProvisionMethod.DOCKER`(독립 DB 자원)** 🟢 *구현*: DB 도메인의 독립 DB 컨테이너(RDS 대안, 자체 EC2). 번들 DB 와 별개 — 번들은 앱과 한 인스턴스(교체 시 소멸), 이건 앱과 독립된 영속 DB(더 저렴한 RDS 대안). RDS 골격 복제: `DockerDbProvisioner`(EC2 에 DB 컨테이너), `DatabaseProvisionApprovalHandler`(RDS·DOCKER method 분기, 새 ApprovalType 없이), `DockerDbProvisionStatusWorker`.
+  - **준비 판단(핵심 난점)**: DB 는 사설 VPC(qeploy-db SG)라 컨트롤 플레인이 직접 헬스체크 불가 → DB EC2 가 준비되면 자기 사설 IP 를 SSM(`/qeploy/{projectId}/dbstatus/{instanceId}`)에 self-report, 워커가 폴링→markReady 후 그 param 삭제(백엔드 env 오염 방지). 백엔드는 같은 VPC 사설 IP 로 접속(RDS 와 동일 모델, assembleEnv 는 method 무관이라 자동).
+  - **BYOC 정책 추가 불필요** — 기존 `/qeploy/{projectId}/` SSM + `qeploy-instance-*` IAM 스코프 재사용(DB EC2 역할 이름 qeploy-instance-dbw-*, SSM Put 만). EIP 불필요(사설 IP 안정). 비밀번호는 단일목적 DB EC2 라 user-data 인라인.
+  - **검증**: DB 컨테이너 기동+healthcheck 로컬 실구동(mysql), user-data 생성·핸들러 분기 단위테스트. **실 EC2 e2e(DB EC2+백엔드 2인스턴스)는 크레딧 확보 시.**
 
 ## 결정
 
