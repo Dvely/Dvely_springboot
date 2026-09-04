@@ -46,7 +46,7 @@ public class DockerImageBuildService {
             throw new BackendBuildException("연결된 GitHub 저장소가 없어 빌드할 수 없습니다.");
         }
 
-        String imageTag = "qeploy-app-" + projectId + ":latest";
+        String imageTag = imageTagFor(projectId);
         String sessionId = "img-" + projectId + "-" + System.currentTimeMillis();
         String containerId = dockerService.createAndStartContainer(
                 ownerUserId, sessionId, projectId, null, null);
@@ -92,6 +92,14 @@ public class DockerImageBuildService {
             throw new BackendBuildException(
                     "저장소 루트에 Dockerfile 이 없습니다. DOCKER 배포 모드는 Dockerfile 이 필요합니다.");
         }
+    }
+
+    /**
+     * 이 프로젝트의 이미지 태그. save 할 때와 EC2 에서 {@code docker run} 할 때가 반드시 같아야 하므로
+     * (docker load 가 이 태그로 복원한다) 한 곳에서 정한다.
+     */
+    public static String imageTagFor(Long projectId) {
+        return "qeploy-app-" + projectId + ":latest";
     }
 
     private long sizeQuietly(Path p) {

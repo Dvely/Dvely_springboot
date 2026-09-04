@@ -50,11 +50,14 @@ public class ProvisionedServer {
         this.updatedAt = updatedAt;
     }
 
-    /** 새 서버 배포 요청 — PENDING 으로 시작(승인 대기). */
-    public static ProvisionedServer pending(Long projectId, String instanceType, int port) {
+    /** 새 서버 배포 요청 — PENDING 으로 시작(승인 대기). deployMode 는 실행 형태(null 이면 NATIVE). */
+    public static ProvisionedServer pending(Long projectId, String instanceType, int port,
+                                            ServerDeployMode deployMode) {
         LocalDateTime now = LocalDateTime.now();
-        return new ProvisionedServer(null, projectId, instanceType, ServerStatus.PENDING,
+        ProvisionedServer server = new ProvisionedServer(null, projectId, instanceType, ServerStatus.PENDING,
                 null, null, null, port, null, null, null, now, now);
+        server.assignDeployMode(deployMode);
+        return server;
     }
 
     /** 이 배포를 특정 승인에 연결한다(승인 후 실행되는 경우). */

@@ -10,6 +10,7 @@ import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
+import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import com.example.dvely.provisioning.application.port.out.ProjectDomainCleanupPort;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
@@ -48,13 +49,15 @@ public class ServerProvisioningCommandService {
     private final SsmParameterStore ssm;
     private final S3ArtifactStore s3;
 
-    public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType) {
+    public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType,
+                                              ServerDeployMode deployMode) {
         resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
 
         String tier = (instanceType == null || instanceType.isBlank())
                 ? DEFAULT_INSTANCE_TYPE : instanceType;
+        ServerDeployMode mode = deployMode == null ? ServerDeployMode.NATIVE : deployMode;
         ProvisionedServer record = serverRepository.save(
-                ProvisionedServer.pending(projectId, tier, APP_PORT));
+                ProvisionedServer.pending(projectId, tier, APP_PORT, mode));
         Approval approval = approvalRepository.save(Approval.standalone(
                 ownerUserId, projectId, ApprovalType.SERVER_PROVISION,
                 "EC2 백엔드 서버 생성 (" + tier + ", 과금)"));
@@ -117,7 +120,10 @@ public class ServerProvisioningCommandService {
                             server.getProjectId(), e.getMessage());
                 }
                 try {
-                    s3.deleteJar(connection, s3.bucketNameFor(connection), s3.jarKeyFor(server.getProjectId()));
+                    String artifactKey = server.getDeployMode() == ServerDeployMode.DOCKER
+                            ? s3.imageKeyFor(server.getProjectId())
+                            : s3.jarKeyFor(server.getProjectId());
+                    s3.deleteJar(connection, s3.bucketNameFor(connection), artifactKey);
                 } catch (RuntimeException e) {
                     log.warn("서버 종료 후 S3 아티팩트 정리 실패(수동 정리 필요): projectId={} 원인={}",
                             server.getProjectId(), e.getMessage());

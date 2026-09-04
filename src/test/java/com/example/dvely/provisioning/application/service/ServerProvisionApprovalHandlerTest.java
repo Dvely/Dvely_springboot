@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.application.service;
 
+import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -92,7 +93,7 @@ class ServerProvisionApprovalHandlerTest {
     }
 
     private ProvisionedServer pending() {
-        return ProvisionedServer.pending(PROJECT, "t3.micro", 8080);
+        return ProvisionedServer.pending(PROJECT, "t3.micro", 8080, ServerDeployMode.NATIVE);
     }
 
     private Approval approval(ApprovalStatus status) {

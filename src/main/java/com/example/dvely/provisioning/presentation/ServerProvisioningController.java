@@ -12,6 +12,8 @@ import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import com.example.dvely.provisioning.domain.value.ServerDeployMode;
+import java.util.Locale;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -35,8 +37,17 @@ public class ServerProvisioningController {
             @RequestBody(required = false) CreateServerRequest request
     ) {
         String instanceType = request == null ? null : request.instanceType();
+        ServerDeployMode deployMode = parseDeployMode(request == null ? null : request.deployMode());
         return ServerProvisionSubmitResponse.from(
-                commandService.submit(ownerUserId, projectId, instanceType));
+                commandService.submit(ownerUserId, projectId, instanceType, deployMode));
+    }
+
+    /** 요청의 deployMode 문자열 → enum. 생략/공백이면 NATIVE, 알 수 없는 값이면 400(IllegalArgument). */
+    private ServerDeployMode parseDeployMode(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return ServerDeployMode.NATIVE;
+        }
+        return ServerDeployMode.valueOf(raw.trim().toUpperCase(Locale.ROOT));
     }
 
     @Operation(summary = "프로젝트 EC2 서버 목록 조회",

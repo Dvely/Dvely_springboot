@@ -10,6 +10,7 @@ import com.example.dvely.provisioning.application.result.ServerProvisionSubmitRe
 import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
 import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepository;
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
+import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ProvisionMethod;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import java.util.ArrayList;
@@ -48,6 +49,7 @@ public class BackendDeployAgentService {
 
         String instanceType = blankToNull(step.parameters().get("instanceType"));
         DatabaseEngine dbEngine = parseEngine(step.parameters().get("dbEngine"));
+        ServerDeployMode deployMode = parseDeployMode(step.parameters().get("deployMode"));
 
         try {
             List<Long> approvalIds = new ArrayList<>();
@@ -62,7 +64,7 @@ public class BackendDeployAgentService {
                 dbRequested = true;
             }
 
-            ServerProvisionSubmitResult server = serverCommandService.submit(userId, projectId, instanceType);
+            ServerProvisionSubmitResult server = serverCommandService.submit(userId, projectId, instanceType, deployMode);
             approvalIds.addAll(server.approvalIds());
 
             log.info("[BACKEND_DEPLOY] 배포 요청 접수 | projectId={} dbRequested={} approvalIds={}",
@@ -104,6 +106,18 @@ public class BackendDeployAgentService {
             return DatabaseEngine.valueOf(value.trim().toUpperCase());
         } catch (RuntimeException e) {
             return null;   // 알 수 없는 엔진은 DB 없이 서버만 배포
+        }
+    }
+
+    /** 배포 형태(step 파라미터). 생략/알 수 없으면 NATIVE(jar). LLM 이 "docker"를 주면 이미지 배포. */
+    private ServerDeployMode parseDeployMode(String value) {
+        if (value == null || value.isBlank()) {
+            return ServerDeployMode.NATIVE;
+        }
+        try {
+            return ServerDeployMode.valueOf(value.trim().toUpperCase());
+        } catch (RuntimeException e) {
+            return ServerDeployMode.NATIVE;
         }
     }
 
