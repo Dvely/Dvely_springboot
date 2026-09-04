@@ -17,7 +17,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public record Ec2ProvisioningProperties(
         String instanceProfileOverride,
         String tlsAskBaseUrl,
-        String imageTransfer
+        String imageTransfer,
+        String buildIsolation
 ) {
     public boolean hasInstanceProfileOverride() {
         return instanceProfileOverride != null && !instanceProfileOverride.isBlank();
@@ -31,6 +32,17 @@ public record Ec2ProvisioningProperties(
      */
     public boolean useEcr() {
         return imageTransfer != null && imageTransfer.trim().equalsIgnoreCase("ECR");
+    }
+
+    /**
+     * 이미지 빌드 격리 방식. 기본(빈 값/미설정)은 {@code BUILDX} — 호스트 buildkit 로 빌드하며 크로스빌드
+     * (arm64 컨트롤 플레인→amd64 이미지)를 지원한다(개발기·현행). {@code KANIKO} 로 켜면 신뢰할 수 없는
+     * Dockerfile 의 빌드 스텝이 <b>호스트 데몬이 아니라 격리된 kaniko 컨테이너 안</b>에서 돈다(멀티테넌트
+     * 하드닝). 단 kaniko 는 컨트롤 플레인 arch 로만 빌드하므로(크로스빌드 없음) <b>amd64 컨트롤 플레인에서만</b>
+     * 켠다 — arm64 개발기에서 켜면 arm64 이미지가 나와 amd64 EC2 에서 안 뜬다.
+     */
+    public boolean useKaniko() {
+        return buildIsolation != null && buildIsolation.trim().equalsIgnoreCase("KANIKO");
     }
 
     /**
