@@ -7,8 +7,10 @@ import com.example.dvely.agent.application.facade.AgentFacade;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.result.AgentSubmitResult;
 import com.example.dvely.agent.application.service.AgentEventStreamService;
+import com.example.dvely.agent.application.service.AiProviderQueryService;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.agent.presentation.dto.AiProvidersResponse;
 import com.example.dvely.agent.presentation.dto.DecisionRequest;
 import com.example.dvely.agent.presentation.dto.DecisionResponse;
 import com.example.dvely.agent.presentation.dto.AgentTaskEventResponse;
@@ -50,6 +52,7 @@ public class AgentController {
     private final InputWaitStore        inputWaitStore;
     private final PreviewSessionService previewSessionService;
     private final AgentEventStreamService agentEventStreamService;
+    private final AiProviderQueryService  aiProviderQueryService;
 
     @Operation(
             summary = "에이전트 요청 제출",
@@ -85,6 +88,21 @@ public class AgentController {
                 submission.status().name(),
                 submission.approvalIds()
         );
+    }
+
+    @Operation(
+            summary = "사용 가능한 AI 제공자·모델 목록",
+            description = "요청 body 의 aiProvider·model 에 지정할 수 있는 값들을 반환합니다. "
+                          + "apiKey 가 설정된 제공자만 담기며, 각 제공자의 기본 모델·선택 가능 모델·"
+                          + "thinking 지원 모델을 함께 줍니다. FE 의 제공자 선택 UI 가 이걸 소비합니다."
+    )
+    @GetMapping("/ai-providers")
+    public AiProvidersResponse aiProviders() {
+        List<AiProvidersResponse.Provider> providers = aiProviderQueryService.availableProviders().stream()
+                .map(v -> new AiProvidersResponse.Provider(
+                        v.provider(), v.defaultModel(), v.models(), v.thinkingModels()))
+                .toList();
+        return new AiProvidersResponse(providers);
     }
 
     @Operation(

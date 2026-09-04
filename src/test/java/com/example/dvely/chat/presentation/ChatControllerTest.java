@@ -123,7 +123,7 @@ class ChatControllerTest {
 
         @Test
         void sendMessage_delegatesUsingAuthenticatedUserIdAndConversationId() {
-                SendMessageRequest request = new SendMessageRequest("hi");
+                SendMessageRequest request = new SendMessageRequest("hi", null);
                 MessageResult result = new MessageResult(
                                 101L,
                                 30L,
@@ -143,14 +143,14 @@ class ChatControllerTest {
                                 "task-abc123"
                 );
 
-                when(chatFacade.sendMessage(1L, 30L, "hi")).thenReturn(result);
+                when(chatFacade.sendMessage(1L, 30L, "hi", null)).thenReturn(result);
                 when(chatMapper.toMessageResponse(result)).thenReturn(response);
 
                 MessageResponse actual = chatController.sendMessage(1L, 30L, request);
 
                 assertThat(actual.messageId()).isEqualTo(101L);
                 assertThat(actual.taskId()).isEqualTo("task-abc123");
-                verify(chatFacade).sendMessage(1L, 30L, "hi");
+                verify(chatFacade).sendMessage(1L, 30L, "hi", null);
         }
 
         @Test
