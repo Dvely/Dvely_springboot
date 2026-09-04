@@ -12,6 +12,7 @@ import com.example.dvely.change.application.service.ResultApprovalService;
 import com.example.dvely.common.exception.ForbiddenException;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.deployment.application.command.dto.DeployCommand;
+import com.example.dvely.deployment.application.port.out.FrontendServerHostingPort;
 import com.example.dvely.deployment.application.port.out.FrontendStaticHostingPort;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort.WorkflowRunMatch;
@@ -35,6 +36,7 @@ import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -76,6 +78,9 @@ public class DeploymentCommandService {
     // S3 는 이 execute 안에서 동기 완료하므로, Pages 가 웹훅에서 쓰는 표준 성공 처리(LIVE 전이+변경표시
     // +대화알림+감사)를 여기서 그대로 재사용해 파리티를 맞춘다.
     private final DeploymentOutcomeService deploymentOutcomeService;
+    // EC2 프론트 호스팅: 비동기·승인 게이트라 배포 이력이 아니라 웹 전용 서버 프로비저닝으로 위임한다
+    // (provisioning 어댑터 구현). Pages/S3 와 다른 축.
+    private final FrontendServerHostingPort frontendServerHostingPort;
     // S3 배포는 사용자 AWS 연결이 있어야 한다 — 요청 시점에 미리 확인해 헛되이 빌드까지 갔다 실패하는
     // 것(라운드마다 clone+npm build 수 분)을 막는다. project 도메인 리포라 deployment 가 이미 의존한다.
     private final ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
@@ -83,7 +88,51 @@ public class DeploymentCommandService {
     @Transactional
     public DeployResult deploy(Long ownerUserId, Long projectId, DeployCommand command) {
         Project project = resolveProject(ownerUserId, projectId);
+        // 요청이 프론트 호스팅을 지정하면 프로젝트 설정을 반영한다(EC2 분기 판단에 쓰인다). Pages/S3 는
+        // createAndQueueDeployment 가 이 변경을 저장하고, EC2 는 아래에서 직접 저장한다.
+        if (command.frontendHostingType() != null) {
+            project.changeFrontendHosting(command.frontendHostingType());
+        }
+        // EC2 프론트 호스팅은 비동기·과금·승인 게이트라 배포 이력/워커 파이프라인(Pages/S3)에 안 맞는다 —
+        // 웹 전용 서버 프로비저닝으로 위임한다. 프론트 소스 = 프로젝트 소스 레포(S3 경로와 같은 가정).
+        if (project.getFrontendHostingType() == FrontendHostingType.EC2) {
+            projectRepository.save(project);   // 호스팅 변경 영속(EC2 는 createAndQueue 를 안 타므로)
+            return deployToEc2(ownerUserId, project, command);
+        }
         return createAndQueueDeployment(ownerUserId, project, command, null);
+    }
+
+    private DeployResult deployToEc2(Long ownerUserId, Project project, DeployCommand command) {
+        FrontendServerHostingPort.ServerSubmission submission = frontendServerHostingPort.provisionWebOnly(
+                new FrontendServerHostingPort.Request(
+                        project.getId(), ownerUserId, project.getSourceRepository()));
+        auditRecorder.record(new AuditEvent(
+                AuditAction.DEPLOYMENT_REQUESTED,
+                AuditOutcome.SUCCEEDED,
+                command.taskId() != null ? AuditActorType.AGENT : AuditActorType.USER,
+                ownerUserId,
+                project.getId(),
+                "DEPLOYMENT",
+                submission.serverId() == null ? null : String.valueOf(submission.serverId()),
+                command.taskId(),
+                null,
+                "target=EC2_FRONTEND, serverId=" + submission.serverId()
+                        + ", approvalIds=" + submission.approvalIds(),
+                null
+        ));
+        log.info("프론트 EC2 배포 요청을 웹 전용 서버 프로비저닝으로 위임: projectId={} serverId={} approvalIds={}",
+                project.getId(), submission.serverId(), submission.approvalIds());
+        // 과금 자원이라 즉시 뜨지 않고 승인 대기 — status=PENDING, deploymentId=대기 서버 id, 승인 id 동봉.
+        return new DeployResult(
+                submission.serverId(),
+                project.getId(),
+                command.deployTargetType().name(),
+                null,
+                DeployStatus.PENDING.name(),
+                null,
+                java.time.LocalDateTime.now(),
+                submission.approvalIds()
+        );
     }
 
     /**
@@ -643,7 +692,8 @@ public class DeploymentCommandService {
                 history.getVersionLabel(),
                 history.getStatus().name(),
                 history.getDeployedUrl(),
-                history.getTriggeredAt()
+                history.getTriggeredAt(),
+                List.of()   // Pages/S3 는 승인 흐름이 아니다(EC2 만 approvalIds 를 채운다)
         );
     }
 

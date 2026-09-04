@@ -64,6 +64,7 @@ class DeploymentCommandServiceTest {
     @Mock private AuditRecorder auditRecorder;
     @Mock private com.example.dvely.deployment.application.port.out.FrontendStaticHostingPort frontendStaticHostingPort;
     @Mock private com.example.dvely.deployment.application.service.DeploymentOutcomeService deploymentOutcomeService;
+    @Mock private com.example.dvely.deployment.application.port.out.FrontendServerHostingPort frontendServerHostingPort;
     @Mock private com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
 
     private DeploymentCommandService service;
@@ -83,6 +84,7 @@ class DeploymentCommandServiceTest {
                 auditRecorder,
                 frontendStaticHostingPort,
                 deploymentOutcomeService,
+                frontendServerHostingPort,
                 cloudConnectionSettingRepository
         );
     }
@@ -218,18 +220,35 @@ class DeploymentCommandServiceTest {
     }
 
     @Test
-    void deploy_withEc2HostingIsAlsoRejectedForNow() {
+    void deploy_withEc2HostingDelegatesToWebOnlyServerProvisioningAndReturnsApprovalIds() {
+        // EC2 프론트 호스팅은 비동기·과금·승인 게이트라 배포 이력이 아니라 웹 전용 서버 프로비저닝으로
+        // 위임한다. 배포 응답은 대기 서버 id + 승인 id 를 담아 FE 가 승인 화면으로 연결한다.
         Project project = boundProject();
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(project));
+        when(projectRepository.save(any(Project.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(frontendServerHostingPort.provisionWebOnly(any()))
+                .thenReturn(new com.example.dvely.deployment.application.port.out.FrontendServerHostingPort.ServerSubmission(
+                        77L, java.util.List.of(88L)));
 
-        assertThatThrownBy(() -> service.deploy(
+        DeployResult result = service.deploy(
                 1L, 11L,
-                new DeployCommand(DeployTargetType.LATEST, null, null, FrontendHostingType.EC2)))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("EC2");
+                new DeployCommand(DeployTargetType.LATEST, null, null, FrontendHostingType.EC2));
 
+        assertThat(result.deploymentId()).isEqualTo(77L);   // 대기 서버 id
+        assertThat(result.status()).isEqualTo("PENDING");
+        assertThat(result.approvalIds()).containsExactly(88L);
+        assertThat(project.getFrontendHostingType()).isEqualTo(FrontendHostingType.EC2);
+
+        ArgumentCaptor<com.example.dvely.deployment.application.port.out.FrontendServerHostingPort.Request> captor =
+                ArgumentCaptor.forClass(com.example.dvely.deployment.application.port.out.FrontendServerHostingPort.Request.class);
+        verify(frontendServerHostingPort).provisionWebOnly(captor.capture());
+        assertThat(captor.getValue().projectId()).isEqualTo(11L);
+        assertThat(captor.getValue().ownerUserId()).isEqualTo(1L);
+        assertThat(captor.getValue().frontendRepo()).isEqualTo("octo/repo");   // 프로젝트 소스 레포
+        // EC2 는 배포 이력을 만들지 않고(서버 프로비저닝이 단위), Pages/S3 파이프라인을 안 건드린다.
         verify(deploymentHistoryRepository, never()).save(any(DeploymentHistory.class));
+        verifyNoInteractions(githubPagesPort, githubActionsPort, frontendStaticHostingPort);
     }
 
     @Test
