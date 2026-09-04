@@ -63,6 +63,10 @@ public class WebImageBuildService {
      */
     private Path prepareWebContextTar(Long ownerUserId, Long projectId, String frontendRepo,
                                       String frontendDir, String apiPathPrefix) {
+        // frontendRepo·frontendDir 은 사용자 입력이고 컨테이너 셸 명령(clone·test·tar)에 들어가므로
+        // 진입점에서 엄격 검증한다(주입 차단 + 명확한 안내). 통과한 값만 아래로 흘려보낸다.
+        validateFrontendRepo(frontendRepo);
+        validateFrontendDir(frontendDir);
         Project project = projectRepository.findByIdAndOwnerUserId(projectId, ownerUserId)
                 .orElseThrow(() -> new BackendBuildException("프로젝트를 찾을 수 없습니다: " + projectId));
         boolean split = frontendRepo != null && !frontendRepo.isBlank();
@@ -105,6 +109,31 @@ public class WebImageBuildService {
         sourceClone.writeFile(containerId, frontendRoot + "/nginx.conf", WebAssetsFactory.nginxConf(prefixes));
         sourceClone.writeFile(containerId, frontendRoot + "/Dockerfile", WebAssetsFactory.webDockerfile());
         log.info("웹 Dockerfile·nginx.conf 자동생성: dir={} prefixes={}", frontendRoot, prefixes);
+    }
+
+    // 프론트 소스는 사용자 입력이라 clone/test/tar 셸 명령에 들어가기 전에 형식을 못박는다.
+    private static final java.util.regex.Pattern REPO_SLUG =
+            java.util.regex.Pattern.compile("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+");   // owner/repo
+    private static final java.util.regex.Pattern SAFE_SUBPATH =
+            java.util.regex.Pattern.compile("[A-Za-z0-9_./-]+");                   // 레포 하위경로
+
+    static void validateFrontendRepo(String frontendRepo) {
+        if (frontendRepo == null || frontendRepo.isBlank()) {
+            return;   // 미지정(모노) — 검증 대상 아님
+        }
+        if (!REPO_SLUG.matcher(frontendRepo).matches() || frontendRepo.contains("..")) {
+            throw new BackendBuildException("프론트 저장소 형식이 올바르지 않습니다(owner/repo 만): " + frontendRepo);
+        }
+    }
+
+    static void validateFrontendDir(String frontendDir) {
+        if (frontendDir == null || frontendDir.isBlank()) {
+            return;   // 미지정(레포 루트)
+        }
+        if (!SAFE_SUBPATH.matcher(frontendDir).matches() || frontendDir.contains("..")) {
+            throw new BackendBuildException(
+                    "프론트 디렉터리 경로가 올바르지 않습니다(영숫자·_/-.만, .. 불가): " + frontendDir);
+        }
     }
 
     /** 이 프로젝트의 웹 이미지 태그. save/pull 과 EC2 의 compose {@code image} 가 반드시 같아야 하므로 한 곳에서 정한다. */

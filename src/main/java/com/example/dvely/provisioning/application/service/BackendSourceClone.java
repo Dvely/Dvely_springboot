@@ -63,10 +63,23 @@ public class BackendSourceClone {
      * 이미지 빌드 서비스들이 Dockerfile·nginx.conf 같은 생성물을 컨텍스트에 심을 때 쓴다.
      */
     public void writeFile(String containerId, String path, String content) {
+        assertSafeContainerPath(path, "파일 경로");   // path 가 셸 문자열에 들어가므로 주입 차단
         String b64 = Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
         ExecResult w = dockerService.execWithExitCode(containerId, "echo " + b64 + " | base64 -d > " + path);
         if (!w.succeeded()) {
             throw new BackendBuildException("파일 기록 실패(" + path + "): " + tail(w.output()));
+        }
+    }
+
+    // 컨테이너 경로가 sh -c 문자열에 연결되므로, 셸 메타문자·상위경로 이탈을 막는 엄격 화이트리스트.
+    // 정상 경로(/workspace/app/frontend 등)는 통과하고, 세미콜론·파이프·$()·공백·`..` 는 거른다.
+    private static final java.util.regex.Pattern SAFE_CONTAINER_PATH =
+            java.util.regex.Pattern.compile("[A-Za-z0-9_./-]+");
+
+    private static void assertSafeContainerPath(String path, String what) {
+        if (path == null || path.isBlank() || !SAFE_CONTAINER_PATH.matcher(path).matches()
+                || path.contains("..")) {
+            throw new BackendBuildException("안전하지 않은 " + what + "입니다: " + path);
         }
     }
 
@@ -75,6 +88,7 @@ public class BackendSourceClone {
      * (이후 빌드는 호스트 buildx 가 이 tar 로 한다). 호출자는 반환된 tar 를 반드시 지운다.
      */
     public Path tarContextOut(String containerId, String dir) {
+        assertSafeContainerPath(dir, "컨텍스트 디렉터리");   // dir 이 셸 문자열에 들어가므로 주입 차단
         String ctxTar = "/tmp/qeploy-ctx.tar";
         ExecResult tar = dockerService.execWithExitCode(containerId, "tar -cf " + ctxTar + " -C " + dir + " .");
         if (!tar.succeeded()) {
