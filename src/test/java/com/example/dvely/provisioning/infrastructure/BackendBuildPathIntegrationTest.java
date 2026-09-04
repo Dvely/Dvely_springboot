@@ -21,7 +21,7 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 /**
  * EC2 배포 빌드 경로의 novel 한 두 조각을 실측 Docker 로 검증한다 — AWS 없이:
  * (1) {@link DockerContainerService#copyFileFromContainer} 가 컨테이너의 파일(빌드 jar)을 tar
- *     스트림에서 정확히 꺼내는지, (2) BackendJarBuildService.locateJar 의 find 명령이 alpine(busybox)
+ *     스트림에서 정확히 꺼내는지, (2) NativeBuildService.buildJar 의 find 명령이 alpine(busybox)
  *     find 에서 실행가능 jar 만 집고 {@code -plain.jar}/{@code -sources.jar} 를 빼는지.
  *
  * <p>전체 {@code ./gradlew build} 는 배포 다운로드+컴파일로 수 분이 걸려 담지 않는다(같은 이유로
@@ -87,7 +87,7 @@ class BackendBuildPathIntegrationTest {
         dockerService.exec(containerId,
                 "cd " + APP_DIR + "/build/libs && touch app.jar app-plain.jar app-sources.jar app-javadoc.jar");
 
-        // BackendJarBuildService.locateJar 와 동일한 명령 — alpine(busybox) find 에서 실제로 동작하는지 고정.
+        // NativeBuildService.buildJar 와 동일한 명령 — alpine(busybox) find 에서 실제로 동작하는지 고정.
         String jar = dockerService.exec(containerId,
                 "find " + APP_DIR + " -path '*/build/libs/*.jar' ! -name '*-plain.jar' "
                         + "! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1").trim();

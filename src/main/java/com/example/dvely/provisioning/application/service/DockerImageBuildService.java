@@ -17,7 +17,7 @@ import org.springframework.stereotype.Service;
  * {@code Dockerfile}(없으면 스택 감지로 자동생성)로 빌드 컨텍스트를 만들고, {@link ContainerImageBuilder}
  * 로 amd64 이미지를 뽑는다. S3 전달은 이미지 tar 를, ECR 전달은 레지스트리 push 를 한다.
  *
- * <p>native jar 경로({@link BackendJarBuildService})와 형제 — 스택 무관이 차이다. Dockerfile 만 있으면
+ * <p>native jar 경로({@link NativeBuildService})와 형제 — 스택 무관이 차이다. Dockerfile 만 있으면
  * Node·Java·Next 무엇이든 같은 경로로 이미지가 된다. 프론트(웹) 이미지는 {@link WebImageBuildService}.</p>
  *
  * <p><b>보안:</b> 신뢰할 수 없는 Dockerfile 이 호스트 데몬에서 빌드된다. 단일 테넌트·검증 단계 한정이며

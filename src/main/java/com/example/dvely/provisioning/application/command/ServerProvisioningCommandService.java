@@ -140,13 +140,15 @@ public class ServerProvisioningCommandService {
                 // 종료 사이에 설정을 바꾸면 반대편 아티팩트가 남을 수 있다(실험 기능, 문서화된 한계).
                 boolean useEcr = server.getDeployMode() == ServerDeployMode.DOCKER && ec2Properties.useEcr();
                 try {
+                    String bucket = s3.bucketNameFor(connection);
                     if (useEcr) {
                         ecr.deleteRepository(connection, server.getProjectId());
+                    } else if (server.getDeployMode() == ServerDeployMode.DOCKER) {
+                        s3.deleteJar(connection, bucket, s3.imageKeyFor(server.getProjectId()));
                     } else {
-                        String artifactKey = server.getDeployMode() == ServerDeployMode.DOCKER
-                                ? s3.imageKeyFor(server.getProjectId())
-                                : s3.jarKeyFor(server.getProjectId());
-                        s3.deleteJar(connection, s3.bucketNameFor(connection), artifactKey);
+                        // NATIVE — Java=app.jar / Node=app-src.tar. 런타임을 안 저장하므로 둘 다 지운다(멱등).
+                        s3.deleteJar(connection, bucket, s3.jarKeyFor(server.getProjectId()));
+                        s3.deleteJar(connection, bucket, s3.nodeSourceKeyFor(server.getProjectId()));
                     }
                 } catch (RuntimeException e) {
                     log.warn("서버 종료 후 이미지 아티팩트 정리 실패(수동 정리 필요): projectId={} useEcr={} 원인={}",

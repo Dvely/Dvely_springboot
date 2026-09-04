@@ -45,7 +45,7 @@ class BackendDeployRunnerTest {
 
     @Mock private ProvisionedServerRepository serverRepository;
     @Mock private CloudConnectionRepository cloudConnectionRepository;
-    @Mock private BackendJarBuildService buildService;
+    @Mock private NativeBuildService nativeBuildService;
     @Mock private S3ArtifactStore s3;
     @Mock private SsmParameterStore ssm;
     @Mock private Ec2InstanceRoleProvisioner roleProvisioner;
@@ -69,7 +69,7 @@ class BackendDeployRunnerTest {
 
     private void stubHappyPath(Path jar) {
         when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection()));
-        when(buildService.buildJar(OWNER, PROJECT)).thenReturn(jar);
+        when(nativeBuildService.build(OWNER, PROJECT)).thenReturn(new NativeBuildService.NativeArtifact(jar, NativeBuildService.NativeRuntime.JAVA));
         when(s3.bucketNameFor(any())).thenReturn("qeploy-artifacts-x");
         when(s3.jarKeyFor(PROJECT)).thenReturn("10/app.jar");
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
@@ -100,7 +100,7 @@ class BackendDeployRunnerTest {
     @Test
     void buildFailureMarksServerFailedAndNeverLaunches() {
         when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection()));
-        when(buildService.buildJar(OWNER, PROJECT)).thenThrow(new BackendBuildException("gradle 빌드 실패"));
+        when(nativeBuildService.build(OWNER, PROJECT)).thenThrow(new BackendBuildException("gradle 빌드 실패"));
 
         runner.deploy(building());
 
@@ -119,7 +119,7 @@ class BackendDeployRunnerTest {
         ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
         verify(serverRepository).save(saved.capture());
         assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.FAILED);
-        verify(buildService, never()).buildJar(anyLong(), anyLong());
+        verify(nativeBuildService, never()).build(anyLong(), anyLong());
     }
 
     @Test
@@ -137,7 +137,7 @@ class BackendDeployRunnerTest {
         ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
         verify(serverRepository).save(saved.capture());
         assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.FAILED);
-        verify(buildService, never()).buildJar(anyLong(), anyLong());
+        verify(nativeBuildService, never()).build(anyLong(), anyLong());
         verify(ec2, never()).launch(any(), any());
     }
 
@@ -161,7 +161,7 @@ class BackendDeployRunnerTest {
         // roleProvisioner(IAM 생성)를 아예 부르지 않아야 한다.
         Path jar = Files.createTempFile("test-app", ".jar");
         when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection()));
-        when(buildService.buildJar(OWNER, PROJECT)).thenReturn(jar);
+        when(nativeBuildService.build(OWNER, PROJECT)).thenReturn(new NativeBuildService.NativeArtifact(jar, NativeBuildService.NativeRuntime.JAVA));
         when(s3.bucketNameFor(any())).thenReturn("qeploy-artifacts-x");
         when(s3.jarKeyFor(PROJECT)).thenReturn("10/app.jar");
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
