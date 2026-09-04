@@ -75,8 +75,10 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       "Sid": "S3ArtifactsOnly",
       "Effect": "Allow",
       "Action": ["s3:CreateBucket", "s3:PutObject", "s3:GetObject", "s3:DeleteObject",
-                 "s3:ListBucket"],
+                 "s3:ListBucket", "s3:AbortMultipartUpload"],
       "Resource": ["arn:aws:s3:::qeploy-artifacts-*", "arn:aws:s3:::qeploy-artifacts-*/*"]
+      // 대용량 산출물은 멀티파트 업로드(#218). Create/Upload/Complete 는 PutObject 로 커버되고,
+      // 실패 시 정리(abortMultipartUpload)에 AbortMultipartUpload 가 필요하다(best-effort).
     },
     {
       "Sid": "RdsCreateDeleteQeployScoped",
@@ -100,6 +102,26 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       // 자동 생성한다. 그 권한이 없으면 "permission to create service linked role" 로 400 실패한다
       // (실계정 검증 2026-09-03). 조건으로 rds.amazonaws.com SLR 하나로만 좁혀 blast radius 를 막는다.
       // 이미 RDS 를 써본 계정은 SLR 이 있어 이 액션이 호출되지 않는다.
+    },
+    {
+      "Sid": "EcrAuthToken",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"                       // 계정 레벨 토큰(AWS 제약상 스코프 불가)
+    },
+    {
+      "Sid": "EcrPushManageQeployScoped",
+      "Effect": "Allow",
+      "Action": ["ecr:CreateRepository", "ecr:DescribeRepositories", "ecr:DeleteRepository",
+                 "ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload",
+                 "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage",
+                 "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+      "Resource": "arn:aws:ecr:*:*:repository/qeploy-app-*"   // 이미지 저장소 qeploy-app-{projectId}
+      // DOCKER 배포의 image-transfer=ECR 경로 전용: 컨트롤 플레인이 이미지를 ECR 로 push 한다.
+      // buildx(buildkit)는 push 전에 매니페스트를 HEAD 로 확인하므로 read 권한(BatchGetImage,
+      // GetDownloadUrlForLayer)도 필요하다 — 없으면 매니페스트 HEAD 가 403 으로 push 실패한다
+      // (실계정 e2e 2026-09-04 에서 확인 — 고전 docker push 는 이 read-check 가 없어 안 드러났다).
+      // 기본 S3 전달이면 이 권한은 불필요. EC2 의 pull 권한은 인스턴스 역할(아래)에 자동 부여.
     }
   ]
 }
@@ -124,9 +146,13 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       "Resource": "arn:aws:ssm:*:*:parameter/qeploy/{projectId}/*" },
     { "Effect": "Allow", "Action": ["s3:GetObject"],
       "Resource": "arn:aws:s3:::qeploy-artifacts-*/{projectId}/*" }
+    // image-transfer=ECR 이면 아래 두 문장이 추가된다(우리가 자동 부여, 사용자 조치 불필요):
+    // { "Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*" },
+    // { "Effect": "Allow", "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
+    //     "ecr:BatchCheckLayerAvailability"], "Resource": "arn:aws:ecr:*:*:repository/qeploy-app-{projectId}" }
   ]
 }
 ```
 
 > 인스턴스 역할은 자기 프로젝트 경로만 참조하므로, 앱이 탈취돼도 다른 프로젝트의 비밀·아티팩트에
-> 닿지 못한다.
+> 닿지 못한다. ECR pull 권한도 자기 프로젝트 저장소(`qeploy-app-{projectId}`)로만 좁힌다.
