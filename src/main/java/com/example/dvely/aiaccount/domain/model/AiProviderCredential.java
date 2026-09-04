@@ -59,7 +59,7 @@ public class AiProviderCredential {
                                 LocalDateTime updatedAt) {
         this.id = id;
         this.userId = Objects.requireNonNull(userId, "userId must not be null");
-        this.provider = Objects.requireNonNull(provider, "provider must not be null");
+        this.provider = validateProvider(provider);
         this.apiKey = validateApiKey(apiKey);
         this.label = validateLabel(label);
         this.createdAt = createdAt;
@@ -87,6 +87,22 @@ public class AiProviderCredential {
             return "****";
         }
         return apiKey.substring(0, MASK_PREFIX_LENGTH) + "****";
+    }
+
+    /**
+     * Only a vendor may own a credential. {@code CLAUDE_CODE}/{@code CODEX} are execution modes
+     * that read a vendor's key ({@link AiProvider#credentialVendor()}), so storing a row under one
+     * of them would give the same key two homes and let the two copies drift out of step. Callers
+     * holding an execution mode must convert first.
+     */
+    private static AiProvider validateProvider(AiProvider provider) {
+        Objects.requireNonNull(provider, "provider must not be null");
+        if (provider.isCodingAgent()) {
+            throw new IllegalArgumentException(
+                    "크리덴셜은 벤더 단위로만 저장합니다. " + provider + " 대신 "
+                            + provider.credentialVendor() + " 로 등록해주세요.");
+        }
+        return provider;
     }
 
     private static String validateApiKey(String rawApiKey) {
