@@ -4,6 +4,7 @@ import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
+import com.example.dvely.provisioning.domain.value.WebFrontendSpec;
 import java.time.LocalDateTime;
 
 /**
@@ -26,6 +27,11 @@ public class ProvisionedServer {
     // 번들 DB 엔진(null=없음). 있으면 DOCKER 배포가 같은 EC2 에 이 엔진의 DB 컨테이너를 docker compose 로
     // 함께 띄우고 앱을 그 DB 로 배선한다(RDS 없이 앱+DB 한 인스턴스). deployMode 와 같은 이유로 생성자 밖 세팅.
     private DatabaseEngine bundledDbEngine;
+    // 웹(프론트) 컨테이너: 값이 있으면 같은 EC2 에 프론트 nginx 컨테이너를 compose 로 함께 띄운다. deployMode
+    // 와 같은 이유로 생성자 밖 세팅. frontendRepo/frontendDir 중 하나라도 있으면 활성(hasWebFrontend).
+    private String frontendRepo;
+    private String frontendDir;
+    private String apiPathPrefix;
     private String elasticIpAllocationId; // EIP 할당 ID — 종료 시 release 대상(생성자 밖: 로드·연결 시 세팅)
     private String publicHost;           // running 이후 채워짐
     private int port;                    // 앱 포트(기본 8080)
@@ -59,12 +65,14 @@ public class ProvisionedServer {
      * bundledDbEngine 은 같은 EC2 에 함께 띄울 DB 엔진(null 이면 번들 DB 없음, DOCKER 모드에서만 유효).
      */
     public static ProvisionedServer pending(Long projectId, String instanceType, int port,
-                                            ServerDeployMode deployMode, DatabaseEngine bundledDbEngine) {
+                                            ServerDeployMode deployMode, DatabaseEngine bundledDbEngine,
+                                            WebFrontendSpec web) {
         LocalDateTime now = LocalDateTime.now();
         ProvisionedServer server = new ProvisionedServer(null, projectId, instanceType, ServerStatus.PENDING,
                 null, null, null, port, null, null, null, now, now);
         server.assignDeployMode(deployMode);
         server.assignBundledDbEngine(bundledDbEngine);
+        server.assignWebFrontend(web);
         return server;
     }
 
@@ -93,6 +101,19 @@ public class ProvisionedServer {
     /** 번들 DB 엔진을 지정한다(로드 시 복원, 또는 배포 요청 시 선택). null 이면 번들 DB 없음. */
     public void assignBundledDbEngine(DatabaseEngine bundledDbEngine) {
         this.bundledDbEngine = bundledDbEngine;
+    }
+
+    /** 웹 프론트 스펙을 지정한다(로드 시 복원, 또는 배포 요청 시 선택). null 이면 웹 컨테이너 없음. */
+    public void assignWebFrontend(WebFrontendSpec web) {
+        if (web != null) {
+            this.frontendRepo = blankToNull(web.frontendRepo());
+            this.frontendDir = blankToNull(web.frontendDir());
+            this.apiPathPrefix = blankToNull(web.apiPathPrefix());
+        }
+    }
+
+    private static String blankToNull(String s) {
+        return (s == null || s.isBlank()) ? null : s;
     }
 
     public void assignElasticIp(String elasticIpAllocationId) {
@@ -164,6 +185,11 @@ public class ProvisionedServer {
     public ServerDeployMode getDeployMode() { return deployMode; }
     public DatabaseEngine getBundledDbEngine() { return bundledDbEngine; }
     public boolean hasBundledDb() { return bundledDbEngine != null; }
+    public String getFrontendRepo() { return frontendRepo; }
+    public String getFrontendDir() { return frontendDir; }
+    public String getApiPathPrefix() { return apiPathPrefix; }
+    public WebFrontendSpec getWebFrontend() { return new WebFrontendSpec(frontendRepo, frontendDir, apiPathPrefix); }
+    public boolean hasWebFrontend() { return frontendRepo != null || frontendDir != null; }
     public String getElasticIpAllocationId() { return elasticIpAllocationId; }
     public String getPublicHost() { return publicHost; }
     public int getPort() { return port; }

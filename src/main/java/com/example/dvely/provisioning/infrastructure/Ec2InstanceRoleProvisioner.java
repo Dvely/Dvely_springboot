@@ -109,11 +109,12 @@ public class Ec2InstanceRoleProvisioner {
      * 레벨이라 Resource *, 나머지 pull 은 저장소 ARN 으로 좁힌다).
      */
     private String instancePolicy(Long projectId, String bucket, boolean ecr) {
+        // qeploy-*-{projectId} 로 이 프로젝트의 app·web 저장소를 함께 커버(여전히 프로젝트 스코프).
         String ecrStatements = ecr ? """
                 ,{"Effect":"Allow","Action":["ecr:GetAuthorizationToken"],"Resource":"*"},\
                 {"Effect":"Allow","Action":["ecr:BatchGetImage","ecr:GetDownloadUrlForLayer",\
                 "ecr:BatchCheckLayerAvailability"],\
-                "Resource":"arn:aws:ecr:*:*:repository/qeploy-app-%d"}""".formatted(projectId) : "";
+                "Resource":"arn:aws:ecr:*:*:repository/qeploy-*-%d"}""".formatted(projectId) : "";
         return """
                 {"Version":"2012-10-17","Statement":[\
                 {"Effect":"Allow","Action":["ssm:GetParameter","ssm:GetParameters","ssm:GetParametersByPath"],\

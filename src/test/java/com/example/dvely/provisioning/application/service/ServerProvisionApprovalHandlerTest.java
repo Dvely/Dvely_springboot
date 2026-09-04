@@ -93,7 +93,7 @@ class ServerProvisionApprovalHandlerTest {
     }
 
     private ProvisionedServer pending() {
-        return ProvisionedServer.pending(PROJECT, "t3.micro", 8080, ServerDeployMode.NATIVE, null);
+        return ProvisionedServer.pending(PROJECT, "t3.micro", 8080, ServerDeployMode.NATIVE, null, null);
     }
 
     private Approval approval(ApprovalStatus status) {

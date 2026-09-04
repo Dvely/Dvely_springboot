@@ -14,6 +14,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ServerDeployMode;
+import com.example.dvely.provisioning.domain.value.WebFrontendSpec;
 import java.util.Locale;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -40,8 +41,10 @@ public class ServerProvisioningController {
         String instanceType = request == null ? null : request.instanceType();
         ServerDeployMode deployMode = parseDeployMode(request == null ? null : request.deployMode());
         DatabaseEngine bundledDb = parseBundledDb(request == null ? null : request.bundledDbEngine());
+        WebFrontendSpec web = request == null ? new WebFrontendSpec(null, null, null)
+                : new WebFrontendSpec(request.frontendRepo(), request.frontendDir(), request.apiPathPrefix());
         return ServerProvisionSubmitResponse.from(
-                commandService.submit(ownerUserId, projectId, instanceType, deployMode, bundledDb));
+                commandService.submit(ownerUserId, projectId, instanceType, deployMode, bundledDb, web));
     }
 
     /** 요청의 deployMode 문자열 → enum. 생략/공백이면 NATIVE, 알 수 없는 값이면 400(IllegalArgument). */

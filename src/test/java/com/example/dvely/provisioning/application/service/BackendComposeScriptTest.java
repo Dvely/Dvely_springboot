@@ -44,7 +44,7 @@ class BackendComposeScriptTest {
     @Test
     void s3ComposeScriptLoadsImageWritesEnvAndBringsUpAppPlusMysql() {
         String s = BackendDeployRunner.dockerComposeUserDataScript(
-                "bucket-x", "5/image.tar", "qeploy-app-5:latest",
+                "bucket-x", "5/image.tar", "qeploy-app-5:latest", null, null,
                 DatabaseEngine.MYSQL, 5L, 8080, "https://ask.qeploy.com");
 
         // 앱 이미지: S3 load
@@ -67,7 +67,7 @@ class BackendComposeScriptTest {
         String registry = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com";
         String imageRef = registry + "/qeploy-app-5:latest";
         String s = BackendDeployRunner.ecrComposeUserDataScript(
-                "ap-northeast-2", registry, imageRef, DatabaseEngine.MYSQL, 5L, 8080, "");
+                "ap-northeast-2", registry, imageRef, null, DatabaseEngine.MYSQL, 5L, 8080, "");
 
         assertThat(s).contains("docker pull " + imageRef);
         assertThat(s).doesNotContain("aws s3 cp");
@@ -78,12 +78,52 @@ class BackendComposeScriptTest {
     @Test
     void postgresComposeUsesPostgresImageAndHealthcheck() {
         String s = BackendDeployRunner.dockerComposeUserDataScript(
-                "b", "k", "app:latest", DatabaseEngine.POSTGRESQL, 5L, 8080, "");
+                "b", "k", "app:latest", null, null, DatabaseEngine.POSTGRESQL, 5L, 8080, "");
 
         assertThat(s).contains("image: postgres:16");
         assertThat(s).contains("POSTGRES_PASSWORD: ${DB_PASSWORD}");
         assertThat(s).contains("POSTGRES_DB: ${DB_NAME}");
         assertThat(s).contains("pg_isready -U postgres");
         assertThat(s).doesNotContain("mysql");
+    }
+
+    @Test
+    void s3ComposeWithWebLoadsBothImagesAndWebOwnsHostPort() {
+        // 웹 컨테이너(번들 DB 없음): app + web 두 서비스, web 이 호스트 포트, app 은 내부.
+        String s = BackendDeployRunner.dockerComposeUserDataScript(
+                "bucket-x", "5/image.tar", "qeploy-app-5:latest",
+                "5/web.tar", "qeploy-web-5:latest", null, 5L, 8080, "");
+
+        // 앱·웹 이미지 둘 다 S3 load
+        assertThat(s).contains("aws s3 cp s3://bucket-x/5/image.tar /opt/app/image.tar");
+        assertThat(s).contains("aws s3 cp s3://bucket-x/5/web.tar /opt/app/web.tar");
+        assertThat(s).contains("docker load -i /opt/app/web.tar");
+        // web 서비스 = nginx 이미지 + 호스트 포트(8080→80), app depends
+        assertThat(s).contains("  web:");
+        assertThat(s).contains("image: qeploy-web-5:latest");
+        assertThat(s).contains("\"8080:80\"");
+        // app 은 호스트 포트를 열지 않는다(웹이 대신 연다)
+        assertThat(s).doesNotContain("\"8080:8080\"");
+        // 번들 DB 없음
+        assertThat(s).doesNotContain("mysql");
+        assertThat(s).doesNotContain("dbdata");
+    }
+
+    @Test
+    void ecrComposeWithWebPullsBothImages() {
+        String reg = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com";
+        String appRef = reg + "/qeploy-app-5:latest";
+        String webRef = reg + "/qeploy-web-5:latest";
+        String s = BackendDeployRunner.ecrComposeUserDataScript(
+                "ap-northeast-2", reg, appRef, webRef, DatabaseEngine.MYSQL, 5L, 8080, "");
+
+        assertThat(s).contains("docker pull " + appRef);
+        assertThat(s).contains("docker pull " + webRef);
+        assertThat(s).doesNotContain("aws s3 cp");
+        // web+app+db 세 서비스
+        assertThat(s).contains("image: " + webRef);
+        assertThat(s).contains("image: " + appRef);
+        assertThat(s).contains("image: mysql:8.0");
+        assertThat(s).contains("\"8080:80\"");   // web 이 호스트 포트
     }
 }

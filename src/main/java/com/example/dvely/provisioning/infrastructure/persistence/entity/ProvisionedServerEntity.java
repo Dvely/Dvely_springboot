@@ -50,6 +50,15 @@ public class ProvisionedServerEntity {
     @Column(name = "bundled_db_engine", length = 20)
     private String bundledDbEngine;   // null = 번들 DB 없음
 
+    @Column(name = "frontend_repo", length = 255)
+    private String frontendRepo;      // null = 웹 컨테이너 없음(모노면 frontend_dir 로만 활성)
+
+    @Column(name = "frontend_dir", length = 255)
+    private String frontendDir;
+
+    @Column(name = "api_path_prefix", length = 255)
+    private String apiPathPrefix;
+
     @Column(name = "elastic_ip_allocation_id", length = 40)
     private String elasticIpAllocationId;
 
@@ -91,6 +100,9 @@ public class ProvisionedServerEntity {
         this.instanceId = s.getInstanceId();
         this.deployMode = s.getDeployMode().name();
         this.bundledDbEngine = s.getBundledDbEngine() == null ? null : s.getBundledDbEngine().name();
+        this.frontendRepo = s.getFrontendRepo();
+        this.frontendDir = s.getFrontendDir();
+        this.apiPathPrefix = s.getApiPathPrefix();
         this.elasticIpAllocationId = s.getElasticIpAllocationId();
         this.publicHost = s.getPublicHost();
         this.port = s.getPort();
@@ -107,6 +119,8 @@ public class ProvisionedServerEntity {
                 errorMessage, createdAt, updatedAt);
         server.assignDeployMode(deployMode == null ? null : ServerDeployMode.valueOf(deployMode));
         server.assignBundledDbEngine(bundledDbEngine == null ? null : DatabaseEngine.valueOf(bundledDbEngine));
+        server.assignWebFrontend(new com.example.dvely.provisioning.domain.value.WebFrontendSpec(
+                frontendRepo, frontendDir, apiPathPrefix));
         server.assignElasticIp(elasticIpAllocationId);
         return server;
     }
