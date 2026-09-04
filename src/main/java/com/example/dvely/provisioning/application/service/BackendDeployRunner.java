@@ -164,7 +164,10 @@ public class BackendDeployRunner {
     /** RDS 접속정보 + 프로젝트 환경변수를 EC2 앱이 읽을 env 로 조립한다. */
     private Map<String, String> assembleEnv(Long projectId, int port) {
         Map<String, String> env = new LinkedHashMap<>();
+        // 리슨 포트를 두 관례로 다 준다: SERVER_PORT(Spring relaxed-binding: server.port)와
+        // PORT(Node/Next 관례). 스택에 따라 앱이 둘 중 무엇을 읽든 host 매핑 포트와 맞는다.
         env.put("SERVER_PORT", String.valueOf(port));
+        env.put("PORT", String.valueOf(port));
 
         databaseRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
                 .filter(db -> db.getStatus() == ProvisionStatus.READY)
