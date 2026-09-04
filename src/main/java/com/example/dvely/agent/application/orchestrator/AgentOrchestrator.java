@@ -45,23 +45,68 @@ public class AgentOrchestrator {
     private final ApprovalRepository approvalRepository;
     private final AgentMessageService agentMessageService;
 
+    /**
+     * 계획이 이미 있는 동기 제출 경로(AgentFacade·DomainBindingSubmissionService). PENDING 태스크를
+     * 만들고 곧바로 계획을 확정한다 — 한 트랜잭션 안에서 생성→확정이 끝난다.
+     *
+     * <p>메시지 발화 경로(ChatCommandService)는 이 메서드를 쓰지 않는다. 거기서는 Decision(LLM
+     * 호출)이 오래 걸려 요청 스레드를 붙들면 안 되므로, {@link #createPending} 로 taskId 만 먼저
+     * 받아 응답하고, 백그라운드에서 Decision 후 {@link #submitDecided} 로 확정한다.</p>
+     */
     @Transactional
     public AgentSubmission submit(AgentPlan plan, Long userId, Long conversationId) {
         Long projectId = resolveProjectId(userId, plan.projectId(), conversationId);
+        String taskId = newTaskId();
+        savePendingTask(taskId, userId, projectId, conversationId);
+        return finalizeSubmission(taskId, plan, projectId, userId, conversationId);
+    }
+
+    /**
+     * taskId 만 즉시 발급하는 절반 — PENDING 태스크(계획 없음)를 만들고 반환한다. 아직 무엇을 할지
+     * 모르는 상태이므로 계획·승인·큐잉은 하지 않는다. 짝인 {@link #submitDecided} 가 Decision 후에,
+     * 실패하면 {@link #markDecisionFailed} 가 이 태스크를 닫는다 — 둘 중 하나는 반드시 불려서
+     * PENDING 이 영구히 남지 않아야 한다(호출부의 책임).
+     *
+     * <p>projectId 는 {@code submit} 과 똑같이 대화로부터 해석·검증한다({@code requestedProjectId}
+     * 는 아직 계획이 없어 null). 그래서 나중 {@link #submitDecided} 가 계획의 projectId 로 다시
+     * 해석해도 같은 값이 나온다.</p>
+     */
+    @Transactional
+    public String createPending(Long userId, Long conversationId) {
+        Long projectId = resolveProjectId(userId, null, conversationId);
+        String taskId = newTaskId();
+        savePendingTask(taskId, userId, projectId, conversationId);
+        return taskId;
+    }
+
+    /**
+     * {@link #createPending} 로 만든 PENDING 태스크에 계획을 실어 확정한다(계획 저장 → 승인 생성 →
+     * 큐잉 또는 승인 대기). {@code submit} 의 뒷부분과 완전히 같은 로직을 공유한다.
+     */
+    @Transactional
+    public AgentSubmission submitDecided(String taskId, AgentPlan plan, Long userId, Long conversationId) {
+        Long projectId = resolveProjectId(userId, plan.projectId(), conversationId);
+        return finalizeSubmission(taskId, plan, projectId, userId, conversationId);
+    }
+
+    /**
+     * 비동기 Decision 이 실패했을 때 {@link #createPending} 로 열어둔 PENDING 태스크를 닫는다.
+     * FAILED 로 전이시켜(SSE 로 FE 가 즉시 인지) 태스크가 계획 없이 PENDING 으로 고착되지 않게 하고,
+     * 동기 경로가 그랬듯 대화에도 안내를 남긴다. 이 태스크의 Decision 은 소유자가 하나뿐이라
+     * (createPending 한 건당 decideAndSubmit 한 건) 여기서 경합·이중 전이는 없다.
+     */
+    @Transactional
+    public void markDecisionFailed(String taskId, Long conversationId, String error) {
+        taskStore.markFailed(taskId, error);
+        agentMessageService.appendAssistant(conversationId, "요청을 분석하지 못했습니다: " + error);
+    }
+
+    private AgentSubmission finalizeSubmission(String taskId,
+                                               AgentPlan plan,
+                                               Long projectId,
+                                               Long userId,
+                                               Long conversationId) {
         AgentPlan normalizedPlan = new AgentPlan(plan.steps(), plan.reasoning(), plan.aiProvider(), projectId);
-        String taskId = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
-        taskStore.save(new AgentTask(
-                taskId,
-                userId,
-                normalizedPlan.projectId(),
-                conversationId,
-                TaskStatus.PENDING,
-                null,
-                null,
-                null,
-                null,
-                Instant.now()
-        ));
         taskStore.savePlan(taskId, normalizedPlan);
 
         List<Approval> approvals = createRequiredApprovals(normalizedPlan, taskId, userId, conversationId);
@@ -78,6 +123,25 @@ public class AgentOrchestrator {
                 TaskStatus.WAITING_APPROVAL,
                 approvals.stream().map(Approval::getId).toList()
         );
+    }
+
+    private void savePendingTask(String taskId, Long userId, Long projectId, Long conversationId) {
+        taskStore.save(new AgentTask(
+                taskId,
+                userId,
+                projectId,
+                conversationId,
+                TaskStatus.PENDING,
+                null,
+                null,
+                null,
+                null,
+                Instant.now()
+        ));
+    }
+
+    private String newTaskId() {
+        return UUID.randomUUID().toString().replace("-", "").substring(0, 12);
     }
 
     /**
@@ -288,6 +352,34 @@ public class AgentOrchestrator {
         agentMessageService.appendAssistant(
                 task.conversationId(),
                 "오랫동안 결정되지 않아 이 작업을 종료했습니다. 필요하면 다시 요청해주세요."
+        );
+        return true;
+    }
+
+    /**
+     * 시작되지 않은 채 방치된 PENDING 태스크를 닫는다. {@code StuckPendingSweeper} 가 후보마다 부른다.
+     *
+     * <p>{@code createPending} 으로 연 PENDING 은 원래 곧바로 뒤따르는 비동기 Decision 이 확정
+     * (QUEUED/승인 대기)하거나 {@link #markDecisionFailed} 가 FAILED 로 닫는다. 그런데 그 사이에
+     * 프로세스가 죽으면(배포 재기동 등) 태스크가 계획 없이 PENDING 으로 남고, 워커는 이 상태를 집지
+     * 않으므로 스스로 빠져나올 길이 없다 — 이 메서드가 그 유일한 출구다.</p>
+     *
+     * <p>{@link #abandonStaleApprovalTask} 와 같은 잠금 규율(태스크 행 잠금 → 상태 재검사)을 쓴다.
+     * grace 를 한 번의 Decision 최대 소요보다 넉넉히 잡으므로 살아 있는 Decision 과 경합하지 않지만,
+     * 만에 하나 겹치더라도 잠금 아래 상태가 이미 PENDING 이 아니면(그 사이 Decision 이 확정/실패시킴)
+     * 조용히 no-op 한다. PENDING 태스크는 아직 승인이 없으므로 취소 캐스케이드가 필요 없다.</p>
+     */
+    @Transactional
+    public boolean failStalePendingTask(String taskId) {
+        AgentTask task = taskStore.lockTask(taskId);
+        if (task.status() != TaskStatus.PENDING) {
+            return false; // 그 사이 Decision 이 확정/실패시켰다 — 정상적인 no-op
+        }
+        taskStore.markFailed(taskId, "요청 처리가 시작되지 않아 종료했습니다.");
+        log.info("[AgentOrchestrator] 시작되지 않은 채 방치된 PENDING 태스크를 정리했습니다. taskId={}", taskId);
+        agentMessageService.appendAssistant(
+                task.conversationId(),
+                "요청 처리가 시작되지 않아 이 작업을 종료했습니다. 다시 시도해주세요."
         );
         return true;
     }

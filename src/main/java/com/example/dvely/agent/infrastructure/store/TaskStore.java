@@ -303,6 +303,22 @@ public class TaskStore {
     }
 
     /**
+     * 시작되지 않은 채 방치된 PENDING 태스크 후보. {@code ChatCommandService} 의 비동기 Decision 이
+     * {@code createPending} 으로 PENDING 을 먼저 커밋한 뒤 프로세스가 죽으면(배포 재기동 등) 계획
+     * 없이 PENDING 으로 남는데, 워커도 다른 스윕도 이 상태를 집지 않는다 — 이 스윕이 유일한 출구다.
+     *
+     * 비잠금 스칼라 읽기다. 재확인은 {@code AgentOrchestrator#failStalePendingTask} 가 태스크 행
+     * 잠금 아래에서 하므로, 오검출(예: 방금 확정으로 넘어간 태스크)은 상태 재검사로 조용히 no-op 된다.
+     */
+    @Transactional(readOnly = true)
+    public List<String> findStalePendingTaskIds(Duration grace) {
+        return runRepository.findStalePendingTaskIds(
+                TaskStatus.PENDING.name(),
+                LocalDateTime.now().minus(grace)
+        );
+    }
+
+    /**
      * ADR-Y2's actual state transition for a sweep-recovered task — mirrors {@link #enqueue}
      * (WAITING_APPROVAL -&gt; QUEUED) but appends a distinctly-named audit event instead of the
      * generic "QUEUED" one, so this recovery path is distinguishable from an ordinary approve on

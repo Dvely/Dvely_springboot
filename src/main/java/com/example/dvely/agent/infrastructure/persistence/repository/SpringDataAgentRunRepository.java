@@ -203,4 +203,24 @@ public interface SpringDataAgentRunRepository extends JpaRepository<AgentRunEnti
             @Param("statuses") List<String> statuses,
             @Param("before") LocalDateTime before
     );
+
+    // 시작되지 않은 채 방치된 PENDING 태스크 후보. ChatCommandService 의 비동기 Decision 은
+    // createPending 으로 PENDING 태스크를 먼저 커밋한 뒤 백그라운드에서 계획을 확정한다 —
+    // 그 사이에 프로세스가 죽으면(배포 재기동 등) 태스크가 계획 없이 PENDING 으로 남고, 워커는
+    // 이 상태를 집지 않아 스스로 빠져나올 길이 없다. createdAt 기준으로 잡는 이유는 PENDING 은
+    // 생성 후 손대지 않는 상태라 createdAt 이 "언제부터 이러고 있었는지"를 그대로 나타내기 때문.
+    // grace 는 한 번의 Decision 최대 소요(#238 read timeout 180s × 재시도)보다 넉넉히 커서 살아
+    // 있는 Decision 을 잘못 잡지 않는다. 비잠금 스칼라 읽기이고, 재확인은 태스크 행 잠금 아래
+    // AgentOrchestrator#failStalePendingTask 가 한다.
+    @Query("""
+            select run.taskId
+            from AgentRunEntity run
+            where run.status = :status
+              and run.createdAt < :before
+            order by run.createdAt asc
+            """)
+    List<String> findStalePendingTaskIds(
+            @Param("status") String status,
+            @Param("before") LocalDateTime before
+    );
 }
