@@ -5,6 +5,7 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService.Exec
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +30,9 @@ public class DockerImageBuildService {
 
     private static final String APP_DIR = BackendSourceClone.APP_DIR;
     private static final String CONTEXT_TAR = "/tmp/qeploy-ctx.tar";
+    // 배포 대상 EC2 아키텍처(t3.* = amd64). buildx 로 이 플랫폼을 강제해 컨트롤 플레인 arch 와 무관하게
+    // amd64 이미지를 만든다 — 안 그러면 arm64 컨트롤 플레인에서 arm64 이미지가 나와 EC2 에서 안 뜬다.
+    private static final String TARGET_PLATFORM = "linux/amd64";
 
     private final DockerContainerService dockerService;
     private final ProjectRepository projectRepository;
@@ -51,7 +55,6 @@ public class DockerImageBuildService {
         String containerId = dockerService.createAndStartContainer(
                 ownerUserId, sessionId, projectId, null, null);
         Path contextTar = null;
-        boolean imageBuilt = false;
         try {
             sourceClone.cloneInto(containerId, ownerUserId, sourceRepo);
             ensureDockerfile(containerId);
@@ -65,22 +68,58 @@ public class DockerImageBuildService {
             contextTar = Files.createTempFile("qeploy-ctx-", ".tar");
             dockerService.copyFileFromContainer(containerId, CONTEXT_TAR, contextTar);
 
-            String imageId = dockerService.buildImage(contextTar, imageTag);
-            imageBuilt = true;
-            Path imageTar = dockerService.saveImage(imageTag);
-            log.info("백엔드 이미지 빌드 완료: projectId={} tag={} imageId={} bytes={}",
-                    projectId, imageTag, imageId, sizeQuietly(imageTar));
+            Path imageTar = Files.createTempFile("qeploy-image-", ".tar");
+            buildAndExportImage(contextTar, imageTag, imageTar);
+            log.info("백엔드 이미지 빌드 완료: projectId={} tag={} platform={} bytes={}",
+                    projectId, imageTag, TARGET_PLATFORM, sizeQuietly(imageTar));
             return imageTar;
         } catch (IOException e) {
             throw new BackendBuildException("이미지 컨텍스트 처리 실패: " + e.getMessage());
         } finally {
-            if (imageBuilt) {
-                dockerService.removeImage(imageTag);   // save 했으니 로컬 이미지 정리
-            }
             if (contextTar != null) {
                 try { Files.deleteIfExists(contextTar); } catch (IOException ignored) { }
             }
             dockerService.removeContainer(containerId);   // 빌드 컨테이너는 일회용
+        }
+    }
+
+    /**
+     * buildx 로 컨텍스트 tar 를 EC2 아키텍처(amd64)로 빌드해 docker-loadable tar 로 뽑는다. docker-java 의
+     * legacy builder 는 크로스빌드를 못 해(호스트 arch 로만) buildx(buildkit+QEMU)를 쓴다. 빌드는 데몬에
+     * load 한 뒤 save→로컬 이미지 삭제로 tar 만 남긴다(EC2 는 이 tar 를 docker load 한다).
+     */
+    private void buildAndExportImage(Path contextTar, String imageTag, Path outTar) {
+        runCli(new String[]{"docker", "buildx", "build", "--platform", TARGET_PLATFORM,
+                "-t", imageTag, "--load", "-"}, contextTar, "이미지 빌드(buildx)");
+        try {
+            runCli(new String[]{"docker", "save", imageTag, "-o", outTar.toString()}, null, "이미지 save");
+        } finally {
+            try {
+                runCli(new String[]{"docker", "rmi", "-f", imageTag}, null, "로컬 이미지 삭제");
+            } catch (RuntimeException ignore) {
+                log.warn("빌드 이미지 로컬 삭제 실패(무시): {}", imageTag);
+            }
+        }
+    }
+
+    /** CLI 실행. stdinFile 이 있으면 stdin 으로(빌드 컨텍스트 tar). 비-0 이면 BackendBuildException. */
+    private void runCli(String[] cmd, Path stdinFile, String what) {
+        ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
+        if (stdinFile != null) {
+            pb.redirectInput(stdinFile.toFile());
+        }
+        try {
+            Process p = pb.start();
+            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            int code = p.waitFor();
+            if (code != 0) {
+                throw new BackendBuildException(what + " 실패(exit " + code + "): " + BackendSourceClone.tail(out));
+            }
+        } catch (IOException e) {
+            throw new BackendBuildException(what + " 실행 실패: " + e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BackendBuildException(what + " 중단");
         }
     }
 
