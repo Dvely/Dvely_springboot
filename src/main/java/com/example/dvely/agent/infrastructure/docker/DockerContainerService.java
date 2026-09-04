@@ -818,53 +818,6 @@ public class DockerContainerService {
         }
     }
 
-    /**
-     * 호스트 Docker 데몬에서 이미지를 빌드한다. contextTarFile 은 빌드 컨텍스트(루트에 Dockerfile)를
-     * 담은 tar. 스택 무관 배포(DOCKER 모드)의 핵심 — 앱의 Dockerfile 로 무엇이든 같은 경로로 빌드한다.
-     *
-     * <p><b>보안:</b> 신뢰할 수 없는 사용자 Dockerfile 이 호스트 데몬에서 빌드된다(빌드 스텝은 데몬의
-     * 빌드 컨테이너). 단일 테넌트·검증 단계에선 gradle/npm 을 샌드박스에서 돌리는 것과 유사한 트러스트다.
-     * 멀티테넌트 운영 전엔 kaniko/rootless 로 하드닝해야 한다(설계 문서 참고).</p>
-     *
-     * @return 빌드된 이미지 ID
-     */
-    public String buildImage(Path contextTarFile, String imageTag) {
-        try (InputStream tar = Files.newInputStream(contextTarFile)) {
-            return dockerClient.buildImageCmd()
-                    .withTarInputStream(tar)
-                    .withTags(java.util.Set.of(imageTag))
-                    .exec(new com.github.dockerjava.api.command.BuildImageResultCallback())
-                    .awaitImageId();
-        } catch (IOException e) {
-            throw new RuntimeException("이미지 빌드 컨텍스트 읽기 실패: " + contextTarFile, e);
-        }
-    }
-
-    /** 이미지를 호스트 임시 tar 로 저장해 그 경로를 돌려준다(S3 로 넘기기 전 추출). */
-    public Path saveImage(String imageTag) {
-        try {
-            Path dest = Files.createTempFile("qeploy-image-", ".tar");
-            try (InputStream img = dockerClient.saveImageCmd(imageTag).exec();
-                 OutputStream out = Files.newOutputStream(dest)) {
-                img.transferTo(out);
-            }
-            return dest;
-        } catch (IOException e) {
-            throw new RuntimeException("이미지 save 실패: " + imageTag, e);
-        }
-    }
-
-    /** 로컬 이미지 삭제(save 후 컨트롤 플레인 디스크 정리). 없으면 무시. */
-    public void removeImage(String imageTag) {
-        try {
-            dockerClient.removeImageCmd(imageTag).withForce(true).exec();
-        } catch (NotFoundException e) {
-            log.debug("이미지가 이미 없음: {}", imageTag);
-        } catch (RuntimeException e) {
-            log.warn("이미지 삭제 실패(무시): {} 원인={}", imageTag, e.toString());
-        }
-    }
-
     public void removeContainer(String containerId) {
         try {
             dockerClient.stopContainerCmd(containerId).withTimeout(5).exec();

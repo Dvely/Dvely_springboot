@@ -10,6 +10,7 @@ import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepos
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
+import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.infrastructure.Ec2InstanceRoleProvisioner;
 import com.example.dvely.provisioning.application.port.out.FrontendOriginPort;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
@@ -45,6 +46,7 @@ public class BackendDeployRunner {
     private final ProvisionedServerRepository serverRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
     private final BackendJarBuildService buildService;
+    private final DockerImageBuildService imageBuildService;
     private final S3ArtifactStore s3;
     private final SsmParameterStore ssm;
     private final Ec2InstanceRoleProvisioner roleProvisioner;
@@ -71,16 +73,20 @@ public class BackendDeployRunner {
                     "클라우드 연결에 AWS 계정 ID(12자리)가 없습니다. 연결 설정에 계정 ID를 넣어주세요.");
             return;
         }
-        Path jar = null;
+        boolean docker = server.getDeployMode() == ServerDeployMode.DOCKER;
+        Path artifact = null;
         String instanceId = null;
         String eipAllocationId = null;
         try {
-            jar = buildService.buildJar(ownerUserId, projectId);
+            // 배포 형태로 산출물이 갈린다: NATIVE=jar, DOCKER=이미지 tar. 나머지(S3 업로드·SSM·launch)는 공통.
+            artifact = docker
+                    ? imageBuildService.buildImageTar(ownerUserId, projectId)
+                    : buildService.buildJar(ownerUserId, projectId);
 
             String bucket = s3.bucketNameFor(connection);
-            String key = s3.jarKeyFor(projectId);
+            String key = docker ? s3.imageKeyFor(projectId) : s3.jarKeyFor(projectId);
             s3.ensureBucket(connection, bucket);
-            s3.uploadJar(connection, bucket, key, jar);
+            s3.uploadJar(connection, bucket, key, artifact);   // generic: Path→key 멀티파트 업로드
 
             ssm.putAll(connection, projectId, assembleEnv(projectId, server.getPort()));
 
@@ -95,8 +101,12 @@ public class BackendDeployRunner {
             }
             String sgId = ec2.ensureSecurityGroup(connection, server.getPort());
             String ami = ssm.latestAmazonLinux2023Ami(connection);
-            String userData = userDataScript(bucket, key, projectId, server.getPort(),
-                    ec2Properties.tlsAskBaseUrlOrEmpty());
+            String userData = docker
+                    ? dockerUserDataScript(bucket, key, projectId,
+                            DockerImageBuildService.imageTagFor(projectId), server.getPort(),
+                            ec2Properties.tlsAskBaseUrlOrEmpty())
+                    : userDataScript(bucket, key, projectId, server.getPort(),
+                            ec2Properties.tlsAskBaseUrlOrEmpty());
 
             LaunchSpec spec = new LaunchSpec(server.getInstanceType(), ami, userData, sgId, null,
                     profileName, "qeploy-backend-" + projectId);
@@ -126,8 +136,8 @@ public class BackendDeployRunner {
             }
             fail(server, classify(e), e.getMessage());
         } finally {
-            if (jar != null) {
-                try { Files.deleteIfExists(jar); } catch (IOException ignored) { }
+            if (artifact != null) {
+                try { Files.deleteIfExists(artifact); } catch (IOException ignored) { }
             }
         }
     }
