@@ -55,15 +55,21 @@ public class NativeBuildService {
                 DockerContainerService.JAVA_MEMORY_LIMIT_BYTES);
         try {
             sourceClone.cloneInto(containerId, ownerUserId, sourceRepo);
-            String gradleDir = findFirst(containerId, "\\( -name build.gradle -o -name build.gradle.kts \\)");
-            if (!gradleDir.isBlank()) {
-                return new NativeArtifact(buildJar(containerId, projectId, dirOf(gradleDir)), NativeRuntime.JAVA);
+            // 백엔드는 대개 레포 루트이므로 루트를 먼저 본다 — 모노(프론트 하위폴더에도 package.json)에서
+            // 엉뚱한 걸 집지 않게. 루트에 없으면 하위 디렉터리(maxdepth 3)로 폴백. Java(gradle)가 Node 보다
+            // 우선(백엔드 배포 맥락, DefaultDockerfileFactory 와 동일 규칙).
+            String gradleDir = detectDir(containerId,
+                    "test -f " + APP_DIR + "/build.gradle -o -f " + APP_DIR + "/build.gradle.kts",
+                    "\\( -name build.gradle -o -name build.gradle.kts \\)");
+            if (gradleDir != null) {
+                return new NativeArtifact(buildJar(containerId, projectId, gradleDir), NativeRuntime.JAVA);
             }
-            String pkgJson = findFirst(containerId, "-name package.json");
-            if (!pkgJson.isBlank()) {
-                return new NativeArtifact(packageNodeSource(containerId, projectId, dirOf(pkgJson)), NativeRuntime.NODE);
+            String nodeDir = detectDir(containerId,
+                    "test -f " + APP_DIR + "/package.json", "-name package.json");
+            if (nodeDir != null) {
+                return new NativeArtifact(packageNodeSource(containerId, projectId, nodeDir), NativeRuntime.NODE);
             }
-            if (!findFirst(containerId, "-name pom.xml").isBlank()) {
+            if (detectDir(containerId, "test -f " + APP_DIR + "/pom.xml", "-name pom.xml") != null) {
                 throw new BackendBuildException("NATIVE 는 현재 Gradle·Node 만 지원합니다(Maven 미지원). DOCKER 모드를 쓰세요.");
             }
             throw new BackendBuildException("빌드 파일(build.gradle / package.json)을 찾지 못했습니다.");
@@ -117,14 +123,17 @@ public class NativeBuildService {
         return dest;
     }
 
-    /** APP_DIR 아래에서 조건에 맞는 첫 파일 경로(없으면 빈 문자열). 서브디렉터리(maxdepth 3)까지 본다. */
-    private String findFirst(String containerId, String predicate) {
-        return dockerService.exec(containerId,
-                "find " + APP_DIR + " -maxdepth 3 " + predicate + " | head -1").trim();
-    }
-
-    private String dirOf(String filePath) {
-        return filePath.substring(0, filePath.lastIndexOf('/'));
+    /**
+     * 마커 파일이 있는 디렉터리를 찾는다(없으면 null). 루트({@code rootTest} 셸 test)를 먼저 보고, 없으면
+     * 하위 디렉터리(maxdepth 3, findPredicate)로 폴백한다 — 백엔드가 레포 루트인 흔한 경우를 우선한다.
+     */
+    private String detectDir(String containerId, String rootTest, String findPredicate) {
+        if (dockerService.execWithExitCode(containerId, rootTest).succeeded()) {
+            return APP_DIR;
+        }
+        String found = dockerService.exec(containerId,
+                "find " + APP_DIR + " -maxdepth 3 " + findPredicate + " | head -1").trim();
+        return found.isBlank() ? null : found.substring(0, found.lastIndexOf('/'));
     }
 
     private long sizeQuietly(Path p) {
