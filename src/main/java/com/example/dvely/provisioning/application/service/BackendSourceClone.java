@@ -5,7 +5,10 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService.Exec
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Base64;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -53,6 +56,43 @@ public class BackendSourceClone {
         if (!clone.succeeded()) {
             throw new BackendBuildException("소스 clone 실패: " + tail(clone.output()));
         }
+    }
+
+    /**
+     * 멀티라인 파일을 컨테이너 안에 base64 로 안전하게 기록한다(따옴표·개행이 셸에서 깨지지 않게).
+     * 이미지 빌드 서비스들이 Dockerfile·nginx.conf 같은 생성물을 컨텍스트에 심을 때 쓴다.
+     */
+    public void writeFile(String containerId, String path, String content) {
+        String b64 = Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
+        ExecResult w = dockerService.execWithExitCode(containerId, "echo " + b64 + " | base64 -d > " + path);
+        if (!w.succeeded()) {
+            throw new BackendBuildException("파일 기록 실패(" + path + "): " + tail(w.output()));
+        }
+    }
+
+    /**
+     * 컨테이너 안 {@code dir} 를 빌드 컨텍스트 tar 로 묶어 호스트 임시파일로 꺼내 그 경로를 돌려준다
+     * (이후 빌드는 호스트 buildx 가 이 tar 로 한다). 호출자는 반환된 tar 를 반드시 지운다.
+     */
+    public Path tarContextOut(String containerId, String dir) {
+        String ctxTar = "/tmp/qeploy-ctx.tar";
+        ExecResult tar = dockerService.execWithExitCode(containerId, "tar -cf " + ctxTar + " -C " + dir + " .");
+        if (!tar.succeeded()) {
+            throw new BackendBuildException("빌드 컨텍스트 tar 실패: " + tail(tar.output()));
+        }
+        Path host;
+        try {
+            host = Files.createTempFile("qeploy-ctx-", ".tar");
+        } catch (IOException e) {
+            throw new BackendBuildException("컨텍스트 임시파일 생성 실패: " + e.getMessage());
+        }
+        try {
+            dockerService.copyFileFromContainer(containerId, ctxTar, host);
+        } catch (RuntimeException e) {
+            try { Files.deleteIfExists(host); } catch (IOException ignore) { }   // 복사 실패 시 잔여 tar 정리
+            throw e;
+        }
+        return host;
     }
 
     static String tail(String s) {
