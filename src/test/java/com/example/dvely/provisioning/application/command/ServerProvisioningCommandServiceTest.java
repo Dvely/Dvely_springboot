@@ -71,7 +71,7 @@ class ServerProvisioningCommandServiceTest {
         when(serverRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(approvalRepository.save(any())).thenReturn(approval(99L));
 
-        ServerProvisionSubmitResult result = service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null);
+        ServerProvisionSubmitResult result = service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null));
 
         assertThat(result.requiresApproval()).isTrue();
         assertThat(result.approvalIds()).containsExactly(99L);
@@ -94,7 +94,7 @@ class ServerProvisioningCommandServiceTest {
         when(serverRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(approvalRepository.save(any())).thenReturn(approval(99L));
 
-        service.submit(OWNER, PROJECT, "t3.small", ServerDeployMode.NATIVE, null);
+        service.submit(OWNER, PROJECT, "t3.small", ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null));
 
         ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
         verify(serverRepository, times(2)).save(saved.capture());
@@ -105,7 +105,7 @@ class ServerProvisioningCommandServiceTest {
     void submitThrowsWhenNoCloudConnection() {
         when(cloudConnectionSettingRepository.findByProjectId(PROJECT)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null))
+        assertThatThrownBy(() -> service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null)))
                 .isInstanceOf(NotFoundException.class);
         verify(serverRepository, never()).save(any());
         verify(approvalRepository, never()).save(any());
@@ -118,7 +118,7 @@ class ServerProvisioningCommandServiceTest {
         when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
                 .thenReturn(Optional.of(connection(CloudConnectionStatus.BILLING_DISABLED)));
 
-        assertThatThrownBy(() -> service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null))
+        assertThatThrownBy(() -> service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null)))
                 .isInstanceOf(IllegalStateException.class);
         verify(approvalRepository, never()).save(any());
     }

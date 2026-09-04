@@ -49,6 +49,7 @@ public class BackendDeployRunner {
     private final CloudConnectionRepository cloudConnectionRepository;
     private final BackendJarBuildService buildService;
     private final DockerImageBuildService imageBuildService;
+    private final WebImageBuildService webImageBuildService;
     private final EcrImageRegistry ecr;
     private final S3ArtifactStore s3;
     private final SsmParameterStore ssm;
@@ -80,11 +81,16 @@ public class BackendDeployRunner {
         // DOCKER 모드의 이미지 전달: 기본 S3(docker save→S3→load), 설정으로 켜면 ECR(build→push→pull).
         // NATIVE(jar)는 항상 S3. useEcr 는 이후 IAM 권한·정리 방식까지 가른다.
         boolean useEcr = docker && ec2Properties.useEcr();
-        // 번들 DB: DOCKER 배포에서 같은 EC2 에 DB 컨테이너를 docker compose 로 함께 띄운다(submit 이 DOCKER
-        // 임을 강제). 있으면 단일 docker run 대신 compose, 앱 env 는 그 DB(db 서비스)로 배선한다.
+        // 번들 DB·웹 컨테이너: DOCKER 배포에서 같은 EC2 에 DB·프론트 컨테이너를 docker compose 로 함께
+        // 띄운다(submit 이 DOCKER 강제). 둘 중 하나라도 있으면 단일 docker run 대신 compose 를 쓴다.
         DatabaseEngine bundledDb = server.getBundledDbEngine();
+        boolean web = server.hasWebFrontend();
+        String frontendRepo = server.getFrontendRepo();
+        String frontendDir = server.getFrontendDir();
+        String apiPrefix = server.getApiPathPrefix();
         String tlsAsk = ec2Properties.tlsAskBaseUrlOrEmpty();
         int port = server.getPort();
+        boolean compose = bundledDb != null || web;
         Path artifact = null;
         String instanceId = null;
         String eipAllocationId = null;
@@ -95,12 +101,19 @@ public class BackendDeployRunner {
                 // ECR 전달: S3 를 거치지 않고 컨트롤 플레인이 이미지를 ECR 로 push, EC2 가 pull.
                 ecr.ensureRepository(connection, projectId);
                 EcrImageRegistry.EcrAuth auth = ecr.authorize(connection);
-                String imageRef = ecr.imageRefFor(connection, projectId);
-                imageBuildService.buildAndPushImage(ownerUserId, projectId, auth, imageRef);
-                userData = bundledDb != null
-                        ? ecrComposeUserDataScript(connection.getRegion(), auth.registry(), imageRef,
+                String appRef = ecr.imageRefFor(connection, projectId);
+                imageBuildService.buildAndPushImage(ownerUserId, projectId, auth, appRef);
+                String webRef = null;
+                if (web) {
+                    ecr.ensureWebRepository(connection, projectId);
+                    webRef = ecr.webImageRefFor(connection, projectId);
+                    webImageBuildService.buildAndPushWebImage(ownerUserId, projectId,
+                            frontendRepo, frontendDir, apiPrefix, auth, webRef);   // 토큰은 레지스트리 공용, 재사용
+                }
+                userData = compose
+                        ? ecrComposeUserDataScript(connection.getRegion(), auth.registry(), appRef, webRef,
                                 bundledDb, projectId, port, tlsAsk)
-                        : ecrUserDataScript(connection.getRegion(), auth.registry(), imageRef,
+                        : ecrUserDataScript(connection.getRegion(), auth.registry(), appRef,
                                 projectId, port, tlsAsk);
             } else {
                 // S3 전달: NATIVE=jar, DOCKER=이미지 tar. 산출물을 S3 로 올리고 EC2 가 인스턴스 역할로 받는다.
@@ -110,10 +123,23 @@ public class BackendDeployRunner {
                 String key = docker ? s3.imageKeyFor(projectId) : s3.jarKeyFor(projectId);
                 s3.ensureBucket(connection, bucket);
                 s3.uploadJar(connection, bucket, key, artifact);   // generic: Path→key 멀티파트 업로드
+                String webKey = null;
+                if (docker && web) {
+                    webKey = s3.webImageKeyFor(projectId);
+                    Path webArtifact = webImageBuildService.buildWebImageTar(
+                            ownerUserId, projectId, frontendRepo, frontendDir, apiPrefix);
+                    try {
+                        s3.uploadJar(connection, bucket, webKey, webArtifact);
+                    } finally {
+                        try { Files.deleteIfExists(webArtifact); } catch (IOException ignored) { }
+                    }
+                }
                 if (docker) {
                     String appImageTag = DockerImageBuildService.imageTagFor(projectId);
-                    userData = bundledDb != null
-                            ? dockerComposeUserDataScript(bucket, key, appImageTag, bundledDb, projectId, port, tlsAsk)
+                    String webImageTag = web ? WebImageBuildService.webImageTagFor(projectId) : null;
+                    userData = compose
+                            ? dockerComposeUserDataScript(bucket, key, appImageTag, webKey, webImageTag,
+                                    bundledDb, projectId, port, tlsAsk)
                             : dockerUserDataScript(bucket, key, projectId, appImageTag, port, tlsAsk);
                 } else {
                     userData = userDataScript(bucket, key, projectId, port, tlsAsk);
@@ -348,12 +374,13 @@ public class BackendDeployRunner {
     }
 
     /**
-     * 번들 DB(S3 전달) user-data. 앱 이미지는 S3 에서 {@code docker load}, DB 는 compose 로 같은 EC2 에
-     * 함께 띄운다. 비밀·접속정보는 SSM 에서 {@code .env}(compose 작업 디렉터리)로 내려 앱 컨테이너 env 와
-     * db 서비스 치환(${DB_PASSWORD}/${DB_NAME})에 함께 쓴다 — user-data 엔 비밀을 담지 않는다.
+     * compose(S3 전달) user-data. 앱[+웹] 이미지는 S3 에서 {@code docker load}, DB(번들 시)·웹(있으면)은
+     * compose 로 같은 EC2 에 함께 띄운다. 비밀·접속정보는 SSM 에서 {@code .env}(compose 작업 디렉터리)로
+     * 내려 앱 env 와 db 치환에 함께 쓴다 — user-data 엔 비밀을 담지 않는다. webKey/webImageTag 가 null 이면 웹 없음.
      */
-    static String dockerComposeUserDataScript(String bucket, String key, String appImageTag,
-                                              DatabaseEngine dbEngine, Long projectId, int port, String tlsAskBase) {
+    static String dockerComposeUserDataScript(String bucket, String appKey, String appImageTag,
+                                              String webKey, String webImageTag, DatabaseEngine dbEngine,
+                                              Long projectId, int port, String tlsAskBase) {
         return """
                 #!/bin/bash
                 set -e
@@ -362,16 +389,15 @@ public class BackendDeployRunner {
                 mkdir -p /opt/app && cd /opt/app
                 aws s3 cp s3://%s/%s /opt/app/image.tar
                 docker load -i /opt/app/image.tar
-                """.formatted(bucket, key)
+                """.formatted(bucket, appKey)
+                + s3LoadWebSection(bucket, webKey)
                 + ssmToEnvFileSection(projectId)
-                + composeUpSection(appImageTag, dbEngine, port)
+                + composeUpSection(appImageTag, webImageTag, dbEngine, port)
                 + httpsSection(port, tlsAskBase);
     }
 
-    /**
-     * 번들 DB(ECR 전달) user-data. 앱 이미지는 ECR 에서 pull, 나머지는 dockerComposeUserDataScript 와 동일.
-     */
-    static String ecrComposeUserDataScript(String region, String registry, String imageRef,
+    /** compose(ECR 전달) user-data. 앱[+웹] 이미지는 ECR 에서 pull, 나머지는 S3 버전과 동일. webRef null 이면 웹 없음. */
+    static String ecrComposeUserDataScript(String region, String registry, String appRef, String webRef,
                                            DatabaseEngine dbEngine, Long projectId, int port, String tlsAskBase) {
         return """
                 #!/bin/bash
@@ -381,10 +407,27 @@ public class BackendDeployRunner {
                 mkdir -p /opt/app && cd /opt/app
                 aws ecr get-login-password --region %s | docker login --username AWS --password-stdin %s
                 docker pull %s
-                """.formatted(region, registry, imageRef)
+                """.formatted(region, registry, appRef)
+                + ecrPullWebSection(webRef)
                 + ssmToEnvFileSection(projectId)
-                + composeUpSection(imageRef, dbEngine, port)
+                + composeUpSection(appRef, webRef, dbEngine, port)
                 + httpsSection(port, tlsAskBase);
+    }
+
+    /** 웹 이미지도 S3 에서 load(webKey 있으면). 앱 load 뒤에 붙는다. */
+    private static String s3LoadWebSection(String bucket, String webKey) {
+        if (webKey == null) {
+            return "";
+        }
+        return """
+                aws s3 cp s3://%s/%s /opt/app/web.tar
+                docker load -i /opt/app/web.tar
+                """.formatted(bucket, webKey);
+    }
+
+    /** 웹 이미지도 ECR 에서 pull(webRef 있으면). 로그인은 앱 pull 때 이미 됐다. */
+    private static String ecrPullWebSection(String webRef) {
+        return webRef == null ? "" : "docker pull " + webRef + "\n";
     }
 
     /** SSM 파라미터를 compose 작업 디렉터리의 {@code .env} 로 내린다(앱 env_file + compose 변수 치환 겸용). */
@@ -398,11 +441,11 @@ public class BackendDeployRunner {
     }
 
     /**
-     * docker compose 플러그인을 확보하고 compose.yml(app + db 서비스)을 써서 {@code up} 한다. AL2023 기본에
-     * compose 플러그인이 없을 수 있어 릴리스 바이너리를 내려받는다(EC2 는 인터넷 egress 가 있다 — Caddy 도
-     * 같은 방식). app 이미지는 이미 로컬(load/pull)에 있으므로 compose 가 그대로 쓴다.
+     * docker compose 플러그인을 확보하고 compose.yml 을 써서 {@code up} 한다. AL2023 기본에 compose 플러그인이
+     * 없을 수 있어 릴리스 바이너리를 내려받는다(EC2 는 인터넷 egress 가 있다 — Caddy 도 같은 방식). 이미지는
+     * 이미 로컬(load/pull)에 있으므로 compose 가 그대로 쓴다.
      */
-    private static String composeUpSection(String appImageRef, DatabaseEngine dbEngine, int port) {
+    private static String composeUpSection(String appImageRef, String webImageRef, DatabaseEngine dbEngine, int port) {
         return """
                 mkdir -p /usr/libexec/docker/cli-plugins
                 curl -sSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
@@ -411,15 +454,47 @@ public class BackendDeployRunner {
                 cat > /opt/app/compose.yml <<'YAML'
                 %sYAML
                 docker compose -f /opt/app/compose.yml --project-directory /opt/app up -d
-                """.formatted(composeFile(appImageRef, dbEngine, port));
+                """.formatted(composeFile(appImageRef, webImageRef, dbEngine, port));
     }
 
     /**
-     * compose.yml 내용. db(엔진별 공식 이미지 + 볼륨 + 헬스체크)와 app(이미지 + db 의존 + .env + 포트 매핑).
-     * 비밀은 없다 — DB 비밀번호/이름은 {@code .env} 의 ${DB_PASSWORD}/${DB_NAME} 치환으로 들어간다.
+     * compose.yml 내용. 조합에 따라 서비스를 조립한다: db(번들 시, 엔진별 이미지+볼륨+헬스체크) · app(항상,
+     * 이미지+.env) · web(있으면, nginx 이미지). 웹이 있으면 <b>web 이 호스트 포트를 차지하고 app 은 내부
+     * 전용</b>(nginx 가 app:8080 으로 프록시) — 없으면 app 이 호스트 포트. 비밀은 없다(.env 치환).
      */
-    private static String composeFile(String appImageRef, DatabaseEngine dbEngine, int port) {
-        String dbService = switch (dbEngine) {
+    private static String composeFile(String appImageRef, String webImageRef, DatabaseEngine dbEngine, int port) {
+        boolean hasDb = dbEngine != null;
+        boolean hasWeb = webImageRef != null;
+        StringBuilder sb = new StringBuilder("services:\n");
+        if (hasDb) {
+            sb.append(dbServiceYaml(dbEngine));
+        }
+        sb.append("  app:\n");
+        sb.append("    image: ").append(appImageRef).append('\n');
+        if (hasDb) {
+            sb.append("    depends_on:\n      db:\n        condition: service_healthy\n");
+        }
+        sb.append("    env_file:\n      - .env\n");
+        if (!hasWeb) {   // 웹이 없을 때만 app 이 호스트 포트를 연다(웹이 있으면 nginx 가 연다)
+            sb.append("    ports:\n      - \"").append(port).append(':').append(port).append("\"\n");
+        }
+        sb.append("    restart: unless-stopped\n");
+        if (hasWeb) {
+            sb.append("  web:\n");
+            sb.append("    image: ").append(webImageRef).append('\n');
+            sb.append("    depends_on:\n      - app\n");
+            sb.append("    ports:\n      - \"").append(port).append(":80\"\n");
+            sb.append("    restart: unless-stopped\n");
+        }
+        if (hasDb) {
+            sb.append("volumes:\n  dbdata:\n");
+        }
+        return sb.toString();
+    }
+
+    /** 번들 DB 서비스 YAML(2칸 들여쓰기, services 아래). 비밀은 .env 의 ${DB_PASSWORD}/${DB_NAME} 치환. */
+    private static String dbServiceYaml(DatabaseEngine dbEngine) {
+        return switch (dbEngine) {
             case MYSQL -> """
                       db:
                         image: mysql:8.0
@@ -449,21 +524,6 @@ public class BackendDeployRunner {
                           retries: 30
                     """;
         };
-        return """
-                services:
-                %s  app:
-                    image: %s
-                    depends_on:
-                      db:
-                        condition: service_healthy
-                    env_file:
-                      - .env
-                    ports:
-                      - "%d:%d"
-                    restart: unless-stopped
-                volumes:
-                  dbdata:
-                """.formatted(dbService, appImageRef, port, port);
     }
 
     /** HTTPS 종단(Caddy on-demand + 남용 방지 ask). NATIVE·DOCKER 공통 — localhost:port 로 프록시. */

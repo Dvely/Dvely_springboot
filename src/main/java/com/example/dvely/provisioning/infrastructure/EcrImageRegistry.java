@@ -36,9 +36,14 @@ public class EcrImageRegistry {
     public record EcrAuth(String registry, String username, String password) {
     }
 
-    /** 프로젝트별 저장소 이름. push(save 태그)와 EC2 pull 이 반드시 같아야 하므로 한 곳에서 정한다. */
+    /** 앱 이미지 저장소 이름. push(save 태그)와 EC2 pull 이 반드시 같아야 하므로 한 곳에서 정한다. */
     public static String repositoryNameFor(Long projectId) {
         return "qeploy-app-" + projectId;
+    }
+
+    /** 웹(프론트) 이미지 저장소 이름. */
+    public static String webRepositoryNameFor(Long projectId) {
+        return "qeploy-web-" + projectId;
     }
 
     /** 레지스트리 호스트: {account}.dkr.ecr.{region}.amazonaws.com. */
@@ -46,19 +51,32 @@ public class EcrImageRegistry {
         return connection.getAccountId() + ".dkr.ecr." + connection.getRegion() + ".amazonaws.com";
     }
 
-    /** push/pull/run 에 쓰는 이미지 참조: {registry}/{repo}:latest. */
+    /** 앱 이미지 참조: {registry}/{repo}:latest. */
     public String imageRefFor(CloudConnection connection, Long projectId) {
         return registryFor(connection) + "/" + repositoryNameFor(projectId) + ":latest";
     }
 
-    /** 저장소가 없으면 만든다(멱등). 이미 있으면 아무것도 안 한다. */
+    /** 웹 이미지 참조: {registry}/{web-repo}:latest. */
+    public String webImageRefFor(CloudConnection connection, Long projectId) {
+        return registryFor(connection) + "/" + webRepositoryNameFor(projectId) + ":latest";
+    }
+
+    /** 앱 저장소가 없으면 만든다(멱등). */
     public void ensureRepository(CloudConnection connection, Long projectId) {
+        ensureRepo(connection, repositoryNameFor(projectId));
+    }
+
+    /** 웹 저장소가 없으면 만든다(멱등). */
+    public void ensureWebRepository(CloudConnection connection, Long projectId) {
+        ensureRepo(connection, webRepositoryNameFor(projectId));
+    }
+
+    private void ensureRepo(CloudConnection connection, String repo) {
         AwsAccess access = credentialsResolver.resolve(connection);
-        String repo = repositoryNameFor(projectId);
         try (EcrClient ecr = client(access)) {
             try {
                 ecr.createRepository(r -> r.repositoryName(repo));
-                log.info("ECR 저장소 생성: repo={} projectId={}", repo, projectId);
+                log.info("ECR 저장소 생성: repo={}", repo);
             } catch (RepositoryAlreadyExistsException e) {
                 // 멱등 — 이미 있다
             }
@@ -77,14 +95,22 @@ public class EcrImageRegistry {
         }
     }
 
-    /** 정리용 — 배포 종료 시 저장소를 이미지째 지운다(force). 없으면 무시. */
+    /** 정리용 — 배포 종료 시 앱 저장소를 이미지째 지운다(force). 없으면 무시. */
     public void deleteRepository(CloudConnection connection, Long projectId) {
+        deleteRepo(connection, repositoryNameFor(projectId));
+    }
+
+    /** 정리용 — 웹 저장소를 이미지째 지운다(force). 없으면 무시. */
+    public void deleteWebRepository(CloudConnection connection, Long projectId) {
+        deleteRepo(connection, webRepositoryNameFor(projectId));
+    }
+
+    private void deleteRepo(CloudConnection connection, String repo) {
         AwsAccess access = credentialsResolver.resolve(connection);
-        String repo = repositoryNameFor(projectId);
         try (EcrClient ecr = client(access)) {
             try {
                 ecr.deleteRepository(r -> r.repositoryName(repo).force(true));
-                log.info("ECR 저장소 삭제: repo={} projectId={}", repo, projectId);
+                log.info("ECR 저장소 삭제: repo={}", repo);
             } catch (RepositoryNotFoundException e) {
                 // 이미 없다
             }

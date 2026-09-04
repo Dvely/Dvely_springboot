@@ -13,6 +13,7 @@ import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
+import com.example.dvely.provisioning.domain.value.WebFrontendSpec;
 import com.example.dvely.provisioning.application.port.out.ProjectDomainCleanupPort;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
 import com.example.dvely.provisioning.infrastructure.EcrImageRegistry;
@@ -55,19 +56,24 @@ public class ServerProvisioningCommandService {
     private final Ec2ProvisioningProperties ec2Properties;
 
     public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType,
-                                              ServerDeployMode deployMode, DatabaseEngine bundledDbEngine) {
+                                              ServerDeployMode deployMode, DatabaseEngine bundledDbEngine,
+                                              WebFrontendSpec web) {
         resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
 
         String tier = (instanceType == null || instanceType.isBlank())
                 ? DEFAULT_INSTANCE_TYPE : instanceType;
         ServerDeployMode mode = deployMode == null ? ServerDeployMode.NATIVE : deployMode;
-        // 번들 DB 는 DOCKER 배포에서만 의미가 있다(같은 EC2 에 compose 로 DB 컨테이너를 띄우므로).
-        // NATIVE 인데 번들 DB 를 주면 조용히 무시하지 않고 명확히 거절한다.
+        WebFrontendSpec webSpec = web == null ? new WebFrontendSpec(null, null, null) : web;
+        // 번들 DB·웹 컨테이너는 DOCKER 배포에서만 의미가 있다(같은 EC2 에 compose 로 컨테이너를 띄우므로).
+        // NATIVE 인데 요청하면 조용히 무시하지 않고 명확히 거절한다.
         if (bundledDbEngine != null && mode != ServerDeployMode.DOCKER) {
             throw new IllegalStateException("번들 DB 는 DOCKER 배포 모드에서만 지원됩니다. deployMode=DOCKER 로 요청하세요.");
         }
+        if (webSpec.hasWeb() && mode != ServerDeployMode.DOCKER) {
+            throw new IllegalStateException("웹 컨테이너는 DOCKER 배포 모드에서만 지원됩니다. deployMode=DOCKER 로 요청하세요.");
+        }
         ProvisionedServer record = serverRepository.save(
-                ProvisionedServer.pending(projectId, tier, APP_PORT, mode, bundledDbEngine));
+                ProvisionedServer.pending(projectId, tier, APP_PORT, mode, bundledDbEngine, webSpec));
         Approval approval = approvalRepository.save(Approval.standalone(
                 ownerUserId, projectId, ApprovalType.SERVER_PROVISION,
                 "EC2 백엔드 서버 생성 (" + tier + ", 과금)"));
@@ -145,6 +151,20 @@ public class ServerProvisioningCommandService {
                 } catch (RuntimeException e) {
                     log.warn("서버 종료 후 이미지 아티팩트 정리 실패(수동 정리 필요): projectId={} useEcr={} 원인={}",
                             server.getProjectId(), useEcr, e.getMessage());
+                }
+                // 웹(프론트) 컨테이너를 썼으면 웹 이미지도 정리한다(전달방식대로).
+                if (server.hasWebFrontend()) {
+                    try {
+                        if (useEcr) {
+                            ecr.deleteWebRepository(connection, server.getProjectId());
+                        } else {
+                            s3.deleteJar(connection, s3.bucketNameFor(connection),
+                                    s3.webImageKeyFor(server.getProjectId()));
+                        }
+                    } catch (RuntimeException e) {
+                        log.warn("서버 종료 후 웹 이미지 정리 실패(수동 정리 필요): projectId={} 원인={}",
+                                server.getProjectId(), e.getMessage());
+                    }
                 }
             });
         }

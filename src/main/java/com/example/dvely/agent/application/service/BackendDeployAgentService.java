@@ -11,6 +11,7 @@ import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
 import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepository;
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ServerDeployMode;
+import com.example.dvely.provisioning.domain.value.WebFrontendSpec;
 import com.example.dvely.provisioning.domain.value.ProvisionMethod;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import java.util.ArrayList;
@@ -51,8 +52,12 @@ public class BackendDeployAgentService {
         DatabaseEngine dbEngine = parseEngine(step.parameters().get("dbEngine"));
         ServerDeployMode deployMode = parseDeployMode(step.parameters().get("deployMode"));
         DatabaseEngine bundledDb = parseEngine(step.parameters().get("bundledDbEngine"));
-        // 번들 DB(같은 EC2 에 compose 로 DB 컨테이너)는 DOCKER 배포에서만 가능하므로 편의상 DOCKER 로 승격.
-        if (bundledDb != null) {
+        WebFrontendSpec web = new WebFrontendSpec(
+                blankToNull(step.parameters().get("frontendRepo")),
+                blankToNull(step.parameters().get("frontendDir")),
+                blankToNull(step.parameters().get("apiPathPrefix")));
+        // 번들 DB·웹 컨테이너(같은 EC2 에 compose)는 DOCKER 배포에서만 가능하므로 편의상 DOCKER 로 승격.
+        if (bundledDb != null || web.hasWeb()) {
             deployMode = ServerDeployMode.DOCKER;
         }
 
@@ -70,11 +75,11 @@ public class BackendDeployAgentService {
             }
 
             ServerProvisionSubmitResult server =
-                    serverCommandService.submit(userId, projectId, instanceType, deployMode, bundledDb);
+                    serverCommandService.submit(userId, projectId, instanceType, deployMode, bundledDb, web);
             approvalIds.addAll(server.approvalIds());
 
-            log.info("[BACKEND_DEPLOY] 배포 요청 접수 | projectId={} dbRequested={} bundledDb={} approvalIds={}",
-                    projectId, dbRequested, bundledDb, approvalIds);
+            log.info("[BACKEND_DEPLOY] 배포 요청 접수 | projectId={} dbRequested={} bundledDb={} web={} approvalIds={}",
+                    projectId, dbRequested, bundledDb, web.hasWeb(), approvalIds);
             return new CodeResult(null, buildSummary(dbRequested, bundledDb != null));
         } catch (NotFoundException | IllegalStateException e) {
             // "클라우드 연결이 필요합니다" 같은 사용자 조치 안내 — 태스크를 실패로 떨구지 않고 그대로 보여준다.

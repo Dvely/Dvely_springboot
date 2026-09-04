@@ -70,6 +70,11 @@ public class S3ArtifactStore {
         return projectId + "/image.tar";
     }
 
+    /** 프로젝트별 웹(프론트) 이미지 tar 키. 앱 이미지와 같은 {projectId}/ 접두사(IAM 스코프 유지). */
+    public String webImageKeyFor(Long projectId) {
+        return projectId + "/web.tar";
+    }
+
     /** 버킷이 없으면 만든다(멱등). 이미 있으면 아무것도 안 한다. */
     public void ensureBucket(CloudConnection connection, String bucket) {
         AwsAccess access = credentialsResolver.resolve(connection);
