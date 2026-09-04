@@ -58,6 +58,32 @@ public class SsmParameterStore {
         }
     }
 
+    /**
+     * 단일 파라미터 값을 읽는다(없으면 empty). DOCKER DB 가 준비되면 자기 사설 IP 를 SSM 에 self-report
+     * 하는데, 그 값을 컨트롤 플레인이 폴링하는 용도다(사설망이라 직접 헬스체크가 불가하므로).
+     */
+    public java.util.Optional<String> getParameterQuietly(CloudConnection connection, String name) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (SsmClient ssm = client(access)) {
+            return java.util.Optional.of(ssm.getParameter(
+                    GetParameterRequest.builder().name(name).build()).parameter().value());
+        } catch (ParameterNotFoundException e) {
+            return java.util.Optional.empty();
+        }
+    }
+
+    /** 단일 파라미터를 지운다(best-effort). 준비 신호를 소비한 뒤 정리해 백엔드 env 로 새지 않게 한다. */
+    public void deleteParameterQuietly(CloudConnection connection, String name) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (SsmClient ssm = client(access)) {
+            ssm.deleteParameter(DeleteParameterRequest.builder().name(name).build());
+        } catch (ParameterNotFoundException ignored) {
+            // 이미 없음
+        } catch (RuntimeException e) {
+            log.warn("SSM 파라미터 삭제 실패(무시): name={} 원인={}", name, e.getMessage());
+        }
+    }
+
     /** 정리용 — 배포 종료 시 이 프로젝트 경로의 파라미터를 모두 지운다. */
     public void deleteAllForProject(CloudConnection connection, Long projectId) {
         AwsAccess access = credentialsResolver.resolve(connection);
