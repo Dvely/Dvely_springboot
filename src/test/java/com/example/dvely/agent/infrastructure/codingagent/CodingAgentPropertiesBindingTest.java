@@ -36,4 +36,12 @@ class CodingAgentPropertiesBindingTest {
         assertThat(properties.getWorkspaceMountPath()).isEqualTo("/workspace");
         assertThat(properties.getMaxProvisionAttempts()).isEqualTo(3);
     }
+
+    @Test
+    void bindsEachCliInvocationAsASplitArgumentList() {
+        // The yml value is a comma-separated string; it must arrive as separate argv elements,
+        // because a single "claude -p" element would be looked up as one executable of that name.
+        assertThat(properties.getClaude().getArgvPrefix()).containsExactly("claude", "-p");
+        assertThat(properties.getCodex().getArgvPrefix()).containsExactly("codex", "exec");
+    }
 }
