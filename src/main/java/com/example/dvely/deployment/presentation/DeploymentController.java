@@ -241,7 +241,8 @@ public class DeploymentController {
                 result.versionName(),
                 result.status(),
                 result.pagesUrl(),
-                result.createdAt()
+                result.createdAt(),
+                result.approvalIds()
         );
     }
 
