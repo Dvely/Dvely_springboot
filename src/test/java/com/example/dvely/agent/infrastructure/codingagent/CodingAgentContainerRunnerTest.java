@@ -8,6 +8,7 @@ import static org.mockito.Mockito.RETURNS_SELF;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -118,7 +119,7 @@ class CodingAgentContainerRunnerTest {
     }
 
     private ContainerRunOutcome run() {
-        return runner.run("/host/checkout", List.of("claude", "-p", "hi"),
+        return runner.run("/host/checkout", null, List.of("claude", "-p", "hi"),
                 List.of("ANTHROPIC_API_KEY=sk-ant-secret"), Duration.ofSeconds(5));
     }
 
@@ -220,7 +221,7 @@ class CodingAgentContainerRunnerTest {
         stubContainerLifecycle();
         stubExec(false, 0, "partial", "");
 
-        ContainerRunOutcome outcome = runner.run("/host/checkout", List.of("claude", "-p", "hi"),
+        ContainerRunOutcome outcome = runner.run("/host/checkout", null, List.of("claude", "-p", "hi"),
                 List.of(), Duration.ofMillis(50));
 
         assertThat(outcome.timedOut()).isTrue();
@@ -235,7 +236,7 @@ class CodingAgentContainerRunnerTest {
         stubContainerLifecycle();
         stubExec(false, 0, "", "");
 
-        runner.run("/host/checkout", List.of("claude"), List.of(), Duration.ofMillis(50));
+        runner.run("/host/checkout", null, List.of("claude"), List.of(), Duration.ofMillis(50));
 
         verify(dockerClient).removeContainerCmd(CONTAINER_ID);
         verify(removeCmd).withForce(true);
@@ -253,6 +254,44 @@ class CodingAgentContainerRunnerTest {
 
         // A leaked container would hold its memory/CPU reservation for as long as the daemon lives.
         verify(dockerClient).removeContainerCmd(CONTAINER_ID);
+    }
+
+    @Test
+    void runsTheLoginStepBeforeTheAgentAndFeedsTheKeyOnStdin() {
+        stubImagePresent();
+        stubContainerLifecycle();
+        stubExec(true, 0, "ok", "");
+
+        runner.run("/host/checkout",
+                new CodingAgentContainerRunner.AuthStep(
+                        List.of("codex", "login", "--with-api-key"), "sk-proj-secret"),
+                List.of("codex", "exec", "hi"), List.of(), Duration.ofSeconds(5));
+
+        // Two execs: the login, then the agent. The login attaches stdin; the agent does not.
+        ArgumentCaptor<String[]> cmd = ArgumentCaptor.captor();
+        verify(execCreateCmd, times(2)).withCmd(cmd.capture());
+        assertThat(cmd.getAllValues().get(0)).containsExactly("codex", "login", "--with-api-key");
+        assertThat(cmd.getAllValues().get(1)).containsExactly("codex", "exec", "hi");
+
+        ArgumentCaptor<Boolean> attachStdin = ArgumentCaptor.captor();
+        verify(execCreateCmd, times(2)).withAttachStdin(attachStdin.capture());
+        assertThat(attachStdin.getAllValues()).containsExactly(true, false);
+    }
+
+    @Test
+    void doesNotRunTheAgentWhenLoginFails() {
+        stubImagePresent();
+        stubContainerLifecycle();
+        stubExec(true, 1, "", "bad key");
+
+        ContainerRunOutcome outcome = runner.run("/host/checkout",
+                new CodingAgentContainerRunner.AuthStep(List.of("codex", "login"), "bad"),
+                List.of("codex", "exec", "hi"), List.of(), Duration.ofSeconds(5));
+
+        // Running the agent anyway would burn the whole timeout retrying a 401 and produce output
+        // that blames the model instead of the credential.
+        assertThat(outcome.exitCode()).isEqualTo(1);
+        verify(execCreateCmd, times(1)).withCmd(any(String[].class));
     }
 
     @Test

@@ -14,6 +14,7 @@ import com.github.dockerjava.api.model.Volume;
 import com.github.dockerjava.core.DefaultDockerClientConfig;
 import com.github.dockerjava.core.DockerClientImpl;
 import com.github.dockerjava.okhttp.OkDockerHttpClient;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -77,12 +78,29 @@ public class CodingAgentContainerRunner {
     }
 
     /**
+     * A command run before the agent itself, to hand the CLI its credential.
+     *
+     * <p>Exists because the two vendors take a key differently, and only one of them takes an
+     * environment variable. Codex ignores {@code OPENAI_API_KEY} entirely and authenticates through
+     * {@code codex login --with-api-key}, which reads the key from <b>stdin</b> — verified against
+     * codex-cli 0.153.2, where the env-var route returns "401 Missing bearer".</p>
+     *
+     * <p>Stdin is also the better channel: unlike an environment variable it never appears in
+     * {@code /proc/<pid>/environ}, so nothing else in the container can read it back.</p>
+     */
+    public record AuthStep(List<String> argv, String stdin) {
+    }
+
+    /**
      * @param hostWorkspaceDir absolute host path of the checkout, bind-mounted read-write
+     * @param authStep         credential handoff to run first, or {@code null} when the CLI takes
+     *                         its key from {@code env} instead
      * @param argv             the command to run, already split into arguments (no shell)
      * @param env              {@code KEY=VALUE} entries injected into the exec only
      * @param timeout          wall-clock bound; on expiry the container is killed
      */
     public ContainerRunOutcome run(String hostWorkspaceDir,
+                                   AuthStep authStep,
                                    List<String> argv,
                                    List<String> env,
                                    Duration timeout) {
@@ -90,7 +108,18 @@ public class CodingAgentContainerRunner {
 
         String containerId = createAndStart(hostWorkspaceDir);
         try {
-            return exec(containerId, argv, env, timeout);
+            if (authStep != null) {
+                ContainerRunOutcome auth =
+                        exec(containerId, authStep.argv(), List.of(), authStep.stdin(), timeout);
+                if (auth.timedOut() || auth.exitCode() != 0) {
+                    // Failing here rather than running the agent anyway: without a credential the
+                    // agent would burn its whole timeout retrying a 401, and the resulting output
+                    // would blame the model instead of the missing key.
+                    return new ContainerRunOutcome(
+                            auth.exitCode(), auth.stdout(), auth.stderr(), auth.timedOut());
+                }
+            }
+            return exec(containerId, argv, env, null, timeout);
         } finally {
             removeQuietly(containerId);
         }
@@ -144,14 +173,16 @@ public class CodingAgentContainerRunner {
     private ContainerRunOutcome exec(String containerId,
                                      List<String> argv,
                                      List<String> env,
+                                     String stdin,
                                      Duration timeout) {
         // Only the executable name is logged. argv carries the prompt (which can contain source
-        // code) and env carries the API key; neither belongs in a log line.
+        // code), env and stdin carry the API key; none of them belongs in a log line.
         log.debug("코딩 에이전트 exec: containerId={} cmd={}", containerId, argv.isEmpty() ? "?" : argv.getFirst());
 
         ExecCreateCmdResponse execCreate = dockerClient.execCreateCmd(containerId)
                 .withAttachStdout(true)
                 .withAttachStderr(true)
+                .withAttachStdin(stdin != null)
                 .withEnv(env == null || env.isEmpty() ? null : List.copyOf(env))
                 .withCmd(argv.toArray(String[]::new))
                 .exec();
@@ -161,8 +192,12 @@ public class CodingAgentContainerRunner {
 
         boolean completed;
         try {
-            completed = dockerClient.execStartCmd(execCreate.getId())
-                    .withDetach(false)
+            var startCmd = dockerClient.execStartCmd(execCreate.getId()).withDetach(false);
+            if (stdin != null) {
+                startCmd = startCmd.withStdIn(
+                        new ByteArrayInputStream(stdin.getBytes(StandardCharsets.UTF_8)));
+            }
+            completed = startCmd
                     .exec(new ResultCallback.Adapter<Frame>() {
                         @Override
                         public void onNext(Frame frame) {
