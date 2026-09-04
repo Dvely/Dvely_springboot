@@ -12,7 +12,8 @@ import java.util.Objects;
  * behaviour so a later "let's use the default record toString" cleanup cannot silently undo it.</p>
  *
  * @param prompt       what the agent is asked to do
- * @param workspaceDir absolute path of the checkout the CLI runs against, inside the container
+ * @param workspaceDir absolute <b>host</b> path of the checkout; the adapter bind-mounts it into
+ *                     the container at the configured workspace mount path
  * @param apiKey       the end user's own vendor key (BYOK), injected as an env var by the adapter
  * @param timeout      hard wall-clock bound; the adapter kills the process when it elapses
  */
