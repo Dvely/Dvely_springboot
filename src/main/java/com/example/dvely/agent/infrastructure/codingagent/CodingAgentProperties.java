@@ -1,6 +1,7 @@
 package com.example.dvely.agent.infrastructure.codingagent;
 
 import java.time.Duration;
+import java.util.List;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -49,4 +50,29 @@ public class CodingAgentProperties {
     private int maxProvisionAttempts = 3;
 
     private Duration provisionRetryDelay = Duration.ofSeconds(2);
+
+    private Cli claude = Cli.of("claude", "-p");
+
+    private Cli codex = Cli.of("codex", "exec");
+
+    /**
+     * How one vendor's CLI is invoked non-interactively.
+     *
+     * <p>Configurable because this is the part of the integration owned by an external tool. The
+     * image pins a CLI version ({@code docker/coding-agent/Dockerfile}); if a later release renames
+     * its non-interactive mode, the pin and this prefix move together — without a code change.</p>
+     */
+    @Getter
+    @Setter
+    public static class Cli {
+
+        /** Executable plus subcommand/flags. The prompt is appended as the final argument. */
+        private List<String> argvPrefix = List.of();
+
+        static Cli of(String... prefix) {
+            Cli cli = new Cli();
+            cli.setArgvPrefix(List.of(prefix));
+            return cli;
+        }
+    }
 }

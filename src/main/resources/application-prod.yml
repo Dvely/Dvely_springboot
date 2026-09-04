@@ -101,3 +101,10 @@ qeploy:
     # 실패는 워크스페이스가 반쯤 수정됐을 수 있어 재시도하지 않는다.
     max-provision-attempts: ${QEPLOY_CODING_AGENT_PROVISION_ATTEMPTS:3}
     provision-retry-delay: ${QEPLOY_CODING_AGENT_PROVISION_RETRY_DELAY:2s}
+    # 각 CLI 의 비대화 실행 인자(프롬프트는 맨 뒤에 별도 인자로 붙는다). 이 부분만 외부 도구가
+    # 소유하므로 설정으로 뺐다 — CLI 버전을 올렸는데 인자 형식이 바뀌면 Dockerfile 의 버전 핀과
+    # 여기를 함께 옮기면 되고, 코드 변경이 필요 없다.
+    claude:
+      argv-prefix: ${QEPLOY_CODING_AGENT_CLAUDE_ARGV:claude,-p}
+    codex:
+      argv-prefix: ${QEPLOY_CODING_AGENT_CODEX_ARGV:codex,exec}
