@@ -47,7 +47,7 @@ public class BackendDeployRunner {
 
     private final ProvisionedServerRepository serverRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
-    private final BackendJarBuildService buildService;
+    private final NativeBuildService nativeBuildService;
     private final DockerImageBuildService imageBuildService;
     private final WebImageBuildService webImageBuildService;
     private final EcrImageRegistry ecr;
@@ -116,11 +116,19 @@ public class BackendDeployRunner {
                         : ecrUserDataScript(connection.getRegion(), auth.registry(), appRef,
                                 projectId, port, tlsAsk);
             } else {
-                // S3 전달: NATIVE=jar, DOCKER=이미지 tar. 산출물을 S3 로 올리고 EC2 가 인스턴스 역할로 받는다.
-                artifact = docker
-                        ? imageBuildService.buildImageTar(ownerUserId, projectId)
-                        : buildService.buildJar(ownerUserId, projectId);
-                String key = docker ? s3.imageKeyFor(projectId) : s3.jarKeyFor(projectId);
+                // S3 전달. DOCKER=이미지 tar, NATIVE=스택 감지로 Java(jar)/Node(소스 tar). S3 로 올리고
+                // EC2 가 인스턴스 역할로 받는다.
+                String key;
+                boolean nativeNode = false;
+                if (docker) {
+                    artifact = imageBuildService.buildImageTar(ownerUserId, projectId);
+                    key = s3.imageKeyFor(projectId);
+                } else {
+                    NativeBuildService.NativeArtifact na = nativeBuildService.build(ownerUserId, projectId);
+                    artifact = na.path();
+                    nativeNode = na.runtime() == NativeBuildService.NativeRuntime.NODE;
+                    key = nativeNode ? s3.nodeSourceKeyFor(projectId) : s3.jarKeyFor(projectId);
+                }
                 s3.ensureBucket(connection, bucket);
                 s3.uploadJar(connection, bucket, key, artifact);   // generic: Path→key 멀티파트 업로드
                 String webKey = null;
@@ -142,7 +150,9 @@ public class BackendDeployRunner {
                                     bundledDb, projectId, port, tlsAsk)
                             : dockerUserDataScript(bucket, key, projectId, appImageTag, port, tlsAsk);
                 } else {
-                    userData = userDataScript(bucket, key, projectId, port, tlsAsk);
+                    userData = nativeNode
+                            ? nodeUserDataScript(bucket, key, projectId, port, tlsAsk)
+                            : userDataScript(bucket, key, projectId, port, tlsAsk);
                 }
             }
 
@@ -321,6 +331,30 @@ public class BackendDeployRunner {
                   --query "Parameters[].[Name,Value]" --output text)
                 nohup java -jar /opt/app/app.jar --server.port=%d > /var/log/qeploy-app.log 2>&1 &
                 """.formatted(bucket, key, projectId, port)
+                + httpsSection(port, tlsAskBase);
+    }
+
+    /**
+     * NATIVE/Node 부팅 스크립트. 소스 tar 를 받아 <b>EC2 에서</b> {@code npm ci}(그 arch 로 네이티브 애드온
+     * 컴파일 — 크로스아치 회피) 후 {@code npm start}. 앱은 PORT(SSM env)로 리슨하고 Caddy 가 localhost:port
+     * 로 프록시(HTTPS 공통). node 버전은 AL2023 dnf(현재 18~20)에 묶인다 — 특정 버전이 필요하면 DOCKER 모드.
+     */
+    static String nodeUserDataScript(String bucket, String key, Long projectId, int port, String tlsAskBase) {
+        return """
+                #!/bin/bash
+                set -e
+                dnf install -y nodejs npm gcc-c++ make python3
+                mkdir -p /opt/app && cd /opt/app
+                aws s3 cp s3://%s/%s /opt/app/app-src.tar
+                tar -xf /opt/app/app-src.tar -C /opt/app
+                while read -r name value; do
+                  export "$(basename "$name")=$value"
+                done < <(aws ssm get-parameters-by-path --path /qeploy/%d/ --with-decryption --recursive \
+                  --query "Parameters[].[Name,Value]" --output text)
+                npm ci || npm install
+                npm run build --if-present
+                nohup npm start > /var/log/qeploy-app.log 2>&1 &
+                """.formatted(bucket, key, projectId)
                 + httpsSection(port, tlsAskBase);
     }
 

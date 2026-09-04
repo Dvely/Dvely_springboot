@@ -60,9 +60,14 @@ public class S3ArtifactStore {
         return "qeploy-artifacts-" + accountId + "-" + connection.getRegion();
     }
 
-    /** 프로젝트별 jar 키(NATIVE 배포). IAM 정책이 {projectId}/* 로 인스턴스 접근을 좁히므로 접두사 유지. */
+    /** 프로젝트별 jar 키(NATIVE/Java 배포). IAM 정책이 {projectId}/* 로 인스턴스 접근을 좁히므로 접두사 유지. */
     public String jarKeyFor(Long projectId) {
         return projectId + "/app.jar";
+    }
+
+    /** 프로젝트별 Node 소스 tar 키(NATIVE/Node 배포). EC2 가 받아 압축 풀고 npm ci→npm start. */
+    public String nodeSourceKeyFor(Long projectId) {
+        return projectId + "/app-src.tar";
     }
 
     /** 프로젝트별 이미지 tar 키(DOCKER 배포). jar 와 같은 {projectId}/ 접두사(IAM 스코프 유지). */

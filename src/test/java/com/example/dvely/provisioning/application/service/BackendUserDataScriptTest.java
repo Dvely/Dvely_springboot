@@ -66,6 +66,22 @@ class BackendUserDataScriptTest {
     }
 
     @Test
+    void nodeNativeScriptInstallsNodeExtractsSourceAndRunsNpmStart() {
+        String s = BackendDeployRunner.nodeUserDataScript("bucket-x", "7/app-src.tar", 7L, 8080, "https://ask.qeploy.com");
+
+        assertThat(s).contains("dnf install -y nodejs npm");
+        assertThat(s).contains("aws s3 cp s3://bucket-x/7/app-src.tar /opt/app/app-src.tar");
+        assertThat(s).contains("tar -xf /opt/app/app-src.tar -C /opt/app");
+        assertThat(s).contains("npm ci || npm install");   // EC2 arch 로 설치(크로스아치 회피)
+        assertThat(s).contains("nohup npm start");
+        assertThat(s).doesNotContain("java -jar");
+        assertThat(s).doesNotContain("docker");
+        // 공통 HTTPS 종단
+        assertThat(s).contains("reverse_proxy 127.0.0.1:8080");
+        assertThat(s).startsWith("#!/bin/bash");
+    }
+
+    @Test
     void allStartWithShebang() {
         String nat = BackendDeployRunner.userDataScript("b", "k", 1L, 8080, "");
         String doc = BackendDeployRunner.dockerUserDataScript("b", "k", 1L, "img:latest", 8080, "");
