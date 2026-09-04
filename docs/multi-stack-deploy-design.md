@@ -53,13 +53,21 @@
 
 각 단계마다 **손으로 짠 최소 앱**(스택별 + Dockerfile)을 테스트 repo 로 두고 실 EC2 배포로 완주 검증 — dvely-be-db(jar)로 native-Java 를 검증했던 방식 그대로. CODE 에이전트(앱 생성)는 별도 트랙(모델 확보 후).
 
-## 보안 하드닝 (P2 후속, 멀티테넌트 운영 전)
+## 보안 하드닝 — 빌드 격리 🟢 *kaniko opt-in 구현*
 
-P2 는 `docker build` 를 **호스트 Docker 데몬**에서 돈다(`DockerContainerService.buildImage`) — 신뢰할 수
-없는 사용자 Dockerfile 의 빌드 스텝이 우리 컨트롤 플레인 데몬에서 실행된다. **단일 테넌트·검증 단계
-한정**이며, 기존에 gradle/npm 을 샌드박스 컨테이너에서 돌리는 것과 유사한 트러스트 수준이다. 다만
-멀티테넌트 SaaS 운영 전에는 **kaniko 또는 rootless buildkit** 로 옮겨 호스트 데몬 노출을 없애야 한다
-(이미지 빌드를 유저스페이스에서 데몬 없이 수행). 소스 clone 은 지금도 격리 샌드박스에서 한다.
+기본(BUILDX)은 이미지 빌드를 **호스트 buildkit(데몬)**에서 돈다(`ContainerImageBuilder`) — 신뢰할 수
+없는 사용자 Dockerfile 의 빌드 스텝이 우리 컨트롤 플레인 buildkit 에서 실행된다. **단일 테넌트·검증
+단계 한정**이며, gradle/npm 을 샌드박스 컨테이너에서 돌리는 것과 유사한 트러스트 수준이다.
+
+멀티테넌트 운영을 위해 **`qeploy.provisioning.ec2.build-isolation=KANIKO`** 를 추가했다(기본 BUILDX,
+아무것도 안 깨짐). 켜면 빌드가 **호스트 데몬이 아니라 격리된 kaniko 컨테이너 안**에서 돈다 — 호스트
+데몬은 kaniko 컨테이너를 실행만 하고 빌드 RUN 스텝은 그 안에 갇힌다. S3=`--no-push --tar-path`(tar),
+ECR=`--destination`(config.json 마운트로 인증). **주의: kaniko 는 컨트롤 플레인 arch 로만 빌드**(크로스
+빌드 없음)하므로 **amd64 컨트롤 플레인에서만** 켠다 — arm64 개발기에선 BUILDX(크로스빌드) 유지.
+검증(2026-09-04): kaniko 로 실제 npm 빌드 컨텍스트 → RUN 격리 실행 → tar 로드+실행 200, `--destination`
+push 메커니즘(로컬 registry) 확인. **실 ECR+kaniko e2e 는 amd64 컨트롤 플레인에서 후속.**
+
+소스 clone 은 두 방식 모두 격리 샌드박스(`DockerContainerService`)에서 한다.
 
 ## 별도 트랙 (이 설계와 분리)
 
