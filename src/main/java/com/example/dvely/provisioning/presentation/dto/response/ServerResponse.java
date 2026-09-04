@@ -5,12 +5,14 @@ import com.example.dvely.provisioning.domain.value.ServerStatus;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.LocalDateTime;
 
-@Schema(description = "EC2 백엔드 서버 상태. 비밀은 싣지 않는다. status 전이(QUEUED·BUILDING·PROVISIONING)면 폴링, "
+@Schema(description = "EC2 서버 상태. 비밀은 싣지 않는다. status 전이(QUEUED·BUILDING·PROVISIONING)면 폴링, "
         + "종료(RUNNING·FAILED·TERMINATED)면 정지.")
 public record ServerResponse(
         Long serverId,
         Long projectId,
         String status,
+        @Schema(description = "웹 전용(독립 프론트 EC2) 서버면 true, 백엔드 서버면 false. 한 프로젝트에 프론트·백엔드 "
+                + "서버가 함께 뜰 수 있으므로 이 값으로 구분한다.") boolean webOnly,
         String instanceType,
         String host,
         int port,
@@ -36,7 +38,7 @@ public record ServerResponse(
         String domainUrl = running && domainHostname != null && !domainHostname.isBlank()
                 ? "https://" + domainHostname : null;
         return new ServerResponse(
-                s.getId(), s.getProjectId(), s.getStatus().name(), s.getInstanceType(),
+                s.getId(), s.getProjectId(), s.getStatus().name(), s.isWebOnly(), s.getInstanceType(),
                 s.getPublicHost(), s.getPort(), url, domainUrl, s.getInstanceId(),
                 s.getFailureCode() == null ? null : s.getFailureCode().name(),
                 s.getErrorMessage(), s.getCreatedAt(), s.getUpdatedAt());
