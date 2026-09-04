@@ -72,15 +72,18 @@ module.exports = {
         GITHUB_WEBHOOK_SECRET: '',
 
         // --- AI ---
-        // 채팅 경로(ChatCommandService)는 ANTHROPIC 고정, FE 의 decision 폴백은 OPENAI
-        // 고정이다. 둘 중 하나만 채우면 다른 경로에서 조용히 실패하므로 양쪽 다 넣는다.
+        // 제공자는 요청의 aiProvider 로 고른다(#236). 안 고르면 채팅 경로는 ANTHROPIC 기본.
+        // GET /api/v1/agent/ai-providers 가 api-key 채워진 제공자만 노출하고 FE 셀렉트가 그
+        // 목록을 쓴다 — 채운 만큼 뜬다. 셋 다 비면 셀렉트도 없고 에이전트도 못 돈다(제공자 없음).
+        // 최소 하나는 유효한 키여야 한다.
         QEPLOY_AI_ANTHROPIC_API_KEY: '',
         QEPLOY_AI_OPENAI_API_KEY: '',
-        // GLM 은 기본값이 OpenRouter 기준이다. Z.ai 키를 쓴다면 세 개를 함께 넣어야 한다
-        // (안 그러면 기본 엔드포인트로 나가 401 이 된다).
-        //   QEPLOY_AI_GLM_BASE_URL: 'https://api.z.ai/api/paas/v4/chat/completions',
-        //   QEPLOY_AI_GLM_MODEL: 'glm-4.7-flash',
-        QEPLOY_AI_GLM_API_KEY: '',
+        // GLM (Z.ai 직결). api-key 를 채우면 셀렉트에 GLM 이 뜬다. Z.ai 키는 base-url·model 을
+        // 함께 둬야 한다 — 안 그러면 기본 OpenRouter 로 나가 401. OpenRouter 키(sk-or-v1-…)를
+        // 쓸 거면 아래 base-url·model 두 줄을 지우고 api-key 만 채운다(기본값 z-ai/glm-4.6).
+        QEPLOY_AI_GLM_API_KEY:  '',
+        QEPLOY_AI_GLM_BASE_URL: 'https://api.z.ai/api/paas/v4/chat/completions',
+        QEPLOY_AI_GLM_MODEL:    'glm-4.7-flash',
 
         // --- 프론트 연동 ---
         // 프론트는 각자 로컬에서 돌린다. allowCredentials(true) 라 와일드카드를 쓸 수 없어
