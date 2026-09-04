@@ -64,7 +64,16 @@ public class CodingAgentProperties {
      * against a non-repo directory can add the flag here.</p>
      */
     private Cli codex = Cli.withLogin(
-            List.of("codex", "exec"),
+            // --dangerously-bypass-approvals-and-sandbox is required, not a shortcut. Codex's own
+            // sandbox runs on bubblewrap, which needs user namespaces; our container drops every
+            // capability and sets no-new-privileges, so bubblewrap cannot start and every shell
+            // tool call the agent makes dies with exit 1 — measured: the agent reported success
+            // while creating no file at all. The flag's own documentation names this case
+            // ("Intended solely for running in environments that are externally sandboxed"), and
+            // that is exactly what the throwaway container is: no published port, capped memory
+            // and pids, and nothing mounted but the one workspace. With the flag the same prompt
+            // actually writes the file.
+            List.of("codex", "exec", "--dangerously-bypass-approvals-and-sandbox"),
             List.of("codex", "login", "--with-api-key"),
             // The CLI would otherwise default to gpt-5.6-sol; the cheapest tier finishes the same
             // work, so paying for the largest one by default is a cost with nothing behind it.

@@ -18,7 +18,11 @@ FROM node:20-alpine
 
 # git: 코딩 에이전트가 워크스페이스에서 diff/commit 을 다룬다.
 # ca-certificates: 공식 API(api.anthropic.com) TLS 검증.
-RUN apk add --no-cache git ca-certificates
+# bubblewrap: Codex 자체 샌드박스가 쓰는 바이너리. 다만 기본 설정은 그 샌드박스를 우회하므로
+#   (컨테이너가 이미 외부 샌드박스이고, cap-drop ALL 아래서는 bubblewrap 이 user namespace 를
+#   못 만들어 툴 호출이 전부 실패한다) 현재 경로에서는 실제로 쓰이지 않는다. 격리를 느슨하게
+#   풀어 Codex 자체 샌드박스를 쓰는 배포를 위해 남겨 둔다.
+RUN apk add --no-cache git ca-certificates bubblewrap
 
 # 기본값 latest 는 로컬 실험용이다. 운영 이미지는 반드시 --build-arg 로 버전을 고정할 것 —
 # 고정하지 않으면 같은 태그가 시점에 따라 다른 CLI 를 담게 되어 재현이 깨진다.

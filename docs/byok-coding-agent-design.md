@@ -48,7 +48,12 @@ Anthropic 원문: "제3자 개발자가 자기 앱에 claude.ai 로그인을 제
 > 유효한 OpenAI 키로 전 구간이 통과했다. `codex login --with-api-key`(stdin) → `codex exec --model gpt-5.6-luna "..."` → **exit 0, 에이전트 응답 "OK"**.
 > **모델은 별도 설정(`qeploy.coding-agent.codex.model`)으로 뺐고 기본값은 `gpt-5.6-luna`다.** CLI 기본값은 `gpt-5.6-sol` 인데, 같은 프롬프트로 luna 가 9,692 토큰, sol 이 11,203 토큰을 썼고 답은 같았다 — 기본으로 큰 등급을 태울 이유가 없다. `terra` 도 동작 확인(11,203). 비우면 CLI 기본값을 쓴다.
 > Claude Code 쪽은 인증·전송 경로까지 확인했으나 계정 잔액 부족으로 모델 응답까지는 보지 못했다.
-> 사소한 관찰: 컨테이너에 `bubblewrap` 이 없어 Codex 가 번들 버전을 쓴다는 경고가 뜬다(동작에는 영향 없음). 이미지에 추가하면 사라진다.
+> **에이전트가 파일을 쓰려면 Codex 자체 샌드박스를 우회해야 한다 (2026-09-05 실측)**
+> bubblewrap 경고를 쫓다가 훨씬 큰 문제를 찾았다. Codex 자체 샌드박스는 bubblewrap 을 쓰고 그건 user namespace 를 요구하는데, 우리 컨테이너는 모든 capability 를 떨구고 `no-new-privileges` 를 걸어 bubblewrap 이 뜨지 못한다. 그 상태에서는 에이전트의 셸 툴 호출이 전부 `exit 1` 로 죽는다 — **`-s workspace-write` 를 줘도 "성공"(exit 0)을 보고하면서 파일을 하나도 만들지 못했다.** 코딩 에이전트가 코드를 못 고치면 무의미하므로 이건 치명적이다.
+> 해법은 `--dangerously-bypass-approvals-and-sandbox` 다. 이름과 달리 지름길이 아니라 이 배치에 맞는 선택이고, 플래그 문서가 바로 이 경우를 가리킨다("외부에서 이미 샌드박싱된 환경 전용"). 일회용 컨테이너가 그 외부 샌드박스다: 퍼블리시 포트 없음, cap-drop ALL, 메모리·pids 상한, 워크스페이스만 마운트. 이 플래그로 같은 프롬프트가 **실제로 파일을 썼다**(`agent-wrote-this.txt`, 내용 `verified`, exit 0, bubblewrap 경고 0건).
+> `bubblewrap` 은 이미지에 넣어 뒀지만 기본 경로가 Codex 샌드박스를 우회하므로 실제로는 쓰이지 않는다. 격리를 느슨하게 풀어 Codex 자체 샌드박스를 쓰는 배포를 위해 남겨 둔 것이다.
+>
+> **Claude Code 쪽 미해결 위험**: 같은 종류의 문제가 있을 수 있는데 확인하지 못했다. 잔액 부족이라 파일 편집 단계까지 못 갔고, 탈출구인 `--allow-dangerously-skip-permissions` 는 **root 에서 거부된다**("cannot be used with root/sudo privileges"). 현재 이미지는 root 로 돌아가므로, 이 플래그가 필요한 것으로 판명되면 비-root 사용자 추가가 선행되어야 한다(bind mount 소유권 문제를 함께 풀어야 함). 유효한 Anthropic 키가 생기면 가장 먼저 확인할 항목.
 - EC2가 사용자 키(암호화 저장)를 복호화해 컨테이너 env로만 주입한다. 디스크 미기록, egress는 공식 API 도메인(`api.anthropic.com`, `api.openai.com`)으로 제한.
 - 기존 `agent/infrastructure/docker/DockerContainerService`의 격리 정책(자원 상한·capability drop·no-new-priv·네트워크 격리, U4)을 재사용한다.
 - 브라우저·확장·WebSocket은 필요 없다(변형 A). 원안의 브라우저 브리지는 주거용 IP·세션 확보용이었고 BYOK+공식 API에선 그 목적이 사라진다.
