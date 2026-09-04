@@ -7,14 +7,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.example.dvely.agent.application.dto.AgentPlan;
-import com.example.dvely.agent.application.dto.AgentSubmission;
-import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
-import com.example.dvely.agent.application.port.out.LlmMessage;
-import com.example.dvely.agent.application.service.AgentMessageService;
-import com.example.dvely.agent.application.service.DecisionAgentService;
 import com.example.dvely.agent.domain.value.AiProvider;
+import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.chat.application.result.ConversationResult;
 import com.example.dvely.chat.application.result.MessageResult;
 import com.example.dvely.chat.domain.model.ChatMessage;
@@ -50,16 +45,13 @@ class ChatCommandServiceTest {
     private ProjectRepository projectRepository;
 
     @Mock
-    private DecisionAgentService decisionAgentService;
-
-    @Mock
     private AgentOrchestrator agentOrchestrator;
 
     @Mock
-    private AgentMessageService agentMessageService;
+    private AsyncDecisionRunner asyncDecisionRunner;
 
     @Mock
-    private com.example.dvely.agent.infrastructure.config.AiProperties aiProperties;
+    private AiProperties aiProperties;
 
     @InjectMocks
     private ChatCommandService chatCommandService;
@@ -96,7 +88,7 @@ class ChatCommandServiceTest {
     }
 
     @Test
-    void sendMessageStartsAgentUsingUserIntentHistoryOnly() {
+    void sendMessageOpensPendingTaskAndDispatchesDecisionAsynchronously() {
         Conversation conversation = new Conversation(
                 21L,
                 2L,
@@ -114,46 +106,40 @@ class ChatCommandServiceTest {
                 0,
                 LocalDateTime.now()
         );
-        List<LlmMessage> context = List.of(new LlmMessage("user", "FAQ를 추가해줘"));
-        AgentPlan plan = new AgentPlan(List.of(), "reason", AiProvider.ANTHROPIC, 7L);
         when(conversationRepository.findByIdAndUserIdAndDeletedFalse(21L, 2L))
                 .thenReturn(Optional.of(conversation));
         when(chatMessageRepository.save(any(ChatMessage.class))).thenReturn(saved);
-        when(agentMessageService.getUserIntentHistory(21L)).thenReturn(context);
         when(aiProperties.getDefaultProvider()).thenReturn(AiProvider.ANTHROPIC);
-        when(decisionAgentService.decide(context, AiProvider.ANTHROPIC, 7L)).thenReturn(plan);
-        when(agentOrchestrator.submit(plan, 2L, 21L))
-                .thenReturn(new AgentSubmission("task-abc123", TaskStatus.QUEUED, List.of()));
+        when(agentOrchestrator.createPending(2L, 21L)).thenReturn("task-abc123");
 
         MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘", null);
 
+        // taskId 는 Decision 을 기다리지 않고 즉시 발급된 PENDING 태스크의 id 다.
         assertThat(result.messageId()).isEqualTo(31L);
         assertThat(result.taskId()).isEqualTo("task-abc123");
         assertThat(conversation.getTitle()).isEqualTo("FAQ를 추가해줘");
         verify(conversationRepository).save(conversation);
-        verify(agentOrchestrator).submit(plan, 2L, 21L);
+        // Decision→제출은 백그라운드로 넘어간다(제공자 미지정 → 기본 제공자, projectId 는 대화의 값).
+        verify(agentOrchestrator).createPending(2L, 21L);
+        verify(asyncDecisionRunner).decideAndSubmit("task-abc123", 2L, 21L, 7L, AiProvider.ANTHROPIC);
     }
 
     @Test
-    void sendMessageUsesRequestedAiProviderWhenGiven() {
+    void sendMessagePassesRequestedAiProviderToTheAsyncDecision() {
         Conversation conversation = new Conversation(
                 21L, 2L, 7L, false, null, LocalDateTime.now(), LocalDateTime.now());
         ChatMessage saved = new ChatMessage(
                 31L, 21L, com.example.dvely.chat.domain.value.ChatRole.USER, "FAQ를 추가해줘", 0, LocalDateTime.now());
-        List<LlmMessage> context = List.of(new LlmMessage("user", "FAQ를 추가해줘"));
-        AgentPlan plan = new AgentPlan(List.of(), "reason", AiProvider.GLM, 7L);
         when(conversationRepository.findByIdAndUserIdAndDeletedFalse(21L, 2L))
                 .thenReturn(Optional.of(conversation));
         when(chatMessageRepository.save(any(ChatMessage.class))).thenReturn(saved);
-        when(agentMessageService.getUserIntentHistory(21L)).thenReturn(context);
-        when(decisionAgentService.decide(context, AiProvider.GLM, 7L)).thenReturn(plan);
-        when(agentOrchestrator.submit(plan, 2L, 21L))
-                .thenReturn(new AgentSubmission("task-glm", TaskStatus.QUEUED, List.of()));
+        when(agentOrchestrator.createPending(2L, 21L)).thenReturn("task-glm");
 
         MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘", AiProvider.GLM);
 
         assertThat(result.taskId()).isEqualTo("task-glm");
-        verify(decisionAgentService).decide(context, AiProvider.GLM, 7L);
+        // 제공자를 지정하면 기본값 해석 없이 그대로 백그라운드 Decision 에 전달된다.
+        verify(asyncDecisionRunner).decideAndSubmit("task-glm", 2L, 21L, 7L, AiProvider.GLM);
     }
 
     @Test
@@ -238,43 +224,6 @@ class ChatCommandServiceTest {
         assertThat(chatCommandService.purgeExpiredConversations()).isEqualTo(2);
         verify(conversationRepository).deleteById(11L);
         verify(conversationRepository).deleteById(12L);
-    }
-
-    @Test
-    void sendMessageStoresAssistantErrorWhenDecisionFails() {
-        Conversation conversation = new Conversation(
-                21L,
-                2L,
-                7L,
-                false,
-                null,
-                LocalDateTime.now(),
-                LocalDateTime.now()
-        );
-        ChatMessage saved = new ChatMessage(
-                31L,
-                21L,
-                com.example.dvely.chat.domain.value.ChatRole.USER,
-                "FAQ를 추가해줘",
-                0,
-                LocalDateTime.now()
-        );
-        List<LlmMessage> context = List.of(new LlmMessage("user", "FAQ를 추가해줘"));
-        when(conversationRepository.findByIdAndUserIdAndDeletedFalse(21L, 2L))
-                .thenReturn(Optional.of(conversation));
-        when(chatMessageRepository.save(any(ChatMessage.class))).thenReturn(saved);
-        when(agentMessageService.getUserIntentHistory(21L)).thenReturn(context);
-        when(aiProperties.getDefaultProvider()).thenReturn(AiProvider.ANTHROPIC);
-        when(decisionAgentService.decide(context, AiProvider.ANTHROPIC, 7L))
-                .thenThrow(new IllegalStateException("LLM 연결 실패"));
-
-        MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘", null);
-
-        assertThat(result.taskId()).isNull();
-        verify(agentMessageService).appendAssistant(
-                21L,
-                "요청을 분석하지 못했습니다: LLM 연결 실패"
-        );
     }
 
     private Project project(Long projectId, Long ownerUserId, String sourceRepository, boolean deleted) {

@@ -1,9 +1,6 @@
 package com.example.dvely.chat.application.command;
 
-import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
-import com.example.dvely.agent.application.service.AgentMessageService;
-import com.example.dvely.agent.application.service.DecisionAgentService;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.chat.application.result.ConversationResult;
@@ -20,8 +17,11 @@ import com.example.dvely.project.domain.repository.ProjectRepository;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.task.TaskRejectedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @Service
 @RequiredArgsConstructor
@@ -30,9 +30,8 @@ public class ChatCommandService {
     private final ConversationRepository conversationRepository;
     private final ChatMessageRepository chatMessageRepository;
     private final ProjectRepository projectRepository;
-    private final DecisionAgentService decisionAgentService;
     private final AgentOrchestrator agentOrchestrator;
-    private final AgentMessageService agentMessageService;
+    private final AsyncDecisionRunner asyncDecisionRunner;
     private final AiProperties aiProperties;
 
     @Transactional
@@ -118,31 +117,51 @@ public class ChatCommandService {
             conversationRepository.save(conversation);
         }
 
-        // taskId stays null when the Decision Agent fails to classify the message (see catch
-        // below) — the caller (FE) uses its presence to know whether there is anything to poll.
-        String taskId = null;
-        try {
-            // 계획 수립에는 사용자 발화만 넘긴다. 우리가 쓴 운영 안내가 섞이면 모델이 그 문장을
-            // 흉내 내다 JSON 을 내지 못한다 — AgentMessageService#getUserIntentHistory 참고.
-            AgentPlan plan = decisionAgentService.decide(
-                    agentMessageService.getUserIntentHistory(conversationId),
-                    provider,
-                    conversation.getProjectId()
-            );
-            taskId = agentOrchestrator.submit(plan, userId, conversationId).taskId();
-        } catch (RuntimeException exception) {
-            agentMessageService.appendAssistant(
-                    conversationId,
-                    "요청을 분석하지 못했습니다: " + safeMessage(exception)
-            );
-        }
+        // Decision(LLM 호출)은 오래 걸린다. 요청 스레드에서 기다리면 FE 가 타임아웃(Network Error)
+        // 나므로, PENDING 태스크를 열어 taskId 만 먼저 응답하고 Decision→제출은 백그라운드로 넘긴다.
+        // FE 는 이 taskId 로 SSE 를 열어 계획·진행·실패를 실시간으로 받는다(항상 non-null).
+        Long projectId = conversation.getProjectId();
+        String taskId = agentOrchestrator.createPending(userId, conversationId);
+        dispatchDecisionAfterCommit(taskId, userId, conversationId, projectId, provider);
         return toMessageResult(message, taskId);
     }
 
-    private String safeMessage(RuntimeException exception) {
-        return exception.getMessage() == null || exception.getMessage().isBlank()
-                ? "알 수 없는 오류"
-                : exception.getMessage();
+    /**
+     * PENDING 태스크가 커밋된 뒤에만 비동기 Decision 을 띄운다. @Async 로 넘긴 일은 이 트랜잭션이
+     * 커밋되기 전에도 다른 스레드에서 시작될 수 있는데, 그 스레드의 새 트랜잭션은 아직 커밋 안 된
+     * PENDING 행을 못 봐 {@code TaskStore.savePlan}/{@code enqueue} 가 태스크를 못 찾는다. 그래서
+     * afterCommit 콜백으로 커밋 이후로 미룬다. 트랜잭션 동기화가 없는 문맥(단위 테스트 등)에서는
+     * 곧바로 실행한다.
+     *
+     * <p>executor 포화로 디스패치가 거부되면(TaskRejectedException) 그 태스크를 FAILED 로 닫는다 —
+     * {@code createPending} 이 연 PENDING 을 아무도 확정/종료하지 않고 방치하지 않기 위해서다.</p>
+     */
+    private void dispatchDecisionAfterCommit(String taskId,
+                                             Long userId,
+                                             Long conversationId,
+                                             Long projectId,
+                                             AiProvider provider) {
+        Runnable dispatch = () -> {
+            try {
+                asyncDecisionRunner.decideAndSubmit(taskId, userId, conversationId, projectId, provider);
+            } catch (TaskRejectedException rejected) {
+                agentOrchestrator.markDecisionFailed(
+                        taskId,
+                        conversationId,
+                        "서버가 혼잡해 요청을 시작하지 못했습니다. 잠시 후 다시 시도해주세요."
+                );
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    dispatch.run();
+                }
+            });
+        } else {
+            dispatch.run();
+        }
     }
 
     private Project resolveActiveProject(Long userId, Long projectId) {
