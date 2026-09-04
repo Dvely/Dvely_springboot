@@ -13,7 +13,7 @@ import org.springframework.stereotype.Service;
 
 /**
  * NATIVE 배포(컨테이너 없이 EC2 에서 직접 실행)의 산출물을 만든다 — 소스를 격리 샌드박스에서 clone·감지해
- * 스택에 맞는 산출물을 낸다. Java(Gradle)는 컨트롤 플레인에서 jar 로 빌드하고, Node 는 소스 tar(node_modules
+ * 스택에 맞는 산출물을 낸다. Java(Gradle·Maven)는 컨트롤 플레인에서 jar 로 빌드하고, Node 는 소스 tar(node_modules
  * 제외)만 낸다. DOCKER 모드({@link DockerImageBuildService})와 다른 축 — EC2 에 Docker 를 안 쓴다.
  *
  * <p><b>Java vs Node 빌드 위치가 다른 이유(크로스아치):</b> jar 는 JVM 바이트코드라 arch 무관이므로
@@ -56,23 +56,24 @@ public class NativeBuildService {
         try {
             sourceClone.cloneInto(containerId, ownerUserId, sourceRepo);
             // 백엔드는 대개 레포 루트이므로 루트를 먼저 본다 — 모노(프론트 하위폴더에도 package.json)에서
-            // 엉뚱한 걸 집지 않게. 루트에 없으면 하위 디렉터리(maxdepth 3)로 폴백. Java(gradle)가 Node 보다
-            // 우선(백엔드 배포 맥락, DefaultDockerfileFactory 와 동일 규칙).
+            // 엉뚱한 걸 집지 않게. 루트에 없으면 하위 디렉터리(maxdepth 3)로 폴백. Java(gradle·maven)가 Node
+            // 보다 우선(백엔드 배포 맥락, DefaultDockerfileFactory 와 동일 규칙).
             String gradleDir = detectDir(containerId,
                     "test -f " + APP_DIR + "/build.gradle -o -f " + APP_DIR + "/build.gradle.kts",
                     "\\( -name build.gradle -o -name build.gradle.kts \\)");
             if (gradleDir != null) {
                 return new NativeArtifact(buildJar(containerId, projectId, gradleDir), NativeRuntime.JAVA);
             }
+            String mavenDir = detectDir(containerId, "test -f " + APP_DIR + "/pom.xml", "-name pom.xml");
+            if (mavenDir != null) {
+                return new NativeArtifact(buildJarMaven(containerId, projectId, mavenDir), NativeRuntime.JAVA);
+            }
             String nodeDir = detectDir(containerId,
                     "test -f " + APP_DIR + "/package.json", "-name package.json");
             if (nodeDir != null) {
                 return new NativeArtifact(packageNodeSource(containerId, projectId, nodeDir), NativeRuntime.NODE);
             }
-            if (detectDir(containerId, "test -f " + APP_DIR + "/pom.xml", "-name pom.xml") != null) {
-                throw new BackendBuildException("NATIVE 는 현재 Gradle·Node 만 지원합니다(Maven 미지원). DOCKER 모드를 쓰세요.");
-            }
-            throw new BackendBuildException("빌드 파일(build.gradle / package.json)을 찾지 못했습니다.");
+            throw new BackendBuildException("빌드 파일(build.gradle / pom.xml / package.json)을 찾지 못했습니다.");
         } catch (IOException e) {
             throw new BackendBuildException("산출물 추출 실패: " + e.getMessage());
         } finally {
@@ -99,6 +100,31 @@ public class NativeBuildService {
         Path dest = Files.createTempFile("qeploy-app-", ".jar");
         dockerService.copyFileFromContainer(containerId, jar, dest);
         log.info("백엔드 jar 빌드 완료(NATIVE/Java): projectId={} jar={} bytes={}", projectId, jar, sizeQuietly(dest));
+        return dest;
+    }
+
+    // ── Java: 컨트롤 플레인에서 maven 빌드 → jar (Gradle 경로와 같은 축, mvnw 우선) ──
+
+    private Path buildJarMaven(String containerId, Long projectId, String backendDir) throws IOException {
+        // openjdk21 은 clone 단계에서 이미 깔렸다. mvnw 래퍼가 있으면 Java 만으로 빌드되고(Maven 을 스스로
+        // 받는다), 없으면 alpine 의 maven 을 깐다 — apk 는 관대하게 둔다(이미 있거나 네트워크가 없을 수 있다).
+        ExecResult build = dockerService.execWithExitCode(containerId,
+                "cd " + backendDir + " && chmod +x mvnw 2>/dev/null; "
+                        + "if [ -x ./mvnw ]; then ./mvnw -q -B -DskipTests clean package; "
+                        + "else apk add --no-cache maven 2>/dev/null; mvn -q -B -DskipTests clean package; fi");
+        if (!build.succeeded()) {
+            throw new BackendBuildException("maven 빌드 실패: " + BackendSourceClone.tail(build.output()));
+        }
+        // Spring Boot 는 target 의 jar 를 실행가능하게 repackage 하고 원본은 *.jar.original 로 남긴다(.jar 만 매칭).
+        String jar = dockerService.exec(containerId,
+                "find " + APP_DIR + " -path '*/target/*.jar' ! -name '*-sources.jar' "
+                        + "! -name '*-javadoc.jar' | head -1").trim();
+        if (jar.isBlank()) {
+            throw new BackendBuildException("빌드 산출물 jar 를 찾지 못했습니다.");
+        }
+        Path dest = Files.createTempFile("qeploy-app-", ".jar");
+        dockerService.copyFileFromContainer(containerId, jar, dest);
+        log.info("백엔드 jar 빌드 완료(NATIVE/Maven): projectId={} jar={} bytes={}", projectId, jar, sizeQuietly(dest));
         return dest;
     }
 
