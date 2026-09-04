@@ -58,22 +58,30 @@ public class Ec2InstanceRoleProvisioner {
     }
 
     private void ensureRole(IamClient iam, String name, Long projectId, String bucket, boolean ecr) {
+        boolean exists;
         try {
             iam.getRole(r -> r.roleName(name));
-            return;   // 이미 있다 — 정책은 처음 만들 때 붙였으므로 재부착 안 함(전달방식 바뀌면 새 프로젝트부터 반영)
+            exists = true;
         } catch (NoSuchEntityException e) {
-            // 아래에서 만든다
+            exists = false;
         }
-        iam.createRole(CreateRoleRequest.builder()
-                .roleName(name)
-                .assumeRolePolicyDocument(TRUST_POLICY)
-                .description("Qeploy backend instance role for project " + projectId)
-                .build());
+        if (!exists) {
+            iam.createRole(CreateRoleRequest.builder()
+                    .roleName(name)
+                    .assumeRolePolicyDocument(TRUST_POLICY)
+                    .description("Qeploy backend instance role for project " + projectId)
+                    .build());
+            log.info("IAM 인스턴스 역할 생성: role={} projectId={}", name, projectId);
+        }
+        // 인라인 정책은 항상 현재 모드(ecr)에 맞게 재부착한다(PutRolePolicy 는 멱등 덮어쓰기). 기존
+        // 역할이라도 전달방식 전환(S3→ECR)이 반영되게 — 안 그러면 예전에 만들어진 역할이 ECR pull
+        // 권한 없이 남아 인스턴스의 docker pull 이 조용히 실패하고, 앱이 안 떠 부팅 타임아웃으로만
+        // 드러난다(실계정 e2e 2026-09-04 에서 확인). 우리가 소유·관리하는 인라인 정책이라 덮어써도 안전하다.
         iam.putRolePolicy(PutRolePolicyRequest.builder()
                 .roleName(name).policyName("qeploy-instance-access")
                 .policyDocument(instancePolicy(projectId, bucket, ecr))
                 .build());
-        log.info("IAM 인스턴스 역할 생성: role={} projectId={} ecr={}", name, projectId, ecr);
+        log.info("IAM 인스턴스 역할 정책 반영: role={} projectId={} ecr={} (기존={})", name, projectId, ecr, exists);
     }
 
     private void ensureProfileWithRole(IamClient iam, String name) {
