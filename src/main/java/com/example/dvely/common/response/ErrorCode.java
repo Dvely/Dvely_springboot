@@ -33,7 +33,12 @@ public enum ErrorCode {
 
     // 프리뷰 실행 환경(Docker). AI 제공자 코드들과 같은 이유로 4xx가 아니다 — 요청은 정상이고
     // 서버 쪽 실행 환경이 원인이며, 클라이언트가 할 수 있는 일은 재시도 또는 운영자 문의뿐이다.
-    PREVIEW_ENVIRONMENT_UNAVAILABLE(503, "PREVIEW_ENVIRONMENT_UNAVAILABLE", "프리뷰 실행 환경을 사용할 수 없습니다");
+    PREVIEW_ENVIRONMENT_UNAVAILABLE(503, "PREVIEW_ENVIRONMENT_UNAVAILABLE", "프리뷰 실행 환경을 사용할 수 없습니다"),
+
+    // BYOK 코딩 에이전트. 사용자가 해당 벤더의 본인 API 키를 아직 등록하지 않은 상태로, 서버가
+    // 대신 채워줄 수 없다(운영자 키를 사용자 대신 쓰는 것은 제공사 약관 위반). 그래서 5xx 가 아니라
+    // 400 이고, 클라이언트가 할 일은 키 등록 화면으로 보내는 것이다.
+    AI_CREDENTIAL_NOT_REGISTERED(400, "AI_CREDENTIAL_NOT_REGISTERED", "해당 제공자의 API 키가 등록되지 않았습니다");
 
     private final int status;
     private final String code;

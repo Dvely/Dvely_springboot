@@ -50,6 +50,11 @@ public class AiModelOptionsResolver {
             case ANTHROPIC -> aiProperties.getAnthropic();
             case OPENAI -> aiProperties.getOpenai();
             case GLM -> aiProperties.getGlm();
+            // A coding agent's model and reasoning depth are the CLI's own settings, not ours —
+            // there is no qeploy.ai.* block to resolve against, and pretending there is would let
+            // a request set a model that never reaches the vendor.
+            case CLAUDE_CODE, CODEX -> throw new IllegalArgumentException(
+                    "코딩 에이전트 제공자는 모델·thinking 옵션을 받지 않습니다: " + provider);
         };
     }
 

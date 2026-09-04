@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.dvely.agent.domain.value.AiProvider;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class AiProviderCredentialTest {
@@ -68,6 +69,27 @@ class AiProviderCredentialTest {
         // merely a not-null convention — it is the compliance boundary.
         assertThatThrownBy(() -> new AiProviderCredential(null, AiProvider.ANTHROPIC, ANTHROPIC_KEY, null))
                 .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void rejectsAnExecutionModeAsTheCredentialOwner() {
+        // CLAUDE_CODE reads the ANTHROPIC key; storing a row under the execution mode would give
+        // the same key two homes and let the copies drift.
+        assertThatThrownBy(() -> new AiProviderCredential(1L, AiProvider.CLAUDE_CODE, ANTHROPIC_KEY, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ANTHROPIC");
+
+        assertThatThrownBy(() -> new AiProviderCredential(1L, AiProvider.CODEX, ANTHROPIC_KEY, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("OPENAI");
+    }
+
+    @Test
+    void acceptsEveryVendorAsACredentialOwner() {
+        for (AiProvider vendor : List.of(AiProvider.ANTHROPIC, AiProvider.OPENAI, AiProvider.GLM)) {
+            assertThat(new AiProviderCredential(1L, vendor, ANTHROPIC_KEY, null).getProvider())
+                    .isEqualTo(vendor);
+        }
     }
 
     @Test
