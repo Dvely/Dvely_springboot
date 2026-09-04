@@ -81,6 +81,20 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       // 실패 시 정리(abortMultipartUpload)에 AbortMultipartUpload 가 필요하다(best-effort).
     },
     {
+      "Sid": "S3StaticSiteHosting",
+      "Effect": "Allow",
+      "Action": ["s3:CreateBucket", "s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:ListBucket",
+                 "s3:PutBucketWebsite", "s3:GetBucketWebsite",
+                 "s3:PutBucketPolicy", "s3:GetBucketPolicy",
+                 "s3:PutBucketPublicAccessBlock", "s3:GetBucketPublicAccessBlock"],
+      "Resource": ["arn:aws:s3:::qeploy-site-*", "arn:aws:s3:::qeploy-site-*/*"]
+      // 프론트 호스팅을 S3 로 고른 프로젝트가 쓰는 정적 웹호스팅 버킷(qeploy-site-*, 프로젝트별 전용).
+      // 아티팩트 버킷(qeploy-artifacts-*, 비공개 jar·이미지)과 분리한다 — 정적 웹은 퍼블릭 읽기가
+      // 필요해 같은 버킷에 섞을 수 없다. website(SPA)·퍼블릭 읽기 정책·퍼블릭 접근 차단 해제에
+      // PutBucketWebsite / PutBucketPolicy / PutBucketPublicAccessBlock 이 필요하다.
+      // S3 프론트 배포를 안 쓰면 이 문(statement)은 없어도 된다.
+    },
+    {
       "Sid": "RdsCreateDeleteQeployScoped",
       "Effect": "Allow",
       "Action": ["rds:CreateDBInstance", "rds:DeleteDBInstance"],

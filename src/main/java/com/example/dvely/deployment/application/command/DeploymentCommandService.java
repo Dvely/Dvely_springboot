@@ -12,12 +12,14 @@ import com.example.dvely.change.application.service.ResultApprovalService;
 import com.example.dvely.common.exception.ForbiddenException;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.deployment.application.command.dto.DeployCommand;
+import com.example.dvely.deployment.application.port.out.FrontendStaticHostingPort;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort.WorkflowRunMatch;
 import com.example.dvely.deployment.application.port.out.GithubPagesPort;
 import com.example.dvely.deployment.application.port.out.GithubRepoPort;
 import com.example.dvely.deployment.application.port.out.GithubRepoPort.ReleaseMetadata;
 import com.example.dvely.deployment.application.result.DeployResult;
+import com.example.dvely.deployment.application.service.DeploymentOutcomeService;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import com.example.dvely.deployment.domain.value.DeployTargetType;
@@ -27,6 +29,7 @@ import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
 import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
+import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.project.domain.value.FrontendHostingType;
@@ -68,6 +71,14 @@ public class DeploymentCommandService {
     // history is a REJECTED result.
     private final ResultApprovalService resultApprovalService;
     private final AuditRecorder auditRecorder;
+    // 프론트 S3 배포: 서버측 빌드→S3 정적 웹호스팅(provisioning 어댑터가 구현). GitHub Pages 와 다른 축.
+    private final FrontendStaticHostingPort frontendStaticHostingPort;
+    // S3 는 이 execute 안에서 동기 완료하므로, Pages 가 웹훅에서 쓰는 표준 성공 처리(LIVE 전이+변경표시
+    // +대화알림+감사)를 여기서 그대로 재사용해 파리티를 맞춘다.
+    private final DeploymentOutcomeService deploymentOutcomeService;
+    // S3 배포는 사용자 AWS 연결이 있어야 한다 — 요청 시점에 미리 확인해 헛되이 빌드까지 갔다 실패하는
+    // 것(라운드마다 clone+npm build 수 분)을 막는다. project 도메인 리포라 deployment 가 이미 의존한다.
+    private final ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
 
     @Transactional
     public DeployResult deploy(Long ownerUserId, Long projectId, DeployCommand command) {
@@ -126,15 +137,7 @@ public class DeploymentCommandService {
         if (command.frontendHostingType() != null) {
             project.changeFrontendHosting(command.frontendHostingType());
         }
-        // PR1 가드: 프론트 호스팅 타입 모델·플럼바인만 먼저 랜딩하고, S3/EC2 실제 배포 경로는 다음 PR
-        // 이다. 여기서 막지 않으면 프로젝트엔 S3 로 저장되는데 execute 는 여전히 GitHub Pages 로 배포해
-        // "설정과 실제 배포가 어긋나는" 조용한 불일치가 난다. @Transactional 이라 throw 하면 위의
-        // changeFrontendHosting 도 함께 롤백된다.
-        if (project.getFrontendHostingType() != FrontendHostingType.GITHUB_PAGES) {
-            throw new IllegalArgumentException(
-                    "아직 지원되지 않는 프론트 호스팅 방식입니다: " + project.getFrontendHostingType()
-                            + " (현재는 GITHUB_PAGES 만 배포 가능, S3·EC2 는 준비 중)");
-        }
+        validateFrontendHostingSupported(project);
         DeploymentHistory history = deploymentHistoryRepository.save(new DeploymentHistory(
                 ownerUserId,
                 project.getId(),
@@ -187,6 +190,14 @@ public class DeploymentCommandService {
 
         Project project = resolveProject(history.getOwnerUserId(), history.getProjectId());
         User user = resolveUser(history.getOwnerUserId());
+
+        // 프론트 호스팅이 S3 면 GitHub Pages 파이프라인(워크플로우 dispatch→run 폴링)이 아니라 서버측
+        // 빌드→S3 업로드로 이 execute 안에서 동기 완료한다. 완전히 다른 실행 경로라 초입에서 분기한다.
+        if (project.getFrontendHostingType() == FrontendHostingType.S3) {
+            executeS3Static(history, project, user);
+            return;
+        }
+
         String userToken = user.getGithubUserAccessToken();
         String sourceRepo = project.getSourceRepository();
         String deploymentRepo = project.getDeploymentRepository();
@@ -254,6 +265,59 @@ public class DeploymentCommandService {
                 3000
         );
         finishDispatch(history, run);
+    }
+
+    /**
+     * S3 정적 프론트 배포. GitHub Pages 와 달리 GitHub Actions 로 넘기지 않고 서버측에서 직접
+     * 빌드·업로드하므로, 이 메서드 안에서 LIVE 까지 <b>동기로</b> 완료한다(디스패치 후 웹훅/폴러가
+     * LIVE 로 만드는 Pages 경로와 다름). 실행 스레드가 수 분 머무는데, 그동안 배포 워커의
+     * heartbeat(@Scheduled)가 이 IN_PROGRESS 행의 리스를 계속 갱신하므로 단일 인스턴스에서는
+     * 이중실행이 없다(다중 인스턴스 하드닝은 후속).
+     *
+     * <p>버전 관리·preview→main 병합은 Pages 와 똑같이 {@link #prepareRelease} 를 재사용한다 —
+     * 빌드는 병합된 main(LATEST) 또는 그 버전 태그(VERSION) 기준으로 이뤄진다.</p>
+     */
+    private void executeS3Static(DeploymentHistory history, Project project, User user) {
+        String userToken = user.getGithubUserAccessToken();
+        String sourceRepo = project.getSourceRepository();
+
+        ReleaseSelection release = prepareRelease(userToken, sourceRepo, history, project);
+
+        // LATEST 는 clone 된 기본 브랜치(prepareRelease 가 preview 를 병합해 둔 main)를 그대로 빌드하고,
+        // VERSION 은 그 태그를 받아 체크아웃해 빌드한다.
+        String checkoutRef = history.getDeployTargetType() == DeployTargetType.LATEST
+                ? null
+                : release.versionLabel();
+        String siteUrl = frontendStaticHostingPort.publishToS3(new FrontendStaticHostingPort.PublishRequest(
+                project.getId(), history.getOwnerUserId(), sourceRepo, checkoutRef));
+
+        String headSha = githubRepoPort.getHeadCommitSha(userToken, sourceRepo, MAIN_BRANCH);
+        history.prepare(release.versionLabel(), siteUrl, headSha, release.metadata());
+        // prepareRelease 의 GitHub I/O(preview→main 병합 push)가 이 프로젝트 웹훅을 건드려 행 버전이
+        // 오르므로, 저장 직전 신선하게 다시 읽어 self-inflicted 낙관적락 경합을 피한다(I45 와 같은 이유).
+        // 그다음 Pages 와 동일한 표준 성공 처리로 LIVE 전이+변경표시+대화알림+감사를 태운다.
+        Project fresh = projectRepository.findById(project.getId()).orElse(project);
+        deploymentOutcomeService.applySuccess(history, fresh);
+        log.info("S3 프론트 배포 완료(LIVE): historyId={} url={} version={}",
+                history.getId(), siteUrl, release.versionLabel());
+    }
+
+    /**
+     * 요청 시점 프론트 호스팅 지원 검증. EC2 는 아직 미구현이라 거절한다(다음 조각). S3 는 사용자 AWS
+     * 연결이 있어야 하므로, 없으면 헛되이 큐잉·빌드까지 갔다 실패하지 않도록 즉시 막는다. GITHUB_PAGES
+     * 는 통과(기존 동작).
+     */
+    private void validateFrontendHostingSupported(Project project) {
+        FrontendHostingType hosting = project.getFrontendHostingType();
+        if (hosting == FrontendHostingType.EC2) {
+            throw new IllegalArgumentException(
+                    "아직 지원되지 않는 프론트 호스팅 방식입니다: EC2 (준비 중). 현재 GITHUB_PAGES·S3 를 지원합니다.");
+        }
+        if (hosting == FrontendHostingType.S3
+                && cloudConnectionSettingRepository.findByProjectId(project.getId()).isEmpty()) {
+            throw new IllegalArgumentException(
+                    "S3 프론트 배포는 연결된 클라우드가 있어야 합니다. 인프라 탭에서 AWS 클라우드 연결을 먼저 선택해주세요.");
+        }
     }
 
     private void finishDispatch(DeploymentHistory history, WorkflowRunMatch run) {
