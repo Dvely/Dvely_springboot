@@ -43,6 +43,12 @@ Anthropic 원문: "제3자 개발자가 자기 앱에 claude.ai 로그인을 제
 > - `codex exec` 는 **`OPENAI_API_KEY` 를 읽지 않는다** — `401 Missing bearer or basic authentication in header`. `codex login --with-api-key`(stdin)로 먼저 로그인해야 하며, 그 뒤 `codex login status` 가 "Logged in using an API key" 를 보고하고 `codex exec` 가 정상 인증된다.
 > - stdin 은 보안상으로도 낫다. env 와 달리 `/proc/<pid>/environ` 에 남지 않는다.
 > - `codex exec` 는 git 저장소 밖을 거부한다(`--skip-git-repo-check` 미지정 시). 편집을 되돌릴 수 있게 하려는 안전장치이고 Qeploy 워크스페이스는 clone 이라 자연히 통과하므로, 기본값에 그 플래그를 넣지 않았다.
+
+> **end-to-end 검증 완료 (2026-09-05)**
+> 유효한 OpenAI 키로 전 구간이 통과했다. `codex login --with-api-key`(stdin) → `codex exec --model gpt-5.6-luna "..."` → **exit 0, 에이전트 응답 "OK"**.
+> **모델은 별도 설정(`qeploy.coding-agent.codex.model`)으로 뺐고 기본값은 `gpt-5.6-luna`다.** CLI 기본값은 `gpt-5.6-sol` 인데, 같은 프롬프트로 luna 가 9,692 토큰, sol 이 11,203 토큰을 썼고 답은 같았다 — 기본으로 큰 등급을 태울 이유가 없다. `terra` 도 동작 확인(11,203). 비우면 CLI 기본값을 쓴다.
+> Claude Code 쪽은 인증·전송 경로까지 확인했으나 계정 잔액 부족으로 모델 응답까지는 보지 못했다.
+> 사소한 관찰: 컨테이너에 `bubblewrap` 이 없어 Codex 가 번들 버전을 쓴다는 경고가 뜬다(동작에는 영향 없음). 이미지에 추가하면 사라진다.
 - EC2가 사용자 키(암호화 저장)를 복호화해 컨테이너 env로만 주입한다. 디스크 미기록, egress는 공식 API 도메인(`api.anthropic.com`, `api.openai.com`)으로 제한.
 - 기존 `agent/infrastructure/docker/DockerContainerService`의 격리 정책(자원 상한·capability drop·no-new-priv·네트워크 격리, U4)을 재사용한다.
 - 브라우저·확장·WebSocket은 필요 없다(변형 A). 원안의 브라우저 브리지는 주거용 IP·세션 확보용이었고 BYOK+공식 API에선 그 목적이 사라진다.

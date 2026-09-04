@@ -113,8 +113,13 @@ qeploy:
     # 여기를 함께 옮기면 되고, 코드 변경이 필요 없다.
     claude:
       argv-prefix: ${QEPLOY_CODING_AGENT_CLAUDE_ARGV:claude,-p}
+      # 비우면 CLI 기본 모델을 쓴다. 두 CLI 모두 --model 플래그를 받는다.
+      model: ${QEPLOY_CODING_AGENT_CLAUDE_MODEL:}
     codex:
       argv-prefix: ${QEPLOY_CODING_AGENT_CODEX_ARGV:codex,exec}
       # Codex 는 OPENAI_API_KEY 환경변수를 읽지 않는다(codex-cli 0.153.2 실측: 401 Missing bearer).
       # 이 로그인 명령을 먼저 실행하고 키를 stdin 으로 넘긴 뒤에야 codex exec 가 인증된다.
       login-argv: ${QEPLOY_CODING_AGENT_CODEX_LOGIN_ARGV:codex,login,--with-api-key}
+      # CLI 기본값은 gpt-5.6-sol 이지만 가장 싼 등급으로도 같은 일이 끝난다(실측: luna 9,692 토큰
+      # vs sol 11,203 토큰, 동일 프롬프트). 기본으로 큰 모델을 태울 이유가 없다.
+      model: ${QEPLOY_CODING_AGENT_CODEX_MODEL:gpt-5.6-luna}

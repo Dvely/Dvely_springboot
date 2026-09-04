@@ -61,12 +61,20 @@ abstract class AbstractCliCodingAgentAdapter implements CodingAgentPort {
      */
     protected abstract List<String> argvPrefix();
 
+    /** Model to run, or blank to leave the CLI's own default. */
+    protected abstract String model();
+
     /** Human-readable CLI name, used only in log lines. */
     protected abstract String cliName();
 
     @Override
     public final CodingAgentResult run(CodingAgentCommand command) {
         List<String> argv = new ArrayList<>(argvPrefix());
+        // Both CLIs accept --model; blank means "leave the CLI's own default alone".
+        if (!model().isBlank()) {
+            argv.add("--model");
+            argv.add(model());
+        }
         // The prompt is always the final, separate argv element — never concatenated into a flag
         // and never passed through a shell, so its content cannot become syntax.
         argv.add(command.prompt());

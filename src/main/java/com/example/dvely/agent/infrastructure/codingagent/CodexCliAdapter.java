@@ -53,6 +53,11 @@ public class CodexCliAdapter extends AbstractCliCodingAgentAdapter {
     }
 
     @Override
+    protected String model() {
+        return properties.getCodex().getModel();
+    }
+
+    @Override
     protected String cliName() {
         return "Codex";
     }

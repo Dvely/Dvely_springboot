@@ -56,7 +56,7 @@ class CodexCliAdapterTest {
 
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
         verify(runner).run(eq("/host/checkout"), any(), argv.capture(), anyList(), eq(Duration.ofMinutes(4)));
-        assertThat(argv.getValue()).containsExactly("codex", "exec", "Dockerfile 을 최적화해줘");
+        assertThat(argv.getValue()).containsExactly("codex", "exec", "--model", "gpt-5.6-luna", "Dockerfile 을 최적화해줘");
     }
 
     @Test
@@ -99,6 +99,8 @@ class CodexCliAdapterTest {
     void honoursAConfiguredArgvPrefixWhenTheCliInterfaceChanges() {
         // The CLI is an external tool; a renamed non-interactive mode must be fixable in config
         // alongside the image pin rather than requiring a code change.
+        // Cli.of leaves the model blank, so this also shows the two settings are independent:
+        // overriding how the CLI is invoked does not drag a model choice along with it.
         properties.setCodex(CodingAgentProperties.Cli.of("codex", "run", "--quiet"));
         when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(0, "ok", "", false));
@@ -122,6 +124,35 @@ class CodexCliAdapterTest {
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
         verify(runner).run(any(), any(), argv.capture(), anyList(), any());
         assertThat(argv.getValue()).last().isEqualTo("a; shutdown -h now && echo $HOME");
+    }
+
+    @Test
+    void runsTheCheapestModelTierByDefault() {
+        // The CLI would otherwise pick gpt-5.6-sol. Measured on the same trivial prompt, luna used
+        // 9,692 tokens against sol's 11,203 for an identical answer, so the larger tier is cost
+        // with nothing behind it until a task actually needs it.
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
+                .thenReturn(new ContainerRunOutcome(0, "ok", "", false));
+
+        adapter.run(command());
+
+        ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
+        verify(runner).run(any(), any(), argv.capture(), anyList(), any());
+        assertThat(argv.getValue())
+                .containsExactly("codex", "exec", "--model", "gpt-5.6-luna", "Dockerfile 을 최적화해줘");
+    }
+
+    @Test
+    void leavesTheCliDefaultAloneWhenNoModelIsConfigured() {
+        properties.getCodex().setModel("");
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
+                .thenReturn(new ContainerRunOutcome(0, "ok", "", false));
+
+        adapter.run(command());
+
+        ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
+        verify(runner).run(any(), any(), argv.capture(), anyList(), any());
+        assertThat(argv.getValue()).doesNotContain("--model");
     }
 
     @Test

@@ -48,6 +48,11 @@ public class ClaudeCodeCliAdapter extends AbstractCliCodingAgentAdapter {
     }
 
     @Override
+    protected String model() {
+        return properties.getClaude().getModel();
+    }
+
+    @Override
     protected String cliName() {
         return "Claude Code";
     }

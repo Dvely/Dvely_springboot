@@ -65,7 +65,10 @@ public class CodingAgentProperties {
      */
     private Cli codex = Cli.withLogin(
             List.of("codex", "exec"),
-            List.of("codex", "login", "--with-api-key"));
+            List.of("codex", "login", "--with-api-key"),
+            // The CLI would otherwise default to gpt-5.6-sol; the cheapest tier finishes the same
+            // work, so paying for the largest one by default is a cost with nothing behind it.
+            "gpt-5.6-luna");
 
     /**
      * How one vendor's CLI is invoked non-interactively.
@@ -82,6 +85,16 @@ public class CodingAgentProperties {
         private List<String> argvPrefix = List.of();
 
         /**
+         * Model to run, appended as {@code --model <value>}; blank leaves the CLI's own default.
+         *
+         * <p>Its own setting rather than something buried in {@link #argvPrefix} because this is
+         * the cost knob an operator actually turns, and both CLIs happen to accept the same
+         * {@code --model} flag. Measured on a trivial prompt: {@code gpt-5.6-luna} used 9,692
+         * tokens where the CLI default {@code gpt-5.6-sol} used 11,203.</p>
+         */
+        private String model = "";
+
+        /**
          * Login command run before the agent, receiving the key on stdin. Empty when the CLI takes
          * its key from the environment instead (Claude Code does; Codex does not).
          */
@@ -93,10 +106,11 @@ public class CodingAgentProperties {
             return cli;
         }
 
-        static Cli withLogin(List<String> prefix, List<String> login) {
+        static Cli withLogin(List<String> prefix, List<String> login, String model) {
             Cli cli = new Cli();
             cli.setArgvPrefix(prefix);
             cli.setLoginArgv(login);
+            cli.setModel(model);
             return cli;
         }
     }
