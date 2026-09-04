@@ -14,8 +14,10 @@ import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import com.example.dvely.provisioning.application.port.out.ProjectDomainCleanupPort;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
+import com.example.dvely.provisioning.infrastructure.EcrImageRegistry;
 import com.example.dvely.provisioning.infrastructure.S3ArtifactStore;
 import com.example.dvely.provisioning.infrastructure.SsmParameterStore;
+import com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties;
 import com.example.dvely.provisioning.application.result.ServerProvisionSubmitResult;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
@@ -48,6 +50,8 @@ public class ServerProvisioningCommandService {
     private final ProjectDomainCleanupPort projectDomainCleanupPort;
     private final SsmParameterStore ssm;
     private final S3ArtifactStore s3;
+    private final EcrImageRegistry ecr;
+    private final Ec2ProvisioningProperties ec2Properties;
 
     public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType,
                                               ServerDeployMode deployMode) {
@@ -119,14 +123,22 @@ public class ServerProvisioningCommandService {
                     log.warn("서버 종료 후 SSM 파라미터 정리 실패(수동 정리 필요): projectId={} 원인={}",
                             server.getProjectId(), e.getMessage());
                 }
+                // 이미지 전달 방식대로 아티팩트를 지운다: ECR 전달이면 ECR 저장소(이미지째), 아니면 S3 객체
+                // (DOCKER=image.tar / NATIVE=app.jar). 전달 방식은 배포 당시 설정(useEcr)을 따른다 — 배포와
+                // 종료 사이에 설정을 바꾸면 반대편 아티팩트가 남을 수 있다(실험 기능, 문서화된 한계).
+                boolean useEcr = server.getDeployMode() == ServerDeployMode.DOCKER && ec2Properties.useEcr();
                 try {
-                    String artifactKey = server.getDeployMode() == ServerDeployMode.DOCKER
-                            ? s3.imageKeyFor(server.getProjectId())
-                            : s3.jarKeyFor(server.getProjectId());
-                    s3.deleteJar(connection, s3.bucketNameFor(connection), artifactKey);
+                    if (useEcr) {
+                        ecr.deleteRepository(connection, server.getProjectId());
+                    } else {
+                        String artifactKey = server.getDeployMode() == ServerDeployMode.DOCKER
+                                ? s3.imageKeyFor(server.getProjectId())
+                                : s3.jarKeyFor(server.getProjectId());
+                        s3.deleteJar(connection, s3.bucketNameFor(connection), artifactKey);
+                    }
                 } catch (RuntimeException e) {
-                    log.warn("서버 종료 후 S3 아티팩트 정리 실패(수동 정리 필요): projectId={} 원인={}",
-                            server.getProjectId(), e.getMessage());
+                    log.warn("서버 종료 후 이미지 아티팩트 정리 실패(수동 정리 필요): projectId={} useEcr={} 원인={}",
+                            server.getProjectId(), useEcr, e.getMessage());
                 }
             });
         }

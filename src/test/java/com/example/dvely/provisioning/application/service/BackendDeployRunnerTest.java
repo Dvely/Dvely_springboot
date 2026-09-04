@@ -3,6 +3,7 @@ package com.example.dvely.provisioning.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -73,7 +74,7 @@ class BackendDeployRunnerTest {
         when(s3.jarKeyFor(PROJECT)).thenReturn("10/app.jar");
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
         when(environmentVariableRepository.findByProjectIdOrderByScopeAscKeyAsc(PROJECT)).thenReturn(List.of());
-        when(roleProvisioner.ensureInstanceProfile(any(), eq(PROJECT), anyString())).thenReturn("qeploy-instance-10");
+        when(roleProvisioner.ensureInstanceProfile(any(), eq(PROJECT), anyString(), anyBoolean())).thenReturn("qeploy-instance-10");
         when(ec2.ensureSecurityGroup(any(), eq(8080))).thenReturn("sg-1");
         when(ssm.latestAmazonLinux2023Ami(any())).thenReturn("ami-1");
         when(ec2.allocateAndAssociateElasticIp(any(), anyString(), anyString()))
@@ -175,7 +176,7 @@ class BackendDeployRunnerTest {
 
         runner.deploy(building());
 
-        verify(roleProvisioner, never()).ensureInstanceProfile(any(), any(), any());
+        verify(roleProvisioner, never()).ensureInstanceProfile(any(), any(), any(), anyBoolean());
         ArgumentCaptor<LaunchSpec> spec = ArgumentCaptor.forClass(LaunchSpec.class);
         verify(ec2).launch(any(), spec.capture());
         assertThat(spec.getValue().iamInstanceProfileName()).isEqualTo("LabInstanceProfile");

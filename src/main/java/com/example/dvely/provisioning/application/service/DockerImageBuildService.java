@@ -4,6 +4,7 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService.ExecResult;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.provisioning.infrastructure.EcrImageRegistry.EcrAuth;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -40,48 +41,84 @@ public class DockerImageBuildService {
     private final BackendSourceClone sourceClone;
 
     /**
-     * 소스를 clone 해 Dockerfile 로 이미지를 빌드·save 한 tar 경로를 돌려준다. 실패는 BackendBuildException.
-     * 로컬 이미지·빌드 컨테이너는 정리한다(호출자는 tar 만 받아 S3 업로드 후 지운다).
+     * 소스를 clone 해 Dockerfile 로 이미지를 빌드·save 한 tar 경로를 돌려준다(S3 전달용). 실패는
+     * BackendBuildException. 로컬 이미지는 정리한다(호출자는 tar 만 받아 S3 업로드 후 지운다).
      */
     public Path buildImageTar(Long ownerUserId, Long projectId) {
+        String imageTag = imageTagFor(projectId);
+        Path contextTar = prepareContextTar(ownerUserId, projectId);
+        try {
+            Path imageTar = Files.createTempFile("qeploy-image-", ".tar");
+            buildAndExportImage(contextTar, imageTag, imageTar);
+            log.info("백엔드 이미지 빌드 완료(S3 전달): projectId={} tag={} platform={} bytes={}",
+                    projectId, imageTag, TARGET_PLATFORM, sizeQuietly(imageTar));
+            return imageTar;
+        } catch (IOException e) {
+            throw new BackendBuildException("이미지 tar 생성 실패: " + e.getMessage());
+        } finally {
+            deleteQuietly(contextTar);
+        }
+    }
+
+    /**
+     * 소스를 clone 해 Dockerfile 로 이미지를 빌드해 <b>ECR 로 직접 push</b> 한다(ECR 전달용). S3 를 거치지
+     * 않는다 — 컨트롤 플레인이 {@code docker login} 후 buildx {@code --push} 로 바로 올리고, EC2 는 인스턴스
+     * 역할로 pull 한다. imageRef 는 {registry}/{repo}:latest 로, EC2 의 {@code docker run} 태그와 같아야 한다.
+     */
+    public void buildAndPushImage(Long ownerUserId, Long projectId, EcrAuth auth, String imageRef) {
+        Path contextTar = prepareContextTar(ownerUserId, projectId);
+        try {
+            dockerLogin(auth);
+            try {
+                runCli(new String[]{"docker", "buildx", "build", "--platform", TARGET_PLATFORM,
+                        "-t", imageRef, "--push", "-"}, contextTar, "이미지 빌드·푸시(buildx)");
+                log.info("백엔드 이미지 빌드·푸시 완료(ECR 전달): projectId={} ref={} platform={}",
+                        projectId, imageRef, TARGET_PLATFORM);
+            } finally {
+                runCliQuiet(new String[]{"docker", "logout", auth.registry()});
+            }
+        } finally {
+            deleteQuietly(contextTar);
+        }
+    }
+
+    /**
+     * 앱 소스를 격리 컨테이너로 clone 하고 Dockerfile 을 보장한 뒤, 빌드 컨텍스트 tar 를 호스트 임시파일로
+     * 꺼내 그 경로를 돌려준다(컨테이너는 여기서 정리한다 — 이후 빌드는 호스트 buildx 가 tar 로 한다).
+     * S3·ECR 두 전달 경로가 공유한다. 호출자는 반환된 tar 를 반드시 지운다.
+     */
+    private Path prepareContextTar(Long ownerUserId, Long projectId) {
         Project project = projectRepository.findByIdAndOwnerUserId(projectId, ownerUserId)
                 .orElseThrow(() -> new BackendBuildException("프로젝트를 찾을 수 없습니다: " + projectId));
         String sourceRepo = project.getSourceRepository();
         if (sourceRepo == null || sourceRepo.isBlank()) {
             throw new BackendBuildException("연결된 GitHub 저장소가 없어 빌드할 수 없습니다.");
         }
-
-        String imageTag = imageTagFor(projectId);
         String sessionId = "img-" + projectId + "-" + System.currentTimeMillis();
         String containerId = dockerService.createAndStartContainer(
                 ownerUserId, sessionId, projectId, null, null);
-        Path contextTar = null;
         try {
             sourceClone.cloneInto(containerId, ownerUserId, sourceRepo);
             ensureDockerfile(containerId);
-
-            // 컨텍스트 tar(루트에 Dockerfile) 를 컨테이너 안에서 만든 뒤 호스트로 꺼낸다.
             ExecResult tar = dockerService.execWithExitCode(containerId,
                     "tar -cf " + CONTEXT_TAR + " -C " + APP_DIR + " .");
             if (!tar.succeeded()) {
                 throw new BackendBuildException("빌드 컨텍스트 tar 실패: " + BackendSourceClone.tail(tar.output()));
             }
-            contextTar = Files.createTempFile("qeploy-ctx-", ".tar");
+            Path contextTar = Files.createTempFile("qeploy-ctx-", ".tar");
             dockerService.copyFileFromContainer(containerId, CONTEXT_TAR, contextTar);
-
-            Path imageTar = Files.createTempFile("qeploy-image-", ".tar");
-            buildAndExportImage(contextTar, imageTag, imageTar);
-            log.info("백엔드 이미지 빌드 완료: projectId={} tag={} platform={} bytes={}",
-                    projectId, imageTag, TARGET_PLATFORM, sizeQuietly(imageTar));
-            return imageTar;
+            return contextTar;
         } catch (IOException e) {
             throw new BackendBuildException("이미지 컨텍스트 처리 실패: " + e.getMessage());
         } finally {
-            if (contextTar != null) {
-                try { Files.deleteIfExists(contextTar); } catch (IOException ignored) { }
-            }
             dockerService.removeContainer(containerId);   // 빌드 컨테이너는 일회용
         }
+    }
+
+    /** ECR 자격으로 docker login. 비밀번호는 stdin 으로만 준다(프로세스 목록·로그 유출 방지). */
+    private void dockerLogin(EcrAuth auth) {
+        runCliWithStdin(new String[]{"docker", "login", "--username", auth.username(), "--password-stdin",
+                auth.registry()}, auth.password().getBytes(StandardCharsets.UTF_8), "ECR docker login");
     }
 
     /**
@@ -103,7 +140,7 @@ public class DockerImageBuildService {
         }
     }
 
-    /** CLI 실행. stdinFile 이 있으면 stdin 으로(빌드 컨텍스트 tar). 비-0 이면 BackendBuildException. */
+    /** CLI 실행. stdinFile 을 stdin 으로 스트리밍한다(빌드 컨텍스트 tar — 대용량이라 파일 리다이렉트). */
     private void runCli(String[] cmd, Path stdinFile, String what) {
         ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
         if (stdinFile != null) {
@@ -111,16 +148,56 @@ public class DockerImageBuildService {
         }
         try {
             Process p = pb.start();
+            waitAndCheck(p, what);
+        } catch (IOException e) {
+            throw new BackendBuildException(what + " 실행 실패: " + e.getMessage());
+        }
+    }
+
+    /** CLI 실행. stdin 바이트를 써 넣고 닫는다(작은 비밀 — 예: docker login 비밀번호). */
+    private void runCliWithStdin(String[] cmd, byte[] stdin, String what) {
+        ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
+        try {
+            Process p = pb.start();
+            try (var os = p.getOutputStream()) {
+                os.write(stdin);
+            }
+            waitAndCheck(p, what);
+        } catch (IOException e) {
+            throw new BackendBuildException(what + " 실행 실패: " + e.getMessage());
+        }
+    }
+
+    /** best-effort CLI(정리용 — 예: docker logout). 실패해도 던지지 않고 경고만. */
+    private void runCliQuiet(String[] cmd) {
+        try {
+            new ProcessBuilder(cmd).redirectErrorStream(true).start().waitFor();
+        } catch (IOException e) {
+            log.warn("정리 명령 실패(무시): {}", String.join(" ", cmd));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** 출력을 다 읽고 종료코드를 확인한다(출력 소비가 있어야 파이프가 안 막힌다). 비-0 이면 예외. */
+    private void waitAndCheck(Process p, String what) {
+        try {
             String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             int code = p.waitFor();
             if (code != 0) {
                 throw new BackendBuildException(what + " 실패(exit " + code + "): " + BackendSourceClone.tail(out));
             }
         } catch (IOException e) {
-            throw new BackendBuildException(what + " 실행 실패: " + e.getMessage());
+            throw new BackendBuildException(what + " 출력 읽기 실패: " + e.getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new BackendBuildException(what + " 중단");
+        }
+    }
+
+    private void deleteQuietly(Path p) {
+        if (p != null) {
+            try { Files.deleteIfExists(p); } catch (IOException ignored) { }
         }
     }
 

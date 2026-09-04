@@ -52,6 +52,8 @@ class ServerProvisioningCommandServiceTest {
     @Mock private Ec2Provisioner ec2;
     @Mock private SsmParameterStore ssm;
     @Mock private S3ArtifactStore s3;
+    @Mock private com.example.dvely.provisioning.infrastructure.EcrImageRegistry ecr;
+    @Mock private com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties ec2Properties;
     @Mock private ProjectDomainCleanupPort projectDomainCleanupPort;
 
     @InjectMocks private ServerProvisioningCommandService service;

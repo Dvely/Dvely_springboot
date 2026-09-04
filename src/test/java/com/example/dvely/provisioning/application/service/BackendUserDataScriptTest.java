@@ -44,10 +44,34 @@ class BackendUserDataScriptTest {
     }
 
     @Test
-    void bothStartWithShebang() {
+    void ecrScriptLoginsAndPullsFromEcrAndSharesHttpsSection() {
+        String registry = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com";
+        String imageRef = registry + "/qeploy-app-7:latest";
+        String s = BackendDeployRunner.ecrUserDataScript(
+                "ap-northeast-2", registry, imageRef, 7L, 8080, "https://ask.qeploy.com");
+
+        assertThat(s).contains("dnf install -y python3 docker");
+        // 인스턴스 역할로 로그인 → pull (S3 안 씀)
+        assertThat(s).contains("aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin " + registry);
+        assertThat(s).contains("docker pull " + imageRef);
+        assertThat(s).doesNotContain("aws s3 cp");
+        assertThat(s).doesNotContain("docker load");
+        // 이후는 DOCKER-S3 와 동일: env 파일 주입 + host 포트 매핑
+        assertThat(s).contains("> /opt/app/app.env");
+        assertThat(s).contains("docker run -d --restart unless-stopped -p 8080:8080 --env-file /opt/app/app.env " + imageRef);
+        // 공통 HTTPS 종단
+        assertThat(s).contains("reverse_proxy 127.0.0.1:8080");
+        assertThat(s).contains("ASK_BASE = \"https://ask.qeploy.com\"");
+        assertThat(s).contains("on_demand");
+    }
+
+    @Test
+    void allStartWithShebang() {
         String nat = BackendDeployRunner.userDataScript("b", "k", 1L, 8080, "");
         String doc = BackendDeployRunner.dockerUserDataScript("b", "k", 1L, "img:latest", 8080, "");
+        String ecr = BackendDeployRunner.ecrUserDataScript("ap-northeast-2", "reg", "reg/img:latest", 1L, 8080, "");
         assertThat(nat).startsWith("#!/bin/bash");
         assertThat(doc).startsWith("#!/bin/bash");
+        assertThat(ecr).startsWith("#!/bin/bash");
     }
 }

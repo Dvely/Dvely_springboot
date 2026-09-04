@@ -15,6 +15,7 @@ import com.example.dvely.provisioning.infrastructure.Ec2InstanceRoleProvisioner;
 import com.example.dvely.provisioning.application.port.out.FrontendOriginPort;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner.LaunchSpec;
+import com.example.dvely.provisioning.infrastructure.EcrImageRegistry;
 import com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties;
 import com.example.dvely.provisioning.infrastructure.S3ArtifactStore;
 import com.example.dvely.provisioning.infrastructure.SsmParameterStore;
@@ -47,6 +48,7 @@ public class BackendDeployRunner {
     private final CloudConnectionRepository cloudConnectionRepository;
     private final BackendJarBuildService buildService;
     private final DockerImageBuildService imageBuildService;
+    private final EcrImageRegistry ecr;
     private final S3ArtifactStore s3;
     private final SsmParameterStore ssm;
     private final Ec2InstanceRoleProvisioner roleProvisioner;
@@ -74,39 +76,53 @@ public class BackendDeployRunner {
             return;
         }
         boolean docker = server.getDeployMode() == ServerDeployMode.DOCKER;
+        // DOCKER 모드의 이미지 전달: 기본 S3(docker save→S3→load), 설정으로 켜면 ECR(build→push→pull).
+        // NATIVE(jar)는 항상 S3. useEcr 는 이후 IAM 권한·정리 방식까지 가른다.
+        boolean useEcr = docker && ec2Properties.useEcr();
         Path artifact = null;
         String instanceId = null;
         String eipAllocationId = null;
         try {
-            // 배포 형태로 산출물이 갈린다: NATIVE=jar, DOCKER=이미지 tar. 나머지(S3 업로드·SSM·launch)는 공통.
-            artifact = docker
-                    ? imageBuildService.buildImageTar(ownerUserId, projectId)
-                    : buildService.buildJar(ownerUserId, projectId);
-
             String bucket = s3.bucketNameFor(connection);
-            String key = docker ? s3.imageKeyFor(projectId) : s3.jarKeyFor(projectId);
-            s3.ensureBucket(connection, bucket);
-            s3.uploadJar(connection, bucket, key, artifact);   // generic: Path→key 멀티파트 업로드
+            String userData;
+            if (useEcr) {
+                // ECR 전달: S3 를 거치지 않고 컨트롤 플레인이 이미지를 ECR 로 push, EC2 가 pull.
+                ecr.ensureRepository(connection, projectId);
+                EcrImageRegistry.EcrAuth auth = ecr.authorize(connection);
+                String imageRef = ecr.imageRefFor(connection, projectId);
+                imageBuildService.buildAndPushImage(ownerUserId, projectId, auth, imageRef);
+                userData = ecrUserDataScript(connection.getRegion(), auth.registry(), imageRef,
+                        projectId, server.getPort(), ec2Properties.tlsAskBaseUrlOrEmpty());
+            } else {
+                // S3 전달: NATIVE=jar, DOCKER=이미지 tar. 산출물을 S3 로 올리고 EC2 가 인스턴스 역할로 받는다.
+                artifact = docker
+                        ? imageBuildService.buildImageTar(ownerUserId, projectId)
+                        : buildService.buildJar(ownerUserId, projectId);
+                String key = docker ? s3.imageKeyFor(projectId) : s3.jarKeyFor(projectId);
+                s3.ensureBucket(connection, bucket);
+                s3.uploadJar(connection, bucket, key, artifact);   // generic: Path→key 멀티파트 업로드
+                userData = docker
+                        ? dockerUserDataScript(bucket, key, projectId,
+                                DockerImageBuildService.imageTagFor(projectId), server.getPort(),
+                                ec2Properties.tlsAskBaseUrlOrEmpty())
+                        : userDataScript(bucket, key, projectId, server.getPort(),
+                                ec2Properties.tlsAskBaseUrlOrEmpty());
+            }
 
             ssm.putAll(connection, projectId, assembleEnv(projectId, server.getPort()));
 
             // IAM 역할 생성이 금지된 환경(AWS Academy Learner Lab 등)에서는 미리 존재하는
             // 프로파일(예: LabInstanceProfile)을 설정으로 지정해 생성을 건너뛴다. 기본은 자동 생성.
+            // ECR 전달이면 인스턴스 역할에 ECR pull 권한을 더한다(useEcr).
             String profileName;
             if (ec2Properties.hasInstanceProfileOverride()) {
                 profileName = ec2Properties.instanceProfileOverride();
                 log.info("[BackendDeploy] 인스턴스 프로파일 오버라이드 사용(생성 건너뜀): {}", profileName);
             } else {
-                profileName = roleProvisioner.ensureInstanceProfile(connection, projectId, bucket);
+                profileName = roleProvisioner.ensureInstanceProfile(connection, projectId, bucket, useEcr);
             }
             String sgId = ec2.ensureSecurityGroup(connection, server.getPort());
             String ami = ssm.latestAmazonLinux2023Ami(connection);
-            String userData = docker
-                    ? dockerUserDataScript(bucket, key, projectId,
-                            DockerImageBuildService.imageTagFor(projectId), server.getPort(),
-                            ec2Properties.tlsAskBaseUrlOrEmpty())
-                    : userDataScript(bucket, key, projectId, server.getPort(),
-                            ec2Properties.tlsAskBaseUrlOrEmpty());
 
             LaunchSpec spec = new LaunchSpec(server.getInstanceType(), ami, userData, sgId, null,
                     profileName, "qeploy-backend-" + projectId);
@@ -249,6 +265,30 @@ public class BackendDeployRunner {
                   done > /opt/app/app.env
                 docker run -d --restart unless-stopped -p %d:%d --env-file /opt/app/app.env %s
                 """.formatted(bucket, key, projectId, port, port, imageTag)
+                + httpsSection(port, tlsAskBase);
+    }
+
+    /**
+     * ECR 전달 user-data. S3 대신 ECR 에서 이미지를 받는다 — 인스턴스 역할로 {@code aws ecr
+     * get-login-password} 해 {@code docker login} 후 {@code docker pull}. 이후는 DOCKER-S3 와 동일
+     * ({@code --env-file} 로 SSM env 주입, host 포트 매핑, HTTPS 공통). imageRef 는 {registry}/{repo}:latest.
+     */
+    static String ecrUserDataScript(String region, String registry, String imageRef, Long projectId,
+                                    int port, String tlsAskBase) {
+        return """
+                #!/bin/bash
+                set -e
+                dnf install -y python3 docker
+                systemctl enable --now docker
+                mkdir -p /opt/app && cd /opt/app
+                aws ecr get-login-password --region %s | docker login --username AWS --password-stdin %s
+                docker pull %s
+                aws ssm get-parameters-by-path --path /qeploy/%d/ --with-decryption --recursive \
+                  --query "Parameters[].[Name,Value]" --output text | while read -r name value; do
+                    echo "$(basename "$name")=$value"
+                  done > /opt/app/app.env
+                docker run -d --restart unless-stopped -p %d:%d --env-file /opt/app/app.env %s
+                """.formatted(region, registry, imageRef, projectId, port, port, imageRef)
                 + httpsSection(port, tlsAskBase);
     }
 
