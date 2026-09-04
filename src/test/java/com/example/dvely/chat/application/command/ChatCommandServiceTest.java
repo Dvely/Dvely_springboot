@@ -121,13 +121,35 @@ class ChatCommandServiceTest {
         when(agentOrchestrator.submit(plan, 2L, 21L))
                 .thenReturn(new AgentSubmission("task-abc123", TaskStatus.QUEUED, List.of()));
 
-        MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘");
+        MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘", null);
 
         assertThat(result.messageId()).isEqualTo(31L);
         assertThat(result.taskId()).isEqualTo("task-abc123");
         assertThat(conversation.getTitle()).isEqualTo("FAQ를 추가해줘");
         verify(conversationRepository).save(conversation);
         verify(agentOrchestrator).submit(plan, 2L, 21L);
+    }
+
+    @Test
+    void sendMessageUsesRequestedAiProviderWhenGiven() {
+        Conversation conversation = new Conversation(
+                21L, 2L, 7L, false, null, LocalDateTime.now(), LocalDateTime.now());
+        ChatMessage saved = new ChatMessage(
+                31L, 21L, com.example.dvely.chat.domain.value.ChatRole.USER, "FAQ를 추가해줘", 0, LocalDateTime.now());
+        List<LlmMessage> context = List.of(new LlmMessage("user", "FAQ를 추가해줘"));
+        AgentPlan plan = new AgentPlan(List.of(), "reason", AiProvider.GLM, 7L);
+        when(conversationRepository.findByIdAndUserIdAndDeletedFalse(21L, 2L))
+                .thenReturn(Optional.of(conversation));
+        when(chatMessageRepository.save(any(ChatMessage.class))).thenReturn(saved);
+        when(agentMessageService.getUserIntentHistory(21L)).thenReturn(context);
+        when(decisionAgentService.decide(context, AiProvider.GLM, 7L)).thenReturn(plan);
+        when(agentOrchestrator.submit(plan, 2L, 21L))
+                .thenReturn(new AgentSubmission("task-glm", TaskStatus.QUEUED, List.of()));
+
+        MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘", AiProvider.GLM);
+
+        assertThat(result.taskId()).isEqualTo("task-glm");
+        verify(decisionAgentService).decide(context, AiProvider.GLM, 7L);
     }
 
     @Test
@@ -241,7 +263,7 @@ class ChatCommandServiceTest {
         when(decisionAgentService.decide(context, AiProvider.ANTHROPIC, 7L))
                 .thenThrow(new IllegalStateException("LLM 연결 실패"));
 
-        MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘");
+        MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘", null);
 
         assertThat(result.taskId()).isNull();
         verify(agentMessageService).appendAssistant(

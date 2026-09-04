@@ -104,9 +104,10 @@ public class ChatCommandService {
     }
 
     @Transactional
-    public MessageResult sendMessage(Long userId, Long conversationId, String content) {
+    public MessageResult sendMessage(Long userId, Long conversationId, String content, AiProvider requestedProvider) {
         Conversation conversation = conversationRepository.findByIdAndUserIdAndDeletedFalse(conversationId, userId)
                 .orElseThrow(() -> new ConversationNotFoundException(conversationId, userId));
+        AiProvider provider = requestedProvider != null ? requestedProvider : AiProvider.ANTHROPIC;
 
         ChatMessage message = chatMessageRepository.save(
                 new ChatMessage(conversation.getId(), ChatRole.USER, content, 0)
@@ -123,7 +124,7 @@ public class ChatCommandService {
             // 흉내 내다 JSON 을 내지 못한다 — AgentMessageService#getUserIntentHistory 참고.
             AgentPlan plan = decisionAgentService.decide(
                     agentMessageService.getUserIntentHistory(conversationId),
-                    AiProvider.ANTHROPIC,
+                    provider,
                     conversation.getProjectId()
             );
             taskId = agentOrchestrator.submit(plan, userId, conversationId).taskId();

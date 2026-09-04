@@ -17,6 +17,7 @@ import com.example.dvely.agent.application.facade.AgentFacade;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.result.AgentSubmitResult;
 import com.example.dvely.agent.application.service.AgentEventStreamService;
+import com.example.dvely.agent.application.service.AiProviderQueryService;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
@@ -54,7 +55,8 @@ class AgentControllerTest {
                 taskStore,
                 inputWaitStore,
                 mock(PreviewSessionService.class),
-                mock(AgentEventStreamService.class)
+                mock(AgentEventStreamService.class),
+                mock(AiProviderQueryService.class)
         );
         task = new AgentTask(
                 "task-1",

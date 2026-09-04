@@ -1,5 +1,6 @@
 package com.example.dvely.chat.application.facade;
 
+import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.chat.application.command.ChatCommandService;
 import com.example.dvely.chat.application.query.ChatQueryService;
 import com.example.dvely.chat.application.result.ConversationResult;
@@ -43,8 +44,8 @@ public class ChatFacade {
         return chatQueryService.getTrashConversations(userId);
     }
 
-    public MessageResult sendMessage(Long userId, Long conversationId, String content) {
-        return chatCommandService.sendMessage(userId, conversationId, content);
+    public MessageResult sendMessage(Long userId, Long conversationId, String content, AiProvider aiProvider) {
+        return chatCommandService.sendMessage(userId, conversationId, content, aiProvider);
     }
 
     public List<MessageResult> getMessages(Long userId, Long conversationId) {
