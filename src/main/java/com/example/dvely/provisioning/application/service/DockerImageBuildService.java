@@ -106,7 +106,12 @@ public class DockerImageBuildService {
                 throw new BackendBuildException("빌드 컨텍스트 tar 실패: " + BackendSourceClone.tail(tar.output()));
             }
             Path contextTar = Files.createTempFile("qeploy-ctx-", ".tar");
-            dockerService.copyFileFromContainer(containerId, CONTEXT_TAR, contextTar);
+            try {
+                dockerService.copyFileFromContainer(containerId, CONTEXT_TAR, contextTar);
+            } catch (RuntimeException e) {
+                deleteQuietly(contextTar);   // 복사 실패 시 방금 만든 임시 tar 를 남기지 않는다
+                throw e;
+            }
             return contextTar;
         } catch (IOException e) {
             throw new BackendBuildException("이미지 컨텍스트 처리 실패: " + e.getMessage());
