@@ -37,7 +37,9 @@
   - **검증**: buildx `--push`→pull→run 메커니즘을 로컬 레지스트리로 실검증(내 코드와 동일 명령), ECR 토큰 디코드·URI 구성 단위테스트. **실 ECR e2e 는 크레딧 확보 시**(get-login-password·repo create/delete 는 미검증).
   - **한계**: 배포와 종료 사이 `image-transfer` 를 바꾸면 반대편 아티팩트가 남을 수 있다(플래그가 전역이라). 기존 인스턴스 역할은 정책 재부착 안 함 → ECR 권한은 새 프로젝트부터 반영.
 - **P4 — compose 다중 컨테이너**: web+back(+db) 여러 이미지 한 EC2. user-data 가 `docker compose up`. mono 풀스택을 컨테이너 분리로.
-- **P5 — `ProvisionMethod.DOCKER` 활성**: EC2 위 DB 컨테이너(RDS 대안). 승인·상태·정리는 RDS 골격 복제. compose(P4)와 합쳐 "back+web+db 전부 컨테이너 한 EC2" 완성.
+  - **번들 DB(back+db) 완료** 🟢: DOCKER 배포에 `bundledDbEngine`(MYSQL/POSTGRESQL) 옵션 — 같은 EC2 에 앱+DB 컨테이너를 docker compose 로 함께 띄운다("올인원", RDS 없이). `provisioned_servers.bundled_db_engine`(V41), compose.yml 생성(db=공식이미지+볼륨+헬스체크, app=depends_on service_healthy+env_file+.env), DB 비밀번호는 배포 시 생성→SSM→`.env`(user-data 엔 비밀 없음), 앱은 `jdbc:{engine}://db/appdb` 로 배선. S3·ECR 전달 둘 다 지원. **web(프론트) 컨테이너는 아직** — back+db 만.
+  - **검증**: 생성되는 compose.yml 을 로컬 `docker compose up`(앱 이미지+mysql) + JPA `/db` 200(insert+count)으로 실구동 검증, 생성 스크립트가 그 형태와 바이트 동일함을 테스트로 못박음. compose 플러그인 다운로드·SSM→.env 는 EC2 한정(미검증).
+- **P5 — `ProvisionMethod.DOCKER`(독립 DB 자원) 활성**: DB 도메인의 독립 DB 컨테이너(RDS 대안, 자체 EC2/승인/상태워커). 위 번들 DB 와 별개 — 번들은 앱과 한 인스턴스, 이건 DB 단독 자원. 아직 "곧 지원".
 
 ## 결정
 

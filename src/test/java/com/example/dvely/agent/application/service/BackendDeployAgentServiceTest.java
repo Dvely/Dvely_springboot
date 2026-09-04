@@ -51,13 +51,13 @@ class BackendDeployAgentServiceTest {
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
         when(databaseCommandService.provision(USER, PROJECT, ProvisionMethod.RDS, DatabaseEngine.MYSQL))
                 .thenReturn(new ProvisionSubmitResult(true, null, null, List.of(1L)));
-        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE))
+        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null))
                 .thenReturn(new ServerProvisionSubmitResult(true, 5L, List.of(2L)));
 
         CodeResult result = service.execute(step(Map.of("dbEngine", "MYSQL")), USER, PROJECT);
 
         verify(databaseCommandService).provision(USER, PROJECT, ProvisionMethod.RDS, DatabaseEngine.MYSQL);
-        verify(serverCommandService).submit(USER, PROJECT, null, ServerDeployMode.NATIVE);
+        verify(serverCommandService).submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null);
         assertThat(result.summary()).contains("데이터베이스");
     }
 
@@ -66,25 +66,25 @@ class BackendDeployAgentServiceTest {
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT))
                 .thenReturn(List.of(ProvisionedDatabase.pending(PROJECT, ProvisionMethod.RDS,
                         DatabaseEngine.MYSQL, ProvisionOrigin.MANUAL)));
-        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE))
+        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null))
                 .thenReturn(new ServerProvisionSubmitResult(true, 5L, List.of(2L)));
 
         service.execute(step(Map.of("dbEngine", "MYSQL")), USER, PROJECT);
 
         verify(databaseCommandService, never()).provision(any(), any(), any(), any());
-        verify(serverCommandService).submit(USER, PROJECT, null, ServerDeployMode.NATIVE);
+        verify(serverCommandService).submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null);
     }
 
     @Test
     void serverOnlyWhenNoDbEngine() {
-        when(serverCommandService.submit(USER, PROJECT, "t3.small", ServerDeployMode.NATIVE))
+        when(serverCommandService.submit(USER, PROJECT, "t3.small", ServerDeployMode.NATIVE, null))
                 .thenReturn(new ServerProvisionSubmitResult(true, 5L, List.of(2L)));
 
         service.execute(step(Map.of("instanceType", "t3.small")), USER, PROJECT);
 
         verify(databaseRepository, never()).findByProjectIdOrderByCreatedAtDesc(anyLong());
         verify(databaseCommandService, never()).provision(any(), any(), any(), any());
-        verify(serverCommandService).submit(USER, PROJECT, "t3.small", ServerDeployMode.NATIVE);
+        verify(serverCommandService).submit(USER, PROJECT, "t3.small", ServerDeployMode.NATIVE, null);
     }
 
     @Test
@@ -92,12 +92,12 @@ class BackendDeployAgentServiceTest {
         CodeResult result = service.execute(step(Map.of("dbEngine", "MYSQL")), USER, null);
 
         assertThat(result.summary()).contains("프로젝트");
-        verify(serverCommandService, never()).submit(any(), any(), any(), any());
+        verify(serverCommandService, never()).submit(any(), any(), any(), any(), any());
     }
 
     @Test
     void returnsActionableMessageWhenNoCloudConnected() {
-        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE))
+        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null))
                 .thenThrow(new NotFoundException("백엔드 서버는 연결된 클라우드가 있어야 만들 수 있습니다."));
 
         CodeResult result = service.execute(step(Map.of()), USER, PROJECT);
