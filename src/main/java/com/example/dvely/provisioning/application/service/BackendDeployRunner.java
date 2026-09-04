@@ -6,6 +6,7 @@ import com.example.dvely.environment.domain.model.EnvironmentVariable;
 import com.example.dvely.environment.domain.repository.EnvironmentVariableRepository;
 import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
+import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepository;
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
@@ -79,6 +80,11 @@ public class BackendDeployRunner {
         // DOCKER 모드의 이미지 전달: 기본 S3(docker save→S3→load), 설정으로 켜면 ECR(build→push→pull).
         // NATIVE(jar)는 항상 S3. useEcr 는 이후 IAM 권한·정리 방식까지 가른다.
         boolean useEcr = docker && ec2Properties.useEcr();
+        // 번들 DB: DOCKER 배포에서 같은 EC2 에 DB 컨테이너를 docker compose 로 함께 띄운다(submit 이 DOCKER
+        // 임을 강제). 있으면 단일 docker run 대신 compose, 앱 env 는 그 DB(db 서비스)로 배선한다.
+        DatabaseEngine bundledDb = server.getBundledDbEngine();
+        String tlsAsk = ec2Properties.tlsAskBaseUrlOrEmpty();
+        int port = server.getPort();
         Path artifact = null;
         String instanceId = null;
         String eipAllocationId = null;
@@ -91,8 +97,11 @@ public class BackendDeployRunner {
                 EcrImageRegistry.EcrAuth auth = ecr.authorize(connection);
                 String imageRef = ecr.imageRefFor(connection, projectId);
                 imageBuildService.buildAndPushImage(ownerUserId, projectId, auth, imageRef);
-                userData = ecrUserDataScript(connection.getRegion(), auth.registry(), imageRef,
-                        projectId, server.getPort(), ec2Properties.tlsAskBaseUrlOrEmpty());
+                userData = bundledDb != null
+                        ? ecrComposeUserDataScript(connection.getRegion(), auth.registry(), imageRef,
+                                bundledDb, projectId, port, tlsAsk)
+                        : ecrUserDataScript(connection.getRegion(), auth.registry(), imageRef,
+                                projectId, port, tlsAsk);
             } else {
                 // S3 전달: NATIVE=jar, DOCKER=이미지 tar. 산출물을 S3 로 올리고 EC2 가 인스턴스 역할로 받는다.
                 artifact = docker
@@ -101,15 +110,17 @@ public class BackendDeployRunner {
                 String key = docker ? s3.imageKeyFor(projectId) : s3.jarKeyFor(projectId);
                 s3.ensureBucket(connection, bucket);
                 s3.uploadJar(connection, bucket, key, artifact);   // generic: Path→key 멀티파트 업로드
-                userData = docker
-                        ? dockerUserDataScript(bucket, key, projectId,
-                                DockerImageBuildService.imageTagFor(projectId), server.getPort(),
-                                ec2Properties.tlsAskBaseUrlOrEmpty())
-                        : userDataScript(bucket, key, projectId, server.getPort(),
-                                ec2Properties.tlsAskBaseUrlOrEmpty());
+                if (docker) {
+                    String appImageTag = DockerImageBuildService.imageTagFor(projectId);
+                    userData = bundledDb != null
+                            ? dockerComposeUserDataScript(bucket, key, appImageTag, bundledDb, projectId, port, tlsAsk)
+                            : dockerUserDataScript(bucket, key, projectId, appImageTag, port, tlsAsk);
+                } else {
+                    userData = userDataScript(bucket, key, projectId, port, tlsAsk);
+                }
             }
 
-            ssm.putAll(connection, projectId, assembleEnv(projectId, server.getPort()));
+            ssm.putAll(connection, projectId, assembleEnv(server));
 
             // IAM 역할 생성이 금지된 환경(AWS Academy Learner Lab 등)에서는 미리 존재하는
             // 프로파일(예: LabInstanceProfile)을 설정으로 지정해 생성을 건너뛴다. 기본은 자동 생성.
@@ -177,22 +188,36 @@ public class BackendDeployRunner {
         throw last;
     }
 
-    /** RDS 접속정보 + 프로젝트 환경변수를 EC2 앱이 읽을 env 로 조립한다. */
-    private Map<String, String> assembleEnv(Long projectId, int port) {
+    /** DB 접속정보(RDS 또는 번들) + 프로젝트 환경변수를 EC2 앱이 읽을 env 로 조립한다. */
+    private Map<String, String> assembleEnv(ProvisionedServer server) {
+        Long projectId = server.getProjectId();
         Map<String, String> env = new LinkedHashMap<>();
         // 리슨 포트를 두 관례로 다 준다: SERVER_PORT(Spring relaxed-binding: server.port)와
         // PORT(Node/Next 관례). 스택에 따라 앱이 둘 중 무엇을 읽든 host 매핑 포트와 맞는다.
-        env.put("SERVER_PORT", String.valueOf(port));
-        env.put("PORT", String.valueOf(port));
+        env.put("SERVER_PORT", String.valueOf(server.getPort()));
+        env.put("PORT", String.valueOf(server.getPort()));
 
-        databaseRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
-                .filter(db -> db.getStatus() == ProvisionStatus.READY)
-                .findFirst()
-                .ifPresent(db -> {
-                    env.put("SPRING_DATASOURCE_URL", jdbcUrl(db));
-                    env.put("SPRING_DATASOURCE_USERNAME", db.getUsername());
-                    env.put("SPRING_DATASOURCE_PASSWORD", db.getPassword());
-                });
+        if (server.hasBundledDb()) {
+            // 번들 DB: 같은 EC2 의 db 컨테이너로 배선한다. 비밀번호를 여기서 한 번 생성해 앱
+            // (SPRING_DATASOURCE_PASSWORD)과 db 서비스(compose 가 .env 의 DB_PASSWORD 를 치환)가 같은
+            // 값을 쓰게 한다. 비밀은 SSM 으로만 가고(호스트에서 .env 로 내려짐) user-data 엔 안 담긴다.
+            DatabaseEngine engine = server.getBundledDbEngine();
+            String password = randomPassword();
+            env.put("DB_NAME", BUNDLED_DB_NAME);
+            env.put("DB_PASSWORD", password);
+            env.put("SPRING_DATASOURCE_URL", bundledJdbcUrl(engine));
+            env.put("SPRING_DATASOURCE_USERNAME", bundledDbUsername(engine));
+            env.put("SPRING_DATASOURCE_PASSWORD", password);
+        } else {
+            databaseRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
+                    .filter(db -> db.getStatus() == ProvisionStatus.READY)
+                    .findFirst()
+                    .ifPresent(db -> {
+                        env.put("SPRING_DATASOURCE_URL", jdbcUrl(db));
+                        env.put("SPRING_DATASOURCE_USERNAME", db.getUsername());
+                        env.put("SPRING_DATASOURCE_PASSWORD", db.getPassword());
+                    });
+        }
 
         // 프론트↔백엔드 CORS: 프로젝트 프론트 오리진을 넘겨준다. 백엔드(템플릿/사용자 앱)가 이 값을
         // 읽어 CORS 허용 오리진으로 쓴다 — 없으면 프론트가 백엔드 도메인을 호출할 때 브라우저가 막는다.
@@ -205,6 +230,36 @@ public class BackendDeployRunner {
             env.put(v.getKey(), v.getValue());   // 사용자 지정 env 가 우선(뒤에 넣어 덮어씀)
         }
         return env;
+    }
+
+    /** 번들 DB 이름(고정). compose 의 DB 초기화(MYSQL_DATABASE/POSTGRES_DB)와 앱 JDBC URL 이 이걸 쓴다. */
+    private static final String BUNDLED_DB_NAME = "appdb";
+
+    /** 번들 DB JDBC URL — 같은 compose 네트워크의 db 서비스명으로 접속한다. */
+    private static String bundledJdbcUrl(DatabaseEngine engine) {
+        return switch (engine) {
+            case MYSQL -> "jdbc:mysql://db:3306/" + BUNDLED_DB_NAME;
+            case POSTGRESQL -> "jdbc:postgresql://db:5432/" + BUNDLED_DB_NAME;
+        };
+    }
+
+    /** 번들 DB 접속 계정 — 공식 이미지의 슈퍼유저(단일 테넌트, 같은 인스턴스 안). */
+    private static String bundledDbUsername(DatabaseEngine engine) {
+        return switch (engine) {
+            case MYSQL -> "root";
+            case POSTGRESQL -> "postgres";
+        };
+    }
+
+    /** 번들 DB 비밀번호 — 셸·URL·DB 에서 안전한 영숫자만(특수문자 회피). */
+    private static String randomPassword() {
+        final String alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        java.security.SecureRandom rnd = new java.security.SecureRandom();
+        StringBuilder sb = new StringBuilder(24);
+        for (int i = 0; i < 24; i++) {
+            sb.append(alphabet.charAt(rnd.nextInt(alphabet.length())));
+        }
+        return sb.toString();
     }
 
     private String jdbcUrl(ProvisionedDatabase db) {
@@ -290,6 +345,125 @@ public class BackendDeployRunner {
                 docker run -d --restart unless-stopped -p %d:%d --env-file /opt/app/app.env %s
                 """.formatted(region, registry, imageRef, projectId, port, port, imageRef)
                 + httpsSection(port, tlsAskBase);
+    }
+
+    /**
+     * 번들 DB(S3 전달) user-data. 앱 이미지는 S3 에서 {@code docker load}, DB 는 compose 로 같은 EC2 에
+     * 함께 띄운다. 비밀·접속정보는 SSM 에서 {@code .env}(compose 작업 디렉터리)로 내려 앱 컨테이너 env 와
+     * db 서비스 치환(${DB_PASSWORD}/${DB_NAME})에 함께 쓴다 — user-data 엔 비밀을 담지 않는다.
+     */
+    static String dockerComposeUserDataScript(String bucket, String key, String appImageTag,
+                                              DatabaseEngine dbEngine, Long projectId, int port, String tlsAskBase) {
+        return """
+                #!/bin/bash
+                set -e
+                dnf install -y python3 docker
+                systemctl enable --now docker
+                mkdir -p /opt/app && cd /opt/app
+                aws s3 cp s3://%s/%s /opt/app/image.tar
+                docker load -i /opt/app/image.tar
+                """.formatted(bucket, key)
+                + ssmToEnvFileSection(projectId)
+                + composeUpSection(appImageTag, dbEngine, port)
+                + httpsSection(port, tlsAskBase);
+    }
+
+    /**
+     * 번들 DB(ECR 전달) user-data. 앱 이미지는 ECR 에서 pull, 나머지는 dockerComposeUserDataScript 와 동일.
+     */
+    static String ecrComposeUserDataScript(String region, String registry, String imageRef,
+                                           DatabaseEngine dbEngine, Long projectId, int port, String tlsAskBase) {
+        return """
+                #!/bin/bash
+                set -e
+                dnf install -y python3 docker
+                systemctl enable --now docker
+                mkdir -p /opt/app && cd /opt/app
+                aws ecr get-login-password --region %s | docker login --username AWS --password-stdin %s
+                docker pull %s
+                """.formatted(region, registry, imageRef)
+                + ssmToEnvFileSection(projectId)
+                + composeUpSection(imageRef, dbEngine, port)
+                + httpsSection(port, tlsAskBase);
+    }
+
+    /** SSM 파라미터를 compose 작업 디렉터리의 {@code .env} 로 내린다(앱 env_file + compose 변수 치환 겸용). */
+    private static String ssmToEnvFileSection(Long projectId) {
+        return """
+                aws ssm get-parameters-by-path --path /qeploy/%d/ --with-decryption --recursive \
+                  --query "Parameters[].[Name,Value]" --output text | while read -r name value; do
+                    echo "$(basename "$name")=$value"
+                  done > /opt/app/.env
+                """.formatted(projectId);
+    }
+
+    /**
+     * docker compose 플러그인을 확보하고 compose.yml(app + db 서비스)을 써서 {@code up} 한다. AL2023 기본에
+     * compose 플러그인이 없을 수 있어 릴리스 바이너리를 내려받는다(EC2 는 인터넷 egress 가 있다 — Caddy 도
+     * 같은 방식). app 이미지는 이미 로컬(load/pull)에 있으므로 compose 가 그대로 쓴다.
+     */
+    private static String composeUpSection(String appImageRef, DatabaseEngine dbEngine, int port) {
+        return """
+                mkdir -p /usr/libexec/docker/cli-plugins
+                curl -sSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
+                  -o /usr/libexec/docker/cli-plugins/docker-compose
+                chmod +x /usr/libexec/docker/cli-plugins/docker-compose
+                cat > /opt/app/compose.yml <<'YAML'
+                %sYAML
+                docker compose -f /opt/app/compose.yml --project-directory /opt/app up -d
+                """.formatted(composeFile(appImageRef, dbEngine, port));
+    }
+
+    /**
+     * compose.yml 내용. db(엔진별 공식 이미지 + 볼륨 + 헬스체크)와 app(이미지 + db 의존 + .env + 포트 매핑).
+     * 비밀은 없다 — DB 비밀번호/이름은 {@code .env} 의 ${DB_PASSWORD}/${DB_NAME} 치환으로 들어간다.
+     */
+    private static String composeFile(String appImageRef, DatabaseEngine dbEngine, int port) {
+        String dbService = switch (dbEngine) {
+            case MYSQL -> """
+                      db:
+                        image: mysql:8.0
+                        environment:
+                          MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+                          MYSQL_DATABASE: ${DB_NAME}
+                        volumes:
+                          - dbdata:/var/lib/mysql
+                        healthcheck:
+                          test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${DB_PASSWORD}"]
+                          interval: 5s
+                          timeout: 5s
+                          retries: 30
+                    """;
+            case POSTGRESQL -> """
+                      db:
+                        image: postgres:16
+                        environment:
+                          POSTGRES_PASSWORD: ${DB_PASSWORD}
+                          POSTGRES_DB: ${DB_NAME}
+                        volumes:
+                          - dbdata:/var/lib/postgresql/data
+                        healthcheck:
+                          test: ["CMD-SHELL", "pg_isready -U postgres"]
+                          interval: 5s
+                          timeout: 5s
+                          retries: 30
+                    """;
+        };
+        return """
+                services:
+                %s  app:
+                    image: %s
+                    depends_on:
+                      db:
+                        condition: service_healthy
+                    env_file:
+                      - .env
+                    ports:
+                      - "%d:%d"
+                    restart: unless-stopped
+                volumes:
+                  dbdata:
+                """.formatted(dbService, appImageRef, port, port);
     }
 
     /** HTTPS 종단(Caddy on-demand + 남용 방지 ask). NATIVE·DOCKER 공통 — localhost:port 로 프록시. */

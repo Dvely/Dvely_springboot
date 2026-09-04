@@ -10,6 +10,7 @@ import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
+import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import com.example.dvely.provisioning.application.port.out.ProjectDomainCleanupPort;
@@ -54,14 +55,19 @@ public class ServerProvisioningCommandService {
     private final Ec2ProvisioningProperties ec2Properties;
 
     public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType,
-                                              ServerDeployMode deployMode) {
+                                              ServerDeployMode deployMode, DatabaseEngine bundledDbEngine) {
         resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
 
         String tier = (instanceType == null || instanceType.isBlank())
                 ? DEFAULT_INSTANCE_TYPE : instanceType;
         ServerDeployMode mode = deployMode == null ? ServerDeployMode.NATIVE : deployMode;
+        // 번들 DB 는 DOCKER 배포에서만 의미가 있다(같은 EC2 에 compose 로 DB 컨테이너를 띄우므로).
+        // NATIVE 인데 번들 DB 를 주면 조용히 무시하지 않고 명확히 거절한다.
+        if (bundledDbEngine != null && mode != ServerDeployMode.DOCKER) {
+            throw new IllegalStateException("번들 DB 는 DOCKER 배포 모드에서만 지원됩니다. deployMode=DOCKER 로 요청하세요.");
+        }
         ProvisionedServer record = serverRepository.save(
-                ProvisionedServer.pending(projectId, tier, APP_PORT, mode));
+                ProvisionedServer.pending(projectId, tier, APP_PORT, mode, bundledDbEngine));
         Approval approval = approvalRepository.save(Approval.standalone(
                 ownerUserId, projectId, ApprovalType.SERVER_PROVISION,
                 "EC2 백엔드 서버 생성 (" + tier + ", 과금)"));

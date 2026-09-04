@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.domain.model;
 
+import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
@@ -22,6 +23,9 @@ public class ProvisionedServer {
     // 실행 형태(NATIVE=java -jar / DOCKER=docker run). 기본 NATIVE. 생성자 밖: elasticIp 와 같은 이유로
     // 로드·설정 시 세팅(생성자 시그니처 churn 최소화). 모드 선택 배선(요청→submit)은 docker 경로에서.
     private ServerDeployMode deployMode = ServerDeployMode.NATIVE;
+    // 번들 DB 엔진(null=없음). 있으면 DOCKER 배포가 같은 EC2 에 이 엔진의 DB 컨테이너를 docker compose 로
+    // 함께 띄우고 앱을 그 DB 로 배선한다(RDS 없이 앱+DB 한 인스턴스). deployMode 와 같은 이유로 생성자 밖 세팅.
+    private DatabaseEngine bundledDbEngine;
     private String elasticIpAllocationId; // EIP 할당 ID — 종료 시 release 대상(생성자 밖: 로드·연결 시 세팅)
     private String publicHost;           // running 이후 채워짐
     private int port;                    // 앱 포트(기본 8080)
@@ -50,13 +54,17 @@ public class ProvisionedServer {
         this.updatedAt = updatedAt;
     }
 
-    /** 새 서버 배포 요청 — PENDING 으로 시작(승인 대기). deployMode 는 실행 형태(null 이면 NATIVE). */
+    /**
+     * 새 서버 배포 요청 — PENDING 으로 시작(승인 대기). deployMode 는 실행 형태(null 이면 NATIVE),
+     * bundledDbEngine 은 같은 EC2 에 함께 띄울 DB 엔진(null 이면 번들 DB 없음, DOCKER 모드에서만 유효).
+     */
     public static ProvisionedServer pending(Long projectId, String instanceType, int port,
-                                            ServerDeployMode deployMode) {
+                                            ServerDeployMode deployMode, DatabaseEngine bundledDbEngine) {
         LocalDateTime now = LocalDateTime.now();
         ProvisionedServer server = new ProvisionedServer(null, projectId, instanceType, ServerStatus.PENDING,
                 null, null, null, port, null, null, null, now, now);
         server.assignDeployMode(deployMode);
+        server.assignBundledDbEngine(bundledDbEngine);
         return server;
     }
 
@@ -80,6 +88,11 @@ public class ProvisionedServer {
         if (deployMode != null) {
             this.deployMode = deployMode;
         }
+    }
+
+    /** 번들 DB 엔진을 지정한다(로드 시 복원, 또는 배포 요청 시 선택). null 이면 번들 DB 없음. */
+    public void assignBundledDbEngine(DatabaseEngine bundledDbEngine) {
+        this.bundledDbEngine = bundledDbEngine;
     }
 
     public void assignElasticIp(String elasticIpAllocationId) {
@@ -149,6 +162,8 @@ public class ProvisionedServer {
     public Long getCloudConnectionId() { return cloudConnectionId; }
     public String getInstanceId() { return instanceId; }
     public ServerDeployMode getDeployMode() { return deployMode; }
+    public DatabaseEngine getBundledDbEngine() { return bundledDbEngine; }
+    public boolean hasBundledDb() { return bundledDbEngine != null; }
     public String getElasticIpAllocationId() { return elasticIpAllocationId; }
     public String getPublicHost() { return publicHost; }
     public int getPort() { return port; }
