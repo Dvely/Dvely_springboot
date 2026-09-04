@@ -42,6 +42,19 @@ class WebAssetsFactoryTest {
     }
 
     @Test
+    @DisplayName("nginx.conf(정적 전용): 웹 전용은 app 프록시 없이 SPA 폴백만")
+    void nginxConfStaticOnlyHasNoProxy() {
+        String conf = WebAssetsFactory.nginxConfStaticOnly();
+        assertThat(conf).contains("listen 80;");
+        assertThat(conf).contains("try_files $uri $uri/ /index.html;");   // SPA 폴백
+        assertThat(conf).contains("root /usr/share/nginx/html;");
+        // 백엔드가 없으므로 프록시 관련 요소는 없어야 한다
+        assertThat(conf).doesNotContain("proxy_pass");
+        assertThat(conf).doesNotContain("http://app:8080");
+        assertThat(conf).doesNotContain("location /api/");
+    }
+
+    @Test
     @DisplayName("web Dockerfile: 빌드→출력 정규화(dist|build|out)→nginx + nginx.conf 심기")
     void webDockerfileShape() {
         String df = WebAssetsFactory.webDockerfile();

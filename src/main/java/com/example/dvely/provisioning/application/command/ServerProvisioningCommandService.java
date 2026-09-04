@@ -57,13 +57,22 @@ public class ServerProvisioningCommandService {
 
     public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType,
                                               ServerDeployMode deployMode, DatabaseEngine bundledDbEngine,
-                                              WebFrontendSpec web) {
+                                              WebFrontendSpec web, boolean webOnly) {
         resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
 
         String tier = (instanceType == null || instanceType.isBlank())
                 ? DEFAULT_INSTANCE_TYPE : instanceType;
         ServerDeployMode mode = deployMode == null ? ServerDeployMode.NATIVE : deployMode;
         WebFrontendSpec webSpec = web == null ? new WebFrontendSpec(null, null, null) : web;
+        // 웹 전용(독립 프론트 EC2): 백엔드 없이 프론트 nginx 만. 프론트 소스가 있어야 하고, 백엔드가 없어
+        // 번들 DB 를 쓸 수 없다. DOCKER 강제는 아래 웹 컨테이너 가드가 겸한다(웹 전용 ⇒ hasWeb).
+        if (webOnly && !webSpec.hasWeb()) {
+            throw new IllegalStateException(
+                    "웹 전용 서버는 프론트 소스(frontendRepo 또는 frontendDir)가 필요합니다.");
+        }
+        if (webOnly && bundledDbEngine != null) {
+            throw new IllegalStateException("웹 전용 서버는 백엔드가 없어 번들 DB 를 쓸 수 없습니다.");
+        }
         // 번들 DB·웹 컨테이너는 DOCKER 배포에서만 의미가 있다(같은 EC2 에 compose 로 컨테이너를 띄우므로).
         // NATIVE 인데 요청하면 조용히 무시하지 않고 명확히 거절한다.
         if (bundledDbEngine != null && mode != ServerDeployMode.DOCKER) {
@@ -72,11 +81,12 @@ public class ServerProvisioningCommandService {
         if (webSpec.hasWeb() && mode != ServerDeployMode.DOCKER) {
             throw new IllegalStateException("웹 컨테이너는 DOCKER 배포 모드에서만 지원됩니다. deployMode=DOCKER 로 요청하세요.");
         }
-        ProvisionedServer record = serverRepository.save(
-                ProvisionedServer.pending(projectId, tier, APP_PORT, mode, bundledDbEngine, webSpec));
+        ProvisionedServer server = ProvisionedServer.pending(projectId, tier, APP_PORT, mode, bundledDbEngine, webSpec);
+        server.assignWebOnly(webOnly);
+        ProvisionedServer record = serverRepository.save(server);
         Approval approval = approvalRepository.save(Approval.standalone(
                 ownerUserId, projectId, ApprovalType.SERVER_PROVISION,
-                "EC2 백엔드 서버 생성 (" + tier + ", 과금)"));
+                (webOnly ? "EC2 프론트 서버 생성 (" : "EC2 백엔드 서버 생성 (") + tier + ", 과금)"));
         record.linkApproval(approval.getId());
         serverRepository.save(record);
 
