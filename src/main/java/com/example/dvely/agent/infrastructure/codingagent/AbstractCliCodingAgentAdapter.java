@@ -28,8 +28,30 @@ abstract class AbstractCliCodingAgentAdapter implements CodingAgentPort {
         this.properties = properties;
     }
 
-    /** The env var name the vendor's CLI reads its key from. */
-    protected abstract String apiKeyEnvName();
+    /**
+     * How this vendor's CLI is handed the user's key.
+     *
+     * <p>Not one shared mechanism, because the two CLIs genuinely differ (verified against
+     * Claude Code 2.1.260 and codex-cli 0.153.2): Claude Code reads {@code ANTHROPIC_API_KEY} from
+     * the environment, while Codex ignores {@code OPENAI_API_KEY} and requires a
+     * {@code codex login --with-api-key} step that takes the key on stdin.</p>
+     */
+    protected abstract Credentialing credentialing(String apiKey);
+
+    /**
+     * @param env      {@code KEY=VALUE} entries for the agent's own exec
+     * @param authStep a login command to run first, or {@code null} when {@code env} is enough
+     */
+    protected record Credentialing(List<String> env, CodingAgentContainerRunner.AuthStep authStep) {
+
+        static Credentialing viaEnvironment(String name, String apiKey) {
+            return new Credentialing(List.of(name + "=" + apiKey), null);
+        }
+
+        static Credentialing viaLoginCommand(List<String> argv, String apiKey) {
+            return new Credentialing(List.of(), new CodingAgentContainerRunner.AuthStep(argv, apiKey));
+        }
+    }
 
     /**
      * Executable plus non-interactive subcommand/flags, without the prompt. Configurable rather
@@ -49,12 +71,12 @@ abstract class AbstractCliCodingAgentAdapter implements CodingAgentPort {
         // and never passed through a shell, so its content cannot become syntax.
         argv.add(command.prompt());
 
-        // The key travels only here, in the exec environment. Putting it on the command line would
-        // expose it through /proc to anything else running in the container.
-        List<String> env = List.of(apiKeyEnvName() + "=" + command.apiKey());
+        // The key travels only through the environment or a login step's stdin — never on the
+        // command line, where anything else in the container could read it from /proc.
+        Credentialing credentialing = credentialing(command.apiKey());
 
         CodingAgentContainerRunner.ContainerRunOutcome outcome =
-                runWithProvisionRetry(command, List.copyOf(argv), env);
+                runWithProvisionRetry(command, List.copyOf(argv), credentialing);
 
         if (outcome.timedOut()) {
             log.warn("{} 실행 시간 초과: workspace={} timeout={}",
@@ -76,14 +98,15 @@ abstract class AbstractCliCodingAgentAdapter implements CodingAgentPort {
      * on top of the first.
      */
     private CodingAgentContainerRunner.ContainerRunOutcome runWithProvisionRetry(
-            CodingAgentCommand command, List<String> argv, List<String> env) {
+            CodingAgentCommand command, List<String> argv, Credentialing credentialing) {
 
         int attempts = Math.max(1, properties.getMaxProvisionAttempts());
         CodingAgentProvisionException last = null;
 
         for (int attempt = 1; attempt <= attempts; attempt++) {
             try {
-                return runner.run(command.workspaceDir(), argv, env, command.timeout());
+                return runner.run(command.workspaceDir(), credentialing.authStep(), argv,
+                        credentialing.env(), command.timeout());
             } catch (CodingAgentProvisionException e) {
                 last = e;
                 log.warn("코딩 에이전트 컨테이너 준비 실패({}/{}): {}", attempt, attempts, e.getMessage());

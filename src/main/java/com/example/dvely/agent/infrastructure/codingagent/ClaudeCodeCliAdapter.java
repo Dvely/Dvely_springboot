@@ -32,9 +32,14 @@ public class ClaudeCodeCliAdapter extends AbstractCliCodingAgentAdapter {
         return AiProvider.ANTHROPIC;
     }
 
+    /**
+     * Claude Code reads its key straight from the environment — verified against 2.1.260, where
+     * {@code claude -p} with {@code ANTHROPIC_API_KEY} set reaches the API and returns a real
+     * account-level answer. No login step is needed.
+     */
     @Override
-    protected String apiKeyEnvName() {
-        return "ANTHROPIC_API_KEY";
+    protected Credentialing credentialing(String apiKey) {
+        return Credentialing.viaEnvironment("ANTHROPIC_API_KEY", apiKey);
     }
 
     @Override

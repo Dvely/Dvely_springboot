@@ -115,3 +115,6 @@ qeploy:
       argv-prefix: ${QEPLOY_CODING_AGENT_CLAUDE_ARGV:claude,-p}
     codex:
       argv-prefix: ${QEPLOY_CODING_AGENT_CODEX_ARGV:codex,exec}
+      # Codex 는 OPENAI_API_KEY 환경변수를 읽지 않는다(codex-cli 0.153.2 실측: 401 Missing bearer).
+      # 이 로그인 명령을 먼저 실행하고 키를 stdin 으로 넘긴 뒤에야 codex exec 가 인증된다.
+      login-argv: ${QEPLOY_CODING_AGENT_CODEX_LOGIN_ARGV:codex,login,--with-api-key}

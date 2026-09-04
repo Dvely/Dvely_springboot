@@ -48,35 +48,40 @@ class ClaudeCodeCliAdapterTest {
 
     @Test
     void runsTheOfficialCliInNonInteractivePrintMode() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(0, "done", "", false));
 
         adapter.run(command());
 
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
-        verify(runner).run(eq("/host/checkout"), argv.capture(), anyList(), eq(Duration.ofMinutes(3)));
+        verify(runner).run(eq("/host/checkout"), any(), argv.capture(), anyList(), eq(Duration.ofMinutes(3)));
         assertThat(argv.getValue()).containsExactly("claude", "-p", "빌드 로그를 분석해줘");
     }
 
     @Test
     void passesTheKeyThroughTheEnvironmentAndNeverInTheCommand() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+        // Claude Code does read ANTHROPIC_API_KEY — verified against 2.1.260, where `claude -p`
+        // with it set reaches the API and returns a real account-level answer. So unlike Codex,
+        // this adapter needs no login step.
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(0, "done", "", false));
 
         adapter.run(command());
 
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
         ArgumentCaptor<List<String>> env = ArgumentCaptor.captor();
-        verify(runner).run(any(), argv.capture(), env.capture(), any());
+        ArgumentCaptor<CodingAgentContainerRunner.AuthStep> auth = ArgumentCaptor.captor();
+        verify(runner).run(any(), auth.capture(), argv.capture(), env.capture(), any());
 
         assertThat(env.getValue()).containsExactly("ANTHROPIC_API_KEY=" + API_KEY);
+        assertThat(auth.getValue()).isNull();
         // A key on the command line would be readable from /proc by anything else in the container.
         assertThat(argv.getValue()).noneMatch(arg -> arg.contains(API_KEY));
     }
 
     @Test
     void promptIsPassedAsASingleArgumentSoThereIsNoShellToInjectInto() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(0, "ok", "", false));
 
         CodingAgentCommand hostile = new CodingAgentCommand(
@@ -84,7 +89,7 @@ class ClaudeCodeCliAdapterTest {
         adapter.run(hostile);
 
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
-        verify(runner).run(any(), argv.capture(), anyList(), any());
+        verify(runner).run(any(), any(), argv.capture(), anyList(), any());
         // The metacharacters survive intact as one argv element — proof they were never parsed
         // by a shell rather than proof they were escaped correctly.
         assertThat(argv.getValue()).containsExactly("claude", "-p", "; rm -rf / #");
@@ -92,7 +97,7 @@ class ClaudeCodeCliAdapterTest {
 
     @Test
     void mapsACleanExitToSuccess() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(0, "분석 결과", "warn", false));
 
         CodingAgentResult result = adapter.run(command());
@@ -105,7 +110,7 @@ class ClaudeCodeCliAdapterTest {
 
     @Test
     void mapsANonZeroExitToFailureKeepingTheExitCode() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(2, "partial", "boom", false));
 
         CodingAgentResult result = adapter.run(command());
@@ -117,7 +122,7 @@ class ClaudeCodeCliAdapterTest {
 
     @Test
     void mapsATimeoutToItsOwnOutcomeRatherThanAPlainFailure() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(-1, "so far", "", true));
 
         CodingAgentResult result = adapter.run(command());
@@ -131,7 +136,7 @@ class ClaudeCodeCliAdapterTest {
     @Test
     void retriesWhenTheContainerCouldNotBeProvisioned() {
         properties.setMaxProvisionAttempts(3);
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenThrow(new CodingAgentProvisionException("이미지 없음"))
                 .thenThrow(new CodingAgentProvisionException("이미지 없음"))
                 .thenReturn(new ContainerRunOutcome(0, "ok", "", false));
@@ -139,25 +144,25 @@ class ClaudeCodeCliAdapterTest {
         CodingAgentResult result = adapter.run(command());
 
         assertThat(result.success()).isTrue();
-        verify(runner, times(3)).run(any(), anyList(), anyList(), any());
+        verify(runner, times(3)).run(any(), any(), anyList(), anyList(), any());
     }
 
     @Test
     void givesUpAfterTheConfiguredNumberOfProvisionAttempts() {
         properties.setMaxProvisionAttempts(2);
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenThrow(new CodingAgentProvisionException("이미지 없음"));
 
         assertThatThrownBy(() -> adapter.run(command()))
                 .isInstanceOf(CodingAgentProvisionException.class);
 
-        verify(runner, times(2)).run(any(), anyList(), anyList(), any());
+        verify(runner, times(2)).run(any(), any(), anyList(), anyList(), any());
     }
 
     @Test
     void doesNotRetryAFailureRaisedOnceTheAgentWasAlreadyRunning() {
         properties.setMaxProvisionAttempts(3);
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenThrow(new IllegalStateException("실행 중 인터럽트"));
 
         assertThatThrownBy(() -> adapter.run(command()))
@@ -165,6 +170,6 @@ class ClaudeCodeCliAdapterTest {
 
         // Replaying a run that may have already edited the workspace would stack a second
         // partial change on top of the first.
-        verify(runner, times(1)).run(any(), anyList(), anyList(), any());
+        verify(runner, times(1)).run(any(), any(), anyList(), anyList(), any());
     }
 }

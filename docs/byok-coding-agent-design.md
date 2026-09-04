@@ -34,8 +34,15 @@ Anthropic 원문: "제3자 개발자가 자기 앱에 claude.ai 로그인을 제
 ## 아키텍처 (변형 A — 서버측 실행)
 
 - 작업(Task)마다 격리 Docker 컨테이너를 띄우고 그 안에서 공식 CLI를 헤드리스 구동:
-  - Claude: `ANTHROPIC_API_KEY=<사용자 키> claude -p "<task>"` 또는 Claude Agent SDK.
-  - OpenAI: `OPENAI_API_KEY=<사용자 키>` + Codex CLI 비대화 실행.
+  - **Claude Code**: `ANTHROPIC_API_KEY` env + `claude -p "<task>"`.
+  - **Codex**: env 가 아니라 **로그인 단계**가 필요하다. `codex login --with-api-key`(키를 **stdin** 으로) 실행 후 `codex exec "<task>"`.
+
+> **인증 방식 실측 (2026-09-05, Claude Code 2.1.260 · codex-cli 0.153.2)**
+> 두 CLI 의 키 수용 방식이 다르다. 이미지를 빌드해 실제로 돌려 확인한 결과:
+> - `claude -p` 는 `ANTHROPIC_API_KEY` 를 읽어 API 에 도달한다(계정 잔액 부족 응답까지 확인).
+> - `codex exec` 는 **`OPENAI_API_KEY` 를 읽지 않는다** — `401 Missing bearer or basic authentication in header`. `codex login --with-api-key`(stdin)로 먼저 로그인해야 하며, 그 뒤 `codex login status` 가 "Logged in using an API key" 를 보고하고 `codex exec` 가 정상 인증된다.
+> - stdin 은 보안상으로도 낫다. env 와 달리 `/proc/<pid>/environ` 에 남지 않는다.
+> - `codex exec` 는 git 저장소 밖을 거부한다(`--skip-git-repo-check` 미지정 시). 편집을 되돌릴 수 있게 하려는 안전장치이고 Qeploy 워크스페이스는 clone 이라 자연히 통과하므로, 기본값에 그 플래그를 넣지 않았다.
 - EC2가 사용자 키(암호화 저장)를 복호화해 컨테이너 env로만 주입한다. 디스크 미기록, egress는 공식 API 도메인(`api.anthropic.com`, `api.openai.com`)으로 제한.
 - 기존 `agent/infrastructure/docker/DockerContainerService`의 격리 정책(자원 상한·capability drop·no-new-priv·네트워크 격리, U4)을 재사용한다.
 - 브라우저·확장·WebSocket은 필요 없다(변형 A). 원안의 브라우저 브리지는 주거용 IP·세션 확보용이었고 BYOK+공식 API에선 그 목적이 사라진다.

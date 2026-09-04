@@ -51,9 +51,21 @@ public class CodingAgentProperties {
 
     private Duration provisionRetryDelay = Duration.ofSeconds(2);
 
+    /** {@code -p} is Claude Code's non-interactive print mode; the key comes from the environment. */
     private Cli claude = Cli.of("claude", "-p");
 
-    private Cli codex = Cli.of("codex", "exec");
+    /**
+     * {@code codex exec} is Codex's non-interactive mode, preceded by a login step because the CLI
+     * does not read {@code OPENAI_API_KEY}.
+     *
+     * <p>{@code --skip-git-repo-check} is deliberately <b>not</b> in the default: Codex refuses to
+     * work outside a git repository so that its edits stay recoverable, and Qeploy's workspace is a
+     * clone, so the check passes on its own and is worth keeping. A deployment that needs to run
+     * against a non-repo directory can add the flag here.</p>
+     */
+    private Cli codex = Cli.withLogin(
+            List.of("codex", "exec"),
+            List.of("codex", "login", "--with-api-key"));
 
     /**
      * How one vendor's CLI is invoked non-interactively.
@@ -69,9 +81,22 @@ public class CodingAgentProperties {
         /** Executable plus subcommand/flags. The prompt is appended as the final argument. */
         private List<String> argvPrefix = List.of();
 
+        /**
+         * Login command run before the agent, receiving the key on stdin. Empty when the CLI takes
+         * its key from the environment instead (Claude Code does; Codex does not).
+         */
+        private List<String> loginArgv = List.of();
+
         static Cli of(String... prefix) {
             Cli cli = new Cli();
             cli.setArgvPrefix(List.of(prefix));
+            return cli;
+        }
+
+        static Cli withLogin(List<String> prefix, List<String> login) {
+            Cli cli = new Cli();
+            cli.setArgvPrefix(prefix);
+            cli.setLoginArgv(login);
             return cli;
         }
     }

@@ -49,29 +49,50 @@ class CodexCliAdapterTest {
 
     @Test
     void runsTheOfficialCliInItsNonInteractiveMode() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(0, "done", "", false));
 
         adapter.run(command());
 
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
-        verify(runner).run(eq("/host/checkout"), argv.capture(), anyList(), eq(Duration.ofMinutes(4)));
+        verify(runner).run(eq("/host/checkout"), any(), argv.capture(), anyList(), eq(Duration.ofMinutes(4)));
         assertThat(argv.getValue()).containsExactly("codex", "exec", "Dockerfile 을 최적화해줘");
     }
 
     @Test
-    void usesTheOpenAiKeyEnvironmentVariableAndKeepsItOutOfTheCommand() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+    void authenticatesThroughALoginStepBecauseCodexIgnoresTheEnvironmentVariable() {
+        // Measured against codex-cli 0.153.2: `codex exec` with OPENAI_API_KEY set fails with
+        // "401 Missing bearer or basic authentication in header". The CLI only accepts a key
+        // through `codex login --with-api-key`, which reads it from stdin.
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
+                .thenReturn(new ContainerRunOutcome(0, "done", "", false));
+
+        adapter.run(command());
+
+        ArgumentCaptor<CodingAgentContainerRunner.AuthStep> auth = ArgumentCaptor.captor();
+        ArgumentCaptor<List<String>> env = ArgumentCaptor.captor();
+        verify(runner).run(any(), auth.capture(), anyList(), env.capture(), any());
+
+        assertThat(auth.getValue().argv()).containsExactly("codex", "login", "--with-api-key");
+        assertThat(auth.getValue().stdin()).isEqualTo(API_KEY);
+        assertThat(env.getValue()).isEmpty();
+    }
+
+    @Test
+    void keepsTheKeyOutOfArgvEntirely() {
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(0, "done", "", false));
 
         adapter.run(command());
 
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
-        ArgumentCaptor<List<String>> env = ArgumentCaptor.captor();
-        verify(runner).run(any(), argv.capture(), env.capture(), any());
+        ArgumentCaptor<CodingAgentContainerRunner.AuthStep> auth = ArgumentCaptor.captor();
+        verify(runner).run(any(), auth.capture(), argv.capture(), anyList(), any());
 
-        assertThat(env.getValue()).containsExactly("OPENAI_API_KEY=" + API_KEY);
+        // stdin rather than argv or env: a key on the command line is readable from /proc, and an
+        // environment variable is readable from /proc/<pid>/environ.
         assertThat(argv.getValue()).noneMatch(arg -> arg.contains(API_KEY));
+        assertThat(auth.getValue().argv()).noneMatch(arg -> arg.contains(API_KEY));
     }
 
     @Test
@@ -79,33 +100,33 @@ class CodexCliAdapterTest {
         // The CLI is an external tool; a renamed non-interactive mode must be fixable in config
         // alongside the image pin rather than requiring a code change.
         properties.setCodex(CodingAgentProperties.Cli.of("codex", "run", "--quiet"));
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(0, "ok", "", false));
 
         adapter.run(command());
 
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
-        verify(runner).run(any(), argv.capture(), anyList(), any());
+        verify(runner).run(any(), any(), argv.capture(), anyList(), any());
         assertThat(argv.getValue())
                 .containsExactly("codex", "run", "--quiet", "Dockerfile 을 최적화해줘");
     }
 
     @Test
     void promptStaysASingleArgumentSoThereIsNoShellToInjectInto() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(0, "ok", "", false));
 
         adapter.run(new CodingAgentCommand("a; shutdown -h now && echo $HOME",
                 "/host/checkout", API_KEY, Duration.ofMinutes(1)));
 
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
-        verify(runner).run(any(), argv.capture(), anyList(), any());
+        verify(runner).run(any(), any(), argv.capture(), anyList(), any());
         assertThat(argv.getValue()).last().isEqualTo("a; shutdown -h now && echo $HOME");
     }
 
     @Test
     void mapsACleanExitToSuccess() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(0, "결과", "note", false));
 
         CodingAgentResult result = adapter.run(command());
@@ -117,7 +138,7 @@ class CodexCliAdapterTest {
 
     @Test
     void mapsANonZeroExitToFailureKeepingTheExitCode() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(7, "partial", "boom", false));
 
         CodingAgentResult result = adapter.run(command());
@@ -129,7 +150,7 @@ class CodexCliAdapterTest {
 
     @Test
     void mapsATimeoutToItsOwnOutcome() {
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(-1, "so far", "", true));
 
         CodingAgentResult result = adapter.run(command());
@@ -141,22 +162,22 @@ class CodexCliAdapterTest {
     @Test
     void retriesProvisioningFailuresButNotFailuresFromARunningAgent() {
         properties.setMaxProvisionAttempts(2);
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenThrow(new CodingAgentProvisionException("이미지 없음"))
                 .thenReturn(new ContainerRunOutcome(0, "ok", "", false));
 
         assertThat(adapter.run(command()).success()).isTrue();
-        verify(runner, times(2)).run(any(), anyList(), anyList(), any());
+        verify(runner, times(2)).run(any(), any(), anyList(), anyList(), any());
     }
 
     @Test
     void doesNotRetryOnceTheAgentHasStarted() {
         properties.setMaxProvisionAttempts(3);
-        when(runner.run(any(), anyList(), anyList(), any()))
+        when(runner.run(any(), any(), anyList(), anyList(), any()))
                 .thenThrow(new IllegalStateException("실행 중 폭발"));
 
         assertThatThrownBy(() -> adapter.run(command())).isInstanceOf(IllegalStateException.class);
 
-        verify(runner, times(1)).run(any(), anyList(), anyList(), any());
+        verify(runner, times(1)).run(any(), any(), anyList(), anyList(), any());
     }
 }

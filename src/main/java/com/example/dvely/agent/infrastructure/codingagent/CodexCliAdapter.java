@@ -32,9 +32,19 @@ public class CodexCliAdapter extends AbstractCliCodingAgentAdapter {
         return AiProvider.OPENAI;
     }
 
+    /**
+     * Codex needs a login step, not an environment variable.
+     *
+     * <p>Measured against codex-cli 0.153.2: running {@code codex exec} with {@code OPENAI_API_KEY}
+     * set fails with "401 Missing bearer or basic authentication in header" — the CLI simply does
+     * not read that variable. {@code codex login --with-api-key} takes the key on stdin and stores
+     * it for the session ({@code codex login status} then reports "Logged in using an API key"),
+     * after which {@code codex exec} authenticates normally.</p>
+     */
     @Override
-    protected String apiKeyEnvName() {
-        return "OPENAI_API_KEY";
+    protected Credentialing credentialing(String apiKey) {
+        return Credentialing.viaLoginCommand(
+                properties.getCodex().getLoginArgv(), apiKey);
     }
 
     @Override
