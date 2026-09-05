@@ -55,7 +55,12 @@ public class FrontendStaticHostingAdapter implements FrontendStaticHostingPort {
             requireExec(containerId,
                     "cd " + feDir + " && if [ -f package-lock.json ]; then npm ci; else npm install; fi",
                     "프론트 의존성 설치");
-            requireExec(containerId, "cd " + feDir + " && npm run build", "프론트 빌드");
+            // S3 도 root(/)에서 서빙하므로 base 를 root 로 강제한다(하위경로 base 로 빌드된 앱의 빈 화면
+            // 방지 — 실 e2e 확인). Vite=--base=/, 그 외(CRA 등)=PUBLIC_URL=/. package.json 으로 가른다.
+            requireExec(containerId,
+                    "cd " + feDir + " && if grep -q '\"vite\"' package.json; then npm run build -- --base=/; "
+                            + "else PUBLIC_URL=/ npm run build; fi",
+                    "프론트 빌드");
             String buildDir = detectBuildDir(containerId, feDir);
 
             Path tar = sourceClone.tarContextOut(containerId, buildDir);
