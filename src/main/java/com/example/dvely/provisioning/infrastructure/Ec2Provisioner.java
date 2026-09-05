@@ -291,6 +291,24 @@ public class Ec2Provisioner {
     }
 
     /**
+     * 이미 다른 인스턴스에 연결된 EIP 를 새 인스턴스로 <b>재연결</b>한다(재배포 블루그린 cutover). VPC EIP 는
+     * {@code allowReassociation=true} 로 associate 한 번이면 옛 인스턴스에서 풀려 새 인스턴스로 옮겨간다
+     * (별도 Disassociate 불필요). 새 인스턴스는 이미 RUNNING 이라 pending 재시도는 필요 없다. dnsTarget(IP)
+     * 이 그대로라 도메인·인증서를 안 건드리고 트래픽만 새 인스턴스로 넘어간다.
+     */
+    public void reassociateElasticIp(CloudConnection connection, String allocationId, String newInstanceId) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (Ec2Client ec2 = client(access)) {
+            ec2.associateAddress(AssociateAddressRequest.builder()
+                    .allocationId(allocationId)
+                    .instanceId(newInstanceId)
+                    .allowReassociation(true)
+                    .build());
+            log.info("EIP 재연결(재배포 cutover): allocationId={} → newInstanceId={}", allocationId, newInstanceId);
+        }
+    }
+
+    /**
      * EIP 연결을 재시도한다. runInstances 직후 인스턴스는 잠깐 pending 이라 associate 가 "not in a valid
      * state"(IncorrectInstanceState)로 거부될 수 있다 — associable 해질 때까지 몇 차례 기다린다.
      */

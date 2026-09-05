@@ -86,6 +86,53 @@ class ServerProvisioningCommandServiceTest {
     }
 
     @Test
+    void submitOnRedeploy_recordsSupersedesOfCurrentRunningSameTypeServer() {
+        when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
+                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+        // 같은 프로젝트에 이미 RUNNING 백엔드 서버(webOnly=false, id=5)가 있다 → 재배포.
+        ProvisionedServer existing = new ProvisionedServer(5L, PROJECT, "t3.micro", ServerStatus.RUNNING,
+                CONN_ID, "i-old", "1.2.3.4", 8080, null, null, null,
+                java.time.LocalDateTime.now(), java.time.LocalDateTime.now());
+        existing.assignWebOnly(false);
+        when(serverRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(java.util.List.of(existing));
+        when(serverRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalRepository.save(any())).thenReturn(approval(99L));
+
+        service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null,
+                new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false);
+
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository, times(2)).save(saved.capture());
+        // 새 pending 서버가 옛 RUNNING 서버를 교체 대상으로 기록한다(블루그린).
+        assertThat(saved.getAllValues().get(0).getSupersedesServerId()).isEqualTo(5L);
+    }
+
+    @Test
+    void submitOnRedeploy_ignoresRunningServerOfDifferentWebOnlyType() {
+        when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
+                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+        // RUNNING 프론트(webOnly=true) 서버만 있다 → 백엔드 배포는 이걸 교체하지 않는다(둘은 공존).
+        ProvisionedServer frontend = new ProvisionedServer(6L, PROJECT, "t3.micro", ServerStatus.RUNNING,
+                CONN_ID, "i-fe", "1.2.3.4", 8080, null, null, null,
+                java.time.LocalDateTime.now(), java.time.LocalDateTime.now());
+        frontend.assignWebOnly(true);
+        when(serverRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(java.util.List.of(frontend));
+        when(serverRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalRepository.save(any())).thenReturn(approval(99L));
+
+        service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null,
+                new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false);
+
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository, times(2)).save(saved.capture());
+        assertThat(saved.getAllValues().get(0).getSupersedesServerId()).isNull();   // 백엔드 서버 없으니 교체 없음
+    }
+
+    @Test
     void submitHonorsRequestedInstanceType() {
         when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
                 .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));

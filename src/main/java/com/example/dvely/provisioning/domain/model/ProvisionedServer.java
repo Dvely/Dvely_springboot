@@ -35,6 +35,10 @@ public class ProvisionedServer {
     // 웹 전용(프론트 전용) 서버 — 백엔드 앱 없이 프론트 nginx 컨테이너만 띄운다(독립 프론트 EC2).
     // deployMode 와 같은 이유로 생성자 밖 세팅. frontendRepo/frontendDir 과 함께 활성.
     private boolean webOnly = false;
+    // 재배포 시 이 서버가 교체하는 이전 서버 id(블루그린). submit 시점에 같은 프로젝트+동일 webOnly 의
+    // 현재 RUNNING 서버 id 를 기록하고, 새 서버가 RUNNING 되면 EIP 를 넘겨받은 뒤 옛 서버를 종료한다.
+    // 최초 배포·비-EC2 는 null. 생성자 밖 세팅(로드 복원·submit 배선).
+    private Long supersedesServerId;
     private String elasticIpAllocationId; // EIP 할당 ID — 종료 시 release 대상(생성자 밖: 로드·연결 시 세팅)
     private String publicHost;           // running 이후 채워짐
     private int port;                    // 앱 포트(기본 8080)
@@ -130,6 +134,40 @@ public class ProvisionedServer {
 
     public void assignElasticIp(String elasticIpAllocationId) {
         this.elasticIpAllocationId = elasticIpAllocationId;   // updatedAt 은 건드리지 않음(로드 복원 겸용)
+    }
+
+    /** 재배포 교체 대상(이전 서버) 지정. submit 시 세팅, 로드 시 복원. null 이면 최초 배포(교체 아님). */
+    public void assignSupersedes(Long supersedesServerId) {
+        this.supersedesServerId = supersedesServerId;
+    }
+
+    public Long getSupersedesServerId() {
+        return supersedesServerId;
+    }
+
+    /**
+     * 재배포 교체 완료 시, 옛 서버의 EIP·공개주소를 이 새 서버로 넘겨받는다(EIP 를 새 인스턴스로 reassociate
+     * 한 뒤 호출). 이후 종료 정리가 이 새 서버 기준으로 EIP·도메인을 다룬다 — dnsTarget(IP)이 안 바뀌어
+     * 도메인은 그대로 새 인스턴스를 가리킨다.
+     */
+    public void reassignElasticIp(String elasticIpAllocationId, String publicHost) {
+        this.elasticIpAllocationId = elasticIpAllocationId;
+        this.publicHost = publicHost;
+    }
+
+    /**
+     * EIP·공개주소를 이 서버에서 분리한다(재배포 교체 시 옛 서버에 대해 호출). 종료 시 이 값들이 비어 있어야
+     * releaseElasticIp(방금 새 서버로 옮긴 EIP)·releaseServerDomains(도메인)를 건너뛴다 — 안 그러면 새 서버로
+     * 넘긴 EIP 를 해제하거나 살아있는 도메인을 지워버린다.
+     */
+    public void detachElasticIp() {
+        this.elasticIpAllocationId = null;
+        this.publicHost = null;
+    }
+
+    /** 재배포 교체 완료(옛 서버 종료) 후, 교체 표시를 지운다(재시도 폴링에서 다시 잡히지 않게). */
+    public void clearSupersedes() {
+        this.supersedesServerId = null;
     }
 
     /**

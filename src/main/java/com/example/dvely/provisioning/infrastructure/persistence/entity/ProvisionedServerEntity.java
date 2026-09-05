@@ -59,6 +59,9 @@ public class ProvisionedServerEntity {
     @Column(name = "web_only", nullable = false)
     private boolean webOnly;
 
+    @Column(name = "supersedes_server_id")
+    private Long supersedesServerId;   // 재배포 교체 대상(이전 서버). null = 최초 배포
+
     @Column(name = "api_path_prefix", length = 255)
     private String apiPathPrefix;
 
@@ -107,6 +110,7 @@ public class ProvisionedServerEntity {
         this.frontendDir = s.getFrontendDir();
         this.apiPathPrefix = s.getApiPathPrefix();
         this.webOnly = s.isWebOnly();
+        this.supersedesServerId = s.getSupersedesServerId();
         this.elasticIpAllocationId = s.getElasticIpAllocationId();
         this.publicHost = s.getPublicHost();
         this.port = s.getPort();
@@ -126,6 +130,7 @@ public class ProvisionedServerEntity {
         server.assignWebFrontend(new com.example.dvely.provisioning.domain.value.WebFrontendSpec(
                 frontendRepo, frontendDir, apiPathPrefix));
         server.assignWebOnly(webOnly);
+        server.assignSupersedes(supersedesServerId);
         server.assignElasticIp(elasticIpAllocationId);
         return server;
     }
