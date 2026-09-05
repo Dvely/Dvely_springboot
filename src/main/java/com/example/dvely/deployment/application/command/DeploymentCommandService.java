@@ -175,6 +175,12 @@ public class DeploymentCommandService {
         // taskId=null: unlike agent-triggered deploys, a retry is a direct user click, not
         // something an Agent plan is tracking.
         DeployCommand command = new DeployCommand(target.getDeployTargetType(), requestedVersion, null);
+        // EC2 프론트는 배포 이력/워커 파이프라인이 아니라 서버 프로비저닝이라(deploy() 와 동일), 재시도도
+        // 재프로비저닝으로 위임한다 — 그래야 프로젝트가 EC2 로 바뀐 뒤 옛 Pages/S3 이력을 재시도해도
+        // createAndQueueDeployment 의 지원검사에서 잘못 거절되지 않고, 실제 EC2 배포로 이어진다(블루그린 교체).
+        if (project.getFrontendHostingType() == FrontendHostingType.EC2) {
+            return deployToEc2(ownerUserId, project, command);
+        }
         return createAndQueueDeployment(ownerUserId, project, command, target.getId());
     }
 
@@ -352,16 +358,13 @@ public class DeploymentCommandService {
     }
 
     /**
-     * 요청 시점 프론트 호스팅 지원 검증. EC2 는 아직 미구현이라 거절한다(다음 조각). S3 는 사용자 AWS
-     * 연결이 있어야 하므로, 없으면 헛되이 큐잉·빌드까지 갔다 실패하지 않도록 즉시 막는다. GITHUB_PAGES
-     * 는 통과(기존 동작).
+     * 요청 시점 프론트 호스팅 지원 검증(Pages/S3 큐잉 경로 전용). EC2 는 이 경로를 안 탄다 — deploy()·
+     * retryDeployment() 가 모두 EC2 를 deployToEc2(서버 프로비저닝)로 먼저 위임하므로 여기 도달하지 않는다.
+     * S3 는 사용자 AWS 연결이 있어야 하므로, 없으면 헛되이 큐잉·빌드까지 갔다 실패하지 않도록 즉시 막는다.
+     * GITHUB_PAGES 는 통과(기존 동작).
      */
     private void validateFrontendHostingSupported(Project project) {
         FrontendHostingType hosting = project.getFrontendHostingType();
-        if (hosting == FrontendHostingType.EC2) {
-            throw new IllegalArgumentException(
-                    "아직 지원되지 않는 프론트 호스팅 방식입니다: EC2 (준비 중). 현재 GITHUB_PAGES·S3 를 지원합니다.");
-        }
         if (hosting == FrontendHostingType.S3
                 && cloudConnectionSettingRepository.findByProjectId(project.getId()).isEmpty()) {
             throw new IllegalArgumentException(

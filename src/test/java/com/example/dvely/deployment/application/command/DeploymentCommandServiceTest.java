@@ -308,6 +308,31 @@ class DeploymentCommandServiceTest {
     }
 
     @Test
+    void retry_ofEc2HostedProject_delegatesToServerProvisioningNotQueuePipeline() {
+        // 프로젝트가 EC2 프론트로 설정된 뒤 재시도하면, deploy() 와 똑같이 서버 프로비저닝으로 위임한다
+        // (배포 이력/큐 파이프라인·지원검사를 안 탄다 — 예전엔 여기서 "EC2 준비 중"으로 잘못 거절했다).
+        Project project = boundProject();
+        project.changeFrontendHosting(FrontendHostingType.EC2);
+        DeploymentHistory failed = failedHistory(DeployTargetType.LATEST, "v3");
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(failed));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(frontendServerHostingPort.provisionWebOnly(any()))
+                .thenReturn(new com.example.dvely.deployment.application.port.out.FrontendServerHostingPort.ServerSubmission(
+                        77L, java.util.List.of(88L)));
+
+        DeployResult result = service.retryDeployment(1L, 51L);
+
+        assertThat(result.deploymentId()).isEqualTo(77L);   // 대기 서버 id
+        assertThat(result.status()).isEqualTo("PENDING");
+        assertThat(result.approvalIds()).containsExactly(88L);
+        verify(frontendServerHostingPort).provisionWebOnly(any());
+        // EC2 는 배포 이력/Pages/S3 파이프라인을 안 만든다.
+        verify(deploymentHistoryRepository, never()).save(any(DeploymentHistory.class));
+        verifyNoInteractions(githubPagesPort, githubActionsPort, frontendStaticHostingPort);
+    }
+
+    @Test
     void retry_rejectsWhenTargetIsNotFailed() {
         DeploymentHistory inProgress = new DeploymentHistory(
                 51L, 1L, 11L, DeployTargetType.LATEST, "v3", null, DeployStatus.IN_PROGRESS, 901L,
