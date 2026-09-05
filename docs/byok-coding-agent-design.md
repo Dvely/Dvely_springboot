@@ -84,22 +84,22 @@ Anthropic 원문: "제3자 개발자가 자기 앱에 claude.ai 로그인을 제
 | `AiProperties` | `codingAgent` 중첩 프로퍼티 추가만 | 낮음 |
 | `ErrorCode` enum | 항목 끝에만 추가 | 낮음 |
 | `application-*.yml` | 새 블록만 추가 | 낮음 |
-| Flyway | **V45** 사용. V43·V44 를 develop 이 연속으로 선점했다(아래 참고) | 조율 필요 |
+| Flyway | **V47** 사용. develop 이 V43·V44·V45 를 연속 선점했다(아래 참고) | 조율 필요 |
 | `docs/FRONTEND_API_GUIDE.md` | 새 섹션만 추가 | 낮음 |
 
 핵심: 변형 A는 기존 `LlmRouter`/HTTP 클라이언트(unhak 핫파일)를 거의 건드리지 않는다. CLI 어댑터가 별도 포트로 완전 분리되기 때문. (기존 HTTP 클라이언트까지 per-user 키 BYOK를 원하면 `LlmToolPort`·`AiProperties`를 손대야 해 충돌 위험이 커지므로 별도 후속 단위로 분리한다.)
 
-## 데이터 모델 (V45)
+## 데이터 모델 (V47)
 
 사용자·제공자별 API 키를 기존 `AesEncryptor`(AES/GCM, `auth.infrastructure.persistence.converter`)로 암호화 저장. 신규 crypto 코드 없음(U3 방침).
 
-> **번호 조율 기록 (두 번 밀렸다):** 착수 시점 최신이 V42 라 V43 을 예약했는데, 같은 날 develop 이 V43(PR #241)을 가져가 V44 로 옮겼고, 이틀도 안 돼 V44(PR #244)까지 가져가 V45 로 다시 옮겼다.
+> **번호 조율 기록 (세 번 밀렸다):** 착수 시점 최신이 V42 라 V43 을 예약했는데, develop 이 V43(#241) → V44(#244) → V45(#253)를 연달아 가져가 결국 V47 이 됐다.
 >
 > 이 충돌은 **git 이 잡아주지 않는다.** 파일명이 다르니 rebase 는 조용히 통과하고, Flyway 만 중복 버전으로 죽는다. 즉 브랜치가 초록불인 채로 머지되어 배포에서 터질 수 있는 종류다.
 >
 > 그래서 규칙: **번호는 예약하지 말고 머지 직전에 확정한다.** rebase 후 반드시 `ls src/main/resources/db/migration | sort -V | tail -1` 로 실제 최신을 다시 확인하고, 필요하면 그 자리에서 옮긴다. 병렬 작업자가 마이그레이션을 자주 추가하는 동안은 착수 시점 예약이 무의미하다.
 
-`V45__add_ai_provider_credentials.sql` (구현본):
+`V47__add_ai_provider_credentials.sql` (구현본):
 ```sql
 CREATE TABLE ai_provider_credentials (
     ai_provider_credential_id BIGINT       NOT NULL AUTO_INCREMENT,
@@ -126,7 +126,7 @@ CREATE TABLE ai_provider_credentials (
 
 브랜치 `danto/coding-agent-byok`(develop 분기, 수명 1일, 매일 rebase). 소형 PR 순차.
 
-1. **PR-1** 크리덴셜 도메인(`aiaccount/**`) + `CodingAgentPort` 정의 + **V45**. (신규 파일 위주)
+1. **PR-1** 크리덴셜 도메인(`aiaccount/**`) + `CodingAgentPort` 정의 + **V47**. (신규 파일 위주)
 2. **PR-2** `ClaudeCodeCliAdapter` — 격리 컨테이너 헤드리스 실행 + 타임아웃·재시도.
 3. **PR-3** `CodexCliAdapter` — 동일 패턴.
 4. **PR-4** `AiProvider` enum append + `LlmRouter` 분기 + 오케스트레이터 배선.
