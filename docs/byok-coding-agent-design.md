@@ -54,6 +54,11 @@ Anthropic 원문: "제3자 개발자가 자기 앱에 claude.ai 로그인을 제
 > `bubblewrap` 은 이미지에 넣어 뒀지만 기본 경로가 Codex 샌드박스를 우회하므로 실제로는 쓰이지 않는다. 격리를 느슨하게 풀어 Codex 자체 샌드박스를 쓰는 배포를 위해 남겨 둔 것이다.
 >
 > **Claude Code 쪽 미해결 위험**: 같은 종류의 문제가 있을 수 있는데 확인하지 못했다. 잔액 부족이라 파일 편집 단계까지 못 갔고, 탈출구인 `--allow-dangerously-skip-permissions` 는 **root 에서 거부된다**("cannot be used with root/sudo privileges"). 현재 이미지는 root 로 돌아가므로, 이 플래그가 필요한 것으로 판명되면 비-root 사용자 추가가 선행되어야 한다(bind mount 소유권 문제를 함께 풀어야 함). 유효한 Anthropic 키가 생기면 가장 먼저 확인할 항목.
+
+> **Java 코드 경로 실측 — stdin 하이재킹 결함 발견·수정 (2026-09-05)**
+> 수작업 검증은 `docker exec -i`(CLI)로 했기 때문에 정상이었지만, 제 러너의 stdin 경로는 전부 mock 테스트라 실 데몬에서 돌아본 적이 없었다. 게이트형 통합 테스트(`CodexCliAdapterIntegrationTest`, `-Ddocker.it=true` + `QEPLOY_IT_OPENAI_API_KEY`)를 만들어 러너→어댑터를 그대로 통과시키자 **5초 만에 `AsynchronousCloseException`** 이 났다. 원인은 docker-java의 **OkHttp 전송이 exec stdin 하이재킹을 지원하지 않는 것** — 요청 본문(stdin)을 보낸 뒤 연결 반쪽을 닫아, 응답 프레임을 읽던 쪽이 죽는다. 전송 계층 교체는 `DockerContainerService`까지 파급되므로 하지 않았다.
+> **수정:** stdin 을 하이재킹하지 않는다. 키를 **archive 업로드 API**(`copyArchiveToContainerCmd`, 일반 HTTP PUT)로 `/run/qeploy/stdin`(0600)에 스테이징하고, 상수 래퍼 `"$@" < /run/qeploy/stdin; s=$?; rm -f ...; exit $s` 를 `sh -c` 로 실행한다. 실제 argv 는 `"$@"` 위치 인자로만 전달되어 절대 보간되지 않으므로 주입 표면은 그대로 0 이다. 키는 여전히 argv·env·inspect 에 남지 않고, 컨테이너 안 파일로 잠깐 존재했다가 래퍼가 지운다.
+> **결과:** 통합 테스트 통과 — 로그인 → `codex exec` → 워크스페이스에 파일 실제 생성 → 컨테이너 잔존 0. 이 테스트가 이제 "exit 0 인데 아무것도 안 함" 류의 조용한 회귀를 막는다. 게이트 없이 돌리면 skip 되어 CI 는 초록을 유지한다.
 - EC2가 사용자 키(암호화 저장)를 복호화해 컨테이너 env로만 주입한다. 디스크 미기록, egress는 공식 API 도메인(`api.anthropic.com`, `api.openai.com`)으로 제한.
 - 기존 `agent/infrastructure/docker/DockerContainerService`의 격리 정책(자원 상한·capability drop·no-new-priv·네트워크 격리, U4)을 재사용한다.
 - 브라우저·확장·WebSocket은 필요 없다(변형 A). 원안의 브라우저 브리지는 주거용 IP·세션 확보용이었고 BYOK+공식 API에선 그 목적이 사라진다.
