@@ -42,9 +42,8 @@ public class CodexCliAdapter extends AbstractCliCodingAgentAdapter {
      * after which {@code codex exec} authenticates normally.</p>
      */
     @Override
-    protected Credentialing credentialing(String apiKey) {
-        return Credentialing.viaLoginCommand(
-                properties.getCodex().getLoginArgv(), apiKey);
+    protected CodingAgentContainerRunner.Credential credentialing(String apiKey) {
+        return viaLoginCommand(properties.getCodex().getLoginArgv(), apiKey);
     }
 
     @Override
