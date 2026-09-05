@@ -1,8 +1,11 @@
 package com.example.dvely.provisioning.presentation;
 
 import com.example.dvely.provisioning.application.command.ServerProvisioningCommandService;
+import com.example.dvely.provisioning.application.query.ServerLogQueryService;
 import com.example.dvely.provisioning.application.query.ServerProvisioningQueryService;
+import com.example.dvely.provisioning.domain.value.ServerLogSource;
 import com.example.dvely.provisioning.presentation.dto.request.CreateServerRequest;
+import com.example.dvely.provisioning.presentation.dto.response.ServerLogsResponse;
 import com.example.dvely.provisioning.presentation.dto.response.ServerProvisionSubmitResponse;
 import com.example.dvely.provisioning.presentation.dto.response.ServerResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -19,6 +22,7 @@ import java.util.Locale;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(name = "provisioning", description = "백엔드 앱의 EC2 서버 프로비저닝")
@@ -28,6 +32,7 @@ public class ServerProvisioningController {
 
     private final ServerProvisioningCommandService commandService;
     private final ServerProvisioningQueryService queryService;
+    private final ServerLogQueryService logQueryService;
 
     @Operation(summary = "EC2 백엔드 서버 생성 요청",
             description = "과금 자원이라 항상 승인을 거칩니다. requiresApproval=true 와 approvalIds 가 내려오면 "
@@ -89,5 +94,18 @@ public class ServerProvisioningController {
             @PathVariable Long serverId
     ) {
         commandService.terminate(ownerUserId, serverId);
+    }
+
+    @Operation(summary = "EC2 서버 최근 로그 조회",
+            description = "SSM Run Command 로 인스턴스에서 최근 로그를 뽑아옵니다(느린 외부 호출이라 몇 초 걸립니다). "
+                    + "source=APP(앱 로그·기본) · BOOT(부트스트랩, '왜 안 떴나' 진단) · CADDY(HTTPS). 살아있는 "
+                    + "인스턴스(RUNNING·PROVISIONING)만 조회되고, 종료된 서버는 로그가 남지 않습니다.")
+    @GetMapping("/api/v1/servers/{serverId}/logs")
+    public ServerLogsResponse logs(
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long serverId,
+            @RequestParam(name = "source", required = false, defaultValue = "APP") ServerLogSource source
+    ) {
+        return ServerLogsResponse.from(logQueryService.fetchLogs(ownerUserId, serverId, source));
     }
 }

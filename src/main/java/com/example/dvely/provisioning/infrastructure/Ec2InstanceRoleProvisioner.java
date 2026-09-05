@@ -157,12 +157,22 @@ public class Ec2InstanceRoleProvisioner {
                 {"Effect":"Allow","Action":["ecr:BatchGetImage","ecr:GetDownloadUrlForLayer",\
                 "ecr:BatchCheckLayerAvailability"],\
                 "Resource":"arn:aws:ecr:*:*:repository/qeploy-*-%d"}""".formatted(projectId) : "";
+        // SSM core — 인스턴스를 SSM managed instance 로 등록해 Run Command(로그 조회)를 받게 한다. AL2023 은
+        // 에이전트 기본 탑재라 설치는 불필요하고 이 권한만 있으면 된다. 리소스 스코프 불가라 Resource:"*".
+        // (관리형 정책 AttachRolePolicy 는 BYOC 에 없으므로 인라인으로 넣는다 — putRolePolicy 로 멱등 갱신.)
+        String ssmCore = """
+                ,{"Effect":"Allow","Action":["ssm:UpdateInstanceInformation",\
+                "ssmmessages:CreateControlChannel","ssmmessages:CreateDataChannel",\
+                "ssmmessages:OpenControlChannel","ssmmessages:OpenDataChannel",\
+                "ec2messages:AcknowledgeMessage","ec2messages:DeleteMessage","ec2messages:FailMessage",\
+                "ec2messages:GetEndpoint","ec2messages:GetMessages","ec2messages:SendReply"],"Resource":"*"}""";
         return """
                 {"Version":"2012-10-17","Statement":[\
                 {"Effect":"Allow","Action":["ssm:GetParameter","ssm:GetParameters","ssm:GetParametersByPath"],\
                 "Resource":"arn:aws:ssm:*:*:parameter/qeploy/%d/*"},\
                 {"Effect":"Allow","Action":["s3:GetObject"],\
-                "Resource":"arn:aws:s3:::%s/%d/*"}%s]}""".formatted(projectId, bucket, projectId, ecrStatements);
+                "Resource":"arn:aws:s3:::%s/%d/*"}%s%s]}"""
+                .formatted(projectId, bucket, projectId, ssmCore, ecrStatements);
     }
 
     private IamClient client(AwsAccess access) {

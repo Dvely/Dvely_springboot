@@ -387,7 +387,7 @@ public class BackendDeployRunner {
                   --query "Parameters[].[Name,Value]" --output text | while read -r name value; do
                     echo "$(basename "$name")=$value"
                   done > /opt/app/app.env
-                docker run -d --restart unless-stopped -p %d:%d --env-file /opt/app/app.env %s
+                docker run -d --name qeploy-app --restart unless-stopped -p %d:%d --env-file /opt/app/app.env %s
                 """.formatted(bucket, key, projectId, port, port, imageTag)
                 + httpsSection(port, tlsAskBase);
     }
@@ -411,7 +411,7 @@ public class BackendDeployRunner {
                   --query "Parameters[].[Name,Value]" --output text | while read -r name value; do
                     echo "$(basename "$name")=$value"
                   done > /opt/app/app.env
-                docker run -d --restart unless-stopped -p %d:%d --env-file /opt/app/app.env %s
+                docker run -d --name qeploy-app --restart unless-stopped -p %d:%d --env-file /opt/app/app.env %s
                 """.formatted(region, registry, imageRef, projectId, port, port, imageRef)
                 + httpsSection(port, tlsAskBase);
     }

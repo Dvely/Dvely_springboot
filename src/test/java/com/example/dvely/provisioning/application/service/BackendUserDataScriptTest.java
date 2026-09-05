@@ -35,7 +35,7 @@ class BackendUserDataScriptTest {
         assertThat(s).contains("docker load -i /opt/app/image.tar");
         // SSM env 를 env 파일로 → 컨테이너에만 주입(호스트 export 아님)
         assertThat(s).contains("> /opt/app/app.env");
-        assertThat(s).contains("docker run -d --restart unless-stopped -p 8080:8080 --env-file /opt/app/app.env qeploy-app-7:latest");
+        assertThat(s).contains("docker run -d --name qeploy-app --restart unless-stopped -p 8080:8080 --env-file /opt/app/app.env qeploy-app-7:latest");
         assertThat(s).doesNotContain("java -jar");
         // 공통 HTTPS 종단 — native 와 동일하게 localhost:port 프록시
         assertThat(s).contains("reverse_proxy 127.0.0.1:8080");
@@ -58,7 +58,7 @@ class BackendUserDataScriptTest {
         assertThat(s).doesNotContain("docker load");
         // 이후는 DOCKER-S3 와 동일: env 파일 주입 + host 포트 매핑
         assertThat(s).contains("> /opt/app/app.env");
-        assertThat(s).contains("docker run -d --restart unless-stopped -p 8080:8080 --env-file /opt/app/app.env " + imageRef);
+        assertThat(s).contains("docker run -d --name qeploy-app --restart unless-stopped -p 8080:8080 --env-file /opt/app/app.env " + imageRef);
         // 공통 HTTPS 종단
         assertThat(s).contains("reverse_proxy 127.0.0.1:8080");
         assertThat(s).contains("ASK_BASE = \"https://ask.qeploy.com\"");
