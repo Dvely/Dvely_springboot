@@ -1,5 +1,10 @@
 package com.example.dvely.provisioning.infrastructure.worker;
 
+import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.audit.application.AuditRecorder;
+import com.example.dvely.audit.domain.value.AuditAction;
+import com.example.dvely.audit.domain.value.AuditActorType;
+import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
@@ -24,8 +29,9 @@ import org.springframework.stereotype.Component;
  * 표시), 회복되면 표시를 지워 다음 장애에 다시 시도한다. 재시작이 소용없으면(에피소드 내 재시도 안 함)
  * 무응답인 채로 두고 사용자가 로그를 보거나 재배포하도록 남긴다 — 재시작 루프를 만들지 않는다.
  *
- * <p><b>DOCKER 모드만</b> 복구한다. NATIVE({@code nohup java -jar}/{@code npm start})는 관리 프로세스가
- * 아니라 안전한 자동 재시작이 어렵다(원 실행 명령·런타임을 재구성해야 함) — 감지만 하고 재배포에 맡긴다.
+ * <p>DOCKER(compose/docker restart)·NATIVE(포트 프로세스 kill→SSM env 재export→java -jar/npm start) 둘 다
+ * 재시작한다. 자동복구를 시도하면 감사 이벤트({@code SERVER_RECOVERY_ATTEMPTED})를 남겨 사용자가 감사 로그에서
+ * 앱 불안정(잦은 자동재시작)이나 재시작 실패를 볼 수 있다.
  *
  * <p>인스턴스는 종료하지 않는다: 앱만 죽은 것이라 인스턴스는 살려 두고 재시작·로그 조회를 한다. 원자적
  * claim 없음 — 헬스체크는 읽기, 기록은 최신값 덮어쓰기, 복구는 표시로 1회 보장이라 겹친 폴링이 해가 없다.</p>
@@ -41,6 +47,7 @@ public class ServerHealthMonitorWorker {
     private final TcpHealthChecker healthChecker;
     private final CloudConnectionRepository cloudConnectionRepository;
     private final SsmRunCommandClient ssmRunCommandClient;
+    private final AuditRecorder auditRecorder;
 
     // 자동복구 킬스위치. 문제가 생기면 재시작 시도만 끄고 감지·기록은 유지할 수 있다. 테스트는 필드
     // 초기값(true)을 쓰고(스프링 없이도 켜짐), 운영은 @Value 가 설정값으로 덮어쓴다.
@@ -104,16 +111,27 @@ public class ServerHealthMonitorWorker {
         if (!serverRepository.claimRecovery(server.getId())) {
             return;   // 다른 인스턴스가 이미 복구를 claim 함 — 이중 재시작 방지
         }
+        AuditOutcome outcome;
+        String errorSummary = null;
         try {
             String output = ssmRunCommandClient.runShellCommand(
                     connection, server.getInstanceId(), buildRestartCommand(server));
+            outcome = AuditOutcome.SUCCEEDED;   // 재시작 명령이 인스턴스에서 실행됨(회복 여부는 다음 주기 헬스로 판정)
             log.warn("앱 무응답 자동복구 시도(재시작, {}): serverId={} instanceId={} 출력={}",
                     server.getDeployMode(), server.getId(), server.getInstanceId(),
                     output == null ? "" : output.substring(0, Math.min(200, output.length())));
         } catch (RuntimeException e) {
+            outcome = AuditOutcome.FAILED;   // 재시작 명령 자체가 실패(SSM 미도달 등) — 사용자 개입 필요 신호
+            errorSummary = e.toString();
             log.warn("자동복구 재시작 실패(재배포 필요할 수 있음): serverId={} 원인={}",
                     server.getId(), e.toString());
         }
+        // 자동복구 시도를 감사 로그에 남긴다(에피소드당 1회, claim 뒤라 중복 없음). AuditRecorder 는 절대
+        // 예외를 던지지 않으므로 워커에 안전하다. 사용자는 잦은 이벤트로 앱 불안정을, FAILED 로 재시작 실패를 안다.
+        auditRecorder.record(new AuditEvent(
+                AuditAction.SERVER_RECOVERY_ATTEMPTED, outcome, AuditActorType.SYSTEM, null,
+                server.getProjectId(), "SERVER", String.valueOf(server.getId()), null, null,
+                "앱 무응답으로 자동 재시작 시도(" + server.getDeployMode() + ")", errorSummary));
     }
 
     /** 실행 형태별 앱 재시작 명령(SSM 으로 실행). */
