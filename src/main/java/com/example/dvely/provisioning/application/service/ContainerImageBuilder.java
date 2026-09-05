@@ -56,8 +56,19 @@ public class ContainerImageBuilder {
 
     private Path buildxBuildTar(Path contextTar, String imageTag) {
         Path outTar = createTempFile("qeploy-image-", ".tar");
-        runCli(new String[]{"docker", "buildx", "build", "--platform", TARGET_PLATFORM,
-                "-t", imageTag, "--load", "-"}, contextTar, "이미지 빌드(buildx)");
+        if (buildxAvailable()) {
+            runCli(new String[]{"docker", "buildx", "build", "--platform", TARGET_PLATFORM,
+                    "-t", imageTag, "--load", "-"}, contextTar, "이미지 빌드(buildx)");
+        } else if (controlPlaneMatchesTarget()) {
+            // buildx 미설치인데 컨트롤 플레인이 타깃과 같은 amd64 → 크로스빌드가 필요 없으므로 BuildKit
+            // 기본 docker build 로 네이티브 빌드한다(빌드 후 로컬 이미지 스토어에 자동 load 되어 save 가능).
+            // buildx 는 arm64 컨트롤 플레인의 크로스빌드용이라, amd64 컨트롤 플레인엔 이 폴백으로 충분하다.
+            log.info("buildx 미설치 — amd64 네이티브 docker build 로 폴백: {}", imageTag);
+            runCli(new String[]{"docker", "build", "--platform", TARGET_PLATFORM,
+                    "-t", imageTag, "-"}, contextTar, "이미지 빌드(docker build)");
+        } else {
+            throw new BackendBuildException(requireBuildxMessage());
+        }
         try {
             runCli(new String[]{"docker", "save", imageTag, "-o", outTar.toString()}, null, "이미지 save");
         } catch (RuntimeException e) {
@@ -77,11 +88,57 @@ public class ContainerImageBuilder {
         runCliWithStdin(new String[]{"docker", "login", "--username", auth.username(), "--password-stdin",
                 auth.registry()}, auth.password().getBytes(StandardCharsets.UTF_8), "ECR docker login");
         try {
-            runCli(new String[]{"docker", "buildx", "build", "--platform", TARGET_PLATFORM,
-                    "-t", imageRef, "--push", "-"}, contextTar, "이미지 빌드·푸시(buildx)");
+            if (buildxAvailable()) {
+                runCli(new String[]{"docker", "buildx", "build", "--platform", TARGET_PLATFORM,
+                        "-t", imageRef, "--push", "-"}, contextTar, "이미지 빌드·푸시(buildx)");
+            } else if (controlPlaneMatchesTarget()) {
+                // 폴백(buildxBuildTar 와 같은 이유): amd64 네이티브 빌드 후 별도 push.
+                log.info("buildx 미설치 — amd64 네이티브 docker build+push 로 폴백: {}", imageRef);
+                runCli(new String[]{"docker", "build", "--platform", TARGET_PLATFORM,
+                        "-t", imageRef, "-"}, contextTar, "이미지 빌드(docker build)");
+                runCli(new String[]{"docker", "push", imageRef}, null, "이미지 push");
+            } else {
+                throw new BackendBuildException(requireBuildxMessage());
+            }
         } finally {
             runCliQuiet(new String[]{"docker", "logout", auth.registry()});
         }
+    }
+
+    /**
+     * 이미지 빌드에 buildx 를 쓸 수 있는지(플러그인 설치 여부). 없으면 컨트롤 플레인이 타깃과 같은
+     * arch 일 때만 {@code docker build} 로 폴백한다. 한 번만 확인해 캐시한다(빌드마다 재확인 불필요).
+     */
+    private volatile Boolean buildxAvailable;
+
+    private boolean buildxAvailable() {
+        Boolean cached = buildxAvailable;
+        if (cached != null) {
+            return cached;
+        }
+        boolean ok;
+        try {
+            ok = new ProcessBuilder("docker", "buildx", "version")
+                    .redirectErrorStream(true).start().waitFor() == 0;
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            ok = false;
+        }
+        buildxAvailable = ok;
+        return ok;
+    }
+
+    /** 컨트롤 플레인 arch 가 배포 타깃(amd64)과 같은가 — 같으면 buildx 없이도 네이티브 빌드 가능. */
+    private static boolean controlPlaneMatchesTarget() {
+        String arch = System.getProperty("os.arch", "");
+        return arch.equals("amd64") || arch.equals("x86_64");
+    }
+
+    private static String requireBuildxMessage() {
+        return "이미지 빌드 실패: buildx 가 없고 컨트롤 플레인 arch(" + System.getProperty("os.arch")
+                + ")가 배포 타깃(amd64)과 달라 크로스빌드가 필요합니다 — docker-buildx-plugin 을 설치하세요.";
     }
 
     // ── KANIKO(격리 컨테이너 빌드, 컨트롤 플레인 arch) ────────────────────────────────────

@@ -96,11 +96,21 @@ final class WebAssetsFactory {
                 COPY package*.json ./
                 RUN npm ci 2>/dev/null || npm install
                 COPY . .
-                RUN npm run build
+                %s
                 RUN set -e; for d in dist build out; do [ -d "$d" ] && { cp -r "$d" /site; break; }; done; [ -d /site ] || { echo "프론트 빌드 출력(dist|build|out) 없음"; exit 1; }
                 FROM nginx:alpine
                 COPY --from=build /site/ /usr/share/nginx/html/
                 COPY nginx.conf /etc/nginx/conf.d/default.conf
-                """;
+                """.formatted(rootBaseBuildStep());
+    }
+
+    /**
+     * nginx 는 산출물을 <b>root(/)</b>에서 서빙하므로, GitHub Pages 용으로 하위경로 base(예 {@code /repo/})로
+     * 빌드된 앱은 에셋 경로가 어긋나 빈 화면이 된다(실 e2e 확인). 그래서 base 를 root 로 강제한다 —
+     * Vite 는 {@code --base=/}, 그 외(CRA 등)는 {@code PUBLIC_URL=/}. package.json 으로 프레임워크를 가른다.
+     */
+    static String rootBaseBuildStep() {
+        return "RUN if grep -q '\"vite\"' package.json; then npm run build -- --base=/; "
+                + "else PUBLIC_URL=/ npm run build; fi";
     }
 }

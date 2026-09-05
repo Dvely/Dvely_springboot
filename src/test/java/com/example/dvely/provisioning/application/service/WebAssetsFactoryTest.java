@@ -55,6 +55,16 @@ class WebAssetsFactoryTest {
     }
 
     @Test
+    @DisplayName("web Dockerfile: root 서빙용 base 강제(Vite=--base=/, 그 외=PUBLIC_URL=/)")
+    void webDockerfileForcesRootBase() {
+        String df = WebAssetsFactory.webDockerfile();
+        // GitHub Pages 용 하위경로 base 로 빌드된 앱이 root 서빙에서 빈 화면 나는 것 방지(실 e2e 발견)
+        assertThat(df).contains("grep -q '\"vite\"' package.json");   // 프레임워크 분기
+        assertThat(df).contains("npm run build -- --base=/");          // Vite → root base
+        assertThat(df).contains("PUBLIC_URL=/ npm run build");         // CRA 등 → root base
+    }
+
+    @Test
     @DisplayName("web Dockerfile: 빌드→출력 정규화(dist|build|out)→nginx + nginx.conf 심기")
     void webDockerfileShape() {
         String df = WebAssetsFactory.webDockerfile();
