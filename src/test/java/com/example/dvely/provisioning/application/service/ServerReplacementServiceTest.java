@@ -3,7 +3,10 @@ package com.example.dvely.provisioning.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -31,6 +34,12 @@ class ServerReplacementServiceTest {
     @Mock private CloudConnectionRepository cloudConnectionRepository;
     @Mock private Ec2Provisioner ec2;
     @InjectMocks private ServerReplacementService service;
+
+    @org.junit.jupiter.api.BeforeEach
+    void leaseClaimedByDefault() {
+        // 기본은 리스 claim 성공 — 교체 로직 자체를 검증하는 테스트들이 진행되게. claim 실패 케이스는 개별 재정의.
+        lenient().when(serverRepository.claimForReplacement(anyLong(), anyString())).thenReturn(true);
+    }
 
     private ProvisionedServer server(Long id, String instanceId, String publicHost, boolean webOnly) {
         LocalDateTime now = LocalDateTime.now();
@@ -179,5 +188,23 @@ class ServerReplacementServiceTest {
 
         assertThat(newServer.getSupersedesServerId()).isNull();
         verify(ec2, never()).terminate(any(), any());
+    }
+
+    @Test
+    void leaseClaimLost_skipsReplacement() {
+        // 다른 인스턴스가 이 서버의 교체 리스를 쥠 → 이 인스턴스는 아무것도 하지 않는다(중복 EIP 재연결·종료 방지).
+        ProvisionedServer oldServer = server(1L, "i-old", "2.2.2.2", false);
+        oldServer.assignElasticIp("alloc-old");
+        ProvisionedServer newServer = server(2L, "i-new", "1.1.1.1", false);
+        newServer.assignSupersedes(1L);
+        when(serverRepository.findRunningWithPendingReplacement(anyInt())).thenReturn(List.of(newServer));
+        when(serverRepository.claimForReplacement(anyLong(), anyString())).thenReturn(false);   // 리스 못 잡음
+
+        service.completePendingReplacements();
+
+        verify(serverRepository, never()).findById(any());   // 교체 로직에 진입조차 안 함
+        verify(ec2, never()).terminate(any(), any());
+        verify(ec2, never()).reassociateElasticIp(any(), any(), any());
+        assertThat(newServer.getSupersedesServerId()).isEqualTo(1L);   // 손대지 않음
     }
 }

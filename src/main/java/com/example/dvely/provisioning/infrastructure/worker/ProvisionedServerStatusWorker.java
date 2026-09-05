@@ -85,6 +85,11 @@ public class ProvisionedServerStatusWorker {
 
         // 아직 기동 중 — 너무 오래면(앱이 안 뜸) 과금을 멈추고 실패로 닫는다.
         if (server.getUpdatedAt().plus(BOOT_TIMEOUT).isBefore(LocalDateTime.now())) {
+            // 다중 인스턴스: 부트 타임아웃 처리 권한을 CAS 로 claim(PROVISIONING→FAILED). 진 인스턴스
+            // 하나만 진행한다 — 두 곳이 같은 인스턴스를 종료하거나 SSM 으로 로그를 뜨지 않게.
+            if (!serverRepository.claimBootTimeout(server.getId())) {
+                return;
+            }
             // terminate 하기 전에 부트 로그를 떠 둔다 — 인스턴스가 사라지면 왜 안 떴는지 볼 길이 없어진다.
             captureBootDiagnostics(connection.get(), server);
             safeTerminate(connection.get(), server.getInstanceId());

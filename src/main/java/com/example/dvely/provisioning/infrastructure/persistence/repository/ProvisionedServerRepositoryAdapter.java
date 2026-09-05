@@ -65,6 +65,22 @@ public class ProvisionedServerRepositoryAdapter implements ProvisionedServerRepo
         return springDataRepository.claimForBuild(id, LocalDateTime.now()) == 1;
     }
 
+    /** 교체 리스 유지 시간. 한 틱의 교체 처리보다 넉넉하되, 인스턴스가 죽으면 다른 곳이 이어받을 만큼 짧게. */
+    private static final java.time.Duration REPLACEMENT_LEASE = java.time.Duration.ofMinutes(2);
+
+    @Override
+    @Transactional
+    public boolean claimForReplacement(Long id, String owner) {
+        LocalDateTime now = LocalDateTime.now();
+        return springDataRepository.claimForReplacement(id, owner, now.plus(REPLACEMENT_LEASE), now) == 1;
+    }
+
+    @Override
+    @Transactional
+    public boolean claimBootTimeout(Long id) {
+        return springDataRepository.claimBootTimeout(id, LocalDateTime.now()) == 1;
+    }
+
     @Override
     public List<Long> findDistinctCloudConnectionIds() {
         return springDataRepository.findDistinctCloudConnectionIds();

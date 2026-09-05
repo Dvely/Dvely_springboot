@@ -28,6 +28,27 @@ public interface SpringDataProvisionedServerRepository
             + " where e.id = :id and e.status = 'QUEUED'")
     int claimForBuild(@Param("id") Long id, @Param("now") LocalDateTime now);
 
+    /**
+     * 재배포 교체 워커의 다중 인스턴스 리스 claim. RUNNING 이고 리스가 비었거나(NULL) 만료됐거나 내가 쥔
+     * 것이면 내가 리스를 잡는다(1 반환) — 같은 소유자는 다음 틱에 이어받을 수 있다(교체가 여러 틱 걸림).
+     * 이 UPDATE 는 lease 컬럼만 건드려 도메인 저장(EIP·supersedes 등)과 충돌하지 않는다.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("update ProvisionedServerEntity e set e.leaseOwner = :owner, e.leaseUntil = :until"
+            + " where e.id = :id and e.status = 'RUNNING'"
+            + " and (e.leaseUntil is null or e.leaseUntil < :now or e.leaseOwner = :owner)")
+    int claimForReplacement(@Param("id") Long id, @Param("owner") String owner,
+            @Param("until") LocalDateTime until, @Param("now") LocalDateTime now);
+
+    /**
+     * 부트 타임아웃 처리 권한을 status-CAS 로 claim(PROVISIONING→FAILED). 승자만 1 을 받아 인스턴스를
+     * 종료하고 부트 로그를 뜬다 — 다중 인스턴스에서 두 곳이 같은 인스턴스를 종료·SSM 조회하지 않게.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("update ProvisionedServerEntity e set e.status = 'FAILED', e.updatedAt = :now"
+            + " where e.id = :id and e.status = 'PROVISIONING'")
+    int claimBootTimeout(@Param("id") Long id, @Param("now") LocalDateTime now);
+
     @Query("select distinct e.cloudConnectionId from ProvisionedServerEntity e"
             + " where e.cloudConnectionId is not null")
     List<Long> findDistinctCloudConnectionIds();
