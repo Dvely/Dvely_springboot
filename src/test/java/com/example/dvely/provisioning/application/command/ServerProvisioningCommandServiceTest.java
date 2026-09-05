@@ -133,6 +133,64 @@ class ServerProvisioningCommandServiceTest {
     }
 
     @Test
+    void submitOnRedeploy_supersedesLatestInFlightServer_forDoubleRedeployChain() {
+        when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
+                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+        // 직전 재배포(id=7)가 아직 뜨는 중(PROVISIONING)인데 또 재배포 → 새 서버는 '현재 RUNNING'(5)이 아니라
+        // '직전 재배포'(7)를 가리켜야 A←B←C 체인이 된다. 안 그러면 7·새서버가 둘 다 5 를 가리켜 하나가 고아.
+        ProvisionedServer running = new ProvisionedServer(5L, PROJECT, "t3.micro", ServerStatus.RUNNING,
+                CONN_ID, "i-5", "1.2.3.4", 8080, null, null, null,
+                java.time.LocalDateTime.now(), java.time.LocalDateTime.now());
+        running.assignWebOnly(false);
+        ProvisionedServer inFlight = new ProvisionedServer(7L, PROJECT, "t3.micro", ServerStatus.PROVISIONING,
+                CONN_ID, "i-7", null, 8080, null, null, null,
+                java.time.LocalDateTime.now(), java.time.LocalDateTime.now());
+        inFlight.assignWebOnly(false);
+        // 최신순 정렬: [7(PROVISIONING), 5(RUNNING)]
+        when(serverRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT))
+                .thenReturn(java.util.List.of(inFlight, running));
+        when(serverRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalRepository.save(any())).thenReturn(approval(99L));
+
+        service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null,
+                new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false);
+
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository, times(2)).save(saved.capture());
+        assertThat(saved.getAllValues().get(0).getSupersedesServerId()).isEqualTo(7L);   // RUNNING(5) 아닌 최신 비종착(7)
+    }
+
+    @Test
+    void submitOnRedeploy_skipsTerminalServers_picksLatestNonTerminal() {
+        when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
+                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+        // 최신이 FAILED(id=8, 이전 실패 잔재)면 건너뛰고 그 다음 RUNNING(5)을 교체 대상으로.
+        ProvisionedServer failed = new ProvisionedServer(8L, PROJECT, "t3.micro", ServerStatus.FAILED,
+                CONN_ID, "i-8", null, 8080, null, null, null,
+                java.time.LocalDateTime.now(), java.time.LocalDateTime.now());
+        failed.assignWebOnly(false);
+        ProvisionedServer running = new ProvisionedServer(5L, PROJECT, "t3.micro", ServerStatus.RUNNING,
+                CONN_ID, "i-5", "1.2.3.4", 8080, null, null, null,
+                java.time.LocalDateTime.now(), java.time.LocalDateTime.now());
+        running.assignWebOnly(false);
+        when(serverRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT))
+                .thenReturn(java.util.List.of(failed, running));
+        when(serverRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalRepository.save(any())).thenReturn(approval(99L));
+
+        service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null,
+                new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false);
+
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository, times(2)).save(saved.capture());
+        assertThat(saved.getAllValues().get(0).getSupersedesServerId()).isEqualTo(5L);   // FAILED(8) 건너뛰고 RUNNING(5)
+    }
+
+    @Test
     void submitHonorsRequestedInstanceType() {
         when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
                 .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));

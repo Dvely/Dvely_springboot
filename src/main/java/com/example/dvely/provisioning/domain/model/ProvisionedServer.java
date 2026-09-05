@@ -155,6 +155,11 @@ public class ProvisionedServer {
         return supersedesServerId;
     }
 
+    /** 아직 교체할 대상이 남아 있는지(재배포 체인에서 '정착 전'인지 판별). */
+    public boolean hasSupersedes() {
+        return supersedesServerId != null;
+    }
+
     /**
      * 재배포 교체 완료 시, 옛 서버의 EIP·공개주소를 이 새 서버로 넘겨받는다(EIP 를 새 인스턴스로 reassociate
      * 한 뒤 호출). 이후 종료 정리가 이 새 서버 기준으로 EIP·도메인을 다룬다 — dnsTarget(IP)이 안 바뀌어
