@@ -273,14 +273,17 @@ public class DomainBindingCommandService {
             throw new IllegalStateException(
                     "S3 프론트 호스팅으로 설정한 프로젝트에서만 이 도메인 연결을 쓸 수 있습니다. 프론트를 S3 로 먼저 배포해주세요.");
         }
-        // 이 단계는 관리형 서브도메인(우리 Cloudflare 존, DNS 완전 자동)만 지원한다. 커스텀 도메인은
-        // ACM 검증 CNAME·최종 CNAME 을 사용자 소유 존에 넣어야 해(우리 토큰 밖) 사용자 DNS 안내가 필요 —
-        // 후속으로 뺀다.
-        if (command.type() != DomainType.MANAGED_SUBDOMAIN) {
-            throw new IllegalArgumentException(
-                    "S3 프론트 HTTPS 는 현재 관리형 서브도메인만 지원합니다(커스텀 도메인은 곧 지원).");
+        // 관리형 서브도메인은 우리 Cloudflare 존이라 워커가 DNS(검증 CNAME·최종 CNAME)를 자동으로 건다.
+        // 커스텀 도메인은 사용자 소유 존(우리 토큰 밖)이라 워커는 DNS 를 안 걸고, 사용자가 검증 CNAME →
+        // (인증서 발급 후) 최종 CNAME 을 자기 DNS 에 넣도록 검증 가이드로 안내한다.
+        String hostname;
+        if (command.type() == DomainType.MANAGED_SUBDOMAIN) {
+            hostname = normalizeLabel(command.label()) + "." + cloudflareProperties.managedDomainOrDefault();
+        } else if (command.type() == DomainType.CUSTOM_DOMAIN) {
+            hostname = normalizeHostname(command.hostname());
+        } else {
+            throw new IllegalArgumentException("구매형 도메인 연결은 아직 지원되지 않습니다.");
         }
-        String hostname = normalizeLabel(command.label()) + "." + cloudflareProperties.managedDomainOrDefault();
         ensureHostnameAvailable(hostname);
         // ACM 인증서(us-east-1) 발급 요청 — 최종 DNS 는 CloudFront 도메인으로의 CNAME(워커가 배포 후 설정).
         String certArn = s3CdnProvisioningPort.requestCertificate(project.getId(), hostname);

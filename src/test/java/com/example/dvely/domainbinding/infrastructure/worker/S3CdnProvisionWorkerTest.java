@@ -47,6 +47,14 @@ class S3CdnProvisionWorkerTest {
         return domain;
     }
 
+    private DomainBinding customProvisioningDomain() {
+        DomainBinding domain = new DomainBinding(11L, DomainType.CUSTOM_DOMAIN,
+                DomainHostingTarget.AWS_S3_FRONTEND, "www.mysite.com", DomainStatus.PROVISIONING,
+                VerificationMethod.CNAME, null);
+        domain.assignAcmCertificate(CERT);
+        return domain;
+    }
+
     private void givenPending(DomainBinding domain) {
         when(domainBindingRepository.findByStatus(eq(DomainStatus.PROVISIONING), anyInt()))
                 .thenReturn(List.of(domain));
@@ -117,6 +125,41 @@ class S3CdnProvisionWorkerTest {
         worker.pollProvisioning();
 
         assertThat(domain.getStatus()).isEqualTo(DomainStatus.PROVISIONING);
+    }
+
+    @Test
+    void custom_certPending_doesNotAddValidationCname_userAddsToTheirDns() {
+        DomainBinding domain = customProvisioningDomain();
+        givenPending(domain);
+        when(cdnProvisioningPort.describeCertificate(11L, CERT)).thenReturn(new AcmCertStatus(
+                "PENDING_VALIDATION", "_x.www.mysite.com.", "_y.acm-validations.aws.",
+                false, false, true));
+
+        worker.pollProvisioning();
+
+        // 커스텀은 우리 존에 검증 CNAME 을 안 건다 — 사용자가 자기 DNS 에 넣는다(가이드로 안내).
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
+        assertThat(domain.getAcmValidationRecordId()).isNull();
+        assertThat(domain.getStatus()).isEqualTo(DomainStatus.PROVISIONING);
+    }
+
+    @Test
+    void custom_certIssued_createsDistribution_butNoFinalCname() {
+        DomainBinding domain = customProvisioningDomain();
+        givenPending(domain);
+        when(cdnProvisioningPort.describeCertificate(11L, CERT)).thenReturn(new AcmCertStatus(
+                "ISSUED", null, null, true, false, false));
+        when(cdnProvisioningPort.createDistribution(11L, "www.mysite.com", CERT))
+                .thenReturn(new CdnDistribution("E999", "dcustom.cloudfront.net"));
+
+        worker.pollProvisioning();
+
+        verify(cdnProvisioningPort).createDistribution(11L, "www.mysite.com", CERT);
+        // 최종 CNAME 도 사용자 몫 — 우리 존엔 안 건다. dnsTarget 만 남겨 가이드로 안내한다.
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
+        assertThat(domain.getCloudfrontDistributionId()).isEqualTo("E999");
+        assertThat(domain.getDnsTarget()).isEqualTo("dcustom.cloudfront.net");
+        assertThat(domain.getCloudflareRecordId()).isNull();   // 우리 CNAME 레코드 없음
     }
 
     @Test

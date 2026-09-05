@@ -136,15 +136,19 @@ public class DomainBinding {
     }
 
     /**
-     * CloudFront 배포 생성 직후. 배포 id·최종 CNAME(도메인→CloudFront) 레코드 id 를 기록하고 dnsTarget 을
-     * CloudFront 도메인으로 잡는다. 상태는 PROVISIONING 유지(배포 Deployed·https 확인은 이후).
+     * CloudFront 배포 생성 직후. 배포 id 를 기록하고 dnsTarget 을 CloudFront 도메인으로 잡는다. 상태는
+     * PROVISIONING 유지(배포 Deployed·https 확인은 이후).
+     *
+     * @param finalCnameRecordId 관리형 서브도메인은 우리 존에 만든 최종 CNAME 의 Cloudflare 레코드 id.
+     *                           커스텀 도메인은 사용자가 자기 존에 CNAME 을 넣으므로 {@code null}(우리가
+     *                           지울 레코드가 없다 — dnsTarget 은 가이드로 사용자에게 안내한다).
      */
     public void assignCloudfrontDistribution(String distributionId,
                                              String cloudfrontDomain,
                                              String finalCnameRecordId) {
         this.cloudfrontDistributionId = requireText(distributionId, "distributionId");
         this.dnsTarget = requireText(cloudfrontDomain, "cloudfrontDomain");
-        this.cloudflareRecordId = requireText(finalCnameRecordId, "finalCnameRecordId");
+        this.cloudflareRecordId = finalCnameRecordId;
     }
 
     /** DB 에서 복원할 때 생성자 밖 CDN 자원 id 를 되살린다. */

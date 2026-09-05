@@ -7,9 +7,11 @@ import com.example.dvely.domainbinding.application.result.DomainSearchResult;
 import com.example.dvely.domainbinding.application.result.VerificationGuideResult;
 import com.example.dvely.domainbinding.application.result.VerificationRecordResult;
 import com.example.dvely.domainbinding.domain.model.DomainBinding;
+import com.example.dvely.domainbinding.application.port.out.S3CdnProvisioningPort;
 import com.example.dvely.domainbinding.domain.repository.DomainBindingRepository;
 import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.domain.value.DomainType;
+import com.example.dvely.domainbinding.domain.value.VerificationMethod;
 import com.example.dvely.domainbinding.infrastructure.config.CloudflareProperties;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
@@ -27,6 +29,7 @@ public class DomainBindingQueryService {
     private final ProjectRepository projectRepository;
     private final DomainBindingRepository domainBindingRepository;
     private final CloudflareProperties cloudflareProperties;
+    private final S3CdnProvisioningPort s3CdnProvisioningPort;
 
     /**
      * 이 호스트네임이 우리가 관리하는 EC2 도메인(백엔드 AWS · 독립 프론트 AWS_EC2_FRONTEND)으로
@@ -71,6 +74,10 @@ public class DomainBindingQueryService {
 
     public VerificationGuideResult getVerificationGuide(Long ownerUserId, Long domainId) {
         DomainBinding domain = resolveDomainOwnedBy(domainId, ownerUserId);
+        if (domain.getHostingTarget() == DomainHostingTarget.AWS_S3_FRONTEND
+                && domain.getType() == DomainType.CUSTOM_DOMAIN) {
+            return s3CustomDomainGuide(domain);
+        }
         if (domain.getDnsTarget() == null || domain.getDnsTarget().isBlank()) {
             throw new IllegalArgumentException("도메인 검증 대상이 아직 생성되지 않았습니다. domainId=" + domainId);
         }
@@ -83,6 +90,46 @@ public class DomainBindingQueryService {
                         domain.getDnsTarget()
                 ))
         );
+    }
+
+    /**
+     * S3 커스텀 도메인은 사용자가 자기 DNS 에 CNAME 을 두 단계로 넣는다(우리가 못 건다). 각 단계에서 지금
+     * 넣어야 할 레코드를 보여준다:
+     * <ol>
+     *   <li>배포 전(distributionId 없음): ACM DNS 검증 CNAME — 인증서 발급용. 넣으면 인증서가 발급되고
+     *       워커가 CloudFront 배포를 만든다.</li>
+     *   <li>배포 후(distributionId 있음): 도메인 → CloudFront 최종 CNAME — 트래픽 라우팅용. 넣으면 https 서빙.</li>
+     * </ol>
+     */
+    private VerificationGuideResult s3CustomDomainGuide(DomainBinding domain) {
+        if (domain.getCloudfrontDistributionId() == null) {
+            S3CdnProvisioningPort.AcmCertStatus cert = s3CdnProvisioningPort
+                    .describeCertificate(domain.getProjectId(), domain.getAcmCertificateArn());
+            if (!cert.hasValidationRecord()) {
+                throw new IllegalArgumentException("인증서 검증 레코드를 준비 중입니다. 잠시 후 다시 시도해주세요.");
+            }
+            return new VerificationGuideResult(
+                    domain.getHostname(),
+                    VerificationMethod.CNAME,
+                    List.of(new VerificationRecordResult(
+                            "CNAME",
+                            stripTrailingDot(cert.validationRecordName()),
+                            stripTrailingDot(cert.validationRecordValue()))));
+        }
+        return new VerificationGuideResult(
+                domain.getHostname(),
+                VerificationMethod.CNAME,
+                List.of(new VerificationRecordResult(
+                        "CNAME",
+                        domain.getHostname(),
+                        domain.getDnsTarget())));
+    }
+
+    private String stripTrailingDot(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.endsWith(".") ? value.substring(0, value.length() - 1) : value;
     }
 
     private Project resolveProject(Long ownerUserId, Long projectId) {
