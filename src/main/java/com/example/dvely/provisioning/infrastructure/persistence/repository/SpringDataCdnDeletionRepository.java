@@ -27,4 +27,7 @@ public interface SpringDataCdnDeletionRepository extends JpaRepository<CdnDeleti
     @Modifying(clearAutomatically = true)
     @Query("update CdnDeletionEntity e set e.lastError = :error where e.id = :id")
     int recordError(@Param("id") Long id, @Param("error") String error);
+
+    /** 이 배포가 이미 삭제 큐에 있는지 — 고아 스윕이 중복 큐잉을 피하는 데 쓴다. */
+    boolean existsByDistributionId(String distributionId);
 }

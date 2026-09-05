@@ -3,6 +3,8 @@ package com.example.dvely.provisioning.infrastructure;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.infrastructure.external.AwsCredentialsResolver;
 import com.example.dvely.cloudconnection.infrastructure.external.AwsCredentialsResolver.AwsAccess;
+import java.util.ArrayList;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -19,6 +21,9 @@ import software.amazon.awssdk.services.cloudfront.model.CustomOriginConfig;
 import software.amazon.awssdk.services.cloudfront.model.DefaultCacheBehavior;
 import software.amazon.awssdk.services.cloudfront.model.DeleteDistributionRequest;
 import software.amazon.awssdk.services.cloudfront.model.Distribution;
+import software.amazon.awssdk.services.cloudfront.model.DistributionSummary;
+import software.amazon.awssdk.services.cloudfront.model.ListDistributionsRequest;
+import software.amazon.awssdk.services.cloudfront.model.ListDistributionsResponse;
 import software.amazon.awssdk.services.cloudfront.model.DistributionConfig;
 import software.amazon.awssdk.services.cloudfront.model.GetDistributionConfigResponse;
 import software.amazon.awssdk.services.cloudfront.model.GetDistributionResponse;
@@ -51,6 +56,8 @@ public class CloudFrontDistributionProvisioner {
     // AWS 관리형 캐시 정책 "CachingOptimized" — 정적 사이트 캐싱에 적합, 정책 id 는 전 계정 공통 상수.
     private static final String MANAGED_CACHING_OPTIMIZED = "658327ea-f89d-4fab-a63d-7e88639e58f6";
     private static final String ORIGIN_ID = "s3-website-origin";
+    // 우리 배포 식별용 comment 접두사(태그 대신). 뒤에 hostname 이 붙는다. 고아 스윕이 이걸로 우리 것을 가른다.
+    public static final String COMMENT_PREFIX = "qeploy S3 front HTTPS: ";
 
     private final AwsCredentialsResolver credentialsResolver;
 
@@ -86,6 +93,35 @@ public class CloudFrontDistributionProvisioner {
         }
     }
 
+    /**
+     * 이 계정에서 <b>우리가 만든</b> CloudFront 배포들을 나열한다(comment 접두사로 식별). 고아 스윕이 DB 추적과
+     * 대조해 어디에도 없는 배포를 찾는 데 쓴다. certArn·hostname 은 삭제 큐 행에 필요해 summary 에서 뽑는다.
+     */
+    public List<OwnedDistribution> listOwnedDistributions(CloudConnection connection) {
+        List<OwnedDistribution> owned = new ArrayList<>();
+        try (CloudFrontClient cf = client(connection)) {
+            String marker = null;
+            do {
+                ListDistributionsResponse resp = cf.listDistributions(
+                        ListDistributionsRequest.builder().marker(marker).build());
+                var list = resp.distributionList();
+                if (list != null && list.hasItems()) {
+                    for (DistributionSummary d : list.items()) {
+                        String comment = d.comment();
+                        if (comment != null && comment.startsWith(COMMENT_PREFIX)) {
+                            String hostname = comment.substring(COMMENT_PREFIX.length());
+                            String certArn = d.viewerCertificate() == null
+                                    ? null : d.viewerCertificate().acmCertificateArn();
+                            owned.add(new OwnedDistribution(d.id(), certArn, hostname));
+                        }
+                    }
+                }
+                marker = (list != null && Boolean.TRUE.equals(list.isTruncated())) ? list.nextMarker() : null;
+            } while (marker != null);
+        }
+        return owned;
+    }
+
     /** 배포 비활성화(enabled=false). 삭제 전 필수 단계. 이미 비활성이면 no-op 에 가깝다(멱등적으로 다시 설정). */
     public void disable(CloudConnection connection, String distributionId) {
         try (CloudFrontClient cf = client(connection)) {
@@ -116,7 +152,7 @@ public class CloudFrontDistributionProvisioner {
     private DistributionConfig distributionConfig(String hostname, String certificateArn, String originHost) {
         return DistributionConfig.builder()
                 .callerReference("qeploy-" + hostname)   // hostname 당 하나 — 재호출 시 중복생성 대신 에러(호출부가 id 저장으로 방지)
-                .comment("qeploy S3 front HTTPS: " + hostname)
+                .comment(COMMENT_PREFIX + hostname)
                 .enabled(true)
                 .aliases(Aliases.builder().quantity(1).items(hostname).build())
                 .defaultRootObject("index.html")
@@ -176,6 +212,9 @@ public class CloudFrontDistributionProvisioner {
     }
 
     public record DistributionInfo(String distributionId, String domainName) {}
+
+    /** 우리가 만든 배포 한 건(고아 판정·삭제 큐잉용). certArn·hostname 은 summary(comment·viewerCertificate)에서. */
+    public record OwnedDistribution(String distributionId, String certificateArn, String hostname) {}
 
     public record DistributionState(boolean enabled, boolean deployed) {}
 }
