@@ -9,5 +9,8 @@ public interface SpringDataCloudConnectionRepository extends JpaRepository<Cloud
 
     List<CloudConnectionEntity> findAllByOwnerUserIdOrderByCreatedAtDesc(Long ownerUserId);
 
+    // provider 는 String 컬럼(CloudConnectionEntity:35).
+    List<CloudConnectionEntity> findAllByProvider(String provider);
+
     Optional<CloudConnectionEntity> findByIdAndOwnerUserId(Long id, Long ownerUserId);
 }

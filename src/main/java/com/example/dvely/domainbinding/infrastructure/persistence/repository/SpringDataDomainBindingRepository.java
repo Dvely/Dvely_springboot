@@ -32,4 +32,8 @@ public interface SpringDataDomainBindingRepository extends JpaRepository<DomainB
             + " and (e.leaseUntil is null or e.leaseUntil < :now or e.leaseOwner = :owner)")
     int claimForCdnProvision(@Param("id") Long id, @Param("owner") String owner,
             @Param("until") LocalDateTime until, @Param("now") LocalDateTime now);
+
+    /** 현재 바인딩이 참조하는 CloudFront 배포 id 전부(null 제외). 고아 스윕의 활성 집합 — 이건 절대 안 지운다. */
+    @Query("select e.cloudfrontDistributionId from DomainBindingEntity e where e.cloudfrontDistributionId is not null")
+    List<String> findAllCloudfrontDistributionIds();
 }
