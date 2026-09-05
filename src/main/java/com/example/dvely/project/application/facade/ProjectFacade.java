@@ -32,6 +32,8 @@ public class ProjectFacade {
     private final ProjectRepositorySettingsService projectRepositorySettingsService;
     // 프로젝트 삭제 후 남는 클라우드 자원(프론트 S3 사이트 버킷) 정리. best-effort — 절대 던지지 않는다.
     private final com.example.dvely.project.application.port.out.ProjectCloudCleanupPort projectCloudCleanupPort;
+    // 프론트 S3 HTTPS(CloudFront+ACM) 도메인 정리. 도메인 행은 삭제 트랜잭션이 안 지우므로 별도로 정리.
+    private final com.example.dvely.project.application.port.out.ProjectCdnCleanupPort projectCdnCleanupPort;
 
     public ProjectCreationResult createProject(Long ownerUserId, CreateProjectCommand command) {
         return projectCreationService.create(ownerUserId, command);
@@ -52,6 +54,9 @@ public class ProjectFacade {
         // 삭제(트랜잭션)가 끝난 뒤 프론트 S3 사이트 버킷을 정리한다 — 트랜잭션 밖에서(외부 네트워크),
         // best-effort(정리 실패가 이미 끝난 삭제를 되돌리지 않는다). S3 안 쓴 프로젝트는 no-op.
         projectCloudCleanupPort.cleanupFrontendS3(projectId, ownerUserId);
+        // 프론트 S3 HTTPS 도메인(CloudFront+ACM)도 정리한다 — Cloudflare 레코드 제거 + CloudFront/인증서
+        // 정리 큐잉(리퍼가 마무리). 도메인 없으면 no-op. 역시 best-effort.
+        projectCdnCleanupPort.cleanupFrontendCdnDomains(projectId);
     }
 
     public List<GithubRepositoryResult> getGithubRepositories(Long ownerUserId) {

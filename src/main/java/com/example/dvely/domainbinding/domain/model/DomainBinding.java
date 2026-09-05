@@ -24,6 +24,11 @@ public class DomainBinding {
     private CertificateStatus certificateStatus;
     private LocalDate certificateExpiresAt;
     private LocalDateTime lastCheckedAt;
+    // AWS_S3_FRONTEND(S3 프론트 HTTPS) 프로비저닝 자원 식별자. 생성자 밖 mutable — 비동기 워커가
+    // 단계별로 채운다(cert 요청 → 검증 레코드 → CloudFront 배포). 다른 호스팅 타깃에선 전부 null.
+    private String acmCertificateArn;
+    private String acmValidationRecordId;
+    private String cloudfrontDistributionId;
     private final LocalDateTime createdAt;
     private final LocalDateTime updatedAt;
 
@@ -115,6 +120,42 @@ public class DomainBinding {
         this.status = DomainStatus.VERIFYING;
     }
 
+    // ── AWS_S3_FRONTEND(CloudFront+ACM) 프로비저닝 단계별 상태 전이 ──────────────────
+    // 이 경로는 상태를 PROVISIONING 으로 유지하다가, 실제 https 가 뜨면 markVerificationChecked 로
+    // CONNECTED 가 된다(assignCloudflareRecord 처럼 VERIFYING 으로 넘기지 않는다 — CloudFront 배포가
+    // Deployed 될 때까지 계속 프로비저닝 중이기 때문).
+
+    /** ACM 인증서 발급 요청 직후. certArn 을 기록하고 PROVISIONING 으로 둔다. */
+    public void assignAcmCertificate(String certificateArn) {
+        this.acmCertificateArn = requireText(certificateArn, "certificateArn");
+    }
+
+    /** ACM DNS 검증 CNAME 을 Cloudflare 에 넣은 뒤, 그 레코드 id 를 기록(정리 때 지우기 위해). */
+    public void assignAcmValidationRecord(String recordId) {
+        this.acmValidationRecordId = requireText(recordId, "recordId");
+    }
+
+    /**
+     * CloudFront 배포 생성 직후. 배포 id·최종 CNAME(도메인→CloudFront) 레코드 id 를 기록하고 dnsTarget 을
+     * CloudFront 도메인으로 잡는다. 상태는 PROVISIONING 유지(배포 Deployed·https 확인은 이후).
+     */
+    public void assignCloudfrontDistribution(String distributionId,
+                                             String cloudfrontDomain,
+                                             String finalCnameRecordId) {
+        this.cloudfrontDistributionId = requireText(distributionId, "distributionId");
+        this.dnsTarget = requireText(cloudfrontDomain, "cloudfrontDomain");
+        this.cloudflareRecordId = requireText(finalCnameRecordId, "finalCnameRecordId");
+    }
+
+    /** DB 에서 복원할 때 생성자 밖 CDN 자원 id 를 되살린다. */
+    public void restoreCdnResources(String certificateArn,
+                                    String validationRecordId,
+                                    String distributionId) {
+        this.acmCertificateArn = certificateArn;
+        this.acmValidationRecordId = validationRecordId;
+        this.cloudfrontDistributionId = distributionId;
+    }
+
     public void markVerificationChecked(boolean connected,
                                         boolean httpsEnforced,
                                         CertificateStatus certificateStatus,
@@ -181,6 +222,18 @@ public class DomainBinding {
 
     public LocalDateTime getLastCheckedAt() {
         return lastCheckedAt;
+    }
+
+    public String getAcmCertificateArn() {
+        return acmCertificateArn;
+    }
+
+    public String getAcmValidationRecordId() {
+        return acmValidationRecordId;
+    }
+
+    public String getCloudfrontDistributionId() {
+        return cloudfrontDistributionId;
     }
 
     public LocalDateTime getCreatedAt() {
