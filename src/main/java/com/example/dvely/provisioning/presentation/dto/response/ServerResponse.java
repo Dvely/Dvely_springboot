@@ -30,6 +30,9 @@ public record ServerResponse(
         @Schema(description = "부트 타임아웃으로 실패한 서버가 보존한 부트 로그를 갖고 있는지. true 면 인스턴스가 "
                 + "종료됐어도 GET /servers/{id}/logs?source=BOOT 로 '왜 안 떴나'를 볼 수 있다.")
         boolean hasBootDiagnostics,
+        @Schema(description = "무응답 감지 후 자동복구(재시작)를 시도한 시각. 회복되면 null 로 지워진다. "
+                + "healthy=false 이면서 이 값이 있으면 '재시작했으나 회복 못 함' — 재배포가 필요할 수 있다.")
+        LocalDateTime recoveryAttemptedAt,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {
@@ -50,6 +53,6 @@ public record ServerResponse(
                 s.getPublicHost(), s.getPort(), url, domainUrl, s.getInstanceId(),
                 s.getFailureCode() == null ? null : s.getFailureCode().name(),
                 s.getErrorMessage(), s.getHealthy(), s.getLastHealthCheckAt(),
-                s.hasBootDiagnostics(), s.getCreatedAt(), s.getUpdatedAt());
+                s.hasBootDiagnostics(), s.getRecoveryAttemptedAt(), s.getCreatedAt(), s.getUpdatedAt());
     }
 }

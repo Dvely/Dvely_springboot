@@ -49,6 +49,9 @@ public class ProvisionedServer {
     // 부트 타임아웃으로 실패·종료할 때, 종료 직전에 뜬 부트 로그(cloud-init) 스냅샷. 인스턴스가
     // 사라진 뒤에도 "왜 안 떴나"를 볼 수 있게 보존한다. 정상 기동 서버는 null(라이브 조회로 충분).
     private String bootDiagnostics;
+    // 앱이 무응답(healthy=false)일 때 자동복구(재시작)를 시도한 시각. 한 장애 에피소드당 1회만 시도하려
+    // 표시로 쓴다 — 회복되면(healthy=true) 지운다. null=아직 이번 무응답에 복구를 안 시도함.
+    private LocalDateTime recoveryAttemptedAt;
     private Long approvalId;             // 승인 대상 연결
     private ProvisionFailureCode failureCode;
     private String errorMessage;
@@ -220,6 +223,20 @@ public class ProvisionedServer {
         this.lastHealthCheckAt = LocalDateTime.now();
     }
 
+    /** 이번 무응답 에피소드에 자동복구(재시작)를 시도했음을 표시한다(에피소드당 1회 한정용). */
+    public void markRecoveryAttempted() {
+        this.recoveryAttemptedAt = LocalDateTime.now();
+    }
+
+    /** 앱이 회복되면 복구 시도 표시를 지운다 — 다음 무응답 때 다시 복구를 시도할 수 있게. */
+    public void clearRecoveryAttempt() {
+        this.recoveryAttemptedAt = null;
+    }
+
+    public boolean hasRecoveryBeenAttempted() {
+        return recoveryAttemptedAt != null;
+    }
+
     public void markFailed(ProvisionFailureCode code, String message) {
         this.status = ServerStatus.FAILED;
         this.failureCode = code;
@@ -278,6 +295,7 @@ public class ProvisionedServer {
     public LocalDateTime getLastHealthCheckAt() { return lastHealthCheckAt; }
     public String getBootDiagnostics() { return bootDiagnostics; }
     public boolean hasBootDiagnostics() { return bootDiagnostics != null; }
+    public LocalDateTime getRecoveryAttemptedAt() { return recoveryAttemptedAt; }
 
     /** DB 로드 시 헬스 상태 복원(생성자 밖 필드). */
     public void restoreHealth(Boolean healthy, LocalDateTime lastHealthCheckAt) {
@@ -288,5 +306,10 @@ public class ProvisionedServer {
     /** DB 로드 시 보존된 부트 진단 로그 복원(생성자 밖 필드). */
     public void restoreBootDiagnostics(String bootDiagnostics) {
         this.bootDiagnostics = bootDiagnostics;
+    }
+
+    /** DB 로드 시 자동복구 시도 시각 복원(생성자 밖 필드). */
+    public void restoreRecoveryAttemptedAt(LocalDateTime recoveryAttemptedAt) {
+        this.recoveryAttemptedAt = recoveryAttemptedAt;
     }
 }
