@@ -83,11 +83,14 @@ public class ServerProvisioningCommandService {
         }
         ProvisionedServer server = ProvisionedServer.pending(projectId, tier, APP_PORT, mode, bundledDbEngine, webSpec);
         server.assignWebOnly(webOnly);
-        // 재배포면(같은 프로젝트에 동일 webOnly 의 현재 RUNNING 서버가 있으면) 그 서버를 교체 대상으로 기록한다.
-        // 새 서버가 RUNNING 되면 리플레이스 워커가 EIP 를 넘겨받고 옛 서버를 종료한다(블루그린, 고아 없음).
+        // 재배포면 같은 webOnly 의 '최신 비종착 서버'(체인의 머리)를 교체 대상으로 기록한다. RUNNING 뿐 아니라
+        // 아직 뜨는 중(PENDING/QUEUED/BUILDING/PROVISIONING)인 서버도 후보다 — 그래야 앞선 재배포가 RUNNING
+        // 되기 전에 또 재배포해도(더블 재배포) 새 서버가 '현재 RUNNING'(A)이 아니라 '직전 재배포'(B)를 가리켜
+        // A←B←C 체인이 만들어진다. 그래야 교체 워커가 순서대로 A→B→C 로 EIP 를 넘겨 C 만 남는다(고아 없음).
+        // 옛 방식(RUNNING 만)에서는 B·C 가 둘 다 A 를 가리켜, B 가 A 를 교체한 뒤 C 가 할 일을 잃고 고아가 됐다.
         // webOnly 로 갈라 백엔드 재배포는 백엔드만, 프론트 재배포는 프론트만 교체한다(둘은 정상 공존).
         serverRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
-                .filter(existing -> existing.getStatus() == ServerStatus.RUNNING && existing.isWebOnly() == webOnly)
+                .filter(existing -> existing.isWebOnly() == webOnly && !existing.getStatus().isTerminal())
                 .findFirst()
                 .ifPresent(existing -> server.assignSupersedes(existing.getId()));
         ProvisionedServer record = serverRepository.save(server);

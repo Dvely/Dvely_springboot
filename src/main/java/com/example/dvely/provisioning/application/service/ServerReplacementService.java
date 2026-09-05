@@ -55,10 +55,33 @@ public class ServerReplacementService {
             return;
         }
         ProvisionedServer oldServer = serverRepository.findById(oldServerId).orElse(null);
-        if (oldServer == null || oldServer.getStatus() == ServerStatus.TERMINATED) {
-            // 교체 대상이 이미 없다(먼저 종료됐거나 사라짐) — 표시만 지운다.
-            newServer.clearSupersedes();
+        if (oldServer == null) {
+            newServer.clearSupersedes();   // 교체 대상이 사라짐 — 표시만 지운다.
             serverRepository.save(newServer);
+            return;
+        }
+        // 교체 대상이 종착(FAILED·TERMINATED)이면 체인 링크가 끊긴 것이다. 그 서버의 교체 대상(더 앞선 라이브
+        // 서버)으로 승계해 그쪽을 대신 교체한다 — 더블 재배포에서 중간 서버가 실패해도 최신 서버가 진짜 라이브
+        // 서버를 이어받게. 승계할 대상이 없으면(체인 전체가 종착) 표시만 지운다. supersedes 는 늘 더 오래된
+        // 서버를 가리켜 순환이 없으므로 이 승계는 유한하게 끝난다.
+        if (oldServer.getStatus().isTerminal()) {
+            if (oldServer.hasSupersedes()) {
+                newServer.assignSupersedes(oldServer.getSupersedesServerId());
+            } else {
+                newServer.clearSupersedes();
+            }
+            serverRepository.save(newServer);
+            return;
+        }
+        // 교체 대상이 아직 뜨는 중이면(PENDING/QUEUED/BUILDING/PROVISIONING) 기다린다 — 그 서버가 먼저
+        // RUNNING 이 되어 라이브 EIP 를 넘겨받아야 이 새 서버가 그걸 다시 이어받는다(A→B→C 순서 보장).
+        if (oldServer.getStatus() != ServerStatus.RUNNING) {
+            return;   // 다음 주기에 다시 본다
+        }
+        // 교체 대상이 RUNNING 이라도 '자기 교체를 아직 안 끝냈으면'(supersedes 남음) 기다린다 — 그 서버가 먼저
+        // 정착해 라이브 EIP 를 쥐어야 넘겨받을 게 생긴다. 이 가드로 같은 주기 내 처리 순서와 무관하게 안전하다
+        // (C 를 B 보다 먼저 처리해도, C 는 B 가 정착할 때까지 기다린다).
+        if (oldServer.hasSupersedes()) {
             return;
         }
         Optional<CloudConnection> connection = newServer.getCloudConnectionId() == null
