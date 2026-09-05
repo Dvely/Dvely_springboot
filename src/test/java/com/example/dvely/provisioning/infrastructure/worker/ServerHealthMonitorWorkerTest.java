@@ -38,6 +38,7 @@ class ServerHealthMonitorWorkerTest {
     @Mock private TcpHealthChecker healthChecker;
     @Mock private CloudConnectionRepository cloudConnectionRepository;
     @Mock private SsmRunCommandClient ssmRunCommandClient;
+    @Mock private com.example.dvely.audit.application.AuditRecorder auditRecorder;
     @InjectMocks private ServerHealthMonitorWorker worker;
 
     /** id=1L, cloudConnectionId=5L, instanceId="i-1", port 8080. NATIVE(기본). */
@@ -110,6 +111,11 @@ class ServerHealthMonitorWorkerTest {
         ArgumentCaptor<String> cmd = ArgumentCaptor.forClass(String.class);
         verify(ssmRunCommandClient).runShellCommand(any(), eq("i-1"), cmd.capture());
         org.assertj.core.api.Assertions.assertThat(cmd.getValue()).contains("docker restart qeploy-app");
+        // 자동복구 시도가 감사 로그에 SUCCEEDED(재시작 명령 실행됨)로 남는다.
+        verify(auditRecorder).record(org.mockito.ArgumentMatchers.argThat(e ->
+                e.action() == com.example.dvely.audit.domain.value.AuditAction.SERVER_RECOVERY_ATTEMPTED
+                        && e.outcome() == com.example.dvely.audit.domain.value.AuditOutcome.SUCCEEDED
+                        && "SERVER".equals(e.resourceType())));
     }
 
     @Test
@@ -203,5 +209,9 @@ class ServerHealthMonitorWorkerTest {
 
         // claim 은 재시작 시도 전에 이뤄지므로, SSM 이 실패해도 이번 에피소드는 1회로 카운트된다(폭주 방지).
         verify(serverRepository).claimRecovery(1L);
+        // 재시작 명령이 실패하면 감사 로그에 FAILED 로 남는다(사용자 개입 필요 신호).
+        verify(auditRecorder).record(org.mockito.ArgumentMatchers.argThat(e ->
+                e.action() == com.example.dvely.audit.domain.value.AuditAction.SERVER_RECOVERY_ATTEMPTED
+                        && e.outcome() == com.example.dvely.audit.domain.value.AuditOutcome.FAILED));
     }
 }
