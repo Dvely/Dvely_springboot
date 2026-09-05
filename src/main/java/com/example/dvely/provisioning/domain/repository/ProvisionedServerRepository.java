@@ -38,6 +38,15 @@ public interface ProvisionedServerRepository {
      */
     boolean claimBootTimeout(Long id);
 
+    /** 헬스 결과만 targeted 로 기록(전체-엔티티 저장 대신) — 다중 인스턴스 겹침·교체 저장과 충돌 없이 안전. */
+    void recordHealth(Long id, boolean healthy);
+
+    /** 자동복구 권한 원자 claim(recovery_attempted_at null→now). 진 인스턴스 하나만 true — 이중 재시작 방지. */
+    boolean claimRecovery(Long id);
+
+    /** 앱 회복 시 복구 시도 표시 해제 — 다음 무응답에 다시 복구할 수 있게. */
+    void clearRecoveryAttempt(Long id);
+
     /** 서버가 존재하는(했던) 클라우드 연결 ID 들. 고아 EIP 청소가 연결별로 계정을 훑을 때 쓴다. */
     List<Long> findDistinctCloudConnectionIds();
 
