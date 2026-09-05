@@ -72,6 +72,23 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       "Resource": "arn:aws:ssm:*::parameter/aws/service/ami-amazon-linux-latest/*"   // AWS 공개 파라미터(계정 없음): 최신 AL2023 AMI 조회
     },
     {
+      "Sid": "SsmRunCommandForLogs",
+      "Effect": "Allow",
+      "Action": ["ssm:SendCommand"],
+      "Resource": ["arn:aws:ssm:*::document/AWS-RunShellScript", "arn:aws:ssm:*:*:instance/*"]
+      // 배포된 EC2 서버의 로그 조회(GET /servers/{id}/logs)에 쓴다. SSM Run Command 로 인스턴스에서
+      // tail·docker logs 를 돌려 최근 로그를 뽑는다. SendCommand 는 문서(AWS-RunShellScript)와 대상
+      // 인스턴스 양쪽에 리소스 권한이 필요하다. 인스턴스 쪽은 tag(Name=qeploy-backend-*)로 좁힐 수 있으나
+      // 문서 리소스만으로도 충분히 스코프된다. 로그 조회를 안 쓰면 이 문과 아래 GetCommandInvocation 은 없어도 된다.
+      // (인스턴스 역할에도 SSM core 권한이 붙는다 — 그건 인라인이라 이 정책 밖, Ec2InstanceRoleProvisioner 가 넣는다.)
+    },
+    {
+      "Sid": "SsmRunCommandResult",
+      "Effect": "Allow",
+      "Action": ["ssm:GetCommandInvocation"],
+      "Resource": "*"   // invocation ARN 은 실행 시점 동적 생성이라 스코프 불가
+    },
+    {
       "Sid": "S3ArtifactsOnly",
       "Effect": "Allow",
       "Action": ["s3:CreateBucket", "s3:PutObject", "s3:GetObject", "s3:DeleteObject",
