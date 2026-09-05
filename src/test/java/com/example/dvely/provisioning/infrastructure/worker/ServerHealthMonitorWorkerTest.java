@@ -168,16 +168,24 @@ class ServerHealthMonitorWorkerTest {
     }
 
     @Test
-    void nativeServer_secondUnhealthy_noRecovery() {
-        ProvisionedServer server = running("1.2.3.4");   // NATIVE — 자동복구 미지원
-        server.recordHealthCheck(false);
+    void nativeServer_secondConsecutiveUnhealthy_claimsAndRestartsWithNativeCommand() {
+        ProvisionedServer server = running("1.2.3.4");   // NATIVE(java -jar/npm start)
+        server.recordHealthCheck(false);   // 2회 연속 무응답
         batch(server);
         when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(false);
+        when(cloudConnectionRepository.findById(5L)).thenReturn(Optional.of(mock(CloudConnection.class)));
+        when(serverRepository.claimRecovery(1L)).thenReturn(true);
 
         worker.monitorRunningServers();
 
-        verify(serverRepository, never()).claimRecovery(anyLong());   // claim 도 안 함(에피소드 소비 방지)
-        verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());
+        verify(serverRepository).claimRecovery(1L);
+        ArgumentCaptor<String> cmd = ArgumentCaptor.forClass(String.class);
+        verify(ssmRunCommandClient).runShellCommand(any(), eq("i-1"), cmd.capture());
+        // NATIVE 재시작: 포트 쥔 프로세스 kill → SSM env 재export → jar/node 재기동.
+        org.assertj.core.api.Assertions.assertThat(cmd.getValue()).contains("pkill");
+        org.assertj.core.api.Assertions.assertThat(cmd.getValue()).contains("java -jar /opt/app/app.jar --server.port=8080");
+        org.assertj.core.api.Assertions.assertThat(cmd.getValue()).contains("npm start");
+        org.assertj.core.api.Assertions.assertThat(cmd.getValue()).doesNotContain("docker");   // DOCKER 명령 아님
     }
 
     @Test

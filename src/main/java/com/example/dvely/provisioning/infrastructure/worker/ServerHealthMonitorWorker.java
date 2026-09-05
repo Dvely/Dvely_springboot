@@ -85,18 +85,14 @@ public class ServerHealthMonitorWorker {
     /**
      * 2회 연속 무응답(직전도 false) + 이번 에피소드 미시도일 때, 무응답 앱을 SSM 으로 재시작한다. 재시작 직전에
      * {@code claimRecovery} 로 복구 권한을 원자적으로 잡는다 — 다중 인스턴스에서 진 하나만 재시작하고, 이
-     * claim 이 recovery_attempted_at 을 남긴다(전체-엔티티 저장을 안 하므로 clobber 되지 않는다). NATIVE·연결
-     * 없음 등 재시작 불가 조건은 claim <b>전에</b> 걸러 에피소드의 1회 기회를 헛되이 소비하지 않는다.
+     * claim 이 recovery_attempted_at 을 남긴다(전체-엔티티 저장을 안 하므로 clobber 되지 않는다). 연결 없음 등
+     * 재시작 불가 조건은 claim <b>전에</b> 걸러 에피소드의 1회 기회를 헛되이 소비하지 않는다.
      */
     private void attemptRecoveryIfDue(ProvisionedServer server, Boolean previous) {
         if (!Boolean.FALSE.equals(previous) || server.hasRecoveryBeenAttempted()) {
             return;   // 첫 무응답이거나 이미 이번 에피소드에 시도함 — 대상 아님
         }
         if (!autoRecoveryEnabled) {
-            return;
-        }
-        if (server.getDeployMode() != ServerDeployMode.DOCKER) {
-            log.warn("자동복구 미지원(NATIVE 서버는 재배포 필요): serverId={}", server.getId());
             return;
         }
         CloudConnection connection = server.getCloudConnectionId() == null ? null
@@ -110,9 +106,9 @@ public class ServerHealthMonitorWorker {
         }
         try {
             String output = ssmRunCommandClient.runShellCommand(
-                    connection, server.getInstanceId(), buildRestartCommand());
-            log.warn("앱 무응답 자동복구 시도(재시작): serverId={} instanceId={} 출력={}",
-                    server.getId(), server.getInstanceId(),
+                    connection, server.getInstanceId(), buildRestartCommand(server));
+            log.warn("앱 무응답 자동복구 시도(재시작, {}): serverId={} instanceId={} 출력={}",
+                    server.getDeployMode(), server.getId(), server.getInstanceId(),
                     output == null ? "" : output.substring(0, Math.min(200, output.length())));
         } catch (RuntimeException e) {
             log.warn("자동복구 재시작 실패(재배포 필요할 수 있음): serverId={} 원인={}",
@@ -120,11 +116,43 @@ public class ServerHealthMonitorWorker {
         }
     }
 
+    /** 실행 형태별 앱 재시작 명령(SSM 으로 실행). */
+    private String buildRestartCommand(ProvisionedServer server) {
+        return server.getDeployMode() == ServerDeployMode.NATIVE
+                ? buildNativeRestartCommand(server)
+                : buildDockerRestartCommand();
+    }
+
+    /**
+     * NATIVE(nohup java -jar / npm start) 앱 재시작. 관리 프로세스가 아니라 systemctl 이 없으므로: ①포트를
+     * 쥔 기존 프로세스를 죽이고(hang 대비 — 죽어 있으면 no-op) ②SSM 에서 env 를 다시 export 한 뒤(재시작
+     * 앱도 DB 등 env 가 필요하다) ③jar 면 java -jar, 아니면 npm start 로 다시 띄운다. BackendDeployRunner 의
+     * NATIVE 부트 기동과 같은 형태다. 프로세스 치환·process substitution 같은 bashism 을 피해(임시파일 사용)
+     * SSM 셸에서 안전하다.
+     */
+    private String buildNativeRestartCommand(ProvisionedServer server) {
+        int port = server.getPort();
+        long projectId = server.getProjectId();
+        return String.join("\n",
+                "pkill -f '/opt/app/app.jar' 2>/dev/null || true",   // jar 앱(있으면)
+                "pkill -f 'node' 2>/dev/null || true",               // node 앱(있으면; 이 인스턴스엔 우리 앱만 node)
+                "sleep 2",
+                "cd /opt/app || exit 1",
+                "aws ssm get-parameters-by-path --path /qeploy/" + projectId + "/ --with-decryption --recursive"
+                        + " --query \"Parameters[].[Name,Value]\" --output text > /tmp/qeploy-env.txt 2>/dev/null || true",
+                "while read -r name value; do export \"$(basename \"$name\")=$value\"; done < /tmp/qeploy-env.txt",
+                "if [ -f /opt/app/app.jar ]; then",
+                "  nohup java -jar /opt/app/app.jar --server.port=" + port + " > /var/log/qeploy-app.log 2>&1 &",
+                "else",
+                "  nohup npm start > /var/log/qeploy-app.log 2>&1 &",
+                "fi");
+    }
+
     /**
      * DOCKER 앱 재시작 명령. compose.yml 존재로 compose↔단일 run 을 가른다(로그 명령과 같은 분기).
      * 컨테이너가 hang 이든(응답만 멈춤) restart 정책이 소진돼 죽어 있든 restart 가 되살린다.
      */
-    private String buildRestartCommand() {
+    private String buildDockerRestartCommand() {
         return "if [ -f /opt/app/compose.yml ]; then "
                 + "docker compose -f /opt/app/compose.yml --project-directory /opt/app restart 2>&1; "
                 + "else docker restart qeploy-app 2>&1; fi";
