@@ -83,6 +83,14 @@ public class ProvisionedServerEntity {
     @Column(name = "recovery_attempted_at")
     private java.time.LocalDateTime recoveryAttemptedAt;   // 무응답 자동복구 시도 시각. 회복되면 null
 
+    // 다중 인스턴스 리스(교체 워커 claim). 순수 인프라 — 도메인 모델·applyFrom 에 싣지 않아 도메인 저장
+    // (findById→applyFrom→save)이 이 값을 건드리지 않고 보존한다. claim/해제는 전용 UPDATE 로만 한다.
+    @Column(name = "lease_owner", length = 100)
+    private String leaseOwner;
+
+    @Column(name = "lease_until")
+    private java.time.LocalDateTime leaseUntil;
+
     @Column(name = "port", nullable = false)
     private int port;
 

@@ -36,9 +36,17 @@ public class ServerReplacementService {
     private final CloudConnectionRepository cloudConnectionRepository;
     private final Ec2Provisioner ec2;
 
+    // 다중 인스턴스 리스 소유자 식별자(JVM 별 유일). Agent 워커와 동형.
+    private final String workerId = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+
     @Scheduled(fixedDelayString = "${qeploy.provisioning.replace-poll-interval-ms:20000}")
     public void completePendingReplacements() {
         for (ProvisionedServer newServer : serverRepository.findRunningWithPendingReplacement(BATCH)) {
+            // 다중 인스턴스에서 두 곳이 같은 서버의 EIP 재연결·종료를 동시에 하지 않게 리스로 claim 한다.
+            // 못 잡으면(다른 인스턴스가 쥠) 이 틱엔 건너뛴다 — 그쪽이 마무리하거나, 죽으면 리스 만료 후 이어받는다.
+            if (!serverRepository.claimForReplacement(newServer.getId(), workerId)) {
+                continue;
+            }
             try {
                 completeReplacement(newServer);
             } catch (RuntimeException e) {

@@ -25,6 +25,19 @@ public interface ProvisionedServerRepository {
     /** 원자적 claim: QUEUED 인 행만 BUILDING 으로 넘긴다. 진 워커 하나만 true — 이중 launch(과금) 방지. */
     boolean claimForBuild(Long id);
 
+    /**
+     * 재배포 교체 워커의 다중 인스턴스 리스 claim. 리스가 비었거나 만료됐거나 내가 쥔 것이면 true —
+     * 그때만 이 서버의 EIP 재연결·종료를 진행한다(두 인스턴스가 동시에 못 하게). 같은 owner 는 여러 틱에
+     * 걸쳐 이어받는다.
+     */
+    boolean claimForReplacement(Long id, String owner);
+
+    /**
+     * 부트 타임아웃 처리 권한 claim(PROVISIONING→FAILED status-CAS). 진 인스턴스 하나만 true — 그것만
+     * 인스턴스를 종료하고 부트 로그를 뜬다(중복 terminate·SSM 방지).
+     */
+    boolean claimBootTimeout(Long id);
+
     /** 서버가 존재하는(했던) 클라우드 연결 ID 들. 고아 EIP 청소가 연결별로 계정을 훑을 때 쓴다. */
     List<Long> findDistinctCloudConnectionIds();
 

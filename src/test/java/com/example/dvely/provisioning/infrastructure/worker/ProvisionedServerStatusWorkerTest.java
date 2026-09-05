@@ -2,6 +2,7 @@ package com.example.dvely.provisioning.infrastructure.worker;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
@@ -96,6 +97,7 @@ class ProvisionedServerStatusWorkerTest {
         stubBatch(provisioning(LocalDateTime.now().minusMinutes(21)));   // 기동 타임아웃
         when(ec2.describe(any(), eq("i-123"))).thenReturn(new Ec2InstanceStatus("running", "ec2-host"));
         when(healthChecker.isHealthy("ec2-host", 8080)).thenReturn(false);
+        when(serverRepository.claimBootTimeout(anyLong())).thenReturn(true);   // 이 인스턴스가 타임아웃 처리 권한 획득
         when(ssmRunCommandClient.runShellCommand(any(), eq("i-123"), any()))
                 .thenReturn("cloud-init: docker pull 실패");
 
@@ -119,6 +121,7 @@ class ProvisionedServerStatusWorkerTest {
         stubBatch(provisioning(LocalDateTime.now().minusMinutes(21)));
         when(ec2.describe(any(), eq("i-123"))).thenReturn(new Ec2InstanceStatus("running", "ec2-host"));
         when(healthChecker.isHealthy("ec2-host", 8080)).thenReturn(false);
+        when(serverRepository.claimBootTimeout(anyLong())).thenReturn(true);
         when(ssmRunCommandClient.runShellCommand(any(), eq("i-123"), any()))
                 .thenThrow(new RuntimeException("SSM 미등록"));   // 진단 조회 실패
 
@@ -129,6 +132,21 @@ class ProvisionedServerStatusWorkerTest {
         verify(serverRepository).save(saved.capture());
         assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.FAILED);
         assertThat(saved.getValue().hasBootDiagnostics()).isFalse();
+    }
+
+    @Test
+    void bootTimeout_claimLost_doesNotTerminate() {
+        // 다른 인스턴스가 이미 타임아웃 처리를 claim 함 → 이 인스턴스는 종료·SSM·저장을 하지 않는다.
+        stubBatch(provisioning(LocalDateTime.now().minusMinutes(21)));
+        when(ec2.describe(any(), eq("i-123"))).thenReturn(new Ec2InstanceStatus("running", "ec2-host"));
+        when(healthChecker.isHealthy("ec2-host", 8080)).thenReturn(false);
+        when(serverRepository.claimBootTimeout(anyLong())).thenReturn(false);   // 다른 인스턴스가 이김
+
+        worker.pollProvisioning();
+
+        verify(ec2, never()).terminate(any(), any());
+        verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());
+        verify(serverRepository, never()).save(any());
     }
 
     private CloudConnection connection() {
