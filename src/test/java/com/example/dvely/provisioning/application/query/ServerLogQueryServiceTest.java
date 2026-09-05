@@ -106,6 +106,36 @@ class ServerLogQueryServiceTest {
     }
 
     @Test
+    void failedServer_withBootDiagnostics_returnsSnapshot_noSsmCall() {
+        LocalDateTime now = LocalDateTime.now();
+        ProvisionedServer failed = new ProvisionedServer(1L, 7L, "t3.micro", ServerStatus.FAILED,
+                5L, "i-123", null, 8080, null, null, null, now, now);
+        failed.restoreBootDiagnostics("cloud-init: compose up 실패");
+        when(serverRepository.findById(1L)).thenReturn(Optional.of(failed));
+        when(projectRepository.findByIdAndOwnerUserId(7L, 9L)).thenReturn(Optional.of(mock(Project.class)));
+
+        // 종료된 서버라도 부트 실패 진단은 보존돼 있으므로 그 스냅샷을 돌려준다.
+        var logs = service.fetchLogs(9L, 1L, ServerLogSource.BOOT);
+
+        assertThat(logs.source()).isEqualTo("BOOT");
+        assertThat(logs.content()).contains("compose up 실패");
+        verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());   // 라이브 조회 안 함
+    }
+
+    @Test
+    void failedServer_bootSourceButNoDiagnostics_rejected() {
+        LocalDateTime now = LocalDateTime.now();
+        ProvisionedServer failed = new ProvisionedServer(1L, 7L, "t3.micro", ServerStatus.FAILED,
+                5L, "i-123", null, 8080, null, null, null, now, now);   // 보존된 진단 없음
+        when(serverRepository.findById(1L)).thenReturn(Optional.of(failed));
+        when(projectRepository.findByIdAndOwnerUserId(7L, 9L)).thenReturn(Optional.of(mock(Project.class)));
+
+        assertThatThrownBy(() -> service.fetchLogs(9L, 1L, ServerLogSource.BOOT))
+                .isInstanceOf(IllegalStateException.class);
+        verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());
+    }
+
+    @Test
     void notOwned_rejected() {
         when(serverRepository.findById(1L)).thenReturn(Optional.of(running(ServerDeployMode.NATIVE)));
         when(projectRepository.findByIdAndOwnerUserId(7L, 9L)).thenReturn(Optional.empty());

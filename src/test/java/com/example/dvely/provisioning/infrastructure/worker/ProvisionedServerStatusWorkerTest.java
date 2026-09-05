@@ -3,6 +3,7 @@ package com.example.dvely.provisioning.infrastructure.worker;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -16,6 +17,7 @@ import com.example.dvely.provisioning.domain.repository.ProvisionedServerReposit
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner.Ec2InstanceStatus;
+import com.example.dvely.provisioning.infrastructure.SsmRunCommandClient;
 import com.example.dvely.provisioning.infrastructure.TcpHealthChecker;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -23,6 +25,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -34,6 +37,7 @@ class ProvisionedServerStatusWorkerTest {
     @Mock private CloudConnectionRepository cloudConnectionRepository;
     @Mock private Ec2Provisioner ec2;
     @Mock private TcpHealthChecker healthChecker;
+    @Mock private SsmRunCommandClient ssmRunCommandClient;
 
     @InjectMocks private ProvisionedServerStatusWorker worker;
 
@@ -92,13 +96,39 @@ class ProvisionedServerStatusWorkerTest {
         stubBatch(provisioning(LocalDateTime.now().minusMinutes(21)));   // 기동 타임아웃
         when(ec2.describe(any(), eq("i-123"))).thenReturn(new Ec2InstanceStatus("running", "ec2-host"));
         when(healthChecker.isHealthy("ec2-host", 8080)).thenReturn(false);
+        when(ssmRunCommandClient.runShellCommand(any(), eq("i-123"), any()))
+                .thenReturn("cloud-init: docker pull 실패");
 
         worker.pollProvisioning();
 
-        verify(ec2).terminate(any(), eq("i-123"));   // 과금 멈추려 정리
+        // 진단 로그를 뜬 다음(인스턴스가 살아있을 때) terminate 해야 한다 — 순서가 뒤집히면 로그를 잃는다.
+        InOrder order = inOrder(ssmRunCommandClient, ec2);
+        order.verify(ssmRunCommandClient).runShellCommand(any(), eq("i-123"), any());
+        order.verify(ec2).terminate(any(), eq("i-123"));
+
         ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
         verify(serverRepository).save(saved.capture());
         assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.FAILED);
+        // 종료돼도 "왜 안 떴나"가 남는다.
+        assertThat(saved.getValue().hasBootDiagnostics()).isTrue();
+        assertThat(saved.getValue().getBootDiagnostics()).contains("docker pull 실패");
+    }
+
+    @Test
+    void bootTimeout_ssmCaptureFails_stillTerminates() {
+        stubBatch(provisioning(LocalDateTime.now().minusMinutes(21)));
+        when(ec2.describe(any(), eq("i-123"))).thenReturn(new Ec2InstanceStatus("running", "ec2-host"));
+        when(healthChecker.isHealthy("ec2-host", 8080)).thenReturn(false);
+        when(ssmRunCommandClient.runShellCommand(any(), eq("i-123"), any()))
+                .thenThrow(new RuntimeException("SSM 미등록"));   // 진단 조회 실패
+
+        worker.pollProvisioning();
+
+        verify(ec2).terminate(any(), eq("i-123"));   // 진단을 못 떠도 정리는 그대로 진행
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.FAILED);
+        assertThat(saved.getValue().hasBootDiagnostics()).isFalse();
     }
 
     private CloudConnection connection() {

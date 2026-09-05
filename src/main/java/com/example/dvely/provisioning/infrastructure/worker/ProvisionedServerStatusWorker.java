@@ -8,6 +8,7 @@ import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner.Ec2InstanceStatus;
+import com.example.dvely.provisioning.infrastructure.SsmRunCommandClient;
 import com.example.dvely.provisioning.infrastructure.TcpHealthChecker;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -41,6 +42,7 @@ public class ProvisionedServerStatusWorker {
     private final CloudConnectionRepository cloudConnectionRepository;
     private final Ec2Provisioner ec2;
     private final TcpHealthChecker healthChecker;
+    private final SsmRunCommandClient ssmRunCommandClient;
 
     @Scheduled(fixedDelayString = "${qeploy.provisioning.server-poll-interval-ms:20000}")
     public void pollProvisioning() {
@@ -83,6 +85,8 @@ public class ProvisionedServerStatusWorker {
 
         // 아직 기동 중 — 너무 오래면(앱이 안 뜸) 과금을 멈추고 실패로 닫는다.
         if (server.getUpdatedAt().plus(BOOT_TIMEOUT).isBefore(LocalDateTime.now())) {
+            // terminate 하기 전에 부트 로그를 떠 둔다 — 인스턴스가 사라지면 왜 안 떴는지 볼 길이 없어진다.
+            captureBootDiagnostics(connection.get(), server);
             safeTerminate(connection.get(), server.getInstanceId());
             server.markFailed(ProvisionFailureCode.PROVIDER_ERROR,
                     "제한 시간 안에 앱이 기동하지 않았습니다(포트 " + server.getPort() + " 응답 없음).");
@@ -91,6 +95,24 @@ public class ProvisionedServerStatusWorker {
                     server.getId(), server.getInstanceId());
         }
         // 그 외: 다음 주기에 다시 본다(저장 안 함 — updatedAt 유지).
+    }
+
+    /**
+     * terminate 직전에 부트 로그(cloud-init)를 한 번 떠서 서버에 보존한다. 베스트 에포트 — SSM 미등록·
+     * 타임아웃으로 실패해도 terminate 는 그대로 진행한다(진단 없는 실패가 더 나쁠 것은 없다). 저장은
+     * 호출부의 markFailed 뒤 save 가 함께 처리한다.
+     */
+    private void captureBootDiagnostics(CloudConnection connection, ProvisionedServer server) {
+        try {
+            String bootLog = ssmRunCommandClient.runShellCommand(
+                    connection, server.getInstanceId(), SsmRunCommandClient.BOOT_LOG_TAIL);
+            server.recordBootDiagnostics(bootLog);
+            log.info("부트 타임아웃 진단 보존: serverId={} 길이={}",
+                    server.getId(), bootLog == null ? 0 : bootLog.length());
+        } catch (RuntimeException e) {
+            log.warn("부트 진단 보존 실패(그대로 terminate 진행): serverId={} 원인={}",
+                    server.getId(), e.toString());
+        }
     }
 
     private void safeTerminate(CloudConnection connection, String instanceId) {

@@ -30,6 +30,14 @@ import software.amazon.awssdk.services.ssm.model.SendCommandRequest;
 @RequiredArgsConstructor
 public class SsmRunCommandClient {
 
+    /**
+     * 부트 로그(cloud-init) 최근 200줄을 뽑는 셸 명령. 로그 조회(ServerLogQueryService 의 BOOT 소스)와
+     * 부트 타임아웃 종료 직전 진단 보존(ProvisionedServerStatusWorker)이 같은 문자열을 써야 어긋나지 않아
+     * 여기 한 곳에 둔다.
+     */
+    public static final String BOOT_LOG_TAIL =
+            "sudo tail -n 200 /var/log/cloud-init-output.log 2>/dev/null || echo '부트 로그 없음'";
+
     private static final int MAX_POLLS = 20;
     private static final long POLL_INTERVAL_MS = 700;
     private static final int COMMAND_TIMEOUT_SECONDS = 30;

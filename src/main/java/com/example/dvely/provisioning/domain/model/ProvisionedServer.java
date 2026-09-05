@@ -46,6 +46,9 @@ public class ProvisionedServer {
     // 인스턴스는 RUNNING 인데 앱이 죽으면 healthy=false 로, 종료하지 않고 "앱 죽음"만 드러낸다.
     private Boolean healthy;
     private LocalDateTime lastHealthCheckAt;
+    // 부트 타임아웃으로 실패·종료할 때, 종료 직전에 뜬 부트 로그(cloud-init) 스냅샷. 인스턴스가
+    // 사라진 뒤에도 "왜 안 떴나"를 볼 수 있게 보존한다. 정상 기동 서버는 null(라이브 조회로 충분).
+    private String bootDiagnostics;
     private Long approvalId;             // 승인 대상 연결
     private ProvisionFailureCode failureCode;
     private String errorMessage;
@@ -225,6 +228,14 @@ public class ProvisionedServer {
     }
 
     /**
+     * 부트 타임아웃 종료 직전에 뜬 부트 로그를 보존한다. 인스턴스를 terminate 하면 SSM 으로 로그에 닿을
+     * 길이 사라지므로, 그 전에 한 번 떠서 여기 담아 두면 실패한 서버 카드에서도 원인을 볼 수 있다.
+     */
+    public void recordBootDiagnostics(String log) {
+        this.bootDiagnostics = blankToNull(log);
+    }
+
+    /**
      * 승인 대기 중 사용자가 거부함. FAILED 로 두되 failureCode 는 null — 프로바이더 오류가 아니므로
      * FE 가 '거부됨'으로 구분할 수 있다(ProvisionedDatabase.markRejected 와 동형).
      */
@@ -265,10 +276,17 @@ public class ProvisionedServer {
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public Boolean getHealthy() { return healthy; }
     public LocalDateTime getLastHealthCheckAt() { return lastHealthCheckAt; }
+    public String getBootDiagnostics() { return bootDiagnostics; }
+    public boolean hasBootDiagnostics() { return bootDiagnostics != null; }
 
     /** DB 로드 시 헬스 상태 복원(생성자 밖 필드). */
     public void restoreHealth(Boolean healthy, LocalDateTime lastHealthCheckAt) {
         this.healthy = healthy;
         this.lastHealthCheckAt = lastHealthCheckAt;
+    }
+
+    /** DB 로드 시 보존된 부트 진단 로그 복원(생성자 밖 필드). */
+    public void restoreBootDiagnostics(String bootDiagnostics) {
+        this.bootDiagnostics = bootDiagnostics;
     }
 }

@@ -27,6 +27,9 @@ public record ServerResponse(
                 + "수 있음, 인스턴스는 살아있음) · null=아직 미확인. status=RUNNING 이라도 이 값이 false 면 앱 문제다.")
         Boolean healthy,
         LocalDateTime lastHealthCheckAt,
+        @Schema(description = "부트 타임아웃으로 실패한 서버가 보존한 부트 로그를 갖고 있는지. true 면 인스턴스가 "
+                + "종료됐어도 GET /servers/{id}/logs?source=BOOT 로 '왜 안 떴나'를 볼 수 있다.")
+        boolean hasBootDiagnostics,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {
@@ -47,6 +50,6 @@ public record ServerResponse(
                 s.getPublicHost(), s.getPort(), url, domainUrl, s.getInstanceId(),
                 s.getFailureCode() == null ? null : s.getFailureCode().name(),
                 s.getErrorMessage(), s.getHealthy(), s.getLastHealthCheckAt(),
-                s.getCreatedAt(), s.getUpdatedAt());
+                s.hasBootDiagnostics(), s.getCreatedAt(), s.getUpdatedAt());
     }
 }

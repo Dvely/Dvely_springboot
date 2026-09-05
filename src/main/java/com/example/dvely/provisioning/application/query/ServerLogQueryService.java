@@ -43,7 +43,15 @@ public class ServerLogQueryService {
                 .orElseThrow(() -> new NotFoundException(
                         "서버를 찾을 수 없거나 접근 권한이 없습니다. serverId=" + serverId));
 
-        if (server.getStatus() != ServerStatus.RUNNING && server.getStatus() != ServerStatus.PROVISIONING) {
+        boolean liveInstance = server.getStatus() == ServerStatus.RUNNING
+                || server.getStatus() == ServerStatus.PROVISIONING;
+        // 종료된 서버라도 부트 타임아웃 때 보존해 둔 부트 로그가 있으면 그걸 돌려준다 — "왜 안 떴나"는
+        // 실패한 뒤에 보는 정보라, 인스턴스가 사라져 라이브 조회가 막힌 뒤에도 남아 있어야 뜻이 있다.
+        if (!liveInstance && source == ServerLogSource.BOOT && server.hasBootDiagnostics()) {
+            return new ServerLogs(serverId, source.name(),
+                    "[종료된 서버의 보존된 부트 로그]\n" + server.getBootDiagnostics());
+        }
+        if (!liveInstance) {
             throw new IllegalStateException(
                     "실행 중인 서버만 로그를 조회할 수 있습니다. 종료된 인스턴스의 로그는 남지 않습니다. status="
                             + server.getStatus());
@@ -70,7 +78,7 @@ public class ServerLogQueryService {
      */
     private String buildCommand(ProvisionedServer server, ServerLogSource source) {
         return switch (source) {
-            case BOOT -> "sudo tail -n 200 /var/log/cloud-init-output.log 2>/dev/null || echo '부트 로그 없음'";
+            case BOOT -> SsmRunCommandClient.BOOT_LOG_TAIL;
             case CADDY -> "sudo tail -n 200 /var/log/qeploy-caddy.log 2>/dev/null || echo 'Caddy 로그 없음(도메인 미연결일 수 있음)'";
             case APP -> server.getDeployMode() == ServerDeployMode.DOCKER
                     ? "if [ -f /opt/app/compose.yml ]; then "
