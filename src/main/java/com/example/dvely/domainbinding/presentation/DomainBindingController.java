@@ -6,10 +6,13 @@ import com.example.dvely.domainbinding.application.result.DomainBindingResult;
 import com.example.dvely.domainbinding.application.result.DomainSearchResult;
 import com.example.dvely.domainbinding.application.result.VerificationGuideResult;
 import com.example.dvely.domainbinding.application.service.DomainBindingSubmissionService;
+import com.example.dvely.domainbinding.application.service.DomainHostingAdapterRegistry;
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.presentation.dto.request.BindDomainRequest;
 import com.example.dvely.domainbinding.presentation.dto.response.DomainBindingSubmissionResponse;
 import com.example.dvely.domainbinding.presentation.dto.response.DomainResponse;
 import com.example.dvely.domainbinding.presentation.dto.response.DomainSearchResponse;
+import com.example.dvely.domainbinding.presentation.dto.response.HostingTargetsResponse;
 import com.example.dvely.domainbinding.presentation.dto.response.VerificationGuideResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -35,6 +38,19 @@ public class DomainBindingController {
 
     private final DomainBindingFacade domainBindingFacade;
     private final DomainBindingSubmissionService submissionService;
+    private final DomainHostingAdapterRegistry hostingAdapterRegistry;
+
+    @Operation(summary = "지원 배포 대상 조회",
+            description = "이 서버가 도메인 연결을 지원하는 배포 대상 목록을 반환합니다. 어댑터가 등록된 것만 담기며"
+                    + "(enum 에 있어도 어댑터 없는 값은 제외), 배포마다 다를 수 있습니다. FE 가 이걸 읽어 지원하지 "
+                    + "않는 옵션을 노출하지 않게 합니다(하드코딩과 서버 지원이 어긋나는 드리프트 방지).")
+    @GetMapping("/api/v1/domains/hosting-targets")
+    public HostingTargetsResponse supportedHostingTargets() {
+        List<String> targets = hostingAdapterRegistry.supportedTargets().stream()
+                .map(DomainHostingTarget::name)
+                .toList();
+        return new HostingTargetsResponse(targets);
+    }
 
     @Operation(summary = "도메인 검색", description = "키워드 기준으로 현재 지원하는 관리형 서브도메인의 사용 가능 여부를 조회합니다.")
     @GetMapping("/api/v1/domain-search")
