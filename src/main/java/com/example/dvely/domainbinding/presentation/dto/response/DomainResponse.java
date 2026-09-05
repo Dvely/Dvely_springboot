@@ -12,7 +12,7 @@ public record DomainResponse(
         @Schema(description = "도메인 타입", allowableValues = {"managed_subdomain", "custom_domain", "purchasable_domain"}, example = "managed_subdomain")
         String type,
 
-        @Schema(description = "배포 대상", allowableValues = {"GITHUB_PAGES", "AWS", "GCP"}, example = "GITHUB_PAGES")
+        @Schema(description = "배포 대상", allowableValues = {"GITHUB_PAGES", "AWS", "AWS_EC2_FRONTEND", "AWS_S3_FRONTEND", "GCP"}, example = "GITHUB_PAGES")
         String hostingTarget,
 
         @Schema(description = "전체 hostname", example = "myproject.qeploy.com") String hostname,
