@@ -177,6 +177,13 @@ public class CodeAgentService {
                         openAiToolClient, "OpenAI", instruction, containerId, modelOptions);
                 case GLM -> runOpenAiCompatibleLoop(
                         glmToolClient, "GLM", instruction, containerId, modelOptions);
+                // Not wired into this step yet, and the gap is structural rather than missing code:
+                // this loop drives tools inside an already-running preview container, while a
+                // coding agent brings its own container and works on a bind-mounted host checkout.
+                // Reconciling those two workspace models is its own unit; until then a CODE step
+                // must refuse the provider rather than silently run a different engine.
+                case CLAUDE_CODE, CODEX -> throw new IllegalArgumentException(
+                        "코딩 에이전트 제공자는 아직 CODE 스텝에 배선되지 않았습니다: " + provider);
             };
 
             // 세션은 PROVISIONING 으로 만들어져 있다. 서버가 실제로 뜬 뒤에만 ACTIVE 로 올려야
