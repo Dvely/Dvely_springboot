@@ -16,11 +16,15 @@ import com.github.dockerjava.core.DockerClientImpl;
 import com.github.dockerjava.okhttp.OkDockerHttpClient;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -170,6 +174,24 @@ public class CodingAgentContainerRunner {
         }
     }
 
+    /**
+     * Where a step's stdin payload is staged inside the container. Under {@code /run} so it lives
+     * on the container's own filesystem (never the bind-mounted workspace) and dies with it.
+     */
+    private static final String STDIN_REMOTE_DIR = "/run";
+    private static final String STDIN_ENTRY = "qeploy/stdin";
+    private static final String STDIN_PATH = STDIN_REMOTE_DIR + "/" + STDIN_ENTRY;
+
+    /**
+     * Constant wrapper that feeds the staged file to the real command and then deletes it.
+     *
+     * <p>The command's argv is passed as positional parameters and expanded with {@code "$@"} —
+     * it is never interpolated into this string, so a prompt or flag can contain any shell
+     * metacharacter without becoming syntax. Only this fixed text is ever parsed by the shell.</p>
+     */
+    private static final String STDIN_WRAPPER =
+            "\"$@\" < " + STDIN_PATH + "; s=$?; rm -f " + STDIN_PATH + "; exit $s";
+
     private ContainerRunOutcome exec(String containerId,
                                      List<String> argv,
                                      List<String> env,
@@ -179,12 +201,27 @@ public class CodingAgentContainerRunner {
         // code), env and stdin carry the API key; none of them belongs in a log line.
         log.debug("코딩 에이전트 exec: containerId={} cmd={}", containerId, argv.isEmpty() ? "?" : argv.getFirst());
 
+        // stdin is delivered by staging a file and redirecting it, NOT via ExecStartCmd#withStdIn.
+        // Measured against the real daemon: the OkHttp transport this codebase uses cannot hold
+        // the bidirectional hijacked stream that exec-with-stdin needs — it closes its half once
+        // the request body is sent, and the response reader dies with AsynchronousCloseException
+        // before the command finishes. The archive upload below is an ordinary HTTP PUT with no
+        // hijacking, so it works on every transport. The key still never touches argv, env, or
+        // the container's inspect data; it exists briefly as a 0600 file the wrapper deletes.
+        List<String> command = argv;
+        if (stdin != null) {
+            stageStdin(containerId, stdin);
+            List<String> wrapped = new ArrayList<>(List.of("sh", "-c", STDIN_WRAPPER, "sh"));
+            wrapped.addAll(argv);
+            command = wrapped;
+        }
+
         ExecCreateCmdResponse execCreate = dockerClient.execCreateCmd(containerId)
                 .withAttachStdout(true)
                 .withAttachStderr(true)
-                .withAttachStdin(stdin != null)
+                .withAttachStdin(false)
                 .withEnv(env == null || env.isEmpty() ? null : List.copyOf(env))
-                .withCmd(argv.toArray(String[]::new))
+                .withCmd(command.toArray(String[]::new))
                 .exec();
 
         ByteArrayOutputStream stdout = new ByteArrayOutputStream();
@@ -192,12 +229,8 @@ public class CodingAgentContainerRunner {
 
         boolean completed;
         try {
-            var startCmd = dockerClient.execStartCmd(execCreate.getId()).withDetach(false);
-            if (stdin != null) {
-                startCmd = startCmd.withStdIn(
-                        new ByteArrayInputStream(stdin.getBytes(StandardCharsets.UTF_8)));
-            }
-            completed = startCmd
+            completed = dockerClient.execStartCmd(execCreate.getId())
+                    .withDetach(false)
                     .exec(new ResultCallback.Adapter<Frame>() {
                         @Override
                         public void onNext(Frame frame) {
@@ -227,6 +260,30 @@ public class CodingAgentContainerRunner {
 
         Long exitCode = dockerClient.inspectExecCmd(execCreate.getId()).exec().getExitCodeLong();
         return new ContainerRunOutcome(exitCode == null ? -1 : exitCode.intValue(), out, err, false);
+    }
+
+    /**
+     * Uploads {@code stdin} as {@code /run/qeploy/stdin} (mode 0600) using the archive API. The tar
+     * carries the {@code qeploy/} directory prefix so Docker creates the subdirectory itself — no
+     * extra exec is needed just to {@code mkdir}.
+     */
+    private void stageStdin(String containerId, String stdin) {
+        byte[] payload = stdin.getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        try (TarArchiveOutputStream tar = new TarArchiveOutputStream(buffer)) {
+            TarArchiveEntry entry = new TarArchiveEntry(STDIN_ENTRY);
+            entry.setSize(payload.length);
+            entry.setMode(0600);
+            tar.putArchiveEntry(entry);
+            tar.write(payload);
+            tar.closeArchiveEntry();
+        } catch (IOException e) {
+            throw new CodingAgentProvisionException("stdin 페이로드 tar 생성에 실패했습니다.", e);
+        }
+        dockerClient.copyArchiveToContainerCmd(containerId)
+                .withRemotePath(STDIN_REMOTE_DIR)
+                .withTarInputStream(new ByteArrayInputStream(buffer.toByteArray()))
+                .exec();
     }
 
     private void removeQuietly(String containerId) {

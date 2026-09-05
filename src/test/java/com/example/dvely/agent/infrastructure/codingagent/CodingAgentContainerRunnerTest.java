@@ -15,8 +15,11 @@ import static org.mockito.Mockito.when;
 import com.example.dvely.agent.infrastructure.codingagent.CodingAgentContainerRunner.ContainerRunOutcome;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.async.ResultCallback;
+import com.github.dockerjava.api.command.CopyArchiveToContainerCmd;
 import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.CreateContainerResponse;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import com.github.dockerjava.api.command.ExecCreateCmd;
 import com.github.dockerjava.api.command.ExecCreateCmdResponse;
 import com.github.dockerjava.api.command.ExecStartCmd;
@@ -57,6 +60,7 @@ class CodingAgentContainerRunnerTest {
     private ExecCreateCmd execCreateCmd;
     private ExecStartCmd execStartCmd;
     private RemoveContainerCmd removeCmd;
+    private CopyArchiveToContainerCmd copyCmd;
 
     @BeforeEach
     void setUp() {
@@ -82,6 +86,9 @@ class CodingAgentContainerRunnerTest {
 
         removeCmd = mock(RemoveContainerCmd.class, RETURNS_SELF);
         lenient().when(dockerClient.removeContainerCmd(anyString())).thenReturn(removeCmd);
+
+        copyCmd = mock(CopyArchiveToContainerCmd.class, RETURNS_SELF);
+        lenient().when(dockerClient.copyArchiveToContainerCmd(anyString())).thenReturn(copyCmd);
     }
 
     /**
@@ -257,7 +264,7 @@ class CodingAgentContainerRunnerTest {
     }
 
     @Test
-    void runsTheLoginStepBeforeTheAgentAndFeedsTheKeyOnStdin() {
+    void runsTheLoginStepBeforeTheAgentAndFeedsTheKeyViaAStagedFileNotAHijackedStdin() throws Exception {
         stubImagePresent();
         stubContainerLifecycle();
         stubExec(true, 0, "ok", "");
@@ -267,15 +274,51 @@ class CodingAgentContainerRunnerTest {
                         List.of("codex", "login", "--with-api-key"), "sk-proj-secret"),
                 List.of("codex", "exec", "hi"), List.of(), Duration.ofSeconds(5));
 
-        // Two execs: the login, then the agent. The login attaches stdin; the agent does not.
+        // The key is uploaded with the archive API (plain HTTP PUT) under /run — never through
+        // ExecStartCmd#withStdIn, which the OkHttp transport cannot keep open (measured:
+        // AsynchronousCloseException against the real daemon).
+        ArgumentCaptor<java.io.InputStream> tarStream = ArgumentCaptor.captor();
+        verify(copyCmd).withRemotePath("/run");
+        verify(copyCmd).withTarInputStream(tarStream.capture());
+        try (TarArchiveInputStream tar = new TarArchiveInputStream(tarStream.getValue())) {
+            TarArchiveEntry entry = tar.getNextEntry();
+            assertThat(entry.getName()).isEqualTo("qeploy/stdin");
+            assertThat(entry.getMode() & 0777).isEqualTo(0600);
+            assertThat(new String(tar.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo("sk-proj-secret");
+        }
+
+        // Two execs: the login (wrapped so the staged file is its stdin, then deleted), then the
+        // agent. The login argv rides as positional parameters after a constant script — never
+        // interpolated — so it can hold any shell metacharacter without becoming syntax.
         ArgumentCaptor<String[]> cmd = ArgumentCaptor.captor();
         verify(execCreateCmd, times(2)).withCmd(cmd.capture());
-        assertThat(cmd.getAllValues().get(0)).containsExactly("codex", "login", "--with-api-key");
+        String[] login = cmd.getAllValues().get(0);
+        assertThat(login[0]).isEqualTo("sh");
+        assertThat(login[1]).isEqualTo("-c");
+        assertThat(login[2]).contains("< /run/qeploy/stdin").contains("rm -f /run/qeploy/stdin");
+        assertThat(login[3]).isEqualTo("sh");
+        assertThat(java.util.Arrays.copyOfRange(login, 4, login.length))
+                .containsExactly("codex", "login", "--with-api-key");
         assertThat(cmd.getAllValues().get(1)).containsExactly("codex", "exec", "hi");
 
+        // Neither exec attaches stdin any more.
         ArgumentCaptor<Boolean> attachStdin = ArgumentCaptor.captor();
         verify(execCreateCmd, times(2)).withAttachStdin(attachStdin.capture());
-        assertThat(attachStdin.getAllValues()).containsExactly(true, false);
+        assertThat(attachStdin.getAllValues()).containsExactly(false, false);
+    }
+
+    @Test
+    void doesNotStageAnythingWhenThereIsNoStdinStep() {
+        stubImagePresent();
+        stubContainerLifecycle();
+        stubExec(true, 0, "ok", "");
+
+        run(); // env-only credentialing (the Claude Code shape)
+
+        verify(dockerClient, never()).copyArchiveToContainerCmd(anyString());
+        ArgumentCaptor<String[]> cmd = ArgumentCaptor.captor();
+        verify(execCreateCmd).withCmd(cmd.capture());
+        assertThat(cmd.getValue()).containsExactly("claude", "-p", "hi");
     }
 
     @Test
