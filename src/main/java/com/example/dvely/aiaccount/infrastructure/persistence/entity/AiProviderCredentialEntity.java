@@ -18,7 +18,7 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 /**
- * JPA row for {@code ai_provider_credentials} (V44 migration). {@code encrypted_api_key} is
+ * JPA row for {@code ai_provider_credentials} (V45 migration). {@code encrypted_api_key} is
  * encrypted at rest via the existing {@link AesEncryptor} converter — reused as-is, no new crypto
  * code (same choice as {@code EnvironmentVariableEntity}).
  *
