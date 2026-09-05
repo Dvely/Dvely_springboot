@@ -129,3 +129,20 @@ qeploy:
       # CLI 기본값은 gpt-5.6-sol 이지만 가장 싼 등급으로도 같은 일이 끝난다(실측: luna 9,692 토큰
       # vs sol 11,203 토큰, 동일 프롬프트). 기본으로 큰 모델을 태울 이유가 없다.
       model: ${QEPLOY_CODING_AGENT_CODEX_MODEL:gpt-5.6-luna}
+    # 에이전트 네트워크 격리. Codex 자체 샌드박스를 우회하면서 그 샌드박스가 주로 막던 것(모델이
+    # 만든 셸 명령의 네트워크 접근)이 통째로 비었기 때문에 필요하다. 없으면 에이전트 컨테이너가 기본
+    # 브리지에 붙어 제한 없이 나가고, Codex 가 레포의 AGENTS.md 를 자동으로 읽는다는 점에서 신뢰할 수
+    # 없는 레포가 곧 지시문이 되므로, 사용자 키를 임의 주소로 보내거나 호스트 게이트웨이의 서비스에
+    # 닿을 수 있다.
+    # 구조: internal 네트워크(기본 경로 자체가 없음) + 유일하게 바깥으로 나갈 수 있는 프록시 사이드카
+    # (CONNECT 를 호스트명으로 필터). 실 데몬 실측: 허용 API 는 응답하고, 비허용 호스트·프록시 우회
+    # 직접 연결·호스트 게이트웨이는 전부 차단된다.
+    egress:
+      # 끄면 에이전트가 기본 브리지로 돌아가 제한 없이 나간다.
+      enabled: ${QEPLOY_CODING_AGENT_EGRESS_ENABLED:true}
+      network-name: ${QEPLOY_CODING_AGENT_EGRESS_NETWORK:qeploy-coding-agent}
+      proxy-alias: ${QEPLOY_CODING_AGENT_EGRESS_PROXY_ALIAS:qeploy-egress}
+      proxy-port: ${QEPLOY_CODING_AGENT_EGRESS_PROXY_PORT:8888}
+      # 통째로 일치시킨다(점을 이스케이프한 앵커 정규식). api.openai.com 이 api.openai.com.evil.test
+      # 까지 허용하지 않는다.
+      allowed-hosts: ${QEPLOY_CODING_AGENT_EGRESS_ALLOWED_HOSTS:api.anthropic.com,api.openai.com}

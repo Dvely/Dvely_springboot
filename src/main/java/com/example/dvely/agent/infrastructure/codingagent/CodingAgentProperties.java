@@ -51,6 +51,49 @@ public class CodingAgentProperties {
 
     private Duration provisionRetryDelay = Duration.ofSeconds(2);
 
+    private Egress egress = new Egress();
+
+    /**
+     * Network containment for the agent.
+     *
+     * <p>Needed because bypassing Codex's own sandbox (see {@link #codex}) gives up the thing that
+     * sandbox was mostly there for: control over what the model's shell commands may reach. Without
+     * this, an agent container sits on the default bridge with unrestricted egress, so anything the
+     * agent runs — and Codex reads {@code AGENTS.md} out of the repository itself, so a hostile
+     * repo is effectively an instruction source — could reach the host gateway's services or post
+     * the user's key to an arbitrary address.</p>
+     *
+     * <p>The shape is an <b>internal</b> Docker network (no default route at all) plus a small
+     * proxy sidecar that is the only member with a way out, filtering CONNECT by hostname. Measured
+     * against a real daemon: the allowed API answers, while a non-allowlisted host, a
+     * proxy-bypassing direct connection, and the host gateway all fail.</p>
+     */
+    @Getter
+    @Setter
+    public static class Egress {
+
+        /** Turning this off puts the agent back on the default bridge with unrestricted egress. */
+        private boolean enabled = true;
+
+        private String networkName = "qeploy-coding-agent";
+
+        /** DNS alias the agent reaches the proxy by; constant, so the proxy URL is constant too. */
+        private String proxyAlias = "qeploy-egress";
+
+        private int proxyPort = 8888;
+
+        /**
+         * Hostnames the agent may reach. Matched whole, not as substrings — an entry becomes an
+         * anchored regex with its dots escaped, so {@code api.openai.com} cannot also permit
+         * {@code api.openai.com.evil.test}.
+         */
+        private List<String> allowedHosts = List.of("api.anthropic.com", "api.openai.com");
+
+        public String proxyUrl() {
+            return "http://" + proxyAlias + ":" + proxyPort;
+        }
+    }
+
     /** {@code -p} is Claude Code's non-interactive print mode; the key comes from the environment. */
     private Cli claude = Cli.of("claude", "-p");
 
