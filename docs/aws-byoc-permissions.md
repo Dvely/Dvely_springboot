@@ -83,7 +83,8 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
     {
       "Sid": "S3StaticSiteHosting",
       "Effect": "Allow",
-      "Action": ["s3:CreateBucket", "s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:ListBucket",
+      "Action": ["s3:CreateBucket", "s3:DeleteBucket", "s3:PutObject", "s3:GetObject", "s3:DeleteObject",
+                 "s3:ListBucket",
                  "s3:PutBucketWebsite", "s3:GetBucketWebsite",
                  "s3:PutBucketPolicy", "s3:GetBucketPolicy",
                  "s3:PutBucketPublicAccessBlock", "s3:GetBucketPublicAccessBlock"],
@@ -92,6 +93,7 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       // 아티팩트 버킷(qeploy-artifacts-*, 비공개 jar·이미지)과 분리한다 — 정적 웹은 퍼블릭 읽기가
       // 필요해 같은 버킷에 섞을 수 없다. website(SPA)·퍼블릭 읽기 정책·퍼블릭 접근 차단 해제에
       // PutBucketWebsite / PutBucketPolicy / PutBucketPublicAccessBlock 이 필요하다.
+      // DeleteBucket 은 프로젝트 삭제 시 고아 공개 버킷을 자동 정리하는 데 쓴다(ProjectCloudCleanup).
       // S3 프론트 배포를 안 쓰면 이 문(statement)은 없어도 된다.
     },
     {

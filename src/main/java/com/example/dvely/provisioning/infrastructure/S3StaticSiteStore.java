@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -19,10 +20,16 @@ import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CreateBucketConfiguration;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.Delete;
+import software.amazon.awssdk.services.s3.model.DeleteBucketRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
 import software.amazon.awssdk.services.s3.model.ErrorDocument;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.IndexDocument;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 import software.amazon.awssdk.services.s3.model.PublicAccessBlockConfiguration;
 import software.amazon.awssdk.services.s3.model.PutBucketPolicyRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketWebsiteRequest;
@@ -150,6 +157,45 @@ public class S3StaticSiteStore {
         }
         log.info("S3 정적 사이트 업로드 완료: bucket={} files={}", bucket, uploaded);
         return uploaded;
+    }
+
+    /**
+     * 정적 사이트 버킷을 통째로 지운다(객체 전부 삭제 후 버킷 삭제) — 고아 버킷 방지. 버킷이 없으면
+     * 조용히 no-op(멱등). 정리 경로라 호출자가 best-effort 로 감싼다. {@code s3:DeleteBucket} 권한이
+     * 필요하다(생성만 하던 정책에 추가 — docs/aws-byoc-permissions.md).
+     */
+    public void deleteSite(CloudConnection connection, String bucket) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (S3Client s3 = client(access)) {
+            try {
+                s3.headBucket(HeadBucketRequest.builder().bucket(bucket).build());
+            } catch (NoSuchBucketException e) {
+                return;   // 이미 없다
+            } catch (S3Exception e) {
+                if (e.statusCode() == 404) {
+                    return;
+                }
+                throw e;
+            }
+            // 버킷을 지우려면 먼저 비워야 한다. 페이지네이션으로 전부 삭제(배치 1000개).
+            ListObjectsV2Request.Builder listReq = ListObjectsV2Request.builder().bucket(bucket);
+            ListObjectsV2Response resp;
+            do {
+                resp = s3.listObjectsV2(listReq.build());
+                List<ObjectIdentifier> ids = resp.contents().stream()
+                        .map(o -> ObjectIdentifier.builder().key(o.key()).build())
+                        .toList();
+                if (!ids.isEmpty()) {
+                    s3.deleteObjects(DeleteObjectsRequest.builder()
+                            .bucket(bucket)
+                            .delete(Delete.builder().objects(ids).quiet(true).build())
+                            .build());
+                }
+                listReq.continuationToken(resp.nextContinuationToken());
+            } while (Boolean.TRUE.equals(resp.isTruncated()));
+            s3.deleteBucket(DeleteBucketRequest.builder().bucket(bucket).build());
+            log.info("S3 정적 사이트 삭제: bucket={}", bucket);
+        }
     }
 
     /** 정적 사이트 접근 URL(S3 website 엔드포인트). 리전마다 대시/점 형식이 다르다. */
