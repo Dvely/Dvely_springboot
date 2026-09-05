@@ -42,6 +42,10 @@ public class ProvisionedServer {
     private String elasticIpAllocationId; // EIP 할당 ID — 종료 시 release 대상(생성자 밖: 로드·연결 시 세팅)
     private String publicHost;           // running 이후 채워짐
     private int port;                    // 앱 포트(기본 8080)
+    // RUNNING 이후 앱 건강 상태(주기 TCP 헬스체크). null=아직 미확인. status(인스턴스 수준)와 별개 —
+    // 인스턴스는 RUNNING 인데 앱이 죽으면 healthy=false 로, 종료하지 않고 "앱 죽음"만 드러낸다.
+    private Boolean healthy;
+    private LocalDateTime lastHealthCheckAt;
     private Long approvalId;             // 승인 대상 연결
     private ProvisionFailureCode failureCode;
     private String errorMessage;
@@ -193,13 +197,24 @@ public class ProvisionedServer {
         this.updatedAt = LocalDateTime.now();
     }
 
-    /** 헬스체크 통과 — 접속 가능. */
+    /** 헬스체크 통과 — 접속 가능. RUNNING 전이 자체가 TCP 통과라 healthy=true 로 시작한다. */
     public void markRunning(String publicHost) {
         this.status = ServerStatus.RUNNING;
         this.publicHost = publicHost;
         this.failureCode = null;
         this.errorMessage = null;
+        this.healthy = true;
+        this.lastHealthCheckAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
+    }
+
+    /**
+     * RUNNING 이후 주기 헬스체크 결과를 기록한다(모니터 워커). 인스턴스 상태(RUNNING)는 안 건드리고 앱
+     * 건강만 갱신한다 — 앱이 죽으면 healthy=false 가 되지만 인스턴스는 그대로라(로그 조회·재배포 가능).
+     */
+    public void recordHealthCheck(boolean healthy) {
+        this.healthy = healthy;
+        this.lastHealthCheckAt = LocalDateTime.now();
     }
 
     public void markFailed(ProvisionFailureCode code, String message) {
@@ -248,4 +263,12 @@ public class ProvisionedServer {
     public String getErrorMessage() { return errorMessage; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public Boolean getHealthy() { return healthy; }
+    public LocalDateTime getLastHealthCheckAt() { return lastHealthCheckAt; }
+
+    /** DB 로드 시 헬스 상태 복원(생성자 밖 필드). */
+    public void restoreHealth(Boolean healthy, LocalDateTime lastHealthCheckAt) {
+        this.healthy = healthy;
+        this.lastHealthCheckAt = lastHealthCheckAt;
+    }
 }
