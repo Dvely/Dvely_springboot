@@ -8,9 +8,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 배포된 백엔드 인스턴스의 Caddy on-demand TLS 게이트(ask). 인증서 발급 전 Caddy 가 이 엔드포인트에
- * 물어(ask), 우리 DB 에 등록된 백엔드(AWS) 도메인이면 2xx 를 준다 — 남의 도메인을 우리 IP 로 겨눠도
- * 인증서가 발급되지 않게 하는 남용 방지. 인증 없음(인스턴스가 부팅 중 호출), 호스트네임 등록 여부만 반환.
+ * 배포된 EC2 인스턴스(백엔드·독립 프론트)의 Caddy on-demand TLS 게이트(ask). 인증서 발급 전 Caddy 가 이
+ * 엔드포인트에 물어(ask), 우리 DB 에 등록된 EC2 도메인(AWS · AWS_EC2_FRONTEND)이면 2xx 를 준다 — 남의
+ * 도메인을 우리 IP 로 겨눠도 인증서가 발급되지 않게 하는 남용 방지. 인증 없음(인스턴스가 부팅 중 호출),
+ * 호스트네임 등록 여부만 반환.
  */
 @RestController
 @RequiredArgsConstructor
@@ -20,7 +21,7 @@ public class DomainTlsController {
 
     @GetMapping("/api/v1/tls/allow")
     public ResponseEntity<Void> allow(@RequestParam("domain") String domain) {
-        return queryService.isBackendDomainRegistered(domain)
+        return queryService.isEc2DomainRegistered(domain)
                 ? ResponseEntity.ok().build()
                 : ResponseEntity.notFound().build();
     }

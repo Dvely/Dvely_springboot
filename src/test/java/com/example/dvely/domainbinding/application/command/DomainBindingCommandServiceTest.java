@@ -162,6 +162,35 @@ class DomainBindingCommandServiceTest {
     }
 
     @Test
+    void bindManagedSubdomain_frontendEc2_createsARecordToFrontendEipNotCname() {
+        // 독립 프론트(AWS_EC2_FRONTEND)는 백엔드처럼 EC2 대상이라 대상이 IP(프론트 EIP) → A 레코드
+        // (proxied=false, Cloudflare 프록시 미경유). Caddy 가 인스턴스에서 HTTPS 를 종단한다. CNAME 아님.
+        Project project = boundProject("https://frontend.example.com/");
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(hostingAdapterRegistry.resolve(DomainHostingTarget.AWS_EC2_FRONTEND)).thenReturn(hostingAdapter);
+        when(domainBindingRepository.existsByHostnameIgnoreCase("fe-app.qeploy.com")).thenReturn(false);
+        when(hostingAdapter.resolveDnsTarget(any())).thenReturn("54.180.1.2");   // RUNNING 프론트 서버 EIP
+        when(cloudflareDnsPort.createARecord("fe-app.qeploy.com", "54.180.1.2", false))
+                .thenReturn("cf-fe-rec");
+        when(domainBindingRepository.save(any(DomainBinding.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DomainBindingResult result = commandService.bindDomain(
+                1L, 11L,
+                new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "fe-app", null, null,
+                        DomainHostingTarget.AWS_EC2_FRONTEND));
+
+        assertThat(result.hostingTarget()).isEqualTo(DomainHostingTarget.AWS_EC2_FRONTEND);
+        assertThat(result.verificationMethod())
+                .isEqualTo(com.example.dvely.domainbinding.domain.value.VerificationMethod.A);
+        assertThat(result.dnsTarget()).isEqualTo("54.180.1.2");
+        verify(cloudflareDnsPort).createARecord("fe-app.qeploy.com", "54.180.1.2", false);
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any());
+        // 프론트 EC2 도 GitHub 토큰 게이트를 안 탄다(백엔드와 동일) — 유저 조회가 없어야 한다.
+        verifyNoInteractions(userRepository);
+    }
+
+    @Test
     void bindDomain_recorderThrowing_doesNotUndoTheAlreadySavedDomainBinding() {
         // H10 is one of the hooks called out (design §11) for the "recorder throws does not break
         // the caller's own operation" property — see the H3/H7 tests' javadoc for why this is a
@@ -429,22 +458,32 @@ class DomainBindingCommandServiceTest {
     }
 
     @org.junit.jupiter.api.Test
-    void releaseBackendDomains_deletesOnlyAwsBindingsPointingAtReleasedIp() {
+    void releaseServerDomains_deletesEc2BindingsPointingAtReleasedIp_backendAndFrontend() {
         DomainBinding awsMatch = backendBinding(1L, "be.qeploy.com", "1.2.3.4", "rec-1");
-        DomainBinding frontend = new DomainBinding(2L, 7L, DomainType.MANAGED_SUBDOMAIN,
+        // GitHub Pages 프론트: EC2 대상이 아니고 대상이 IP 도 아니라 정리 대상이 아니다.
+        DomainBinding pagesFrontend = new DomainBinding(2L, 7L, DomainType.MANAGED_SUBDOMAIN,
                 DomainHostingTarget.GITHUB_PAGES, "app.qeploy.com", DomainStatus.CONNECTED,
                 com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME,
                 "octo.github.io", "rec-2", true, CertificateStatus.ACTIVE, null,
                 LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now());
         DomainBinding awsOtherIp = backendBinding(3L, "be2.qeploy.com", "9.9.9.9", "rec-3");
+        // 독립 프론트 EC2 도메인이 같은 해제 EIP 를 가리키면 함께 정리돼야 한다(dangling DNS 방지).
+        DomainBinding frontendEc2Match = new DomainBinding(4L, 7L, DomainType.MANAGED_SUBDOMAIN,
+                DomainHostingTarget.AWS_EC2_FRONTEND, "fe.qeploy.com", DomainStatus.CONNECTED,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.A,
+                "1.2.3.4", "rec-4", false, CertificateStatus.ACTIVE, null,
+                LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now());
         when(domainBindingRepository.findByProjectIdOrderByCreatedAtDesc(7L))
-                .thenReturn(java.util.List.of(awsMatch, frontend, awsOtherIp));
+                .thenReturn(java.util.List.of(awsMatch, pagesFrontend, awsOtherIp, frontendEc2Match));
 
-        commandService.releaseBackendDomains(7L, "1.2.3.4");
+        commandService.releaseServerDomains(7L, "1.2.3.4");
 
-        // 매칭(AWS + IP) 만 Cloudflare 레코드·행 삭제. 프론트·다른 IP 는 그대로.
+        // EC2 대상(백엔드 AWS · 프론트 AWS_EC2_FRONTEND) 이면서 해제 IP 를 가리키던 것만 삭제.
         verify(cloudflareDnsPort).deleteRecord("be.qeploy.com", "rec-1");
+        verify(cloudflareDnsPort).deleteRecord("fe.qeploy.com", "rec-4");
         verify(domainBindingRepository).deleteById(1L);
+        verify(domainBindingRepository).deleteById(4L);
+        // GitHub Pages 프론트·다른 IP 백엔드는 그대로.
         verify(domainBindingRepository, never()).deleteById(2L);
         verify(domainBindingRepository, never()).deleteById(3L);
     }

@@ -19,8 +19,13 @@ public class ServerProvisioningQueryService {
     private final ProjectRepository projectRepository;
     private final BackendDomainPort backendDomainPort;
 
-    /** 서버 목록 + 프로젝트에 연결된 백엔드 도메인 호스트네임(있으면). 한 프로젝트의 서버들은 같은 도메인을 공유한다. */
-    public record ServerListResult(List<ProvisionedServer> servers, String domainHostname) {}
+    /**
+     * 서버 목록 + 프로젝트에 연결된 백엔드/프론트 도메인 호스트네임(있으면). 한 프로젝트에 백엔드·프론트
+     * EC2 서버가 함께 뜰 수 있어 도메인도 둘로 나눠 주고, 컨트롤러가 서버의 webOnly 로 갈라 매핑한다.
+     */
+    public record ServerListResult(List<ProvisionedServer> servers,
+                                   String backendDomainHostname,
+                                   String frontendDomainHostname) {}
 
     @Transactional(readOnly = true)
     public ServerListResult list(Long ownerUserId, Long projectId) {
@@ -28,7 +33,8 @@ public class ServerProvisioningQueryService {
                 .orElseThrow(() -> new NotFoundException(
                         "프로젝트를 찾을 수 없거나 접근 권한이 없습니다. projectId=" + projectId));
         List<ProvisionedServer> servers = serverRepository.findByProjectIdOrderByCreatedAtDesc(projectId);
-        String domainHostname = backendDomainPort.resolveConnectedBackendDomain(projectId).orElse(null);
-        return new ServerListResult(servers, domainHostname);
+        String backendDomain = backendDomainPort.resolveConnectedBackendDomain(projectId).orElse(null);
+        String frontendDomain = backendDomainPort.resolveConnectedFrontendDomain(projectId).orElse(null);
+        return new ServerListResult(servers, backendDomain, frontendDomain);
     }
 }

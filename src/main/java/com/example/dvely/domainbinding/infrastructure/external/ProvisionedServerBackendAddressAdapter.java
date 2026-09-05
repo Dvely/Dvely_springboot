@@ -20,8 +20,19 @@ public class ProvisionedServerBackendAddressAdapter implements BackendAddressPor
 
     @Override
     public Optional<String> resolveRunningBackendIp(Long projectId) {
+        return resolveRunningHost(projectId, false);
+    }
+
+    @Override
+    public Optional<String> resolveRunningFrontendHost(Long projectId) {
+        return resolveRunningHost(projectId, true);
+    }
+
+    /** RUNNING 서버 중 webOnly 가 일치하는 첫 서버의 공개 IP. 백엔드/프론트를 이 플래그로 가른다. */
+    private Optional<String> resolveRunningHost(Long projectId, boolean webOnly) {
         return serverRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
                 .filter(s -> s.getStatus() == ServerStatus.RUNNING)
+                .filter(s -> s.isWebOnly() == webOnly)
                 .map(ProvisionedServer::getPublicHost)
                 .filter(h -> h != null && !h.isBlank())
                 .findFirst();

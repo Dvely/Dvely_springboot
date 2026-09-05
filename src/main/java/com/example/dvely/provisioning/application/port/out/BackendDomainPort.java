@@ -12,4 +12,11 @@ public interface BackendDomainPort {
 
     /** 이 프로젝트의 백엔드(AWS)에 연결된 CONNECTED 도메인 호스트네임. 없으면 empty. */
     Optional<String> resolveConnectedBackendDomain(Long projectId);
+
+    /**
+     * 이 프로젝트의 독립 프론트(AWS_EC2_FRONTEND)에 연결된 CONNECTED 도메인 호스트네임. 없으면 empty.
+     * 한 프로젝트에 백엔드·프론트 EC2 서버가 함께 뜰 수 있어, 서버 카드가 webOnly 로 갈라 각자 도메인을
+     * 보여줄 수 있게 백엔드와 분리해 준다.
+     */
+    Optional<String> resolveConnectedFrontendDomain(Long projectId);
 }

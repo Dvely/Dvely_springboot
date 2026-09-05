@@ -193,10 +193,11 @@ public class DomainBindingCommandService {
         ensureHostnameAvailable(hostname);
         String dnsTarget = resolveManagedDnsTarget(adapter, context);
         ensureDnsTargetDoesNotReferenceHostname(hostname, dnsTarget);
-        // 백엔드(AWS)는 대상이 IP(EIP)라 CNAME 을 못 건다 — A 레코드로 EIP 를 가리킨다(현재 DNS-only,
-        // proxied=false → http://label:8080 직결; HTTPS 는 B 후속). 프론트(GitHub Pages)는 그대로 CNAME.
-        boolean backendTarget = command.hostingTarget() == DomainHostingTarget.AWS;
-        VerificationMethod method = backendTarget ? VerificationMethod.A : VerificationMethod.CNAME;
+        // EC2 대상(백엔드 AWS · 독립 프론트 AWS_EC2_FRONTEND)은 대상이 IP(EIP)라 CNAME 을 못 건다 —
+        // A 레코드로 EIP 를 가리키고 HTTPS 는 인스턴스 Caddy 가 종단한다(proxied=false, Cloudflare 프록시 미경유).
+        // 관리형 호스트(GitHub Pages 등)는 그대로 CNAME.
+        boolean ec2ATarget = isEc2Target(command.hostingTarget());
+        VerificationMethod method = ec2ATarget ? VerificationMethod.A : VerificationMethod.CNAME;
         DomainBinding domain = new DomainBinding(
                 project.getId(),
                 DomainType.MANAGED_SUBDOMAIN,
@@ -206,7 +207,7 @@ public class DomainBindingCommandService {
                 method,
                 dnsTarget
         );
-        String recordId = backendTarget
+        String recordId = ec2ATarget
                 ? cloudflareDnsPort.createARecord(hostname, dnsTarget, false)
                 : cloudflareDnsPort.createCnameRecord(hostname, dnsTarget);
         try {
@@ -225,11 +226,11 @@ public class DomainBindingCommandService {
                                                  DomainHostingAdapter.Context context) {
         String hostname = normalizeHostname(command.hostname());
         ensureHostnameAvailable(hostname);
-        // 백엔드(AWS)는 대상이 IP(EIP)라 사용자가 A 레코드를 EIP 로 건다 → 검증도 A 가 기본.
-        // 프론트(GitHub Pages 등)는 CNAME 기본. 클라이언트가 명시하면 그게 우선.
+        // EC2 대상(백엔드·독립 프론트)은 대상이 IP(EIP)라 사용자가 A 레코드를 EIP 로 건다 → 검증도 A 가 기본.
+        // 관리형 호스트(GitHub Pages 등)는 CNAME 기본. 클라이언트가 명시하면 그게 우선.
         VerificationMethod method = command.verificationMethod() != null
                 ? command.verificationMethod()
-                : (command.hostingTarget() == DomainHostingTarget.AWS
+                : (isEc2Target(command.hostingTarget())
                         ? VerificationMethod.A : VerificationMethod.CNAME);
         String dnsTarget = adapter.resolveDnsTarget(context);
         ensureDnsTargetDoesNotReferenceHostname(hostname, dnsTarget);
@@ -247,19 +248,21 @@ public class DomainBindingCommandService {
     }
 
     /**
-     * 백엔드 서버 종료로 EIP 가 해제될 때, 그 IP 를 가리키던 이 프로젝트의 백엔드(AWS) 도메인을 정리한다.
+     * EC2 서버 종료로 EIP 가 해제될 때, 그 IP 를 가리키던 이 프로젝트의 EC2 도메인(백엔드 AWS · 독립
+     * 프론트 AWS_EC2_FRONTEND)을 정리한다. 백엔드·프론트 어느 서버가 종료되든 해제되는 EIP 를 dnsTarget
+     * 으로 삼던 도메인만 골라 지우므로, 프론트 서버 종료 시 프론트 도메인이 함께 정리된다.
      * <b>보안:</b> 해제된 EIP 는 AWS 풀로 돌아가 남에게 재할당될 수 있어, Cloudflare A 레코드를 남겨두면
      * 우리 서브도메인이 남의 서버를 가리키는 dangling DNS(서브도메인 탈취)가 된다 — 그래서 레코드를 반드시
      * 지운다. 시스템 내부 호출(종료 정리)이라 소유권 검사는 상위(terminate)가 이미 했다. 한 도메인 정리가
      * 실패해도 나머지·종료는 계속한다(best-effort).
      */
     @Transactional
-    public void releaseBackendDomains(Long projectId, String ipAddress) {
+    public void releaseServerDomains(Long projectId, String ipAddress) {
         if (ipAddress == null || ipAddress.isBlank()) {
             return;
         }
         domainBindingRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
-                .filter(d -> d.getHostingTarget() == DomainHostingTarget.AWS)
+                .filter(d -> isEc2Target(d.getHostingTarget()))
                 .filter(d -> ipAddress.equals(d.getDnsTarget()))
                 .forEach(d -> {
                     try {
@@ -267,13 +270,18 @@ public class DomainBindingCommandService {
                             cloudflareDnsPort.deleteRecord(d.getHostname(), d.getCloudflareRecordId());
                         }
                         domainBindingRepository.deleteById(d.getId());
-                        log.info("백엔드 종료로 도메인 정리: hostname={} projectId={} (EIP {} 해제)",
-                                d.getHostname(), projectId, ipAddress);
+                        log.info("서버 종료로 도메인 정리: hostname={} projectId={} target={} (EIP {} 해제)",
+                                d.getHostname(), projectId, d.getHostingTarget(), ipAddress);
                     } catch (RuntimeException e) {
-                        log.warn("백엔드 종료 시 도메인 정리 실패(수동 확인 필요, dangling DNS 위험): hostname={} 원인={}",
+                        log.warn("서버 종료 시 도메인 정리 실패(수동 확인 필요, dangling DNS 위험): hostname={} 원인={}",
                                 d.getHostname(), e.toString());
                     }
                 });
+    }
+
+    /** EC2 인스턴스(백엔드 AWS · 독립 프론트 AWS_EC2_FRONTEND)에 EIP·Caddy 로 붙는 대상인가. */
+    private static boolean isEc2Target(DomainHostingTarget target) {
+        return target == DomainHostingTarget.AWS || target == DomainHostingTarget.AWS_EC2_FRONTEND;
     }
 
     private boolean isCustomDomainConnected(DomainBinding domain) {
