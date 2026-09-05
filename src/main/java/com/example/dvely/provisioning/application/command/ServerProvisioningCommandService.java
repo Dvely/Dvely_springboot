@@ -83,6 +83,13 @@ public class ServerProvisioningCommandService {
         }
         ProvisionedServer server = ProvisionedServer.pending(projectId, tier, APP_PORT, mode, bundledDbEngine, webSpec);
         server.assignWebOnly(webOnly);
+        // 재배포면(같은 프로젝트에 동일 webOnly 의 현재 RUNNING 서버가 있으면) 그 서버를 교체 대상으로 기록한다.
+        // 새 서버가 RUNNING 되면 리플레이스 워커가 EIP 를 넘겨받고 옛 서버를 종료한다(블루그린, 고아 없음).
+        // webOnly 로 갈라 백엔드 재배포는 백엔드만, 프론트 재배포는 프론트만 교체한다(둘은 정상 공존).
+        serverRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
+                .filter(existing -> existing.getStatus() == ServerStatus.RUNNING && existing.isWebOnly() == webOnly)
+                .findFirst()
+                .ifPresent(existing -> server.assignSupersedes(existing.getId()));
         ProvisionedServer record = serverRepository.save(server);
         Approval approval = approvalRepository.save(Approval.standalone(
                 ownerUserId, projectId, ApprovalType.SERVER_PROVISION,

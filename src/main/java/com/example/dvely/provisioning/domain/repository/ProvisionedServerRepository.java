@@ -19,6 +19,9 @@ public interface ProvisionedServerRepository {
     /** 워커가 집을 대상(QUEUED·PROVISIONING 등). */
     List<ProvisionedServer> findByStatus(ServerStatus status, int limit);
 
+    /** RUNNING 이 됐지만 아직 교체 대상(이전 서버)을 정리하지 않은 서버 — 리플레이스 워커가 집는다. */
+    List<ProvisionedServer> findRunningWithPendingReplacement(int limit);
+
     /** 원자적 claim: QUEUED 인 행만 BUILDING 으로 넘긴다. 진 워커 하나만 true — 이중 launch(과금) 방지. */
     boolean claimForBuild(Long id);
 

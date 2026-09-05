@@ -53,6 +53,13 @@ public class ProvisionedServerRepositoryAdapter implements ProvisionedServerRepo
     }
 
     @Override
+    public List<ProvisionedServer> findRunningWithPendingReplacement(int limit) {
+        return springDataRepository.findByStatusAndSupersedesServerIdIsNotNullOrderByCreatedAtAsc(
+                        ServerStatus.RUNNING.name(), PageRequest.of(0, limit))
+                .stream().map(ProvisionedServerEntity::toDomain).toList();
+    }
+
+    @Override
     @Transactional
     public boolean claimForBuild(Long id) {
         return springDataRepository.claimForBuild(id, LocalDateTime.now()) == 1;

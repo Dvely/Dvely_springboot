@@ -19,6 +19,10 @@ public interface SpringDataProvisionedServerRepository
 
     List<ProvisionedServerEntity> findByStatusOrderByCreatedAtAsc(String status, Pageable pageable);
 
+    /** 교체 대기: RUNNING 이 됐지만 아직 옛 서버(supersedes)를 정리하지 않은 것. 리플레이스 워커가 집는다. */
+    List<ProvisionedServerEntity> findByStatusAndSupersedesServerIdIsNotNullOrderByCreatedAtAsc(
+            String status, Pageable pageable);
+
     @Modifying(clearAutomatically = true)
     @Query("update ProvisionedServerEntity e set e.status = 'BUILDING', e.updatedAt = :now"
             + " where e.id = :id and e.status = 'QUEUED'")
