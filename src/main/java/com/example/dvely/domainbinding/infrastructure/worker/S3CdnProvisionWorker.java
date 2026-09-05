@@ -48,11 +48,19 @@ public class S3CdnProvisionWorker {
     private final CloudflareDnsPort cloudflareDnsPort;
     private final HttpsProbePort httpsProbePort;
 
+    // 다중 인스턴스 리스 소유자 식별자(JVM 별 유일).
+    private final String workerId = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+
     @Scheduled(fixedDelayString = "${qeploy.provisioning.s3-cdn-poll-interval-ms:30000}")
     public void pollProvisioning() {
         for (DomainBinding domain : domainBindingRepository.findByStatus(DomainStatus.PROVISIONING, BATCH)) {
             if (domain.getHostingTarget() != DomainHostingTarget.AWS_S3_FRONTEND) {
                 continue;   // PROVISIONING 은 이 워커가 소유하는 S3 프론트 도메인만 처리한다
+            }
+            // 다중 인스턴스: 리스로 claim 한 인스턴스만 진행한다 — 두 곳이 같은 도메인에 CloudFront 배포·ACM
+            // 인증서를 동시에 만들면 중복 자원(비용·고아)이 생긴다. 못 잡으면 이 틱은 건너뛴다.
+            if (!domainBindingRepository.claimForCdnProvision(domain.getId(), workerId)) {
+                continue;
             }
             try {
                 advance(domain);

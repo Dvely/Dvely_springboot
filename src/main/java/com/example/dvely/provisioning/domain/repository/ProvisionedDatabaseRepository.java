@@ -27,6 +27,12 @@ public interface ProvisionedDatabaseRepository {
     boolean claimForExpiry(Long id, LocalDateTime now);
 
     /**
+     * 부트 타임아웃 처리 권한을 status-CAS 로 claim(PROVISIONING→FAILED). 진 인스턴스 하나만 true —
+     * 그것만 DB 인스턴스를 teardown 한다(다중 인스턴스에서 같은 DB 를 두 번 정리 방지).
+     */
+    boolean claimBootTimeout(Long id);
+
+    /**
      * 만료 회수 대상 — expiresAt 이 지났는데 아직 READY 인 LOCAL 자원. 워커가 EXPIRED 로 넘긴다.
      * "READY 인데 실제로는 없는" 상태를 그 주기 안에 정리하기 위한 것.
      */
