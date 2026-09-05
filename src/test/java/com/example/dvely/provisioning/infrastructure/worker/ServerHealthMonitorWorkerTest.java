@@ -1,8 +1,8 @@
 package com.example.dvely.provisioning.infrastructure.worker;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -27,6 +27,10 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+/**
+ * 헬스 모니터는 다중 인스턴스 안전을 위해 전체-엔티티 저장 대신 targeted UPDATE 만 쓴다 — 그래서 이 테스트들은
+ * 도메인 객체 상태가 아니라 리포지토리 호출(recordHealth·claimRecovery·clearRecoveryAttempt)을 검증한다.
+ */
 @ExtendWith(MockitoExtension.class)
 class ServerHealthMonitorWorkerTest {
 
@@ -36,14 +40,13 @@ class ServerHealthMonitorWorkerTest {
     @Mock private SsmRunCommandClient ssmRunCommandClient;
     @InjectMocks private ServerHealthMonitorWorker worker;
 
-    /** NATIVE 서버(기본). */
+    /** id=1L, cloudConnectionId=5L, instanceId="i-1", port 8080. NATIVE(기본). */
     private ProvisionedServer running(String host) {
         LocalDateTime now = LocalDateTime.now();
         return new ProvisionedServer(1L, 7L, "t3.micro", ServerStatus.RUNNING,
                 5L, "i-1", host, 8080, null, null, null, now, now);
     }
 
-    /** DOCKER 서버(자동복구 대상). cloudConnectionId=5L, instanceId="i-1". */
     private ProvisionedServer runningDocker(String host) {
         ProvisionedServer s = running(host);
         s.assignDeployMode(ServerDeployMode.DOCKER);
@@ -62,23 +65,21 @@ class ServerHealthMonitorWorkerTest {
 
         worker.monitorRunningServers();
 
-        assertThat(server.getHealthy()).isTrue();
-        assertThat(server.getLastHealthCheckAt()).isNotNull();
-        verify(serverRepository).save(server);
+        verify(serverRepository).recordHealth(1L, true);
+        verify(serverRepository, never()).claimRecovery(anyLong());
     }
 
     @Test
     void appDown_recordsUnhealthy_withoutTerminating() {
         ProvisionedServer server = running("1.2.3.4");
-        server.recordHealthCheck(true);   // 직전엔 건강했다
+        server.recordHealthCheck(true);   // 직전엔 건강했다(fetch 시점 DB 값)
         batch(server);
         when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(false);   // 이제 포트 무응답
 
         worker.monitorRunningServers();
 
-        assertThat(server.getHealthy()).isFalse();          // 앱 무응답으로 표시
-        assertThat(server.getStatus()).isEqualTo(ServerStatus.RUNNING);   // 인스턴스는 종료 안 함
-        verify(serverRepository).save(server);
+        verify(serverRepository).recordHealth(1L, false);   // 무응답 기록
+        verify(serverRepository, never()).claimRecovery(anyLong());   // 첫 무응답 — 복구 안 함
     }
 
     @Test
@@ -89,33 +90,44 @@ class ServerHealthMonitorWorkerTest {
         worker.monitorRunningServers();
 
         verify(healthChecker, never()).isHealthy(any(), anyInt());
-        verify(serverRepository, never()).save(any());
+        verify(serverRepository, never()).recordHealth(anyLong(), org.mockito.ArgumentMatchers.anyBoolean());
     }
 
-    // ── 자동복구 ─────────────────────────────────────────────────────────────
+    // ── 자동복구(원자적) ─────────────────────────────────────────────────────
 
     @Test
-    void secondConsecutiveUnhealthy_docker_attemptsRestart() {
+    void secondConsecutiveUnhealthy_docker_claimsAndRestarts() {
         ProvisionedServer server = runningDocker("1.2.3.4");
-        server.recordHealthCheck(false);   // 직전에도 무응답이었다(2회 연속)
+        server.recordHealthCheck(false);   // 직전에도 무응답(2회 연속)
         batch(server);
-        when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(false);   // 여전히 무응답
+        when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(false);
         when(cloudConnectionRepository.findById(5L)).thenReturn(Optional.of(mock(CloudConnection.class)));
-        when(ssmRunCommandClient.runShellCommand(any(), eq("i-1"), any())).thenReturn("restarted");
+        when(serverRepository.claimRecovery(1L)).thenReturn(true);   // 이 인스턴스가 복구 권한 획득
 
         worker.monitorRunningServers();
 
+        verify(serverRepository).claimRecovery(1L);   // 원자적 claim
         ArgumentCaptor<String> cmd = ArgumentCaptor.forClass(String.class);
         verify(ssmRunCommandClient).runShellCommand(any(), eq("i-1"), cmd.capture());
-        assertThat(cmd.getValue()).contains("docker restart qeploy-app");   // 단일 컨테이너 재시작
-        assertThat(cmd.getValue()).contains("/opt/app/compose.yml");        // compose 분기도 포함
-        assertThat(server.getRecoveryAttemptedAt()).isNotNull();            // 시도 표시
-        assertThat(server.getStatus()).isEqualTo(ServerStatus.RUNNING);     // 인스턴스는 종료 안 함
-        verify(serverRepository).save(server);
+        org.assertj.core.api.Assertions.assertThat(cmd.getValue()).contains("docker restart qeploy-app");
     }
 
     @Test
-    void singleUnhealthy_doesNotAttemptRestart() {
+    void secondConsecutiveUnhealthy_claimLost_doesNotRestart() {
+        ProvisionedServer server = runningDocker("1.2.3.4");
+        server.recordHealthCheck(false);
+        batch(server);
+        when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(false);
+        when(cloudConnectionRepository.findById(5L)).thenReturn(Optional.of(mock(CloudConnection.class)));
+        when(serverRepository.claimRecovery(1L)).thenReturn(false);   // 다른 인스턴스가 이미 복구 claim
+
+        worker.monitorRunningServers();
+
+        verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());   // 이중 재시작 방지
+    }
+
+    @Test
+    void singleUnhealthy_doesNotAttemptRecovery() {
         ProvisionedServer server = runningDocker("1.2.3.4");
         server.recordHealthCheck(true);   // 직전엔 정상 — 이번이 첫 무응답
         batch(server);
@@ -123,25 +135,22 @@ class ServerHealthMonitorWorkerTest {
 
         worker.monitorRunningServers();
 
-        verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());   // 흔들림에 재시작 안 함
-        assertThat(server.getRecoveryAttemptedAt()).isNull();
-        verify(serverRepository).save(server);
+        verify(serverRepository, never()).claimRecovery(anyLong());
+        verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());
     }
 
     @Test
     void healthyAgain_clearsRecoveryAttempt() {
         ProvisionedServer server = runningDocker("1.2.3.4");
         server.recordHealthCheck(false);
-        server.markRecoveryAttempted();   // 이전에 복구를 시도했음
+        server.markRecoveryAttempted();   // 이전에 복구 시도했음(fetch 시점 DB 값)
         batch(server);
         when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(true);   // 회복됨
 
         worker.monitorRunningServers();
 
-        assertThat(server.getHealthy()).isTrue();
-        assertThat(server.getRecoveryAttemptedAt()).isNull();   // 다음 장애 대비 초기화
-        verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());
-        verify(serverRepository).save(server);
+        verify(serverRepository).recordHealth(1L, true);
+        verify(serverRepository).clearRecoveryAttempt(1L);   // 다음 장애 대비 초기화
     }
 
     @Test
@@ -150,16 +159,16 @@ class ServerHealthMonitorWorkerTest {
         server.recordHealthCheck(false);
         server.markRecoveryAttempted();   // 이번 에피소드에 이미 시도함
         batch(server);
-        when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(false);   // 여전히 무응답
+        when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(false);
 
         worker.monitorRunningServers();
 
-        verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());   // 재시작 루프 방지
-        verify(serverRepository).save(server);
+        verify(serverRepository, never()).claimRecovery(anyLong());   // 재claim·재시작 안 함
+        verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());
     }
 
     @Test
-    void nativeServer_secondUnhealthy_noRestart() {
+    void nativeServer_secondUnhealthy_noRecovery() {
         ProvisionedServer server = running("1.2.3.4");   // NATIVE — 자동복구 미지원
         server.recordHealthCheck(false);
         batch(server);
@@ -167,26 +176,24 @@ class ServerHealthMonitorWorkerTest {
 
         worker.monitorRunningServers();
 
+        verify(serverRepository, never()).claimRecovery(anyLong());   // claim 도 안 함(에피소드 소비 방지)
         verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());
-        assertThat(server.getRecoveryAttemptedAt()).isNull();   // 시도 표시도 안 남긴다
-        verify(serverRepository).save(server);
     }
 
     @Test
-    void restartSsmFails_stillMarksAttempted() {
+    void restartSsmFails_claimStillTaken() {
         ProvisionedServer server = runningDocker("1.2.3.4");
         server.recordHealthCheck(false);
         batch(server);
         when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(false);
         when(cloudConnectionRepository.findById(5L)).thenReturn(Optional.of(mock(CloudConnection.class)));
+        when(serverRepository.claimRecovery(1L)).thenReturn(true);
         when(ssmRunCommandClient.runShellCommand(any(), eq("i-1"), any()))
                 .thenThrow(new RuntimeException("SSM 실패"));
 
         worker.monitorRunningServers();
 
-        // 실패해도 1회 시도로 카운트해 이번 에피소드엔 다시 안 두드린다(폭주 방지). 인스턴스는 그대로.
-        assertThat(server.getRecoveryAttemptedAt()).isNotNull();
-        assertThat(server.getStatus()).isEqualTo(ServerStatus.RUNNING);
-        verify(serverRepository).save(server);
+        // claim 은 재시작 시도 전에 이뤄지므로, SSM 이 실패해도 이번 에피소드는 1회로 카운트된다(폭주 방지).
+        verify(serverRepository).claimRecovery(1L);
     }
 }

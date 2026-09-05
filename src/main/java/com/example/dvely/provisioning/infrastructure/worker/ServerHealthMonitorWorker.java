@@ -55,12 +55,14 @@ public class ServerHealthMonitorWorker {
             }
             try {
                 boolean healthy = healthChecker.isHealthy(server.getPublicHost(), server.getPort());
-                Boolean previous = server.getHealthy();
-                server.recordHealthCheck(healthy);
+                Boolean previous = server.getHealthy();   // fetch 시점 DB 값(디바운스·복구 판정용)
+                // 헬스는 targeted UPDATE 로만 쓴다 — 전체-엔티티 저장을 하지 않아, 다중 인스턴스에서 각자
+                // 헬스체크·기록해도 lost-update 가 없고 교체 워커의 저장과 충돌하지 않는다.
+                serverRepository.recordHealth(server.getId(), healthy);
 
                 if (healthy) {
                     if (server.hasRecoveryBeenAttempted()) {
-                        server.clearRecoveryAttempt();   // 회복 — 다음 장애에 다시 복구할 수 있게 초기화
+                        serverRepository.clearRecoveryAttempt(server.getId());   // 회복 — 다음 장애 대비 초기화
                     }
                     if (Boolean.FALSE.equals(previous)) {
                         log.info("앱 헬스 회복: serverId={} host={}:{}",
@@ -71,12 +73,8 @@ public class ServerHealthMonitorWorker {
                         log.warn("앱 헬스 이상(RUNNING 이지만 포트 무응답 — 앱이 죽었을 수 있음): serverId={} host={}:{} projectId={}",
                                 server.getId(), server.getPublicHost(), server.getPort(), server.getProjectId());
                     }
-                    // 2회 연속 무응답 + 이번 에피소드에 아직 복구 안 함 → 재시작으로 자동복구 시도.
-                    if (Boolean.FALSE.equals(previous) && !server.hasRecoveryBeenAttempted()) {
-                        attemptRecovery(server);
-                    }
+                    attemptRecoveryIfDue(server, previous);
                 }
-                serverRepository.save(server);
             } catch (RuntimeException e) {
                 // 이 서버만 건너뛰고 다음 주기에 다시 본다.
                 log.warn("서버 헬스 모니터 실패(다음 주기 재시도): serverId={} 원인={}", server.getId(), e.toString());
@@ -85,10 +83,15 @@ public class ServerHealthMonitorWorker {
     }
 
     /**
-     * 무응답 앱을 SSM 으로 재시작한다. 먼저 시도 표시를 남겨(성공·실패 무관) 이번 에피소드엔 다시 시도하지
-     * 않는다 — 재시작 루프 방지. 표시 뒤 저장은 호출부의 save 가 healthy 와 함께 처리한다.
+     * 2회 연속 무응답(직전도 false) + 이번 에피소드 미시도일 때, 무응답 앱을 SSM 으로 재시작한다. 재시작 직전에
+     * {@code claimRecovery} 로 복구 권한을 원자적으로 잡는다 — 다중 인스턴스에서 진 하나만 재시작하고, 이
+     * claim 이 recovery_attempted_at 을 남긴다(전체-엔티티 저장을 안 하므로 clobber 되지 않는다). NATIVE·연결
+     * 없음 등 재시작 불가 조건은 claim <b>전에</b> 걸러 에피소드의 1회 기회를 헛되이 소비하지 않는다.
      */
-    private void attemptRecovery(ProvisionedServer server) {
+    private void attemptRecoveryIfDue(ProvisionedServer server, Boolean previous) {
+        if (!Boolean.FALSE.equals(previous) || server.hasRecoveryBeenAttempted()) {
+            return;   // 첫 무응답이거나 이미 이번 에피소드에 시도함 — 대상 아님
+        }
         if (!autoRecoveryEnabled) {
             return;
         }
@@ -102,7 +105,9 @@ public class ServerHealthMonitorWorker {
             log.warn("자동복구 건너뜀(클라우드 연결 없음): serverId={}", server.getId());
             return;
         }
-        server.markRecoveryAttempted();
+        if (!serverRepository.claimRecovery(server.getId())) {
+            return;   // 다른 인스턴스가 이미 복구를 claim 함 — 이중 재시작 방지
+        }
         try {
             String output = ssmRunCommandClient.runShellCommand(
                     connection, server.getInstanceId(), buildRestartCommand());

@@ -82,6 +82,24 @@ public class ProvisionedServerRepositoryAdapter implements ProvisionedServerRepo
     }
 
     @Override
+    @Transactional
+    public void recordHealth(Long id, boolean healthy) {
+        springDataRepository.updateHealth(id, healthy, LocalDateTime.now());
+    }
+
+    @Override
+    @Transactional
+    public boolean claimRecovery(Long id) {
+        return springDataRepository.claimRecovery(id, LocalDateTime.now()) == 1;
+    }
+
+    @Override
+    @Transactional
+    public void clearRecoveryAttempt(Long id) {
+        springDataRepository.clearRecoveryAttempt(id);
+    }
+
+    @Override
     public List<Long> findDistinctCloudConnectionIds() {
         return springDataRepository.findDistinctCloudConnectionIds();
     }
