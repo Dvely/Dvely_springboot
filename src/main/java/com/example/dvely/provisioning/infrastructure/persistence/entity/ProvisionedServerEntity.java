@@ -71,6 +71,12 @@ public class ProvisionedServerEntity {
     @Column(name = "public_host")
     private String publicHost;
 
+    @Column(name = "healthy")
+    private Boolean healthy;   // RUNNING 이후 앱 건강(주기 TCP 헬스체크). null=미확인
+
+    @Column(name = "last_health_check_at")
+    private java.time.LocalDateTime lastHealthCheckAt;
+
     @Column(name = "port", nullable = false)
     private int port;
 
@@ -113,6 +119,8 @@ public class ProvisionedServerEntity {
         this.supersedesServerId = s.getSupersedesServerId();
         this.elasticIpAllocationId = s.getElasticIpAllocationId();
         this.publicHost = s.getPublicHost();
+        this.healthy = s.getHealthy();
+        this.lastHealthCheckAt = s.getLastHealthCheckAt();
         this.port = s.getPort();
         this.approvalId = s.getApprovalId();
         this.failureCode = s.getFailureCode() == null ? null : s.getFailureCode().name();
@@ -132,6 +140,7 @@ public class ProvisionedServerEntity {
         server.assignWebOnly(webOnly);
         server.assignSupersedes(supersedesServerId);
         server.assignElasticIp(elasticIpAllocationId);
+        server.restoreHealth(healthy, lastHealthCheckAt);
         return server;
     }
 }

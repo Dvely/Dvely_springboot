@@ -23,6 +23,10 @@ public record ServerResponse(
         String instanceId,
         @Schema(description = "실패 분류. 사용자 거부는 null(=거부됨).") String errorCode,
         String errorMessage,
+        @Schema(description = "RUNNING 이후 앱 건강(주기 TCP 헬스체크). true=응답 · false=포트 무응답(앱이 죽었을 "
+                + "수 있음, 인스턴스는 살아있음) · null=아직 미확인. status=RUNNING 이라도 이 값이 false 면 앱 문제다.")
+        Boolean healthy,
+        LocalDateTime lastHealthCheckAt,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {
@@ -42,6 +46,7 @@ public record ServerResponse(
                 s.getId(), s.getProjectId(), s.getStatus().name(), s.isWebOnly(), s.getInstanceType(),
                 s.getPublicHost(), s.getPort(), url, domainUrl, s.getInstanceId(),
                 s.getFailureCode() == null ? null : s.getFailureCode().name(),
-                s.getErrorMessage(), s.getCreatedAt(), s.getUpdatedAt());
+                s.getErrorMessage(), s.getHealthy(), s.getLastHealthCheckAt(),
+                s.getCreatedAt(), s.getUpdatedAt());
     }
 }
