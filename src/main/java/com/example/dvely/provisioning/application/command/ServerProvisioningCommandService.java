@@ -125,11 +125,11 @@ public class ServerProvisioningCommandService {
                                 server.getElasticIpAllocationId(), e.getMessage());
                     }
                 }
-                // EIP 가 해제되면 그 IP 를 가리키던 백엔드 도메인은 dangling DNS(서브도메인 탈취) 위험이
-                // 된다 — Cloudflare 레코드를 지운다. best-effort(실패해도 종료는 계속, 경고는 남는다).
+                // EIP 가 해제되면 그 IP 를 가리키던 도메인(백엔드·독립 프론트)은 dangling DNS(서브도메인
+                // 탈취) 위험이 된다 — Cloudflare 레코드를 지운다. best-effort(실패해도 종료는 계속, 경고는 남는다).
                 if (server.getPublicHost() != null) {
                     try {
-                        projectDomainCleanupPort.releaseBackendDomains(server.getProjectId(), server.getPublicHost());
+                        projectDomainCleanupPort.releaseServerDomains(server.getProjectId(), server.getPublicHost());
                     } catch (RuntimeException e) {
                         log.warn("서버 종료 후 도메인 정리 실패(수동 확인 필요, dangling DNS 위험): projectId={} ip={} 원인={}",
                                 server.getProjectId(), server.getPublicHost(), e.getMessage());

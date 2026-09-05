@@ -188,8 +188,8 @@ class ServerProvisioningCommandServiceTest {
         verify(ec2).terminate(any(), org.mockito.ArgumentMatchers.eq("i-123"));
         verify(ssm).deleteAllForProject(any(), org.mockito.ArgumentMatchers.eq(PROJECT));
         verify(s3).deleteJar(any(), org.mockito.ArgumentMatchers.eq("bucket"), org.mockito.ArgumentMatchers.eq("10/app.jar"));
-        // EIP 를 가리키던 백엔드 도메인 정리(dangling DNS 방지)도 호출한다.
-        verify(projectDomainCleanupPort).releaseBackendDomains(org.mockito.ArgumentMatchers.eq(PROJECT),
+        // EIP 를 가리키던 도메인(백엔드·프론트) 정리(dangling DNS 방지)도 호출한다.
+        verify(projectDomainCleanupPort).releaseServerDomains(org.mockito.ArgumentMatchers.eq(PROJECT),
                 org.mockito.ArgumentMatchers.eq("ec2-host"));
         ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
         verify(serverRepository).save(saved.capture());

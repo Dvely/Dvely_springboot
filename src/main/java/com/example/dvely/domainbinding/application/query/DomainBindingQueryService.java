@@ -29,15 +29,20 @@ public class DomainBindingQueryService {
     private final CloudflareProperties cloudflareProperties;
 
     /**
-     * 이 호스트네임이 백엔드(AWS) 도메인으로 등록됐는지. 배포된 인스턴스 Caddy 가 커스텀 도메인 TLS 를
-     * on-demand 발급하기 전 이 값을 물어(ask) 남용을 막는다 — DB 에 등록된 백엔드 도메인만 발급 허용.
+     * 이 호스트네임이 우리가 관리하는 EC2 도메인(백엔드 AWS · 독립 프론트 AWS_EC2_FRONTEND)으로
+     * 등록됐는지. 백엔드든 프론트든 EC2 인스턴스의 Caddy 가 커스텀 도메인 TLS 를 on-demand 발급하기 전
+     * 이 값을 물어(ask) 남용을 막는다 — DB 에 등록된 EC2 도메인만 발급 허용. 관리형 *.qeploy.com 은
+     * 인스턴스가 로컬로 자기완결 허용하므로 이 ask 를 타지 않고, 여기 걸리는 것은 커스텀 도메인이다.
      */
-    public boolean isBackendDomainRegistered(String hostname) {
+    public boolean isEc2DomainRegistered(String hostname) {
         if (hostname == null || hostname.isBlank()) {
             return false;
         }
+        String trimmed = hostname.trim();
         return domainBindingRepository.existsByHostnameIgnoreCaseAndHostingTarget(
-                hostname.trim(), DomainHostingTarget.AWS);
+                        trimmed, DomainHostingTarget.AWS)
+                || domainBindingRepository.existsByHostnameIgnoreCaseAndHostingTarget(
+                        trimmed, DomainHostingTarget.AWS_EC2_FRONTEND);
     }
 
     public DomainSearchResult search(String keyword) {

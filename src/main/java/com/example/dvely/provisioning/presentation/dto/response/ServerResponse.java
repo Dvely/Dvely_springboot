@@ -17,8 +17,9 @@ public record ServerResponse(
         String host,
         int port,
         @Schema(description = "RUNNING 일 때만 원시 EIP 접속 URL, 아니면 null") String url,
-        @Schema(description = "백엔드에 연결된 도메인 URL(있고 RUNNING 일 때만). Caddy 가 443 에서 HTTPS 종단 "
-                + "(https://{host}). 도메인 없으면 null — 그땐 url(EIP:8080) 사용.") String domainUrl,
+        @Schema(description = "이 서버(백엔드 또는 독립 프론트)에 연결된 도메인 URL(있고 RUNNING 일 때만). "
+                + "Caddy 가 443 에서 HTTPS 종단(https://{host}). 도메인 없으면 null — 그땐 url(EIP:8080) 사용.")
+        String domainUrl,
         String instanceId,
         @Schema(description = "실패 분류. 사용자 거부는 null(=거부됨).") String errorCode,
         String errorMessage,

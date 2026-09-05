@@ -73,8 +73,12 @@ public class ServerProvisioningController {
             @PathVariable Long projectId
     ) {
         var result = queryService.list(ownerUserId, projectId);
+        // 웹 전용(프론트) 서버엔 프론트 도메인을, 백엔드 서버엔 백엔드 도메인을 매핑한다 — 한 프로젝트에
+        // 둘이 함께 뜰 수 있어 도메인을 섞으면 카드가 잘못된 https URL 을 보인다.
         return result.servers().stream()
-                .map(s -> ServerResponse.from(s, result.domainHostname())).toList();
+                .map(s -> ServerResponse.from(s,
+                        s.isWebOnly() ? result.frontendDomainHostname() : result.backendDomainHostname()))
+                .toList();
     }
 
     @Operation(summary = "EC2 백엔드 서버 종료",
