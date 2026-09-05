@@ -18,7 +18,10 @@ import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.CopyArchiveToContainerCmd;
 import com.github.dockerjava.api.command.CreateContainerCmd;
+import com.github.dockerjava.api.command.ConnectToNetworkCmd;
 import com.github.dockerjava.api.command.CreateContainerResponse;
+import com.github.dockerjava.api.command.CreateNetworkCmd;
+import com.github.dockerjava.api.command.ListNetworksCmd;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import com.github.dockerjava.api.command.ExecCreateCmd;
@@ -35,6 +38,7 @@ import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.Capability;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.Network;
 import com.github.dockerjava.api.model.StreamType;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -66,7 +70,32 @@ class CodingAgentContainerRunnerTest {
     @BeforeEach
     void setUp() {
         properties = new CodingAgentProperties();
+        // Egress containment is off for the exec/credential tests so their mocks stay about the
+        // thing under test. It gets its own tests below, and whether the routing it sets up is
+        // actually effective is a daemon-side fact asserted by CodexCliAdapterIntegrationTest.
+        properties.getEgress().setEnabled(false);
         runner = new CodingAgentContainerRunner(dockerClient, properties);
+    }
+
+    /** Stubs the network + proxy calls that egress containment makes before the agent starts. */
+    private void stubEgress(Network existingNetwork) {
+        ListNetworksCmd listCmd = mock(ListNetworksCmd.class, RETURNS_SELF);
+        lenient().when(dockerClient.listNetworksCmd()).thenReturn(listCmd);
+        lenient().when(listCmd.exec())
+                .thenReturn(existingNetwork == null ? List.of() : List.of(existingNetwork));
+
+        CreateNetworkCmd createNetwork = mock(CreateNetworkCmd.class, RETURNS_SELF);
+        lenient().when(dockerClient.createNetworkCmd()).thenReturn(createNetwork);
+
+        ConnectToNetworkCmd connect = mock(ConnectToNetworkCmd.class, RETURNS_SELF);
+        lenient().when(dockerClient.connectToNetworkCmd()).thenReturn(connect);
+    }
+
+    private static Network networkNamed(String name, boolean internal) {
+        Network network = mock(Network.class);
+        lenient().when(network.getName()).thenReturn(name);
+        lenient().when(network.getInternal()).thenReturn(internal);
+        return network;
     }
 
     private void stubImagePresent() {
@@ -388,6 +417,78 @@ class CodingAgentContainerRunnerTest {
         // that blames the model instead of the credential.
         assertThat(outcome.exitCode()).isEqualTo(1);
         verify(execCreateCmd, times(1)).withCmd(any(String[].class));
+    }
+
+    @Test
+    void createsAnInternalNetworkAndPutsTheAgentOnIt() {
+        properties.getEgress().setEnabled(true);
+        stubImagePresent();
+        stubContainerLifecycle();
+        stubExec(true, 0, "ok", "");
+        stubEgress(null);
+
+        run();
+
+        // withInternal(true) is the whole containment: members get no default route, so the proxy
+        // sidecar — the only container also attached to a routed network — becomes the only exit.
+        verify(dockerClient.createNetworkCmd()).withInternal(true);
+
+        ArgumentCaptor<HostConfig> hostConfig = ArgumentCaptor.captor();
+        verify(createCmd, times(2)).withHostConfig(hostConfig.capture());
+        assertThat(hostConfig.getAllValues())
+                .allSatisfy(c -> assertThat(c.getNetworkMode()).isEqualTo("qeploy-coding-agent"));
+    }
+
+    @Test
+    void startsAndThenRemovesTheEgressProxyAlongsideTheAgent() {
+        properties.getEgress().setEnabled(true);
+        stubImagePresent();
+        stubContainerLifecycle();
+        stubExec(true, 0, "ok", "");
+        stubEgress(null);
+
+        run();
+
+        // The proxy is the only member with a route out, which is why it alone is also attached to
+        // a routed network. It is torn down with the run — a leaked proxy would be a standing exit.
+        verify(dockerClient.connectToNetworkCmd()).withNetworkId("bridge");
+        verify(dockerClient, times(2)).removeContainerCmd(CONTAINER_ID);
+    }
+
+    @Test
+    void warnsRatherThanSilentlyTrustingAnExistingNonInternalNetwork() {
+        properties.getEgress().setEnabled(true);
+        stubImagePresent();
+        stubContainerLifecycle();
+        stubExec(true, 0, "ok", "");
+        stubEgress(networkNamed("qeploy-coding-agent", false));
+
+        run();
+
+        // A network that lost its internal flag looks identical from the outside while providing no
+        // containment at all, so it is never recreated under running containers — only reported.
+        verify(dockerClient, never()).createNetworkCmd();
+    }
+
+    @Test
+    void givesTheAgentTheProxyEnvironmentButNoSecret() {
+        properties.getEgress().setEnabled(true);
+        stubImagePresent();
+        stubContainerLifecycle();
+        stubExec(true, 0, "ok", "");
+        stubEgress(null);
+
+        run();
+
+        // Only the agent gets env; the proxy is configured by staged files, not variables.
+        ArgumentCaptor<List<String>> env = ArgumentCaptor.captor();
+        verify(createCmd).withEnv(env.capture());
+        // Proxy settings are not secret, so unlike the API key they can live in the container
+        // config — the key is staged as a file precisely because that config gets logged.
+        assertThat(env.getValue())
+                .contains("HTTPS_PROXY=http://qeploy-egress:8888")
+                .contains("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
+                .noneSatisfy(e -> assertThat(e).contains("API_KEY="));
     }
 
     @Test

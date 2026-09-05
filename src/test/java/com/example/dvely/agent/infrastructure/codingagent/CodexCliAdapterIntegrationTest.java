@@ -118,6 +118,49 @@ class CodexCliAdapterIntegrationTest {
                 .isEmpty();
     }
 
+    /**
+     * The containment is only real if the agent can reach the vendor API and nothing else. Asserted
+     * against the live daemon rather than by inspecting the HostConfig we sent, because "internal
+     * network + proxy" is a claim about routing, and routing is a fact on the daemon's side.
+     */
+    @Test
+    void agentReachesTheAllowedApiAndNothingElse() {
+        CodingAgentProperties properties = new CodingAgentProperties();
+        CodingAgentContainerRunner runner = new CodingAgentContainerRunner(properties);
+
+        // curl is not in the image, so probe with the node runtime that is. Each probe prints a
+        // single token; the whole thing runs as the agent would, inside the same containment.
+        String probe = """
+                const check = async (name, url) => {
+                  try {
+                    const c = new AbortController();
+                    const t = setTimeout(() => c.abort(), 8000);
+                    const r = await fetch(url, { signal: c.signal });
+                    clearTimeout(t);
+                    console.log(name + '=REACHED:' + r.status);
+                  } catch (e) { console.log(name + '=BLOCKED'); }
+                };
+                await check('allowed', 'https://api.openai.com/v1/models');
+                await check('denied', 'https://example.com');
+                await check('gateway', 'http://172.17.0.1:8080/');
+                """;
+
+        CodingAgentContainerRunner.ContainerRunOutcome outcome = runner.run(
+                workspace.toString(), null,
+                List.of("node", "--input-type=module", "-e", probe),
+                Duration.ofMinutes(2));
+
+        String out = outcome.stdout() + outcome.stderr();
+        // Node honours HTTPS_PROXY only via undici's env-aware dispatcher, which it does not do by
+        // default — so a REACHED here would mean a direct route exists, which is exactly the hole
+        // the internal network closes. The allowed host is verified through the CLI path instead
+        // (the test above), which does honour the proxy.
+        assertThat(out)
+                .withFailMessage("egress 격리가 걸리지 않았습니다:%n%s", out)
+                .contains("denied=BLOCKED")
+                .contains("gateway=BLOCKED");
+    }
+
     private void git(String... args) throws Exception {
         List<String> cmd = new java.util.ArrayList<>(List.of("git", "-C", workspace.toString()));
         cmd.addAll(List.of(args));

@@ -4,11 +4,13 @@ import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.ExecCreateCmdResponse;
+import com.github.dockerjava.api.exception.ConflictException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.Bind;
 import com.github.dockerjava.api.model.Capability;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.Network;
 import com.github.dockerjava.api.model.StreamType;
 import com.github.dockerjava.api.model.Volume;
 import com.github.dockerjava.core.DefaultDockerClientConfig;
@@ -22,6 +24,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
@@ -59,6 +62,12 @@ import org.springframework.stereotype.Component;
 public class CodingAgentContainerRunner {
 
     private static final String AGENT_LABEL = "qeploy.codingAgent";
+
+    private static final long PROXY_MEMORY_BYTES = 128L << 20;
+    private static final String PROXY_CONF_DIR = "/etc/tinyproxy";
+    private static final String PROXY_CONF_ENTRY = "qeploy.conf";
+    private static final String PROXY_CONF_PATH = PROXY_CONF_DIR + "/" + PROXY_CONF_ENTRY;
+    private static final String PROXY_ALLOW_ENTRY = "qeploy-allow.txt";
 
     private final DockerClient dockerClient;
     private final CodingAgentProperties properties;
@@ -118,7 +127,28 @@ public class CodingAgentContainerRunner {
                                    Duration timeout) {
         assertImagePresent();
 
-        String containerId = createAndStart(hostWorkspaceDir);
+        CodingAgentProperties.Egress egress = properties.getEgress();
+        String network = null;
+        String proxyId = null;
+        if (egress.isEnabled()) {
+            network = ensureInternalNetwork(egress);
+            proxyId = startEgressProxy(egress, network);
+        }
+        try {
+            return runInContainer(hostWorkspaceDir, network, credential, argv, timeout);
+        } finally {
+            if (proxyId != null) {
+                removeQuietly(proxyId);
+            }
+        }
+    }
+
+    private ContainerRunOutcome runInContainer(String hostWorkspaceDir,
+                                               String network,
+                                               Credential credential,
+                                               List<String> argv,
+                                               Duration timeout) {
+        String containerId = createAndStart(hostWorkspaceDir, network);
         try {
             return switch (credential) {
                 case Credential.LoginCommand login -> {
@@ -155,7 +185,110 @@ public class CodingAgentContainerRunner {
         }
     }
 
-    private String createAndStart(String hostWorkspaceDir) {
+    /**
+     * Creates the internal network if absent, and warns when an existing one is not internal.
+     *
+     * <p>Not auto-repaired: a live network may already have containers attached, and recreating it
+     * under them would be worse than the warning. This mirrors how the preview network verifies its
+     * own ICC setting — the failure mode being guarded against is a network that silently lost the
+     * property the whole containment rests on.</p>
+     */
+    private String ensureInternalNetwork(CodingAgentProperties.Egress egress) {
+        String name = egress.getNetworkName();
+        // Docker's name filter matches substrings, so an exact check avoids mistaking a leftover
+        // "qeploy-coding-agent-old" for the real one.
+        Optional<Network> existing = dockerClient.listNetworksCmd().withNameFilter(name).exec()
+                .stream().filter(n -> name.equals(n.getName())).findFirst();
+        if (existing.isPresent()) {
+            if (!Boolean.TRUE.equals(existing.get().getInternal())) {
+                log.warn("코딩 에이전트 네트워크가 internal 이 아닙니다 — egress 격리가 실제로는 걸려 있지 않습니다: {}", name);
+            }
+            return name;
+        }
+        try {
+            dockerClient.createNetworkCmd()
+                    .withName(name)
+                    .withDriver("bridge")
+                    // No default route for members: the proxy sidecar, which is additionally
+                    // attached to a normal network, becomes the only way out.
+                    .withInternal(true)
+                    .exec();
+            log.info("코딩 에이전트 internal 네트워크 생성: {}", name);
+        } catch (ConflictException e) {
+            log.debug("코딩 에이전트 네트워크가 동시 생성 레이스로 이미 존재함: {}", name);
+        }
+        return name;
+    }
+
+    /**
+     * Starts the CONNECT-filtering proxy that is the agent's only route out, on the same image so
+     * no second image has to be built or trusted.
+     */
+    private String startEgressProxy(CodingAgentProperties.Egress egress, String network) {
+        try {
+            CreateContainerResponse proxy = dockerClient.createContainerCmd(properties.getImage())
+                    .withHostConfig(HostConfig.newHostConfig()
+                            .withMemory(PROXY_MEMORY_BYTES)
+                            .withMemorySwap(PROXY_MEMORY_BYTES)
+                            .withPidsLimit(64L)
+                            .withCapDrop(Capability.ALL)
+                            // tinyproxy drops to `nobody` after binding, which needs SETUID/SETGID.
+                            .withCapAdd(Capability.SETUID, Capability.SETGID)
+                            .withSecurityOpts(List.of("no-new-privileges"))
+                            .withNetworkMode(network))
+                    .withLabels(Map.of(AGENT_LABEL, "true"))
+                    .withAliases(egress.getProxyAlias())
+                    .withCmd("tinyproxy", "-d", "-c", PROXY_CONF_PATH)
+                    .exec();
+
+            // Config is staged before start; tinyproxy reads it once at boot and exits on a bad file.
+            stageFile(proxy.getId(), PROXY_CONF_DIR, PROXY_CONF_ENTRY, proxyConf(egress), 0644);
+            stageFile(proxy.getId(), PROXY_CONF_DIR, PROXY_ALLOW_ENTRY, allowList(egress), 0644);
+
+            // The second attachment is what gives the proxy — and only the proxy — a route out.
+            dockerClient.connectToNetworkCmd()
+                    .withContainerId(proxy.getId())
+                    .withNetworkId("bridge")
+                    .exec();
+
+            dockerClient.startContainerCmd(proxy.getId()).exec();
+            return proxy.getId();
+        } catch (CodingAgentProvisionException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new CodingAgentProvisionException("코딩 에이전트 egress 프록시 기동에 실패했습니다.", e);
+        }
+    }
+
+    /**
+     * {@code Filter} must precede the {@code Filter*} options — tinyproxy 1.11 rejects the file
+     * outright otherwise, and it exits rather than starting unfiltered.
+     */
+    private static String proxyConf(CodingAgentProperties.Egress egress) {
+        return """
+                User nobody
+                Group nobody
+                Port %d
+                Listen 0.0.0.0
+                Timeout 600
+                MaxClients 50
+                Allow 0.0.0.0/0
+                ConnectPort 443
+                Filter "%s"
+                FilterExtended On
+                FilterURLs Off
+                FilterDefaultDeny Yes
+                """.formatted(egress.getProxyPort(), PROXY_CONF_DIR + "/" + PROXY_ALLOW_ENTRY);
+    }
+
+    /** Anchored, dot-escaped patterns so an entry matches one host and not its subdomains. */
+    private static String allowList(CodingAgentProperties.Egress egress) {
+        return egress.getAllowedHosts().stream()
+                .map(host -> "^" + host.replace(".", "\\.") + "$")
+                .collect(java.util.stream.Collectors.joining("\n")) + "\n";
+    }
+
+    private String createAndStart(String hostWorkspaceDir, String network) {
         try {
             // Isolation mirrors the preview policy (BI-194) minus the parts that only make sense
             // for a served preview: no exposed port, and no shared bridge network. Capabilities
@@ -171,9 +304,25 @@ public class CodingAgentContainerRunner {
                             .withPidsLimit(properties.getPidsLimit())
                             .withCapDrop(Capability.ALL)
                             .withCapAdd(Capability.CHOWN, Capability.SETUID, Capability.SETGID)
-                            .withSecurityOpts(List.of("no-new-privileges")))
+                            .withSecurityOpts(List.of("no-new-privileges"))
+                            // Internal network when egress containment is on; null leaves Docker's
+                            // default (the shared bridge, unrestricted) — that is the opt-out.
+                            .withNetworkMode(network))
                     .withLabels(Map.of(AGENT_LABEL, "true"))
                     .withWorkingDir(properties.getWorkspaceMountPath())
+                    // Proxy settings are not secret, so the container config is the right home for
+                    // them — unlike the API key, which is staged as a file precisely to stay out of
+                    // any field docker-java might dump. The telemetry switches keep Claude Code
+                    // from stalling on non-essential hosts the allowlist blocks.
+                    .withEnv(network == null ? List.of() : List.of(
+                            "HTTPS_PROXY=" + properties.getEgress().proxyUrl(),
+                            "HTTP_PROXY=" + properties.getEgress().proxyUrl(),
+                            "https_proxy=" + properties.getEgress().proxyUrl(),
+                            "http_proxy=" + properties.getEgress().proxyUrl(),
+                            "NO_PROXY=",
+                            "DISABLE_TELEMETRY=1",
+                            "DISABLE_ERROR_REPORTING=1",
+                            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"))
                     .exec();
 
             dockerClient.startContainerCmd(container.getId()).exec();
@@ -300,20 +449,29 @@ public class CodingAgentContainerRunner {
      * extra exec is needed just to {@code mkdir}.
      */
     private void stageSecret(String containerId, String stdin) {
-        byte[] payload = stdin.getBytes(StandardCharsets.UTF_8);
+        stageFile(containerId, STDIN_REMOTE_DIR, STDIN_ENTRY, stdin, 0600);
+    }
+
+    /**
+     * Writes {@code content} into the container at {@code remoteDir/entry} via the archive API. An
+     * entry name with a directory prefix makes Docker create that directory, so no {@code mkdir}
+     * exec is needed.
+     */
+    private void stageFile(String containerId, String remoteDir, String entry, String content, int mode) {
+        byte[] payload = content.getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         try (TarArchiveOutputStream tar = new TarArchiveOutputStream(buffer)) {
-            TarArchiveEntry entry = new TarArchiveEntry(STDIN_ENTRY);
-            entry.setSize(payload.length);
-            entry.setMode(0600);
-            tar.putArchiveEntry(entry);
+            TarArchiveEntry tarEntry = new TarArchiveEntry(entry);
+            tarEntry.setSize(payload.length);
+            tarEntry.setMode(mode);
+            tar.putArchiveEntry(tarEntry);
             tar.write(payload);
             tar.closeArchiveEntry();
         } catch (IOException e) {
-            throw new CodingAgentProvisionException("stdin 페이로드 tar 생성에 실패했습니다.", e);
+            throw new CodingAgentProvisionException("컨테이너 파일 스테이징 tar 생성에 실패했습니다.", e);
         }
         dockerClient.copyArchiveToContainerCmd(containerId)
-                .withRemotePath(STDIN_REMOTE_DIR)
+                .withRemotePath(remoteDir)
                 .withTarInputStream(new ByteArrayInputStream(buffer.toByteArray()))
                 .exec();
     }

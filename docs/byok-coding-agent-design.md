@@ -59,7 +59,14 @@ Anthropic 원문: "제3자 개발자가 자기 앱에 claude.ai 로그인을 제
 > 수작업 검증은 `docker exec -i`(CLI)로 했기 때문에 정상이었지만, 제 러너의 stdin 경로는 전부 mock 테스트라 실 데몬에서 돌아본 적이 없었다. 게이트형 통합 테스트(`CodexCliAdapterIntegrationTest`, `-Ddocker.it=true` + `QEPLOY_IT_OPENAI_API_KEY`)를 만들어 러너→어댑터를 그대로 통과시키자 **5초 만에 `AsynchronousCloseException`** 이 났다. 원인은 docker-java의 **OkHttp 전송이 exec stdin 하이재킹을 지원하지 않는 것** — 요청 본문(stdin)을 보낸 뒤 연결 반쪽을 닫아, 응답 프레임을 읽던 쪽이 죽는다. 전송 계층 교체는 `DockerContainerService`까지 파급되므로 하지 않았다.
 > **수정:** stdin 을 하이재킹하지 않는다. 키를 **archive 업로드 API**(`copyArchiveToContainerCmd`, 일반 HTTP PUT)로 `/run/qeploy/stdin`(0600)에 스테이징하고, 상수 래퍼 `"$@" < /run/qeploy/stdin; s=$?; rm -f ...; exit $s` 를 `sh -c` 로 실행한다. 실제 argv 는 `"$@"` 위치 인자로만 전달되어 절대 보간되지 않으므로 주입 표면은 그대로 0 이다. 키는 여전히 argv·env·inspect 에 남지 않고, 컨테이너 안 파일로 잠깐 존재했다가 래퍼가 지운다.
 > **결과:** 통합 테스트 통과 — 로그인 → `codex exec` → 워크스페이스에 파일 실제 생성 → 컨테이너 잔존 0. 이 테스트가 이제 "exit 0 인데 아무것도 안 함" 류의 조용한 회귀를 막는다. 게이트 없이 돌리면 skip 되어 CI 는 초록을 유지한다.
-- EC2가 사용자 키(암호화 저장)를 복호화해 컨테이너 env로만 주입한다. 디스크 미기록, egress는 공식 API 도메인(`api.anthropic.com`, `api.openai.com`)으로 제한.
+- EC2가 사용자 키(암호화 저장)를 복호화해 컨테이너 안에 짧게 스테이징한 파일로 전달한다(env·argv 미사용 — 아래 로그 유출 항목 참고). egress는 공식 API 도메인(`api.anthropic.com`, `api.openai.com`)으로 제한.
+
+> **네트워크 격리 (2026-09-05 구현·실측)**
+> Codex 자체 샌드박스를 우회하면서 그 샌드박스가 주로 막던 축(모델이 만든 셸 명령의 네트워크 접근)이 통째로 비어 있었다. 에이전트 컨테이너가 기본 브리지에 붙어 제한 없이 나갈 수 있었고, Codex 는 레포의 `AGENTS.md` 를 자동으로 읽으므로 **신뢰할 수 없는 레포가 곧 지시문**이다 — 사용자 키를 임의 주소로 보내거나 호스트 게이트웨이의 서비스(이 앱·DB 포함)에 닿을 수 있었다.
+> **구조:** `internal` Docker 네트워크(기본 경로 자체가 없음) + 그 위에 얹은 egress 프록시 사이드카. 프록시만 추가로 라우팅되는 네트워크에 붙어 유일한 출구가 되고, tinyproxy 가 CONNECT 를 호스트명 허용목록으로 거른다. 프록시는 같은 이미지로 뜨므로 신뢰해야 할 이미지가 늘지 않는다. 허용목록은 점을 이스케이프한 앵커 정규식이라 `api.openai.com` 이 `api.openai.com.evil.test` 를 허용하지 않는다.
+> **왜 중간 조치를 택하지 않았나:** 전용 브리지 + ICC 차단은 호스트 도달성도 인터넷 유출도 막지 못하면서 "격리됨"이라는 잘못된 안심만 준다. 안쪽 샌드박스를 살리자고 바깥 격리를 푸는 것도 반대 방향의 거래다.
+> **실측(실 데몬, 운영 기본값):** 허용 API 는 왕복 성공(Codex 가 로그인·실행·**파일 생성**까지 완주), 비허용 호스트·프록시 우회 직접 연결·호스트 게이트웨이는 전부 차단. 통합 테스트 `CodexCliAdapterIntegrationTest#agentReachesTheAllowedApiAndNothingElse` 가 이를 고정한다.
+> **부작용:** 에이전트의 `git fetch/push` 는 불가능하다(의도 — git 원격 작업은 호스트가 수행). Claude Code 의 비필수 텔레메트리 호스트가 막혀 지연되지 않도록 관련 env 를 함께 끈다. `qeploy.coding-agent.egress.enabled=false` 로 끄면 기본 브리지로 돌아간다.
 - 기존 `agent/infrastructure/docker/DockerContainerService`의 격리 정책(자원 상한·capability drop·no-new-priv·네트워크 격리, U4)을 재사용한다.
 - 브라우저·확장·WebSocket은 필요 없다(변형 A). 원안의 브라우저 브리지는 주거용 IP·세션 확보용이었고 BYOK+공식 API에선 그 목적이 사라진다.
 
