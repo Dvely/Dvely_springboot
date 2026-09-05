@@ -92,6 +92,7 @@ public class DomainBindingSubmissionService {
         return switch (target) {
             case GITHUB_PAGES -> "HTTPS 강제 적용";
             case AWS, AWS_EC2_FRONTEND -> "HTTPS 자동 적용(Caddy)";
+            case AWS_S3_FRONTEND -> "HTTPS 자동 적용(CloudFront, 프로비저닝 수 분 소요)";
             case GCP -> "미지원";
         };
     }
