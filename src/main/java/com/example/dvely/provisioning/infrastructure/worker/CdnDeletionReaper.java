@@ -7,6 +7,8 @@ import com.example.dvely.provisioning.infrastructure.CloudFrontDistributionProvi
 import com.example.dvely.provisioning.infrastructure.CloudFrontDistributionProvisioner.DistributionState;
 import com.example.dvely.provisioning.infrastructure.persistence.entity.CdnDeletionEntity;
 import com.example.dvely.provisioning.infrastructure.persistence.repository.SpringDataCdnDeletionRepository;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,20 +33,36 @@ public class CdnDeletionReaper {
 
     private static final int BATCH = 20;
 
+    // CloudFront disable→Deployed 는 여러 주기(수 분)에 걸치므로 리스 TTL 을 리퍼 주기(60s)보다 넉넉히
+    // 둬 같은 인스턴스가 이어받게 하고, 그 인스턴스가 죽으면 만료 후 다른 곳이 승계하게 한다.
+    private static final Duration REAP_LEASE = Duration.ofMinutes(2);
+    private static final int MAX_ERROR_LEN = 500;
+
     private final SpringDataCdnDeletionRepository deletionRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
     private final CloudFrontDistributionProvisioner cloudFrontProvisioner;
     private final AcmCertificateProvisioner acmProvisioner;
 
+    // 다중 인스턴스 리스 소유자 식별자(JVM 별 유일).
+    private final String workerId = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+
     @Scheduled(fixedDelayString = "${qeploy.provisioning.cdn-reap-interval-ms:60000}")
     public void reap() {
         for (CdnDeletionEntity row : deletionRepository.findAll(PageRequest.of(0, BATCH))) {
+            // 다중 인스턴스: 리스로 claim 한 인스턴스만 이 배포를 정리한다 — 두 곳이 같은 CloudFront 를
+            // disable·delete 하는 중복 호출(느림·rate limit)을 피한다. 못 잡으면 이 주기엔 건너뛴다.
+            LocalDateTime now = LocalDateTime.now();
+            if (deletionRepository.claimForReap(row.getId(), workerId, now.plus(REAP_LEASE), now) != 1) {
+                continue;
+            }
             try {
                 reapOne(row);
             } catch (RuntimeException e) {
-                // 이 행만 건너뛰고 다음 주기에 다시 본다.
-                row.recordError(e.toString());
-                deletionRepository.save(row);
+                // 이 행만 건너뛰고 다음 주기에 다시 본다. 실패 기록도 targeted UPDATE 로 해서 lease 를
+                // 덮어쓰지 않는다(전체 저장을 하면 방금 잡은 lease 가 지워진다).
+                String msg = e.toString();
+                deletionRepository.recordError(row.getId(),
+                        msg.length() > MAX_ERROR_LEN ? msg.substring(0, MAX_ERROR_LEN) : msg);
                 log.warn("CloudFront 리프 실패(다음 주기 재시도): distributionId={} 원인={}",
                         row.getDistributionId(), e.toString());
             }
