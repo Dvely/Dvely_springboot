@@ -10,6 +10,7 @@ import com.example.dvely.domainbinding.domain.repository.DomainBindingRepository
 import com.example.dvely.domainbinding.domain.value.CertificateStatus;
 import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.domainbinding.domain.value.DomainStatus;
+import com.example.dvely.domainbinding.domain.value.DomainType;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
@@ -37,8 +38,10 @@ import org.springframework.stereotype.Component;
 public class S3CdnProvisionWorker {
 
     private static final int BATCH = 20;
-    // 인증서 검증(~수 분) + CloudFront 배포 Deployed(~15분)까지 넉넉히. 넘으면 FAILED 로 종결한다.
-    private static final Duration TTL = Duration.ofMinutes(45);
+    // 관리형: 인증서 검증(~수 분) + CloudFront 배포 Deployed(~15분)까지 넉넉히. 우리가 DNS 를 바로 걸어 빠르다.
+    private static final Duration MANAGED_TTL = Duration.ofMinutes(45);
+    // 커스텀: 사용자가 검증 CNAME·최종 CNAME 을 자기 DNS 에 넣어야 해 시간이 걸린다 — 여유를 크게 준다.
+    private static final Duration CUSTOM_TTL = Duration.ofHours(24);
 
     private final DomainBindingRepository domainBindingRepository;
     private final S3CdnProvisioningPort cdnProvisioningPort;
@@ -76,8 +79,12 @@ public class S3CdnProvisionWorker {
         }
     }
 
-    /** 인증서 검증 → ISSUED → CloudFront 배포 생성 + 최종 CNAME 단계. */
+    /**
+     * 인증서 검증 → ISSUED → CloudFront 배포 생성 단계. 관리형은 DNS(검증 CNAME·최종 CNAME)를 우리 존에
+     * 직접 걸지만, 커스텀은 사용자가 자기 존에 넣으므로 워커는 DNS 를 안 걸고 AWS 자원(인증서·배포)만 만든다.
+     */
     private void advanceCertAndDistribution(DomainBinding domain) {
+        boolean managed = domain.getType() == DomainType.MANAGED_SUBDOMAIN;
         AcmCertStatus cert = cdnProvisioningPort.describeCertificate(
                 domain.getProjectId(), domain.getAcmCertificateArn());
         if (cert.failed()) {
@@ -88,21 +95,26 @@ public class S3CdnProvisionWorker {
             return;
         }
         if (cert.issued()) {
-            // 배포 생성 → CloudFront 도메인으로 최종 CNAME(proxied=false). 배포 id 를 즉시 저장해 재생성 방지.
+            // 배포 생성. 배포 id 를 즉시 저장해 재생성 방지. 관리형은 최종 CNAME(proxied=false)을 우리 존에
+            // 바로 걸고, 커스텀은 dnsTarget(CloudFront 도메인)만 남겨 사용자가 자기 존에 CNAME 을 넣게 한다.
             CdnDistribution distribution = cdnProvisioningPort.createDistribution(
                     domain.getProjectId(), domain.getHostname(), domain.getAcmCertificateArn());
-            String finalRecordId = cloudflareDnsPort.createCnameRecord(
-                    domain.getHostname(), distribution.cloudfrontDomain(), false);
+            String finalRecordId = managed
+                    ? cloudflareDnsPort.createCnameRecord(
+                            domain.getHostname(), distribution.cloudfrontDomain(), false)
+                    : null;
             domain.assignCloudfrontDistribution(
                     distribution.distributionId(), distribution.cloudfrontDomain(), finalRecordId);
             domainBindingRepository.save(domain);
-            log.info("CloudFront 배포 생성 + 최종 CNAME: domainId={} hostname={} distributionId={} → {}",
+            log.info("CloudFront 배포 생성{}: domainId={} hostname={} distributionId={} → {}",
+                    managed ? " + 최종 CNAME" : "(커스텀: 사용자가 CNAME 등록)",
                     domain.getId(), domain.getHostname(),
                     distribution.distributionId(), distribution.cloudfrontDomain());
             return;
         }
-        // 아직 검증 중 — 검증 CNAME 이 없으면 우리 존에 넣는다(한 번만).
-        if (cert.hasValidationRecord() && domain.getAcmValidationRecordId() == null) {
+        // 아직 검증 중. 관리형만 검증 CNAME 을 우리 존에 넣는다(한 번만). 커스텀은 사용자가 검증 가이드를
+        // 보고 자기 존에 넣으므로 워커는 등록하지 않고 ISSUED 될 때까지 기다린다.
+        if (managed && cert.hasValidationRecord() && domain.getAcmValidationRecordId() == null) {
             String recordId = cloudflareDnsPort.createCnameRecord(
                     stripTrailingDot(cert.validationRecordName()),
                     stripTrailingDot(cert.validationRecordValue()),
@@ -112,7 +124,7 @@ public class S3CdnProvisionWorker {
             log.info("ACM 검증 CNAME 등록: domainId={} hostname={} record={}",
                     domain.getId(), domain.getHostname(), stripTrailingDot(cert.validationRecordName()));
         }
-        // 그 외(검증 레코드 아직 없음·검증 진행 중): 다음 주기에 다시 본다.
+        // 그 외(검증 레코드 아직 없음·사용자 DNS 대기·검증 진행 중): 다음 주기에 다시 본다.
     }
 
     /** CloudFront 배포가 https 로 실제 서빙되면 CONNECTED 로 올린다(Deployed 완료 신호). */
@@ -128,7 +140,8 @@ public class S3CdnProvisionWorker {
 
     private boolean isExpired(DomainBinding domain) {
         LocalDateTime createdAt = domain.getCreatedAt();
-        return createdAt != null && createdAt.plus(TTL).isBefore(LocalDateTime.now());
+        Duration ttl = domain.getType() == DomainType.MANAGED_SUBDOMAIN ? MANAGED_TTL : CUSTOM_TTL;
+        return createdAt != null && createdAt.plus(ttl).isBefore(LocalDateTime.now());
     }
 
     /** ACM 검증 레코드 name/value 는 FQDN 이라 끝에 점이 붙는다 — Cloudflare 등록 전 제거. */

@@ -224,17 +224,29 @@ class DomainBindingCommandServiceTest {
     }
 
     @Test
-    void bindS3Frontend_customDomain_rejectedForNow() {
+    void bindS3Frontend_customDomain_requestsCertAndDoesNotTouchOurDns() {
+        // 커스텀 도메인도 인증서만 요청해 PROVISIONING. 검증 CNAME·최종 CNAME 은 사용자가 자기 존에 넣으므로
+        // 우리 Cloudflare 존은 건드리지 않는다(가이드로 안내).
         Project project = boundProject("http://qeploy-site-1.s3-website.ap-northeast-2.amazonaws.com");
         project.changeFrontendHosting(FrontendHostingType.S3);
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(domainBindingRepository.existsByHostnameIgnoreCase("www.mysite.com")).thenReturn(false);
+        when(s3CdnProvisioningPort.requestCertificate(11L, "www.mysite.com"))
+                .thenReturn("arn:aws:acm:us-east-1:123:certificate/custom");
+        when(domainBindingRepository.save(any(DomainBinding.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
 
-        assertThatThrownBy(() -> commandService.bindDomain(
+        DomainBindingResult result = commandService.bindDomain(
                 1L, 11L,
                 new BindDomainCommand(DomainType.CUSTOM_DOMAIN, null, "www.mysite.com", null,
-                        DomainHostingTarget.AWS_S3_FRONTEND)))
-                .isInstanceOf(IllegalArgumentException.class);
-        verifyNoInteractions(s3CdnProvisioningPort);
+                        DomainHostingTarget.AWS_S3_FRONTEND));
+
+        assertThat(result.hostingTarget()).isEqualTo(DomainHostingTarget.AWS_S3_FRONTEND);
+        assertThat(result.type()).isEqualTo(DomainType.CUSTOM_DOMAIN);
+        assertThat(result.status()).isEqualTo(DomainStatus.PROVISIONING);
+        verify(s3CdnProvisioningPort).requestCertificate(11L, "www.mysite.com");
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any());
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
     }
 
     @Test
