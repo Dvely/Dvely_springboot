@@ -50,6 +50,16 @@ public class DomainBindingRepositoryAdapter implements DomainBindingRepository {
                 .toList();
     }
 
+    /** CDN 프로비전 리스 유지 시간. 인증서 발급(~수 분)·배포 생성은 여러 틱에 걸쳐 매 틱 재claim 한다. */
+    private static final java.time.Duration CDN_PROVISION_LEASE = java.time.Duration.ofMinutes(2);
+
+    @Override
+    @org.springframework.transaction.annotation.Transactional
+    public boolean claimForCdnProvision(Long id, String owner) {
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+        return springDataRepository.claimForCdnProvision(id, owner, now.plus(CDN_PROVISION_LEASE), now) == 1;
+    }
+
     @Override
     public boolean existsByHostnameIgnoreCase(String hostname) {
         return springDataRepository.existsByHostnameIgnoreCase(hostname);

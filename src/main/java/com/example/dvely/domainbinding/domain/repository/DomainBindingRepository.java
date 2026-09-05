@@ -19,6 +19,12 @@ public interface DomainBindingRepository {
      */
     List<DomainBinding> findByStatus(DomainStatus status, int limit);
 
+    /**
+     * S3 CDN 프로비저닝 워커의 다중 인스턴스 리스 claim. 리스가 비었거나 만료됐거나 내가 쥔 것이면 true —
+     * 그때만 이 도메인의 CloudFront 배포·ACM 인증서 생성을 진행한다(두 인스턴스가 중복 자원을 만들지 않게).
+     */
+    boolean claimForCdnProvision(Long id, String owner);
+
     boolean existsByHostnameIgnoreCase(String hostname);
 
     /** 이 호스트네임이 특정 호스팅 대상으로 등록돼 있는지. 백엔드(AWS) 도메인의 TLS 발급 허가 판단에 쓴다. */

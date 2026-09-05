@@ -27,6 +27,14 @@ public interface SpringDataProvisionedDatabaseRepository
     int claimExpired(@org.springframework.data.repository.query.Param("id") Long id,
                      @org.springframework.data.repository.query.Param("now") LocalDateTime now);
 
+    // 부트 타임아웃 처리 권한을 status-CAS 로 claim(PROVISIONING→FAILED). 진 인스턴스 하나만 1을 받아
+    // DB 인스턴스를 teardown 한다 — 다중 인스턴스에서 같은 DB 를 두 번 정리하지 않게(서버 워커와 동형).
+    @Modifying(clearAutomatically = true)
+    @Query("update ProvisionedDatabaseEntity e set e.status = 'FAILED', e.updatedAt = :now"
+            + " where e.id = :id and e.status = 'PROVISIONING'")
+    int claimBootTimeout(@org.springframework.data.repository.query.Param("id") Long id,
+                         @org.springframework.data.repository.query.Param("now") LocalDateTime now);
+
     // status 는 문자열 컬럼. READY 이면서 expiresAt 이 지난 것 — 만료 회수 대상.
     List<ProvisionedDatabaseEntity> findByStatusAndExpiresAtBefore(
             String status, LocalDateTime now, Pageable pageable);

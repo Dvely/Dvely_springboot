@@ -46,6 +46,14 @@ public class DomainBindingEntity {
     @Column(name = "status", nullable = false)
     private String status;
 
+    // 다중 인스턴스 리스(S3 CDN 프로비전 워커 claim). 순수 인프라 — 도메인 모델·updateFrom 에 없어
+    // 도메인 저장(findById→updateFrom→save)이 보존한다. claim 은 전용 UPDATE 로만.
+    @Column(name = "lease_owner", length = 100)
+    private String leaseOwner;
+
+    @Column(name = "lease_until")
+    private java.time.LocalDateTime leaseUntil;
+
     @Column(name = "verification_method")
     private String verificationMethod;
 

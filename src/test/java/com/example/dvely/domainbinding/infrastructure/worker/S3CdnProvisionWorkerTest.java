@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -38,6 +40,13 @@ class S3CdnProvisionWorkerTest {
     @Mock private CloudflareDnsPort cloudflareDnsPort;
     @Mock private HttpsProbePort httpsProbePort;
     @InjectMocks private S3CdnProvisionWorker worker;
+
+    @org.junit.jupiter.api.BeforeEach
+    void leaseClaimedByDefault() {
+        // 기본은 리스 claim 성공 — 상태머신 진행을 검증하는 테스트들이 진행되게. claim 실패는 개별 재정의.
+        // 테스트 픽스처의 도메인 id 는 null 이므로 any()(null 허용)로 매칭한다(운영은 영속 id 라 non-null).
+        lenient().when(domainBindingRepository.claimForCdnProvision(any(), anyString())).thenReturn(true);
+    }
 
     private DomainBinding provisioningDomain() {
         DomainBinding domain = new DomainBinding(11L, DomainType.MANAGED_SUBDOMAIN,
@@ -174,6 +183,21 @@ class S3CdnProvisionWorkerTest {
         assertThat(domain.getStatus()).isEqualTo(DomainStatus.FAILED);
         verify(cdnProvisioningPort, never()).createDistribution(
                 anyLong(), any(), any());
+    }
+
+    @Test
+    void leaseClaimLost_skipsAdvance() {
+        // 다른 인스턴스가 이 도메인의 CDN 리스를 쥠 → 이 인스턴스는 인증서 조회·배포 생성을 하지 않는다
+        // (두 곳이 CloudFront 배포·ACM 인증서를 중복 생성하지 않게).
+        DomainBinding domain = provisioningDomain();
+        givenPending(domain);
+        when(domainBindingRepository.claimForCdnProvision(any(), anyString())).thenReturn(false);
+
+        worker.pollProvisioning();
+
+        verify(cdnProvisioningPort, never()).describeCertificate(anyLong(), any());
+        verify(cdnProvisioningPort, never()).createDistribution(anyLong(), any(), any());
+        verify(domainBindingRepository, never()).save(any());
     }
 
 }

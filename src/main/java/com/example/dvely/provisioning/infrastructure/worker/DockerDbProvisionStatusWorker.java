@@ -84,6 +84,11 @@ public class DockerDbProvisionStatusWorker {
             log.warn("DOCKER DB 프로비저닝 실패: databaseId={} instanceId={} state={}",
                     db.getId(), db.getResourceId(), status.ec2State());
         } else if (db.getUpdatedAt().plus(BOOT_TIMEOUT).isBefore(LocalDateTime.now())) {
+            // 다중 인스턴스: 부트 타임아웃 처리 권한을 CAS 로 claim(PROVISIONING→FAILED). 진 인스턴스
+            // 하나만 teardown 한다 — 두 곳이 같은 DB 인스턴스를 정리하지 않게.
+            if (!databaseRepository.claimBootTimeout(db.getId())) {
+                return;
+            }
             db.markFailed(ProvisionFailureCode.PROVIDER_ERROR,
                     "제한 시간 안에 DB 가 준비되지 않았습니다(사설 IP self-report 없음).");
             databaseRepository.save(db);
