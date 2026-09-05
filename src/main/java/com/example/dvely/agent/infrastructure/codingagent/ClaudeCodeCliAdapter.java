@@ -38,8 +38,8 @@ public class ClaudeCodeCliAdapter extends AbstractCliCodingAgentAdapter {
      * account-level answer. No login step is needed.
      */
     @Override
-    protected Credentialing credentialing(String apiKey) {
-        return Credentialing.viaEnvironment("ANTHROPIC_API_KEY", apiKey);
+    protected CodingAgentContainerRunner.Credential credentialing(String apiKey) {
+        return viaEnvironment("ANTHROPIC_API_KEY", apiKey);
     }
 
     @Override

@@ -43,10 +43,16 @@ import org.springframework.stereotype.Component;
  * would be a command-injection hole, and quoting it correctly is the kind of thing that is right
  * until the day it isn't. With argv there is no shell to inject into.</p>
  *
- * <p><b>Why the key travels in the exec environment:</b> env is passed via
- * {@code ExecCreateCmd#withEnv} rather than baked into the container config or the command, so the
- * credential does not appear in {@code docker inspect} of the container, in the logged command, or
- * in an exception message.</p>
+ * <p><b>Why the key never rides on a docker-java command object:</b> both credential shapes stage
+ * the secret as a short-lived file via the archive API and let a constant shell wrapper pick it up.
+ * The obvious alternative — {@code ExecCreateCmd#withEnv} — leaks: docker-java 3.7.1's
+ * {@code AbstrDockerCmd.exec()} logs {@code LOGGER.debug("Cmd: {}", this)} and its
+ * {@code toString()} is a reflective dump of every field, so with
+ * {@code logging.level.com.github.dockerjava=DEBUG} the key appears in the application log
+ * verbatim (reproduced against 3.7.1 + logback). Staging keeps the secret out of every field that
+ * dump can reach; it is never in the container config, the exec's env, argv, or an exception
+ * message. The prompt still rides in {@code cmd} and would appear at DEBUG, which is why
+ * {@code application.yaml} also pins that logger to WARN.</p>
  */
 @Slf4j
 @Component
@@ -82,48 +88,53 @@ public class CodingAgentContainerRunner {
     }
 
     /**
-     * A command run before the agent itself, to hand the CLI its credential.
+     * How a vendor's CLI is handed the end user's key. The two shapes exist because the CLIs
+     * genuinely differ, not as a convenience: Codex ignores {@code OPENAI_API_KEY} and only accepts
+     * a key through {@code codex login --with-api-key} on stdin (measured against codex-cli
+     * 0.153.2, where the env route returns "401 Missing bearer"), while Claude Code reads
+     * {@code ANTHROPIC_API_KEY} from its environment.
      *
-     * <p>Exists because the two vendors take a key differently, and only one of them takes an
-     * environment variable. Codex ignores {@code OPENAI_API_KEY} entirely and authenticates through
-     * {@code codex login --with-api-key}, which reads the key from <b>stdin</b> — verified against
-     * codex-cli 0.153.2, where the env-var route returns "401 Missing bearer".</p>
-     *
-     * <p>Stdin is also the better channel: unlike an environment variable it never appears in
-     * {@code /proc/<pid>/environ}, so nothing else in the container can read it back.</p>
+     * <p>Both are delivered by staging a file, never by a docker-java command field — see the class
+     * javadoc for why that distinction matters.</p>
      */
-    public record AuthStep(List<String> argv, String stdin) {
+    public sealed interface Credential {
+
+        /** Run {@code argv} first with the secret as its stdin, then run the agent. */
+        record LoginCommand(List<String> argv, String secret) implements Credential {}
+
+        /** Export the secret as {@code name} into the agent's own process environment. */
+        record EnvVar(String name, String secret) implements Credential {}
     }
 
     /**
      * @param hostWorkspaceDir absolute host path of the checkout, bind-mounted read-write
-     * @param authStep         credential handoff to run first, or {@code null} when the CLI takes
-     *                         its key from {@code env} instead
+     * @param credential       how to hand the CLI its key, or {@code null} for none
      * @param argv             the command to run, already split into arguments (no shell)
-     * @param env              {@code KEY=VALUE} entries injected into the exec only
      * @param timeout          wall-clock bound; on expiry the container is killed
      */
     public ContainerRunOutcome run(String hostWorkspaceDir,
-                                   AuthStep authStep,
+                                   Credential credential,
                                    List<String> argv,
-                                   List<String> env,
                                    Duration timeout) {
         assertImagePresent();
 
         String containerId = createAndStart(hostWorkspaceDir);
         try {
-            if (authStep != null) {
-                ContainerRunOutcome auth =
-                        exec(containerId, authStep.argv(), List.of(), authStep.stdin(), timeout);
-                if (auth.timedOut() || auth.exitCode() != 0) {
+            return switch (credential) {
+                case Credential.LoginCommand login -> {
+                    ContainerRunOutcome auth =
+                            exec(containerId, login.argv(), login.secret(), null, timeout);
                     // Failing here rather than running the agent anyway: without a credential the
                     // agent would burn its whole timeout retrying a 401, and the resulting output
                     // would blame the model instead of the missing key.
-                    return new ContainerRunOutcome(
-                            auth.exitCode(), auth.stdout(), auth.stderr(), auth.timedOut());
+                    yield (auth.timedOut() || auth.exitCode() != 0)
+                            ? auth
+                            : exec(containerId, argv, null, null, timeout);
                 }
-            }
-            return exec(containerId, argv, env, null, timeout);
+                case Credential.EnvVar env ->
+                        exec(containerId, argv, env.secret(), env.name(), timeout);
+                case null -> exec(containerId, argv, null, null, timeout);
+            };
         } finally {
             removeQuietly(containerId);
         }
@@ -183,7 +194,7 @@ public class CodingAgentContainerRunner {
     private static final String STDIN_PATH = STDIN_REMOTE_DIR + "/" + STDIN_ENTRY;
 
     /**
-     * Constant wrapper that feeds the staged file to the real command and then deletes it.
+     * Constant wrapper that feeds the staged file to the real command as stdin, then deletes it.
      *
      * <p>The command's argv is passed as positional parameters and expanded with {@code "$@"} —
      * it is never interpolated into this string, so a prompt or flag can contain any shell
@@ -192,26 +203,48 @@ public class CodingAgentContainerRunner {
     private static final String STDIN_WRAPPER =
             "\"$@\" < " + STDIN_PATH + "; s=$?; rm -f " + STDIN_PATH + "; exit $s";
 
+    /** Env var names we will interpolate into a shell wrapper. Anything else is rejected. */
+    private static final java.util.regex.Pattern ENV_NAME =
+            java.util.regex.Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+
+    /**
+     * Constant-shaped wrapper that reads the staged file into {@code name}, deletes the file, and
+     * execs the real command. Only {@code name} is interpolated, and it is validated against
+     * {@link #ENV_NAME} first — argv still rides as positional parameters, never as text.
+     */
+    private static String envWrapper(String name) {
+        if (!ENV_NAME.matcher(name).matches()) {
+            throw new IllegalArgumentException("환경변수 이름이 올바르지 않습니다: " + name);
+        }
+        return name + "=\"$(cat " + STDIN_PATH + ")\"; rm -f " + STDIN_PATH
+                + "; export " + name + "; exec \"$@\"";
+    }
+
+    /**
+     * @param secret  value to stage into the container, or {@code null} for no credential
+     * @param envName when non-null, the secret is exported under this name for {@code argv};
+     *                when null, it is redirected into {@code argv}'s stdin instead
+     */
     private ContainerRunOutcome exec(String containerId,
                                      List<String> argv,
-                                     List<String> env,
-                                     String stdin,
+                                     String secret,
+                                     String envName,
                                      Duration timeout) {
         // Only the executable name is logged. argv carries the prompt (which can contain source
-        // code), env and stdin carry the API key; none of them belongs in a log line.
+        // code) and the secret is staged separately; neither belongs in a log line.
         log.debug("코딩 에이전트 exec: containerId={} cmd={}", containerId, argv.isEmpty() ? "?" : argv.getFirst());
 
-        // stdin is delivered by staging a file and redirecting it, NOT via ExecStartCmd#withStdIn.
-        // Measured against the real daemon: the OkHttp transport this codebase uses cannot hold
-        // the bidirectional hijacked stream that exec-with-stdin needs — it closes its half once
-        // the request body is sent, and the response reader dies with AsynchronousCloseException
-        // before the command finishes. The archive upload below is an ordinary HTTP PUT with no
-        // hijacking, so it works on every transport. The key still never touches argv, env, or
-        // the container's inspect data; it exists briefly as a 0600 file the wrapper deletes.
+        // The secret is delivered by staging a file, never by ExecStartCmd#withStdIn or
+        // ExecCreateCmd#withEnv. withStdIn does not work at all on this codebase's OkHttp
+        // transport (measured: it closes its half of the hijacked stream and the response reader
+        // dies with AsynchronousCloseException mid-command). withEnv works but leaks — docker-java
+        // reflectively dumps every command field into a DEBUG log line. The archive upload is an
+        // ordinary HTTP PUT with no hijacking and no field to dump.
         List<String> command = argv;
-        if (stdin != null) {
-            stageStdin(containerId, stdin);
-            List<String> wrapped = new ArrayList<>(List.of("sh", "-c", STDIN_WRAPPER, "sh"));
+        if (secret != null) {
+            stageSecret(containerId, secret);
+            String wrapper = envName == null ? STDIN_WRAPPER : envWrapper(envName);
+            List<String> wrapped = new ArrayList<>(List.of("sh", "-c", wrapper, "sh"));
             wrapped.addAll(argv);
             command = wrapped;
         }
@@ -220,7 +253,6 @@ public class CodingAgentContainerRunner {
                 .withAttachStdout(true)
                 .withAttachStderr(true)
                 .withAttachStdin(false)
-                .withEnv(env == null || env.isEmpty() ? null : List.copyOf(env))
                 .withCmd(command.toArray(String[]::new))
                 .exec();
 
@@ -263,11 +295,11 @@ public class CodingAgentContainerRunner {
     }
 
     /**
-     * Uploads {@code stdin} as {@code /run/qeploy/stdin} (mode 0600) using the archive API. The tar
+     * Uploads the secret as {@code /run/qeploy/stdin} (mode 0600) using the archive API. The tar
      * carries the {@code qeploy/} directory prefix so Docker creates the subdirectory itself — no
      * extra exec is needed just to {@code mkdir}.
      */
-    private void stageStdin(String containerId, String stdin) {
+    private void stageSecret(String containerId, String stdin) {
         byte[] payload = stdin.getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         try (TarArchiveOutputStream tar = new TarArchiveOutputStream(buffer)) {

