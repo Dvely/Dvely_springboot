@@ -22,7 +22,9 @@ public record BindDomainRequest(
         @Schema(description = "DNS 검증 방식. type=custom_domain에서 사용, 생략 시 CNAME", allowableValues = {"CNAME", "A"}, example = "CNAME")
         VerificationMethod verificationMethod,
 
-        @Schema(description = "배포 대상. 생략 시 GITHUB_PAGES", allowableValues = {"GITHUB_PAGES", "AWS", "GCP"}, example = "GITHUB_PAGES")
+        @Schema(description = "배포 대상. 생략 시 GITHUB_PAGES. AWS=백엔드 EC2, AWS_EC2_FRONTEND=독립 프론트 EC2, "
+                + "AWS_S3_FRONTEND=S3+CloudFront 프론트",
+                allowableValues = {"GITHUB_PAGES", "AWS", "AWS_EC2_FRONTEND", "AWS_S3_FRONTEND", "GCP"}, example = "GITHUB_PAGES")
         DomainHostingTarget hostingTarget
 ) {
 }
