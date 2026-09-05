@@ -204,6 +204,15 @@ public class S3StaticSiteStore {
         return "http://" + bucket + "." + sep + region + ".amazonaws.com";
     }
 
+    /**
+     * CloudFront 커스텀 오리진으로 쓸 이 프로젝트 S3 website 엔드포인트의 <b>호스트</b>(스킴 없음).
+     * S3 website 엔드포인트는 http-only 라 CloudFront 가 오리진과 http 로 통신한다(뷰어는 https).
+     */
+    public String websiteOriginHost(CloudConnection connection, Long projectId) {
+        String bucket = bucketNameFor(connection, projectId);
+        return websiteEndpoint(bucket, connection.getRegion()).replaceFirst("^https?://", "");
+    }
+
     private void createBucketIfAbsent(S3Client s3, CloudConnection connection, String bucket) {
         try {
             s3.headBucket(HeadBucketRequest.builder().bucket(bucket).build());

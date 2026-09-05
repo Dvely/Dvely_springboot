@@ -70,6 +70,16 @@ public class DomainBindingEntity {
     @Column(name = "last_checked_at")
     private LocalDateTime lastCheckedAt;
 
+    // AWS_S3_FRONTEND(CloudFront+ACM) 프로비저닝 자원 식별자. 그 외 타깃은 null.
+    @Column(name = "acm_certificate_arn")
+    private String acmCertificateArn;
+
+    @Column(name = "acm_validation_record_id")
+    private String acmValidationRecordId;
+
+    @Column(name = "cloudfront_distribution_id")
+    private String cloudfrontDistributionId;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
@@ -90,7 +100,10 @@ public class DomainBindingEntity {
                                 String certificateStatus,
                                 LocalDate certificateExpiresAt,
                                 boolean dnsVerified,
-                                LocalDateTime lastCheckedAt) {
+                                LocalDateTime lastCheckedAt,
+                                String acmCertificateArn,
+                                String acmValidationRecordId,
+                                String cloudfrontDistributionId) {
         this.projectId = projectId;
         this.hostname = hostname;
         this.type = type;
@@ -104,6 +117,9 @@ public class DomainBindingEntity {
         this.certificateExpiresAt = certificateExpiresAt;
         this.dnsVerified = dnsVerified;
         this.lastCheckedAt = lastCheckedAt;
+        this.acmCertificateArn = acmCertificateArn;
+        this.acmValidationRecordId = acmValidationRecordId;
+        this.cloudfrontDistributionId = cloudfrontDistributionId;
     }
 
     public static DomainBindingEntity from(DomainBinding domain) {
@@ -120,7 +136,10 @@ public class DomainBindingEntity {
                 domain.getCertificateStatus().name(),
                 domain.getCertificateExpiresAt(),
                 domain.getStatus() == DomainStatus.CONNECTED,
-                domain.getLastCheckedAt()
+                domain.getLastCheckedAt(),
+                domain.getAcmCertificateArn(),
+                domain.getAcmValidationRecordId(),
+                domain.getCloudfrontDistributionId()
         );
     }
 
@@ -140,10 +159,13 @@ public class DomainBindingEntity {
         this.certificateExpiresAt = domain.getCertificateExpiresAt();
         this.dnsVerified = domain.getStatus() == DomainStatus.CONNECTED;
         this.lastCheckedAt = domain.getLastCheckedAt();
+        this.acmCertificateArn = domain.getAcmCertificateArn();
+        this.acmValidationRecordId = domain.getAcmValidationRecordId();
+        this.cloudfrontDistributionId = domain.getCloudfrontDistributionId();
     }
 
     public DomainBinding toDomain() {
-        return new DomainBinding(
+        DomainBinding domain = new DomainBinding(
                 id,
                 projectId,
                 DomainType.valueOf(type),
@@ -160,5 +182,7 @@ public class DomainBindingEntity {
                 createdAt,
                 updatedAt
         );
+        domain.restoreCdnResources(acmCertificateArn, acmValidationRecordId, cloudfrontDistributionId);
+        return domain;
     }
 }

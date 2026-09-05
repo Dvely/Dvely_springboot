@@ -18,16 +18,20 @@ public class CloudflareDnsClient implements CloudflareDnsPort {
 
     @Override
     public String createCnameRecord(String hostname, String target) {
+        return createCnameRecord(hostname, target, properties.proxiedOrDefault());
+    }
+
+    @Override
+    public String createCnameRecord(String hostname, String target, boolean proxied) {
         ensureConfigured();
-        RestClient restClient = restClient();
-        CloudflareRecordResponse response = restClient.post()
+        CloudflareRecordResponse response = restClient().post()
                 .uri("/zones/{zoneId}/dns_records", properties.zoneId())
                 .body(Map.of(
                         "type", "CNAME",
                         "name", hostname,
                         "content", target,
                         "ttl", properties.ttlOrAuto(),
-                        "proxied", properties.proxiedOrDefault()
+                        "proxied", proxied
                 ))
                 .retrieve()
                 .body(CloudflareRecordResponse.class);

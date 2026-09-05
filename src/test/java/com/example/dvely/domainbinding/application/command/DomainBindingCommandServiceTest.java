@@ -34,6 +34,7 @@ import com.example.dvely.domainbinding.infrastructure.config.CloudflarePropertie
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
@@ -79,6 +80,9 @@ class DomainBindingCommandServiceTest {
 
     @Mock
     private AuditRecorder auditRecorder;
+
+    @Mock
+    private com.example.dvely.domainbinding.application.port.out.S3CdnProvisioningPort s3CdnProvisioningPort;
 
     private DomainBindingCommandService commandService;
 
@@ -188,6 +192,63 @@ class DomainBindingCommandServiceTest {
         verify(cloudflareDnsPort, never()).createCnameRecord(any(), any());
         // 프론트 EC2 도 GitHub 토큰 게이트를 안 탄다(백엔드와 동일) — 유저 조회가 없어야 한다.
         verifyNoInteractions(userRepository);
+    }
+
+    @Test
+    void bindS3Frontend_managedSubdomain_requestsCertAndSavesProvisioning() {
+        // S3 프론트 HTTPS 는 CloudFront+ACM 비동기 — 바인딩은 인증서만 요청하고 PROVISIONING 으로 둔다.
+        // 최종 CNAME 은 워커가 배포 후 걸므로 이 시점엔 Cloudflare 레코드를 안 만든다.
+        Project project = boundProject("http://qeploy-site-1.s3-website.ap-northeast-2.amazonaws.com");
+        project.changeFrontendHosting(FrontendHostingType.S3);
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(domainBindingRepository.existsByHostnameIgnoreCase("s3app.qeploy.com")).thenReturn(false);
+        when(s3CdnProvisioningPort.requestCertificate(11L, "s3app.qeploy.com"))
+                .thenReturn("arn:aws:acm:us-east-1:123:certificate/abc");
+        when(domainBindingRepository.save(any(DomainBinding.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DomainBindingResult result = commandService.bindDomain(
+                1L, 11L,
+                new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "s3app", null, null,
+                        DomainHostingTarget.AWS_S3_FRONTEND));
+
+        assertThat(result.hostingTarget()).isEqualTo(DomainHostingTarget.AWS_S3_FRONTEND);
+        assertThat(result.status()).isEqualTo(DomainStatus.PROVISIONING);
+        assertThat(result.verificationMethod())
+                .isEqualTo(com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME);
+        verify(s3CdnProvisioningPort).requestCertificate(11L, "s3app.qeploy.com");
+        // 바인딩 시점엔 아직 DNS 레코드를 안 만든다(워커 몫).
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any());
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
+        verify(cloudflareDnsPort, never()).createARecord(any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
+    }
+
+    @Test
+    void bindS3Frontend_customDomain_rejectedForNow() {
+        Project project = boundProject("http://qeploy-site-1.s3-website.ap-northeast-2.amazonaws.com");
+        project.changeFrontendHosting(FrontendHostingType.S3);
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+
+        assertThatThrownBy(() -> commandService.bindDomain(
+                1L, 11L,
+                new BindDomainCommand(DomainType.CUSTOM_DOMAIN, null, "www.mysite.com", null,
+                        DomainHostingTarget.AWS_S3_FRONTEND)))
+                .isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(s3CdnProvisioningPort);
+    }
+
+    @Test
+    void bindS3Frontend_nonS3Project_rejected() {
+        // 프론트를 S3 로 배포하지 않은 프로젝트엔 오리진(버킷)이 없어 거절한다.
+        Project project = boundProject("https://octo.github.io/repo/");   // 기본 GITHUB_PAGES
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+
+        assertThatThrownBy(() -> commandService.bindDomain(
+                1L, 11L,
+                new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "s3app", null, null,
+                        DomainHostingTarget.AWS_S3_FRONTEND)))
+                .isInstanceOf(IllegalStateException.class);
+        verifyNoInteractions(s3CdnProvisioningPort);
     }
 
     @Test
@@ -507,7 +568,8 @@ class DomainBindingCommandServiceTest {
                 dnsLookupPort,
                 hostingAdapterRegistry,
                 cloudflareProperties,
-                auditRecorder
+                auditRecorder,
+                s3CdnProvisioningPort
         );
     }
 

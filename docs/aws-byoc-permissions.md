@@ -110,15 +110,14 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
     {
       "Sid": "CloudFrontS3FrontHttps",
       "Effect": "Allow",
-      "Action": ["cloudfront:CreateDistributionWithTags", "cloudfront:CreateDistribution",
+      "Action": ["cloudfront:CreateDistribution",
                  "cloudfront:GetDistribution", "cloudfront:GetDistributionConfig",
                  "cloudfront:UpdateDistribution", "cloudfront:DeleteDistribution",
-                 "cloudfront:TagResource", "cloudfront:ListTagsForResource",
                  "cloudfront:ListDistributions"],
       "Resource": "*"
       // S3 website(http-only) 엔드포인트를 오리진으로 CloudFront 배포를 만들어 HTTPS 를 종단한다.
-      // CloudFront 는 글로벌·태그 조건 지원이 약해 리소스 스코프가 사실상 "*" 다. managed-by=qeploy
-      // 태그(TagResource)로 우리 배포를 표시하고, 프로젝트 삭제 시 disable(UpdateDistribution)→Deployed
+      // CloudFront 는 글로벌이라 리소스 스코프가 사실상 "*" 다. 배포는 태그 없이 만들고(정리는 태그가
+      // 아니라 우리 DB 큐 cdn_deletions 로 한다), 프로젝트 삭제 시 disable(UpdateDistribution)→Deployed
       // 대기→DeleteDistribution 으로 정리한다. S3 프론트 HTTPS 를 안 쓰면 이 문은 없어도 된다.
     },
     {

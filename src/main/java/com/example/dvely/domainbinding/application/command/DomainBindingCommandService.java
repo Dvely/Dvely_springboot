@@ -14,6 +14,7 @@ import com.example.dvely.domainbinding.application.command.dto.BindDomainCommand
 import com.example.dvely.domainbinding.application.port.out.CloudflareDnsPort;
 import com.example.dvely.domainbinding.application.port.out.DnsLookupPort;
 import com.example.dvely.domainbinding.application.port.out.DomainHostingAdapter;
+import com.example.dvely.domainbinding.application.port.out.S3CdnProvisioningPort;
 import com.example.dvely.domainbinding.application.result.DomainBindingResult;
 import com.example.dvely.domainbinding.application.service.DomainHostingAdapterRegistry;
 import com.example.dvely.domainbinding.domain.model.DomainBinding;
@@ -26,6 +27,7 @@ import com.example.dvely.domainbinding.infrastructure.config.CloudflarePropertie
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import java.net.IDN;
 import java.net.URI;
 import lombok.RequiredArgsConstructor;
@@ -48,22 +50,29 @@ public class DomainBindingCommandService {
     private final DomainHostingAdapterRegistry hostingAdapterRegistry;
     private final CloudflareProperties cloudflareProperties;
     private final AuditRecorder auditRecorder;
+    private final S3CdnProvisioningPort s3CdnProvisioningPort;
 
     @Transactional
     public DomainBindingResult bindDomain(Long ownerUserId, Long projectId, BindDomainCommand command) {
         Project project = resolveProject(ownerUserId, projectId);
-        DomainHostingAdapter adapter = hostingAdapterRegistry.resolve(command.hostingTarget());
-        // GitHub Pages(프론트)만 사용자 GitHub 토큰이 필요하다(Pages 커스텀도메인 API). AWS 백엔드는
-        // 그 게이트를 안 거친다 — 안 그러면 GitHub 토큰 없는 사용자가 백엔드 도메인도 못 붙인다.
-        User user = requiresGithubToken(command.hostingTarget()) ? resolveUser(ownerUserId) : null;
-        DomainHostingAdapter.Context context = toHostingContext(user, project);
         DomainBindingResult result;
-        if (command.type() == DomainType.MANAGED_SUBDOMAIN) {
-            result = bindManagedSubdomain(project, command, adapter, context);
-        } else if (command.type() == DomainType.CUSTOM_DOMAIN) {
-            result = bindCustomDomain(project, command, adapter, context);
+        if (command.hostingTarget() == DomainHostingTarget.AWS_S3_FRONTEND) {
+            // S3 프론트 HTTPS 는 CloudFront+ACM 비동기 프로비저닝이라 다른 경로다: 인증서만 요청해
+            // PROVISIONING 으로 두고, 워커가 검증 CNAME→배포 생성→최종 CNAME→https 확인을 진행한다.
+            result = bindS3Frontend(project, command);
         } else {
-            throw new IllegalArgumentException("구매형 도메인 연결은 아직 외부 registrar 연동 후 지원됩니다.");
+            DomainHostingAdapter adapter = hostingAdapterRegistry.resolve(command.hostingTarget());
+            // GitHub Pages(프론트)만 사용자 GitHub 토큰이 필요하다(Pages 커스텀도메인 API). AWS 백엔드는
+            // 그 게이트를 안 거친다 — 안 그러면 GitHub 토큰 없는 사용자가 백엔드 도메인도 못 붙인다.
+            User user = requiresGithubToken(command.hostingTarget()) ? resolveUser(ownerUserId) : null;
+            DomainHostingAdapter.Context context = toHostingContext(user, project);
+            if (command.type() == DomainType.MANAGED_SUBDOMAIN) {
+                result = bindManagedSubdomain(project, command, adapter, context);
+            } else if (command.type() == DomainType.CUSTOM_DOMAIN) {
+                result = bindCustomDomain(project, command, adapter, context);
+            } else {
+                throw new IllegalArgumentException("구매형 도메인 연결은 아직 외부 registrar 연동 후 지원됩니다.");
+            }
         }
         // H10 (design §4): recorded once the row is durably saved (bindManagedSubdomain/
         // bindCustomDomain's own save already happened by the time result is returned here) —
@@ -120,6 +129,9 @@ public class DomainBindingCommandService {
     }
 
     private DomainBindingResult verify(DomainBinding domain, Project project, Long ownerUserId) {
+        if (domain.getHostingTarget() == DomainHostingTarget.AWS_S3_FRONTEND) {
+            return verifyS3Frontend(domain);
+        }
         Long domainId = domain.getId();
         User user = resolveUser(ownerUserId);
         DomainHostingAdapter adapter = hostingAdapterRegistry.resolve(domain.getHostingTarget());
@@ -157,12 +169,16 @@ public class DomainBindingCommandService {
     @Transactional
     public void deleteDomain(Long ownerUserId, Long domainId, String taskId) {
         DomainBinding domain = resolveDomainOwnedBy(domainId, ownerUserId);
-        Project project = resolveProject(ownerUserId, domain.getProjectId());
-        User user = resolveUser(ownerUserId);
-        hostingAdapterRegistry.resolve(domain.getHostingTarget())
-                .unbind(toHostingContext(user, project), domain.getHostname());
-        if (domain.getType() == DomainType.MANAGED_SUBDOMAIN) {
-            cloudflareDnsPort.deleteRecord(domain.getHostname(), domain.getCloudflareRecordId());
+        if (domain.getHostingTarget() == DomainHostingTarget.AWS_S3_FRONTEND) {
+            teardownS3Domain(domain);
+        } else {
+            Project project = resolveProject(ownerUserId, domain.getProjectId());
+            User user = resolveUser(ownerUserId);
+            hostingAdapterRegistry.resolve(domain.getHostingTarget())
+                    .unbind(toHostingContext(user, project), domain.getHostname());
+            if (domain.getType() == DomainType.MANAGED_SUBDOMAIN) {
+                cloudflareDnsPort.deleteRecord(domain.getHostname(), domain.getCloudflareRecordId());
+            }
         }
         domainBindingRepository.deleteById(domain.getId());
         // H11 (design §4): the row is hard-deleted above — this audit row becomes the only
@@ -245,6 +261,117 @@ public class DomainBindingCommandService {
                 dnsTarget
         );
         return toResult(domainBindingRepository.save(domain));
+    }
+
+    /**
+     * S3 프론트 HTTPS 바인딩 시작. CloudFront+ACM 은 비동기라 여기선 인증서 발급만 요청하고 PROVISIONING
+     * 으로 저장한다 — 워커가 검증 CNAME → 배포 생성 → 최종 CNAME → https 확인을 진행한다. S3 로 배포된
+     * 프로젝트만 오리진(버킷)이 있어 허용한다.
+     */
+    private DomainBindingResult bindS3Frontend(Project project, BindDomainCommand command) {
+        if (project.getFrontendHostingType() != FrontendHostingType.S3) {
+            throw new IllegalStateException(
+                    "S3 프론트 호스팅으로 설정한 프로젝트에서만 이 도메인 연결을 쓸 수 있습니다. 프론트를 S3 로 먼저 배포해주세요.");
+        }
+        // 이 단계는 관리형 서브도메인(우리 Cloudflare 존, DNS 완전 자동)만 지원한다. 커스텀 도메인은
+        // ACM 검증 CNAME·최종 CNAME 을 사용자 소유 존에 넣어야 해(우리 토큰 밖) 사용자 DNS 안내가 필요 —
+        // 후속으로 뺀다.
+        if (command.type() != DomainType.MANAGED_SUBDOMAIN) {
+            throw new IllegalArgumentException(
+                    "S3 프론트 HTTPS 는 현재 관리형 서브도메인만 지원합니다(커스텀 도메인은 곧 지원).");
+        }
+        String hostname = normalizeLabel(command.label()) + "." + cloudflareProperties.managedDomainOrDefault();
+        ensureHostnameAvailable(hostname);
+        // ACM 인증서(us-east-1) 발급 요청 — 최종 DNS 는 CloudFront 도메인으로의 CNAME(워커가 배포 후 설정).
+        String certArn = s3CdnProvisioningPort.requestCertificate(project.getId(), hostname);
+        DomainBinding domain = new DomainBinding(
+                project.getId(),
+                command.type(),
+                DomainHostingTarget.AWS_S3_FRONTEND,
+                hostname,
+                DomainStatus.PROVISIONING,
+                VerificationMethod.CNAME,
+                null);
+        domain.assignAcmCertificate(certArn);
+        return toResult(domainBindingRepository.save(domain));
+    }
+
+    /**
+     * S3 프론트 도메인 검증. 워커가 주도하지만 수동 재검증도 같은 판단을 쓴다: 실제 https 가 서빙되면
+     * CONNECTED 로 올리고, 아니면 PROVISIONING 을 유지한다(VERIFYING 으로 내리지 않는다 — 그러면 EC2/Pages
+     * 용 DomainVerificationWorker 와 소유가 겹친다).
+     */
+    private DomainBindingResult verifyS3Frontend(DomainBinding domain) {
+        DomainHostingAdapter.VerificationStatus status = hostingAdapterRegistry
+                .resolve(DomainHostingTarget.AWS_S3_FRONTEND)
+                .verify(null, domain.getHostname());   // Context 불필요(https 프로브만)
+        if (status.httpsEnforced()) {
+            domain.markVerificationChecked(true, true,
+                    status.certificateStatus(), status.certificateExpiresAt());
+            domainBindingRepository.save(domain);
+        }
+        return toResult(domain);
+    }
+
+    /**
+     * 프로젝트 삭제 시 그 프로젝트의 S3 프론트 도메인을 정리한다(Cloudflare 레코드·CloudFront·인증서).
+     * 시스템 내부 호출이라 소유권 검사는 상위(프로젝트 삭제)가 이미 했다. 한 도메인 정리가 실패해도
+     * 나머지는 계속한다(best-effort).
+     */
+    @Transactional
+    public void cleanupProjectS3Domains(Long projectId) {
+        for (DomainBinding domain : domainBindingRepository.findByProjectIdOrderByCreatedAtDesc(projectId)) {
+            if (domain.getHostingTarget() != DomainHostingTarget.AWS_S3_FRONTEND) {
+                continue;
+            }
+            try {
+                teardownS3Domain(domain);
+                domainBindingRepository.deleteById(domain.getId());
+                log.info("프로젝트 삭제로 S3 프론트 도메인 정리: hostname={} projectId={}",
+                        domain.getHostname(), projectId);
+            } catch (RuntimeException e) {
+                log.warn("프로젝트 삭제 시 S3 도메인 정리 실패(무시): hostname={} 원인={}",
+                        domain.getHostname(), e.toString());
+            }
+        }
+    }
+
+    /**
+     * S3 프론트 도메인 정리: Cloudflare 레코드(최종 CNAME·ACM 검증 CNAME)를 지우고, CloudFront 배포·인증서
+     * 정리를 큐잉한다(배포 삭제는 Deployed 후 리퍼가 마무리). 배포가 아직 없으면 인증서만 바로 지운다.
+     * 각 단계는 best-effort — 실패가 나머지·행 삭제를 막지 않는다(dangling DNS/고아 자원 방지 우선).
+     */
+    private void teardownS3Domain(DomainBinding domain) {
+        deleteCloudflareRecordQuietly(domain.getHostname(), domain.getCloudflareRecordId());
+        deleteCloudflareRecordQuietly(domain.getHostname(), domain.getAcmValidationRecordId());
+        if (domain.getCloudfrontDistributionId() != null) {
+            safeCleanup(() -> s3CdnProvisioningPort.scheduleDistributionCleanup(
+                    domain.getProjectId(), domain.getCloudfrontDistributionId(),
+                    domain.getAcmCertificateArn(), domain.getHostname()));
+        } else if (domain.getAcmCertificateArn() != null) {
+            safeCleanup(() -> s3CdnProvisioningPort.deleteCertificate(
+                    domain.getProjectId(), domain.getAcmCertificateArn()));
+        }
+    }
+
+    private void deleteCloudflareRecordQuietly(String hostname, String recordId) {
+        if (recordId == null || recordId.isBlank()) {
+            return;   // record id 로만 지운다 — 없으면 안전하게 건너뛴다(엉뚱한 동명 레코드 삭제 방지)
+        }
+        try {
+            cloudflareDnsPort.deleteRecord(hostname, recordId);
+        } catch (RuntimeException e) {
+            log.warn("Cloudflare 레코드 삭제 실패(무시): hostname={} recordId={} 원인={}",
+                    hostname, recordId, e.toString());
+        }
+    }
+
+    private void safeCleanup(Runnable cleanup) {
+        try {
+            cleanup.run();
+        } catch (RuntimeException e) {
+            log.warn("S3 CDN 정리 큐잉 실패(무시): {}", e.toString());
+        }
     }
 
     /**
