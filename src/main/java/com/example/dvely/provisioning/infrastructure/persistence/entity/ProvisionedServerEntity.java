@@ -80,6 +80,9 @@ public class ProvisionedServerEntity {
     @Column(name = "boot_diagnostics", columnDefinition = "TEXT")
     private String bootDiagnostics;   // 부트 타임아웃 종료 직전 보존한 부트 로그. 정상 서버는 null
 
+    @Column(name = "recovery_attempted_at")
+    private java.time.LocalDateTime recoveryAttemptedAt;   // 무응답 자동복구 시도 시각. 회복되면 null
+
     @Column(name = "port", nullable = false)
     private int port;
 
@@ -125,6 +128,7 @@ public class ProvisionedServerEntity {
         this.healthy = s.getHealthy();
         this.lastHealthCheckAt = s.getLastHealthCheckAt();
         this.bootDiagnostics = s.getBootDiagnostics();
+        this.recoveryAttemptedAt = s.getRecoveryAttemptedAt();
         this.port = s.getPort();
         this.approvalId = s.getApprovalId();
         this.failureCode = s.getFailureCode() == null ? null : s.getFailureCode().name();
@@ -146,6 +150,7 @@ public class ProvisionedServerEntity {
         server.assignElasticIp(elasticIpAllocationId);
         server.restoreHealth(healthy, lastHealthCheckAt);
         server.restoreBootDiagnostics(bootDiagnostics);
+        server.restoreRecoveryAttemptedAt(recoveryAttemptedAt);
         return server;
     }
 }
