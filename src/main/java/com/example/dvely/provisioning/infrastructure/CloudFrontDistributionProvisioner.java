@@ -12,7 +12,7 @@ import software.amazon.awssdk.services.cloudfront.CloudFrontClient;
 import software.amazon.awssdk.services.cloudfront.model.Aliases;
 import software.amazon.awssdk.services.cloudfront.model.AllowedMethods;
 import software.amazon.awssdk.services.cloudfront.model.CachedMethods;
-import software.amazon.awssdk.services.cloudfront.model.CreateDistributionWithTagsRequest;
+import software.amazon.awssdk.services.cloudfront.model.CreateDistributionRequest;
 import software.amazon.awssdk.services.cloudfront.model.CustomErrorResponse;
 import software.amazon.awssdk.services.cloudfront.model.CustomErrorResponses;
 import software.amazon.awssdk.services.cloudfront.model.CustomOriginConfig;
@@ -20,7 +20,6 @@ import software.amazon.awssdk.services.cloudfront.model.DefaultCacheBehavior;
 import software.amazon.awssdk.services.cloudfront.model.DeleteDistributionRequest;
 import software.amazon.awssdk.services.cloudfront.model.Distribution;
 import software.amazon.awssdk.services.cloudfront.model.DistributionConfig;
-import software.amazon.awssdk.services.cloudfront.model.DistributionConfigWithTags;
 import software.amazon.awssdk.services.cloudfront.model.GetDistributionConfigResponse;
 import software.amazon.awssdk.services.cloudfront.model.GetDistributionResponse;
 import software.amazon.awssdk.services.cloudfront.model.Method;
@@ -31,8 +30,6 @@ import software.amazon.awssdk.services.cloudfront.model.OriginSslProtocols;
 import software.amazon.awssdk.services.cloudfront.model.Origins;
 import software.amazon.awssdk.services.cloudfront.model.SslProtocol;
 import software.amazon.awssdk.services.cloudfront.model.SSLSupportMethod;
-import software.amazon.awssdk.services.cloudfront.model.Tag;
-import software.amazon.awssdk.services.cloudfront.model.Tags;
 import software.amazon.awssdk.services.cloudfront.model.UpdateDistributionRequest;
 import software.amazon.awssdk.services.cloudfront.model.ViewerCertificate;
 import software.amazon.awssdk.services.cloudfront.model.ViewerProtocolPolicy;
@@ -67,12 +64,10 @@ public class CloudFrontDistributionProvisioner {
                                                String originHost) {
         try (CloudFrontClient cf = client(connection)) {
             DistributionConfig config = distributionConfig(hostname, certificateArn, originHost);
-            Distribution distribution = cf.createDistributionWithTags(CreateDistributionWithTagsRequest.builder()
-                    .distributionConfigWithTags(DistributionConfigWithTags.builder()
-                            .distributionConfig(config)
-                            .tags(Tags.builder().items(
-                                    Tag.builder().key("managed-by").value("qeploy").build()).build())
-                            .build())
+            // 태그 없이 생성한다(CreateDistributionWithTags·TagResource IAM 액션 회피). 정리는 태그가
+            // 아니라 cdn_deletions 큐로 하므로 managed-by 태그는 기능상 불필요하다. comment 로 식별한다.
+            Distribution distribution = cf.createDistribution(CreateDistributionRequest.builder()
+                    .distributionConfig(config)
                     .build()).distribution();
             log.info("CloudFront 배포 생성: hostname={} distributionId={} domain={}",
                     hostname, distribution.id(), distribution.domainName());

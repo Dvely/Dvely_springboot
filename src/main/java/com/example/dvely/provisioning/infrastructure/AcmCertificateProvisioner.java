@@ -15,7 +15,6 @@ import software.amazon.awssdk.services.acm.model.DescribeCertificateRequest;
 import software.amazon.awssdk.services.acm.model.DomainValidation;
 import software.amazon.awssdk.services.acm.model.RequestCertificateRequest;
 import software.amazon.awssdk.services.acm.model.ResourceRecord;
-import software.amazon.awssdk.services.acm.model.Tag;
 import software.amazon.awssdk.services.acm.model.ValidationMethod;
 
 /**
@@ -40,7 +39,6 @@ public class AcmCertificateProvisioner {
                     .domainName(hostname)
                     .validationMethod(ValidationMethod.DNS)
                     .idempotencyToken(idempotencyToken(hostname))
-                    .tags(Tag.builder().key("managed-by").value("qeploy").build())
                     .build()).certificateArn();
             log.info("ACM 인증서 요청: hostname={} certArn={}", hostname, arn);
             return arn;
