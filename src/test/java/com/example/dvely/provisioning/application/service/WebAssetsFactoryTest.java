@@ -65,6 +65,18 @@ class WebAssetsFactoryTest {
     }
 
     @Test
+    @DisplayName("web Dockerfile: 소스 전체를 install 앞에 COPY(설치 훅이 config 읽는 앱 대비, 예 PandaCSS)")
+    void webDockerfileCopiesSourceBeforeInstall() {
+        String df = WebAssetsFactory.webDockerfile();
+        int copyAll = df.indexOf("COPY . .");
+        int install = df.indexOf("RUN npm ci");
+        assertThat(copyAll).isGreaterThanOrEqualTo(0);
+        assertThat(install).isGreaterThan(copyAll);   // COPY . . 가 install 보다 먼저
+        // package.json 만 먼저 복사하는 레이어 캐싱 관례를 안 쓴다(install 훅 codegen 깨짐 방지)
+        assertThat(df).doesNotContain("COPY package*.json");
+    }
+
+    @Test
     @DisplayName("web Dockerfile: 빌드→출력 정규화(dist|build|out)→nginx + nginx.conf 심기")
     void webDockerfileShape() {
         String df = WebAssetsFactory.webDockerfile();

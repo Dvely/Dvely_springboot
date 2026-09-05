@@ -90,12 +90,15 @@ final class WebAssetsFactory {
      * 하고, 생성한 nginx.conf 를 심는다. 프론트에 자체 Dockerfile 이 있으면 그걸 우선(이건 폴백).
      */
     static String webDockerfile() {
+        // 소스 전체를 install 전에 COPY 한다(package.json 만 먼저 복사하는 레이어 캐싱 관례를 안 쓴다).
+        // PandaCSS 처럼 install 훅(prepare: panda codegen)이 설정 파일(panda.config)을 읽는 앱은
+        // package.json 만 있는 상태에서 install 하면 codegen 이 깨진다(실 e2e 로 kanban 에서 확인).
+        // 빌드 컨테이너는 일회용이라 레이어 캐싱 이점이 없어, 소스 먼저 = S3 경로와 동일해 안전하다.
         return """
                 FROM node:20-alpine AS build
                 WORKDIR /app
-                COPY package*.json ./
-                RUN npm ci 2>/dev/null || npm install
                 COPY . .
+                RUN npm ci 2>/dev/null || npm install
                 %s
                 RUN set -e; for d in dist build out; do [ -d "$d" ] && { cp -r "$d" /site; break; }; done; [ -d /site ] || { echo "프론트 빌드 출력(dist|build|out) 없음"; exit 1; }
                 FROM nginx:alpine
