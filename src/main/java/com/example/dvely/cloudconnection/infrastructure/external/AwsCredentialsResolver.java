@@ -38,12 +38,27 @@ public class AwsCredentialsResolver {
     public record AwsAccess(AwsCredentialsProvider credentialsProvider, Region region) {}
 
     public AwsAccess resolve(CloudConnection connection) {
-        Region region = Region.of(connection.getRegion());
+        return new AwsAccess(credentialsProvider(connection), Region.of(connection.getRegion()));
+    }
+
+    /**
+     * 같은 연결 자격을 쓰되 <b>대상 클라이언트 리전만</b> 지정한 값으로 바꿔 준다. 자격(assume-role 세션·
+     * 정적 키)은 리전 무관이라 그대로 재사용한다. CloudFront 용 <b>ACM 인증서는 반드시 us-east-1</b> 이고
+     * CloudFront 자체는 글로벌({@code AWS_GLOBAL})이라, 연결 리전(예 ap-northeast-2)과 다른 리전에 클라이언트를
+     * 만들어야 하는 이 두 경우에 쓴다.
+     */
+    public AwsAccess resolveInRegion(CloudConnection connection, Region region) {
+        return new AwsAccess(credentialsProvider(connection), region);
+    }
+
+    private AwsCredentialsProvider credentialsProvider(CloudConnection connection) {
         AwsCredentialType type = AwsCredentialType.from(connection.getAwsCredentialType());
         if (type == AwsCredentialType.ACCESS_KEY) {
-            return new AwsAccess(StaticCredentialsProvider.create(staticCredentials(connection)), region);
+            return StaticCredentialsProvider.create(staticCredentials(connection));
         }
-        return new AwsAccess(StaticCredentialsProvider.create(assumeRole(connection, region)), region);
+        // assume-role 의 STS 호출은 연결 리전에서 하되(리전 엔드포인트일 뿐), 그렇게 얻은 세션 자격은
+        // 어느 리전 클라이언트에도 쓸 수 있다.
+        return StaticCredentialsProvider.create(assumeRole(connection, Region.of(connection.getRegion())));
     }
 
     private AwsSessionCredentials assumeRole(CloudConnection connection, Region region) {
