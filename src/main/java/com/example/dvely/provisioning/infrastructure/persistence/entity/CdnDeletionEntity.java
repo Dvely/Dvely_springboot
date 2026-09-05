@@ -43,6 +43,14 @@ public class CdnDeletionEntity {
     @Column(name = "last_error")
     private String lastError;
 
+    // 다중 인스턴스 리스(리퍼 claim). 리퍼가 엔티티를 직접 다루지만, 실패 기록도 targeted UPDATE 로 해서
+    // 전체 저장으로 이 값을 덮어쓰지 않는다 — claim/기록 모두 전용 UPDATE 로만 건드린다.
+    @Column(name = "lease_owner", length = 100)
+    private String leaseOwner;
+
+    @Column(name = "lease_until")
+    private LocalDateTime leaseUntil;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
