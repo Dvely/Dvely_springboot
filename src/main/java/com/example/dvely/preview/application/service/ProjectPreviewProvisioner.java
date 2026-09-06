@@ -47,6 +47,12 @@ public class ProjectPreviewProvisioner {
             workspaceService.buildIfConfigured(containerId);
             runtimeLauncher.launch(session.getProjectId(), containerId);
 
+            // 런타임 준비(특히 서버형의 DB 자동 프로비저닝)가 컨테이너를 세션 네트워크에 연결하는데,
+            // 그 과정에서 :0(랜덤) 발행 포트가 재할당돼 생성 시점에 저장한 host_port 와 어긋난다. 게이트웨이는
+            // 이 host_port 로 프록시하므로, 어긋난 채 ACTIVE 로 올리면 빈 포트를 쳐 502 만 나온다(정적 프리뷰는
+            // DB·네트워크 연결이 없어 안 어긋났다). 서빙이 시작된 지금의 실제 포트로 다시 맞춘 뒤 ACTIVE 로 올린다.
+            session.rebindPort(dockerService.getMappedPort(containerId));
+
             // 만료는 여기서부터 다시 센다 — install/build 에 쓴 시간까지 TTL 에서 깎으면 오래 걸린
             // 프로젝트일수록 정작 볼 수 있는 시간이 짧아진다.
             session.activate(LocalDateTime.now().plus(properties.getTtl()));
