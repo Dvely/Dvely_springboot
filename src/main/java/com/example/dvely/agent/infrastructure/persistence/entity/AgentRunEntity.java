@@ -61,6 +61,11 @@ public class AgentRunEntity {
     @Column(name = "question", columnDefinition = "TEXT")
     private String question;
 
+    // CLARIFY 되묻기의 구조화 질문(inputType·options) JSON. 단순 텍스트 입력(DEPLOY/DOMAIN_BIND)이면 null.
+    // FE 가 이걸 보고 라디오/체크박스/텍스트를 렌더한다(TaskStatusResponse.clarification 로 노출).
+    @Column(name = "clarification_json", columnDefinition = "TEXT")
+    private String clarificationJson;
+
     @Column(name = "input_value", columnDefinition = "TEXT")
     private String inputValue;
 
@@ -176,8 +181,34 @@ public class AgentRunEntity {
     }
 
     public void waitForInput(String question) {
+        waitForInput(question, null);
+    }
+
+    /** 구조화 되묻기(CLARIFY)면 clarificationJson 을 함께 싣는다. 단순 텍스트면 null. */
+    public void waitForInput(String question, String clarificationJson) {
         transition(TaskStatus.WAITING_INPUT);
         this.question = question;
+        this.clarificationJson = clarificationJson;
+        leaseOwner = null;
+        leaseUntil = null;
+    }
+
+    public String getClarificationJson() {
+        return clarificationJson;
+    }
+
+    /**
+     * 스펙 되묻기 답을 반영해 재-decide 한 새 플랜으로 교체하고 처음부터 다시 실행하도록 재큐한다.
+     * currentStep 을 0 으로 되돌려(옛 플랜의 CLARIFY 스텝 진행도 폐기) 워커가 새 플랜을 처음부터 돌린다.
+     */
+    public void replacePlan(String newPlanJson) {
+        this.planJson = newPlanJson;
+        this.currentStep = 0;
+        this.question = null;
+        this.clarificationJson = null;
+        this.inputValue = null;
+        transition(TaskStatus.QUEUED);
+        nextRunAt = LocalDateTime.now();
         leaseOwner = null;
         leaseUntil = null;
     }
@@ -230,6 +261,7 @@ public class AgentRunEntity {
 
     public void supplyInput(String inputValue) {
         this.inputValue = inputValue;
+        this.clarificationJson = null;   // 답을 받았으므로 구조화 질문은 더 이상 표시하지 않는다
         transition(TaskStatus.QUEUED);
         nextRunAt = LocalDateTime.now();
         leaseOwner = null;

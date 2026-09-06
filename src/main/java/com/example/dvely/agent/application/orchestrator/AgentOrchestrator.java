@@ -560,6 +560,8 @@ public class AgentOrchestrator {
             // 직접 만들므로 플랜 레벨 승인은 없다(RUNTIME_SETUP 과 동일).
             case BACKEND_DEPLOY -> null;
             case CHAT -> null;
+            // CLARIFY 는 사용자에게 질문만 한다 — 실행할 액션이 없으니 플랜 레벨 승인도 없다.
+            case CLARIFY -> null;
         };
     }
 
