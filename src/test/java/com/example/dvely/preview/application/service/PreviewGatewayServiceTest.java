@@ -313,6 +313,38 @@ class PreviewGatewayServiceTest {
         assertThat(body).contains("\"name\":\"a\"");        // 본문 그대로 전달
     }
 
+    /**
+     * SSE({@code text/event-stream})는 버퍼링이 아니라 스트리밍으로 프록시돼야 한다 — 버퍼링 경로는
+     * 끝나지 않는 SSE 응답에서 영원히 막힌다. 업스트림이 이벤트를 흘리고 닫으면, 스트리밍 응답이
+     * 그 이벤트를 그대로 통과시키고 SSE 계약 헤더(text/event-stream, no-cache/no-transform, 프록시
+     * 버퍼링 끄기)를 단다는 것을 고정한다.
+     */
+    @Test
+    void streamsServerSentEventsWithTheStreamingContract() throws Exception {
+        container.createContext("/events", exchange -> {
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, "text/event-stream");
+            exchange.sendResponseHeaders(200, 0);   // 0 = 청크(길이 미정) — SSE 처럼 열린 채로 흘린다
+            var os = exchange.getResponseBody();
+            os.write("data: one\n\n".getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            os.write("data: two\n\n".getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            exchange.close();   // 유한 스트림으로 닫아 writeTo 가 끝나게 한다
+        });
+
+        ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> response =
+                service.proxyEventStream(session(), "events", null, null);
+
+        assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE)).contains("text/event-stream");
+        assertThat(response.getHeaders().getCacheControl()).contains("no-cache").contains("no-transform");
+        assertThat(response.getHeaders().getFirst("X-Accel-Buffering")).isEqualTo("no");
+
+        java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
+        response.getBody().writeTo(sink);   // 업스트림이 닫힐 때까지 청크를 흘려보낸다
+        String streamed = sink.toString(StandardCharsets.UTF_8);
+        assertThat(streamed).contains("data: one").contains("data: two");
+    }
+
     /** 이 경로에만 실제 파일이 있는 상태를 만든다. 나머지 경로는 @BeforeEach 의 "/" 가 받아 index.html 을 돌려준다(serve -s 와 같은 동작). */
     private void serveAsset(String path, String contentType, String content) {
         container.createContext(path, exchange -> {

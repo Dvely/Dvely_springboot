@@ -2,6 +2,7 @@ package com.example.dvely.preview.application.service;
 
 import com.example.dvely.preview.application.port.out.DeadPreviewSessionReclaimer;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -15,6 +16,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 @Slf4j
 @Service
@@ -147,6 +149,72 @@ public class PreviewGatewayService {
             }
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
         }
+    }
+
+    /**
+     * SSE({@code text/event-stream})를 <b>스트리밍</b>으로 프록시한다. 버퍼링 {@code proxy} 는 응답을
+     * {@code ofByteArray} 로 통째로 모아서 SSE 처럼 끝나지 않는 응답에선 영원히 막힌다 — 그래서 SSE 는
+     * 이 전용 경로로 온다({@code EventSource} 는 {@code Accept: text/event-stream} 을 보내므로 컨트롤러가
+     * {@code produces} 로 갈라 여기로 라우팅한다).
+     *
+     * <p>{@code ofInputStream} 은 본문을 모으지 않고 <b>헤더가 도착하는 즉시</b> 스트림을 돌려주므로,
+     * 업스트림이 이벤트를 흘릴 때마다 청크를 그대로 내려보내며 매 청크 {@code flush} 한다(서블릿 컨테이너·
+     * 앞단 프록시가 이벤트를 쌓지 않게). {@code X-Accel-Buffering: no} 로 nginx 버퍼링을, {@code no-transform}
+     * 으로 CDN 변형을 끈다. 재연결 시 브라우저가 보내는 {@code Last-Event-ID} 는 그대로 앞으로 전달한다.
+     * SSE 는 문서가 아니라 데이터라 sandbox CSP 는 붙이지 않는다.</p>
+     *
+     * <p>업스트림이 SSE 가 아닌 응답을 줘도(엔드포인트 없음 등) 그 {@code Content-Type} 을 그대로 흘려
+     * 일반 스트리밍 패스스루로 동작한다. 도달 실패는 버퍼링 경로와 같은 규칙으로 502 + (재확인 후) 회수.</p>
+     */
+    public ResponseEntity<StreamingResponseBody> proxyEventStream(PreviewSessionInfo session,
+                                                                  String path,
+                                                                  String query,
+                                                                  String lastEventId) {
+        String target = "http://127.0.0.1:" + session.hostPort() + "/" + sanitizePath(path);
+        if (query != null && !query.isBlank()) {
+            target += "?" + query;
+        }
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(target)).GET()
+                .header(HttpHeaders.ACCEPT, MediaType.TEXT_EVENT_STREAM_VALUE);
+        if (lastEventId != null && !lastEventId.isBlank()) {
+            builder.header("Last-Event-ID", lastEventId);
+        }
+
+        HttpResponse<InputStream> upstream;
+        try {
+            upstream = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+        } catch (Exception exception) {
+            if (reclaimEnabled && isInnerAppUnreachable(session)) {
+                reclaimer.reclaimUnreachable(session.sessionId());
+            }
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
+        }
+
+        InputStream upstreamBody = upstream.body();
+        StreamingResponseBody stream = out -> {
+            try (upstreamBody) {
+                byte[] buffer = new byte[512];
+                int read;
+                while ((read = upstreamBody.read(buffer)) != -1) {
+                    out.write(buffer, 0, read);
+                    out.flush();   // 이벤트를 쌓지 않고 즉시 흘려보낸다
+                }
+            } catch (Exception ignored) {
+                // 클라이언트 끊김/업스트림 종료 — EventSource 가 알아서 재연결한다. 남은 스트림은 try-with 로 닫힌다.
+            }
+        };
+        String contentType = upstream.headers()
+                .firstValue(HttpHeaders.CONTENT_TYPE)
+                .orElse(MediaType.TEXT_EVENT_STREAM_VALUE);
+        return ResponseEntity.status(upstream.statusCode())
+                .header(HttpHeaders.CONTENT_TYPE, contentType)
+                .header(HttpHeaders.CACHE_CONTROL, "no-cache, no-transform")
+                // nginx 등 리버스 프록시가 이 응답을 버퍼링하지 않게 한다(안 그러면 이벤트가 뭉쳐서 온다).
+                .header("X-Accel-Buffering", "no")
+                .body(stream);
     }
 
     /**
@@ -339,9 +407,11 @@ public class PreviewGatewayService {
      *       클라이언트 라우터가 {@code basename} 없이 그 prefix 경로를 매칭 못 해 <b>새로고침 초기 렌더가
      *       깨진다</b>. 안 하면 딥링크 새로고침만 깨진다(전진 내비게이션은 라우터 내부 상태로 동작). 둘 다
      *       trade-off 라 건드리지 않는다 — 근본 해결은 생성 앱이 prefix 를 basename 으로 쓰는 것(앱측).</li>
-     *   <li>{@code EventSource}(SSE)·{@code WebSocket} — URL 재작성만으로 안 된다. 게이트웨이가 응답을
-     *       통째로 버퍼링({@code ofByteArray})하고 업그레이드도 안 하므로, prefix 로 보내도 이벤트가 안 온다.
-     *       스트리밍/업그레이드 프록시라는 별개의 큰 작업이 필요하다.</li>
+     *   <li>{@code WebSocket} — URL 재작성만으로 안 된다. HTTP Upgrade(101) 핸드셰이크와 양방향 프레임
+     *       펌핑이 필요해 이 요청/응답 프록시로는 안 되고, Spring WebSocket 인프라가 있어야 한다(별개 작업).
+     *       그래서 WS URL 은 아직 재작성하지 않는다 — prefix 로 보내봐야 업그레이드 못 하는 게이트웨이에
+     *       닿아 더 나빠지기 때문. ({@code EventSource}(SSE)는 {@code proxyEventStream} 이 스트리밍으로
+     *       지원하므로 위에서 URL 을 재작성한다.)</li>
      * </ul>
      */
     private String injectClientShim(String html, String gatewayPrefix) {
@@ -350,9 +420,10 @@ public class PreviewGatewayService {
                 : gatewayPrefix;
         String shim = "<script>(function(){var P=\"" + prefix + "\";"
                 + "function r(u){try{if(typeof u===\"string\"&&u.charAt(0)===\"/\"&&u.charAt(1)!==\"/\"&&u.indexOf(P+\"/\")!==0)return P+u;}catch(e){}return u;}"
-                // 데이터: fetch / XHR
+                // 데이터: fetch / XHR / EventSource(SSE)
                 + "if(window.fetch){var f=window.fetch;window.fetch=function(i,o){try{if(typeof i===\"string\")i=r(i);else if(i&&i.url)i=new Request(r(i.url),i);}catch(e){}return f.call(this,i,o);};}"
                 + "if(window.XMLHttpRequest&&XMLHttpRequest.prototype&&XMLHttpRequest.prototype.open){var x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){try{arguments[1]=r(arguments[1]);}catch(e){}return x.apply(this,arguments);};}"
+                + "if(window.EventSource){var E=window.EventSource;var NE=function(u,c){return new E(r(u),c);};NE.prototype=E.prototype;try{NE.CONNECTING=E.CONNECTING;NE.OPEN=E.OPEN;NE.CLOSED=E.CLOSED;}catch(e){}window.EventSource=NE;}"
                 // 내비게이션: 앵커 href(클릭/중클릭 시점 재작성 — 캡처 단계라 기본 이동 전에 고쳐짐, 라우터 onClick 은 뒤에서 그대로 동작)
                 + "function fixA(e){try{var t=e.target;var a=t&&t.closest?t.closest(\"a[href]\"):null;if(!a)return;var h=a.getAttribute(\"href\");var n=r(h);if(n!==h)a.setAttribute(\"href\",n);}catch(e2){}}"
                 + "document.addEventListener(\"click\",fixA,true);document.addEventListener(\"auxclick\",fixA,true);"
