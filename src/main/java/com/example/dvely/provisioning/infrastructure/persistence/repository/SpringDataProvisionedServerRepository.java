@@ -68,10 +68,29 @@ public interface SpringDataProvisionedServerRepository
             + " where e.id = :id and e.recoveryAttemptedAt is null and e.status = 'RUNNING'")
     int claimRecovery(@Param("id") Long id, @Param("now") LocalDateTime now);
 
-    /** 앱이 회복되면 복구 시도 표시를 지운다(다음 무응답 에피소드에 다시 복구할 수 있게). */
+    /**
+     * 앱이 회복되면 이번 에피소드의 복구 표시를 모두 지운다 — 복구 시도 시각과 "실패 보고" 표시를 함께
+     * 초기화해 다음 무응답 에피소드에 다시 복구·보고할 수 있게 한다.
+     */
     @Modifying(clearAutomatically = true)
-    @Query("update ProvisionedServerEntity e set e.recoveryAttemptedAt = null where e.id = :id")
+    @Query("update ProvisionedServerEntity e set e.recoveryAttemptedAt = null,"
+            + " e.recoveryOutcomeReportedAt = null where e.id = :id")
     int clearRecoveryAttempt(@Param("id") Long id);
+
+    /**
+     * "복구 실패(재시작해도 여전히 무응답)" 감사 이벤트를 에피소드당 1회만 남기도록 원자적으로 claim 한다.
+     * 재시작을 시도했고(recovery_attempted_at NOT NULL) 정착 유예가 지났는데도(attempted_at ≤ :cutoff) 아직
+     * 보고하지 않았고(reported_at NULL) 여전히 RUNNING·무응답(healthy=false)이면 진 인스턴스 하나만 1을 받는다.
+     * 정착 유예(cutoff)는 재시작 앱이 뜰 시간을 줘 조기 오탐을 막는다. healthy 가 다시 true 로 바뀌었으면(회복)
+     * 매치되지 않아 실패로 오인하지 않는다.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("update ProvisionedServerEntity e set e.recoveryOutcomeReportedAt = :now"
+            + " where e.id = :id and e.status = 'RUNNING' and e.healthy = false"
+            + " and e.recoveryAttemptedAt is not null and e.recoveryAttemptedAt <= :cutoff"
+            + " and e.recoveryOutcomeReportedAt is null")
+    int claimRecoveryOutcomeReport(@Param("id") Long id, @Param("cutoff") LocalDateTime cutoff,
+            @Param("now") LocalDateTime now);
 
     @Query("select distinct e.cloudConnectionId from ProvisionedServerEntity e"
             + " where e.cloudConnectionId is not null")

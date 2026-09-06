@@ -100,6 +100,13 @@ public class ProvisionedServerRepositoryAdapter implements ProvisionedServerRepo
     }
 
     @Override
+    @Transactional
+    public boolean claimRecoveryOutcomeReport(Long id, java.time.Duration settleWindow) {
+        LocalDateTime now = LocalDateTime.now();
+        return springDataRepository.claimRecoveryOutcomeReport(id, now.minus(settleWindow), now) == 1;
+    }
+
+    @Override
     public List<Long> findDistinctCloudConnectionIds() {
         return springDataRepository.findDistinctCloudConnectionIds();
     }

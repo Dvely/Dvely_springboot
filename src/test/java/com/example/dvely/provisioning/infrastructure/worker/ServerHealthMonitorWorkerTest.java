@@ -194,6 +194,45 @@ class ServerHealthMonitorWorkerTest {
         org.assertj.core.api.Assertions.assertThat(cmd.getValue()).doesNotContain("docker");   // DOCKER 명령 아님
     }
 
+    // ── 복구 실패 보고(재시작해도 여전히 무응답) ─────────────────────────────
+
+    @Test
+    void recoveryFailedAfterSettle_recordsFailedEventOnce() {
+        ProvisionedServer server = runningDocker("1.2.3.4");
+        server.recordHealthCheck(false);
+        server.markRecoveryAttempted();   // 이전 주기에 재시작을 시도함(fetch 시점 DB 값)
+        batch(server);
+        when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(false);   // 재시작했는데도 여전히 무응답
+        // 정착 유예가 지났고 아직 미보고 → 이 인스턴스가 보고 권한 획득
+        when(serverRepository.claimRecoveryOutcomeReport(eq(1L), any())).thenReturn(true);
+
+        worker.monitorRunningServers();
+
+        // 재시작이 소용없었음을 SERVER_RECOVERY_FAILED/FAILED 로 1회 보고한다.
+        verify(auditRecorder).record(org.mockito.ArgumentMatchers.argThat(e ->
+                e.action() == com.example.dvely.audit.domain.value.AuditAction.SERVER_RECOVERY_FAILED
+                        && e.outcome() == com.example.dvely.audit.domain.value.AuditOutcome.FAILED
+                        && "SERVER".equals(e.resourceType())));
+        verify(serverRepository, never()).claimRecovery(anyLong());          // 재시작은 다시 하지 않는다
+        verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());
+    }
+
+    @Test
+    void recoveryFailed_withinSettleOrAlreadyReported_noEvent() {
+        ProvisionedServer server = runningDocker("1.2.3.4");
+        server.recordHealthCheck(false);
+        server.markRecoveryAttempted();
+        batch(server);
+        when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(false);
+        // 아직 정착 유예 안 지남 · 이미 보고함 · 다른 인스턴스가 보고함 → claim 실패
+        when(serverRepository.claimRecoveryOutcomeReport(eq(1L), any())).thenReturn(false);
+
+        worker.monitorRunningServers();
+
+        verify(auditRecorder, never()).record(org.mockito.ArgumentMatchers.argThat(e ->
+                e.action() == com.example.dvely.audit.domain.value.AuditAction.SERVER_RECOVERY_FAILED));
+    }
+
     @Test
     void restartSsmFails_claimStillTaken() {
         ProvisionedServer server = runningDocker("1.2.3.4");

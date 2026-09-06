@@ -13,6 +13,7 @@ import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import com.example.dvely.provisioning.infrastructure.SsmRunCommandClient;
 import com.example.dvely.provisioning.infrastructure.TcpHealthChecker;
+import java.time.Duration;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,11 +28,15 @@ import org.springframework.stereotype.Component;
  * <p><b>복구 정책</b>: 순간적인 헬스 흔들림에 재시작을 남발하지 않으려 <b>2회 연속 무응답</b>일 때만
  * 시도한다(직전 주기도 false 였을 때). 한 장애 에피소드당 <b>1회만</b> 시도하고({@code recoveryAttemptedAt}
  * 표시), 회복되면 표시를 지워 다음 장애에 다시 시도한다. 재시작이 소용없으면(에피소드 내 재시도 안 함)
- * 무응답인 채로 두고 사용자가 로그를 보거나 재배포하도록 남긴다 — 재시작 루프를 만들지 않는다.
+ * 무응답인 채로 두되, 그 사실을 감사 이벤트로 1회 보고하고(아래) 사용자가 로그를 보거나 재배포하도록 남긴다
+ * — 재시작 루프를 만들지 않는다.
  *
  * <p>DOCKER(compose/docker restart)·NATIVE(포트 프로세스 kill→SSM env 재export→java -jar/npm start) 둘 다
  * 재시작한다. 자동복구를 시도하면 감사 이벤트({@code SERVER_RECOVERY_ATTEMPTED})를 남겨 사용자가 감사 로그에서
- * 앱 불안정(잦은 자동재시작)이나 재시작 실패를 볼 수 있다.
+ * 앱 불안정(잦은 자동재시작)이나 재시작 명령 실패를 볼 수 있다. 다만 {@code SUCCEEDED}는 재시작 <i>명령이
+ * 실행됐다</i>는 뜻일 뿐 앱이 살아났다는 보장이 아니다 — 재시작 후 정착 유예({@code recovery-settle-ms},
+ * 기본 2분)가 지나도록 여전히 무응답이면 자가치유 실패로 {@code SERVER_RECOVERY_FAILED}(에피소드당 1회, 원자
+ * claim)를 남겨 개입(로그·재배포)이 필요함을 알린다.
  *
  * <p>인스턴스는 종료하지 않는다: 앱만 죽은 것이라 인스턴스는 살려 두고 재시작·로그 조회를 한다. 원자적
  * claim 없음 — 헬스체크는 읽기, 기록은 최신값 덮어쓰기, 복구는 표시로 1회 보장이라 겹친 폴링이 해가 없다.</p>
@@ -53,6 +58,11 @@ public class ServerHealthMonitorWorker {
     // 초기값(true)을 쓰고(스프링 없이도 켜짐), 운영은 @Value 가 설정값으로 덮어쓴다.
     @Value("${qeploy.provisioning.auto-recovery-enabled:true}")
     private boolean autoRecoveryEnabled = true;
+
+    // 자동 재시작 후 "복구 실패" 로 판정하기 전 앱이 다시 뜰 시간을 주는 정착 유예. 재시작 명령 실행 시각
+    // (recovery_attempted_at)이 이 유예를 지나도록 여전히 무응답이면 그때 실패로 보고한다 — 조기 오탐 방지.
+    @Value("${qeploy.provisioning.recovery-settle-ms:120000}")
+    private long recoverySettleMs = 120000;
 
     @Scheduled(fixedDelayString = "${qeploy.provisioning.health-monitor-interval-ms:60000}")
     public void monitorRunningServers() {
@@ -80,7 +90,12 @@ public class ServerHealthMonitorWorker {
                         log.warn("앱 헬스 이상(RUNNING 이지만 포트 무응답 — 앱이 죽었을 수 있음): serverId={} host={}:{} projectId={}",
                                 server.getId(), server.getPublicHost(), server.getPort(), server.getProjectId());
                     }
-                    attemptRecoveryIfDue(server, previous);
+                    if (server.hasRecoveryBeenAttempted()) {
+                        // 이미 이번 에피소드에 재시작을 시도했는데도 여전히 무응답 — 재시작이 소용없었는지 본다.
+                        reportRecoveryFailedIfDue(server);
+                    } else {
+                        attemptRecoveryIfDue(server, previous);
+                    }
                 }
             } catch (RuntimeException e) {
                 // 이 서버만 건너뛰고 다음 주기에 다시 본다.
@@ -132,6 +147,26 @@ public class ServerHealthMonitorWorker {
                 AuditAction.SERVER_RECOVERY_ATTEMPTED, outcome, AuditActorType.SYSTEM, null,
                 server.getProjectId(), "SERVER", String.valueOf(server.getId()), null, null,
                 "앱 무응답으로 자동 재시작 시도(" + server.getDeployMode() + ")", errorSummary));
+    }
+
+    /**
+     * 이미 이번 에피소드에 자동 재시작을 시도했는데(recovery_attempted_at 존재) 정착 유예가 지나도록 여전히
+     * 무응답이면, <b>자가치유 실패</b>를 감사 이벤트({@code SERVER_RECOVERY_FAILED})로 <b>에피소드당 1회</b>
+     * 남긴다. 재시작 명령은 실행됐어도(그건 {@code SERVER_RECOVERY_ATTEMPTED}/SUCCEEDED) 앱이 되살아나지
+     * 못했다는 뜻이라, 사용자에게 개입(로그 확인·재배포) 신호를 준다. claim 이 원자적으로 1회를 보장하고
+     * (다중 인스턴스에서 하나만), 정착 유예는 재시작 앱이 뜰 시간을 줘 조기 오탐을 막는다. 앱이 회복되면
+     * {@code clearRecoveryAttempt} 가 표시를 지워 다음 에피소드에 다시 시도·보고할 수 있다.
+     */
+    private void reportRecoveryFailedIfDue(ProvisionedServer server) {
+        if (!serverRepository.claimRecoveryOutcomeReport(server.getId(), Duration.ofMillis(recoverySettleMs))) {
+            return;   // 아직 정착 유예 안 지남 · 이미 보고함 · 다른 인스턴스가 보고함 · 방금 회복함
+        }
+        log.warn("자동복구 실패(재시작 후에도 앱 무응답 — 재배포/로그 확인 필요): serverId={} instanceId={} projectId={}",
+                server.getId(), server.getInstanceId(), server.getProjectId());
+        auditRecorder.record(new AuditEvent(
+                AuditAction.SERVER_RECOVERY_FAILED, AuditOutcome.FAILED, AuditActorType.SYSTEM, null,
+                server.getProjectId(), "SERVER", String.valueOf(server.getId()), null, null,
+                "자동 재시작 후에도 앱이 계속 무응답 — 사용자 개입 필요(로그 확인·재배포)", null));
     }
 
     /** 실행 형태별 앱 재시작 명령(SSM 으로 실행). */
