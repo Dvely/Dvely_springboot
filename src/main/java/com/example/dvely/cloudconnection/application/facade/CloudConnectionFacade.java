@@ -4,9 +4,11 @@ import com.example.dvely.cloudconnection.application.command.CloudConnectionComm
 import com.example.dvely.cloudconnection.application.command.dto.CreateCloudConnectionCommand;
 import com.example.dvely.cloudconnection.application.query.CloudConnectionQueryService;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionHealthResult;
+import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionResult;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionVerificationJobResult;
 import com.example.dvely.cloudconnection.application.result.CreateCloudConnectionResult;
+import com.example.dvely.cloudconnection.application.service.CloudConnectionRequirementsService;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -17,9 +19,14 @@ public class CloudConnectionFacade {
 
     private final CloudConnectionCommandService cloudConnectionCommandService;
     private final CloudConnectionQueryService cloudConnectionQueryService;
+    private final CloudConnectionRequirementsService cloudConnectionRequirementsService;
 
     public List<CloudConnectionResult> getCloudConnections(Long ownerUserId) {
         return cloudConnectionQueryService.getCloudConnections(ownerUserId);
+    }
+
+    public CloudConnectionRequirementsResult getRequirements(String provider, String credentialType) {
+        return cloudConnectionRequirementsService.getRequirements(provider, credentialType);
     }
 
     public CreateCloudConnectionResult create(Long ownerUserId, CreateCloudConnectionCommand command) {
