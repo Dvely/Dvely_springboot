@@ -8,6 +8,7 @@ import com.example.dvely.preview.infrastructure.persistence.repository.SpringDat
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -33,6 +34,11 @@ public class ProjectPreviewProvisioner {
     private final PreviewProperties properties;
     private final PreviewRuntimeLauncher runtimeLauncher;
 
+    // 필드 주입(null-safe). 게이트웨이 경유 도달 확인용. 단위 테스트는 Spring 없이 생성자로 만드므로
+    // 이 필드가 null 이면 게이트를 건너뛴다(테스트는 활성화 상태만 검증, 도달 대기는 무관).
+    @Autowired(required = false)
+    private PreviewReadinessProbe readinessProbe;
+
     @Async("previewExecutor")
     public void provision(String sessionId) {
         PreviewSessionEntity session = repository.findById(sessionId).orElse(null);
@@ -52,6 +58,14 @@ public class ProjectPreviewProvisioner {
             // 이 host_port 로 프록시하므로, 어긋난 채 ACTIVE 로 올리면 빈 포트를 쳐 502 만 나온다(정적 프리뷰는
             // DB·네트워크 연결이 없어 안 어긋났다). 서빙이 시작된 지금의 실제 포트로 다시 맞춘 뒤 ACTIVE 로 올린다.
             session.rebindPort(dockerService.getMappedPort(containerId));
+
+            // ACTIVE 로 올리기 직전, 게이트웨이 경유 경로가 실제로 프록시되는지 확인한다. 컨테이너 내부는
+            // 준비돼도(serve_ready) 호스트→매핑 포트가 뜨기까지 짧은 공백이 있어, 그 사이 FE 가 붙인 첫
+            // iframe 로드가 503 을 맞고 크롬이 깨진 이미지로 그린다 — 사용자가 본 원래 증상. 도달 확인 뒤
+            // 올리면 첫 로드부터 200 이다(best-effort: 예산 초과 시에도 기존처럼 활성화는 진행).
+            if (readinessProbe != null) {
+                readinessProbe.awaitReachable(session.getHostPort());
+            }
 
             // 만료는 여기서부터 다시 센다 — install/build 에 쓴 시간까지 TTL 에서 깎으면 오래 걸린
             // 프로젝트일수록 정작 볼 수 있는 시간이 짧아진다.
