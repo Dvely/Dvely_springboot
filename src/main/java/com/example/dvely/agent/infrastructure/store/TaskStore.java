@@ -85,6 +85,27 @@ public class TaskStore {
                 .orElse(null);
     }
 
+    private static final List<String> TERMINAL_STATUSES = List.of("DONE", "FAILED", "CANCELLED");
+
+    /**
+     * 대화의 현재 살아있는(비-terminal) 태스크 포인터. 새로고침 후 FE 가 WAITING_INPUT(되묻기) 폼이나
+     * 진행 상태를 복구하는 데 쓴다 — 없으면 empty. 소유자만 보고, terminal(DONE/FAILED/CANCELLED)은 제외.
+     */
+    @Transactional(readOnly = true)
+    public java.util.Optional<ActiveTask> findActiveTask(Long conversationId, Long userId) {
+        if (conversationId == null || userId == null) {
+            return java.util.Optional.empty();
+        }
+        return runRepository.findActiveRuns(
+                        conversationId, userId, TERMINAL_STATUSES,
+                        org.springframework.data.domain.PageRequest.of(0, 1))
+                .stream().findFirst()
+                .map(run -> new ActiveTask(run.getTaskId(), TaskStatus.valueOf(run.getStatus())));
+    }
+
+    /** 대화의 현재 살아있는 태스크 포인터(id + 상태). */
+    public record ActiveTask(String taskId, TaskStatus status) {}
+
     /** WAITING_INPUT 인 CLARIFY 태스크의 구조화 질문. 없거나 단순 텍스트 입력이면 null(FE 는 텍스트로 폴백). */
     @Transactional(readOnly = true)
     public ClarificationRequest getClarification(String taskId) {

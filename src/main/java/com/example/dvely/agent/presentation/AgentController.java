@@ -14,6 +14,7 @@ import com.example.dvely.agent.presentation.dto.AiProvidersResponse;
 import com.example.dvely.agent.presentation.dto.DecisionRequest;
 import com.example.dvely.agent.presentation.dto.DecisionResponse;
 import com.example.dvely.agent.presentation.dto.AgentTaskEventResponse;
+import com.example.dvely.agent.presentation.dto.ActiveTaskResponse;
 import com.example.dvely.agent.presentation.dto.TaskStatusResponse;
 import com.example.dvely.agent.presentation.dto.TaskInputRequest;
 import com.example.dvely.common.exception.NotFoundException;
@@ -150,6 +151,22 @@ public class AgentController {
                 pendingApprovalId,
                 taskStore.getClarification(taskId)
         ));
+    }
+
+    @Operation(
+            summary = "대화의 현재 진행/대기 태스크 조회",
+            description = "새로고침 후 복구용. 대화의 살아있는(비-terminal) 태스크의 {taskId, status}를 반환하고, "
+                    + "없으면 204입니다. FE는 이 taskId로 GET /tasks/{id}를 불러 상태에 맞는 UI(WAITING_INPUT이면 "
+                    + "되묻기 폼 등)를 복구합니다 — 메시지가 taskId를 안 실어(과거 조회 시 null) 잃어버린 되묻기/진행 "
+                    + "태스크에 다시 닿는 경로입니다. 소유자 본인 태스크만 반환합니다."
+    )
+    @GetMapping("/conversations/{conversationId}/active-task")
+    public ResponseEntity<ActiveTaskResponse> getActiveTask(
+            @AuthenticationPrincipal Long userId,
+            @Parameter(description = "대화 ID") @PathVariable Long conversationId) {
+        return taskStore.findActiveTask(conversationId, userId)
+                .map(t -> ResponseEntity.ok(new ActiveTaskResponse(t.taskId(), t.status())))
+                .orElseGet(() -> ResponseEntity.noContent().build());
     }
 
     @Operation(summary = "태스크 이벤트 조회", description = "afterEventId 이후의 영속 Agent 이벤트를 시간순으로 반환합니다.")
