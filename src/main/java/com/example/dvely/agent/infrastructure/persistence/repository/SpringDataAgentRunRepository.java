@@ -17,6 +17,25 @@ public interface SpringDataAgentRunRepository extends JpaRepository<AgentRunEnti
 
     Optional<AgentRunEntity> findByTaskIdAndOwnerUserId(String taskId, Long ownerUserId);
 
+    // 대화의 현재 "살아있는"(비-terminal) 태스크. 새로고침 후 FE 가 WAITING_INPUT(되묻기) 폼이나
+    // 진행 중 상태를 복구할 포인터로 쓴다 — 메시지가 taskId 를 안 실어(과거 조회 시 null) 잃어버린
+    // 태스크에 다시 닿는 유일한 길이었다. 소유자로 필터해 남의 태스크가 새지 않고, terminal(DONE/
+    // FAILED/CANCELLED)은 제외해 이미 끝난 태스크의 낡은 상태는 돌려주지 않는다. 가장 최근 하나만 본다.
+    @Query("""
+            select run
+            from AgentRunEntity run
+            where run.conversationId = :conversationId
+              and run.ownerUserId = :ownerUserId
+              and run.status not in :terminalStatuses
+            order by run.createdAt desc
+            """)
+    List<AgentRunEntity> findActiveRuns(
+            @Param("conversationId") Long conversationId,
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("terminalStatuses") List<String> terminalStatuses,
+            Pageable pageable
+    );
+
     // Review follow-up (BLOCKING-3): backs TaskStore#requireWaitingResultApproval — acquires and
     // holds a row lock (SELECT ... FOR UPDATE) for the rest of the caller's transaction. Design
     // ADR-Y1 (#55) reuses this exact query as TaskStore#lockTask, the task-row mutex every
@@ -201,6 +220,26 @@ public interface SpringDataAgentRunRepository extends JpaRepository<AgentRunEnti
             """)
     List<String> findAbandonedApprovalTaskIds(
             @Param("statuses") List<String> statuses,
+            @Param("before") LocalDateTime before
+    );
+
+    // 시작되지 않은 채 방치된 PENDING 태스크 후보. ChatCommandService 의 비동기 Decision 은
+    // createPending 으로 PENDING 태스크를 먼저 커밋한 뒤 백그라운드에서 계획을 확정한다 —
+    // 그 사이에 프로세스가 죽으면(배포 재기동 등) 태스크가 계획 없이 PENDING 으로 남고, 워커는
+    // 이 상태를 집지 않아 스스로 빠져나올 길이 없다. createdAt 기준으로 잡는 이유는 PENDING 은
+    // 생성 후 손대지 않는 상태라 createdAt 이 "언제부터 이러고 있었는지"를 그대로 나타내기 때문.
+    // grace 는 한 번의 Decision 최대 소요(#238 read timeout 180s × 재시도)보다 넉넉히 커서 살아
+    // 있는 Decision 을 잘못 잡지 않는다. 비잠금 스칼라 읽기이고, 재확인은 태스크 행 잠금 아래
+    // AgentOrchestrator#failStalePendingTask 가 한다.
+    @Query("""
+            select run.taskId
+            from AgentRunEntity run
+            where run.status = :status
+              and run.createdAt < :before
+            order by run.createdAt asc
+            """)
+    List<String> findStalePendingTaskIds(
+            @Param("status") String status,
             @Param("before") LocalDateTime before
     );
 }

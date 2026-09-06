@@ -1,6 +1,7 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
+import com.example.dvely.agent.application.dto.ClarificationRequest;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.domain.value.AgentType;
@@ -32,6 +33,30 @@ public class DecisionAgentService {
             that the downstream specialist agent can act on independently — as if the original message
             did not exist. Do NOT copy fragments verbatim; instead synthesize a clear, actionable
             directive from the full context of the user's message.
+
+            ## Clarify FIRST when — and ONLY when — the request is genuinely ambiguous
+
+            Before building, if the request leaves a decision that (a) you would otherwise have to GUESS
+            and (b) materially changes WHAT gets built or deployed, ask the user instead of guessing.
+            The main cases:
+            - Backend stack/language is unspecified for a backend/full-stack/deploy request
+              (e.g. "make a full-stack todo and deploy it") — Node vs Java/Spring is a materially
+              different app to build. Both run as a preview and both deploy to production (Node and
+              Java/Spring are each supported), so do NOT claim one is required for deployment; ask
+              which the user wants, and only recommend a default if the request itself hints at one.
+            - The request is so vague you cannot tell what app to build (e.g. "make me an app").
+            - Essential scope is unclear in a way that changes the build (e.g. "does it need login / a database?").
+
+            When you clarify, respond with a top-level "clarification" object and NO "steps".
+            Pick the input type that fits the answer:
+            - "SINGLE_SELECT" (radio) for a mutually exclusive choice (stack, architecture) — give options.
+            - "MULTI_SELECT" (checkbox) for choosing several (which features) — give options.
+            - "TEXT" (free input) for open-ended answers (app name, a one-line description) — no options.
+            Keep it to ONE focused question. Mark a sensible default option with "recommended": true.
+
+            Be conservative: do NOT clarify when the request is already clear or a sensible default exists
+            (a plain static frontend, a small code edit, an explicit stack). Over-asking is worse than a
+            good default. If in doubt and a reasonable default exists, proceed with a plan, do not clarify.
 
             Agent types and their instruction-writing rules:
 
@@ -131,7 +156,21 @@ public class DecisionAgentService {
               original user message.
             - Respond ONLY with a valid JSON object. No markdown, no code blocks, no extra text.
 
-            Response format:
+            Response format — to CLARIFY (ambiguous; ask before building):
+            {
+              "clarification": {
+                "question": "백엔드를 어떤 스택으로 만들까요?",
+                "inputType": "SINGLE_SELECT",
+                "options": [
+                  { "value": "node", "label": "Node/Express (JS)", "recommended": false },
+                  { "value": "java", "label": "Java/Spring Boot", "recommended": false }
+                ],
+                "allowOther": false
+              },
+              "reasoning": "stack is unspecified and materially changes the plan"
+            }
+
+            Response format — to PROCEED (clear enough; build a plan):
             {
               "steps": [
                 {
@@ -170,7 +209,27 @@ public class DecisionAgentService {
                             AiProvider provider,
                             Long projectId,
                             AiModelOptions modelOptions) {
+        return decide(conversation, provider, projectId, modelOptions, true);
+    }
+
+    /**
+     * {@code allowClarify=false} 면 결정이 다시 CLARIFY 를 내지 못하게 가드를 붙인다 — 사용자가 되묻기에
+     * 이미 답한 뒤의 재-decide 에 쓴다(무한 되묻기 방지). 그 외엔 4-인자 버전과 동일하다.
+     */
+    public AgentPlan decide(List<LlmMessage> conversation,
+                            AiProvider provider,
+                            Long projectId,
+                            AiModelOptions modelOptions,
+                            boolean allowClarify) {
         List<LlmMessage> messages = new ArrayList<>(conversation);
+        if (!allowClarify) {
+            messages.add(new LlmMessage(
+                    "user",
+                    "[The user has already answered a clarifying question above. Do NOT ask for more "
+                            + "clarification and do NOT return a \"clarification\" object — produce a concrete "
+                            + "executable plan now, using their answer and sensible defaults for anything else.]"
+            ));
+        }
         if (projectId != null) {
             messages.add(new LlmMessage(
                     "user",
@@ -190,6 +249,21 @@ public class DecisionAgentService {
         try {
             String json = extractJson(raw);
             Map<String, Object> map = objectMapper.readValue(json, Map.class);
+
+            // 되묻기: 최상위 "clarification" 이 있으면 steps 대신 CLARIFY 스텝 하나로 만든다. 구조화 질문을
+            // 스텝 파라미터에 JSON 문자열로 실어(AgentStep.parameters 는 Map<String,String>) 실행기가 파싱한다.
+            Object clarificationRaw = map.get("clarification");
+            if (clarificationRaw instanceof Map) {
+                ClarificationRequest clarification =
+                        objectMapper.convertValue(clarificationRaw, ClarificationRequest.class);
+                String clarificationJson = objectMapper.writeValueAsString(clarification);
+                String reasoning = (String) map.getOrDefault("reasoning", "");
+                log.info("의사결정: CLARIFY(되묻기) inputType={} reasoning={}",
+                        clarification.inputType(), reasoning);
+                return new AgentPlan(
+                        List.of(new AgentStep(AgentType.CLARIFY, Map.of("clarification", clarificationJson))),
+                        reasoning, provider, projectId, modelOptions);
+            }
 
             List<Map<String, Object>> stepsRaw =
                     (List<Map<String, Object>>) map.getOrDefault("steps", List.of());

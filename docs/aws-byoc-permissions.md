@@ -72,11 +72,71 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       "Resource": "arn:aws:ssm:*::parameter/aws/service/ami-amazon-linux-latest/*"   // AWS 공개 파라미터(계정 없음): 최신 AL2023 AMI 조회
     },
     {
+      "Sid": "SsmRunCommandForLogs",
+      "Effect": "Allow",
+      "Action": ["ssm:SendCommand"],
+      "Resource": ["arn:aws:ssm:*::document/AWS-RunShellScript", "arn:aws:ec2:*:*:instance/*"]
+      // 배포된 EC2 서버의 로그 조회(GET /servers/{id}/logs)에 쓴다. SSM Run Command 로 인스턴스에서
+      // tail·docker logs 를 돌려 최근 로그를 뽑는다. SendCommand 는 문서(AWS-RunShellScript)와 대상
+      // 인스턴스 양쪽에 리소스 권한이 필요한데, 인스턴스 리소스 ARN 은 SSM 이 아니라 EC2 네임스페이스
+      // (arn:aws:ec2:*:*:instance/*)여야 한다 — AWS 가 SendCommand 를 EC2 인스턴스 ARN 으로 인가한다(실측
+      // 확인: ssm ARN 이면 AccessDenied). 로그 조회를 안 쓰면 이 문과 아래 GetCommandInvocation 은 없어도 된다.
+      // (인스턴스 역할에도 SSM core 권한이 붙는다 — 그건 인라인이라 이 정책 밖, Ec2InstanceRoleProvisioner 가 넣는다.)
+    },
+    {
+      "Sid": "SsmRunCommandResult",
+      "Effect": "Allow",
+      "Action": ["ssm:GetCommandInvocation"],
+      "Resource": "*"   // invocation ARN 은 실행 시점 동적 생성이라 스코프 불가
+    },
+    {
       "Sid": "S3ArtifactsOnly",
       "Effect": "Allow",
       "Action": ["s3:CreateBucket", "s3:PutObject", "s3:GetObject", "s3:DeleteObject",
-                 "s3:ListBucket"],
+                 "s3:ListBucket", "s3:AbortMultipartUpload"],
       "Resource": ["arn:aws:s3:::qeploy-artifacts-*", "arn:aws:s3:::qeploy-artifacts-*/*"]
+      // 대용량 산출물은 멀티파트 업로드(#218). Create/Upload/Complete 는 PutObject 로 커버되고,
+      // 실패 시 정리(abortMultipartUpload)에 AbortMultipartUpload 가 필요하다(best-effort).
+    },
+    {
+      "Sid": "S3StaticSiteHosting",
+      "Effect": "Allow",
+      "Action": ["s3:CreateBucket", "s3:DeleteBucket", "s3:PutObject", "s3:GetObject", "s3:DeleteObject",
+                 "s3:ListBucket",
+                 "s3:PutBucketWebsite", "s3:GetBucketWebsite",
+                 "s3:PutBucketPolicy", "s3:GetBucketPolicy",
+                 "s3:PutBucketPublicAccessBlock", "s3:GetBucketPublicAccessBlock"],
+      "Resource": ["arn:aws:s3:::qeploy-site-*", "arn:aws:s3:::qeploy-site-*/*"]
+      // 프론트 호스팅을 S3 로 고른 프로젝트가 쓰는 정적 웹호스팅 버킷(qeploy-site-*, 프로젝트별 전용).
+      // 아티팩트 버킷(qeploy-artifacts-*, 비공개 jar·이미지)과 분리한다 — 정적 웹은 퍼블릭 읽기가
+      // 필요해 같은 버킷에 섞을 수 없다. website(SPA)·퍼블릭 읽기 정책·퍼블릭 접근 차단 해제에
+      // PutBucketWebsite / PutBucketPolicy / PutBucketPublicAccessBlock 이 필요하다.
+      // DeleteBucket 은 프로젝트 삭제 시 고아 공개 버킷을 자동 정리하는 데 쓴다(ProjectCloudCleanup).
+      // S3 프론트 배포를 안 쓰면 이 문(statement)은 없어도 된다.
+    },
+    {
+      "Sid": "AcmForCloudfrontHttps",
+      "Effect": "Allow",
+      "Action": ["acm:RequestCertificate", "acm:DescribeCertificate",
+                 "acm:DeleteCertificate", "acm:ListCertificates"],
+      "Resource": "*"
+      // S3 프론트에 HTTPS 를 붙일 때 CloudFront 용 인증서를 발급한다. CloudFront 인증서는 반드시
+      // us-east-1 이어야 한다. 인증서 ARN 은 RequestCertificate 시점에 생성되므로 리소스 스코프가
+      // 불가능해 "*" 다(AWS 제약). DNS 검증 레코드는 우리 Cloudflare 존에 넣으므로 Route53 권한은
+      // 필요 없다. S3 프론트 HTTPS 를 안 쓰면 이 문은 없어도 된다.
+    },
+    {
+      "Sid": "CloudFrontS3FrontHttps",
+      "Effect": "Allow",
+      "Action": ["cloudfront:CreateDistribution",
+                 "cloudfront:GetDistribution", "cloudfront:GetDistributionConfig",
+                 "cloudfront:UpdateDistribution", "cloudfront:DeleteDistribution",
+                 "cloudfront:ListDistributions"],
+      "Resource": "*"
+      // S3 website(http-only) 엔드포인트를 오리진으로 CloudFront 배포를 만들어 HTTPS 를 종단한다.
+      // CloudFront 는 글로벌이라 리소스 스코프가 사실상 "*" 다. 배포는 태그 없이 만들고(정리는 태그가
+      // 아니라 우리 DB 큐 cdn_deletions 로 한다), 프로젝트 삭제 시 disable(UpdateDistribution)→Deployed
+      // 대기→DeleteDistribution 으로 정리한다. S3 프론트 HTTPS 를 안 쓰면 이 문은 없어도 된다.
     },
     {
       "Sid": "RdsCreateDeleteQeployScoped",
@@ -89,16 +149,48 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       "Effect": "Allow",
       "Action": "rds:DescribeDBInstances",
       "Resource": "*"                       // Describe 계열은 리소스 스코프 불가(AWS 제약)
+    },
+    {
+      "Sid": "RdsServiceLinkedRole",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "arn:aws:iam::*:role/aws-service-role/rds.amazonaws.com/AWSServiceRoleForRDS",
+      "Condition": { "StringEquals": { "iam:AWSServiceName": "rds.amazonaws.com" } }
+      // RDS 를 처음 쓰는 계정은 첫 CreateDBInstance 가 AWSServiceRoleForRDS(서비스 연결 역할)를
+      // 자동 생성한다. 그 권한이 없으면 "permission to create service linked role" 로 400 실패한다
+      // (실계정 검증 2026-09-03). 조건으로 rds.amazonaws.com SLR 하나로만 좁혀 blast radius 를 막는다.
+      // 이미 RDS 를 써본 계정은 SLR 이 있어 이 액션이 호출되지 않는다.
+    },
+    {
+      "Sid": "EcrAuthToken",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"                       // 계정 레벨 토큰(AWS 제약상 스코프 불가)
+    },
+    {
+      "Sid": "EcrPushManageQeployScoped",
+      "Effect": "Allow",
+      "Action": ["ecr:CreateRepository", "ecr:DescribeRepositories", "ecr:DeleteRepository",
+                 "ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload",
+                 "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage",
+                 "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+      "Resource": "arn:aws:ecr:*:*:repository/qeploy-app-*"   // 이미지 저장소 qeploy-app-{projectId}
+      // DOCKER 배포의 image-transfer=ECR 경로 전용: 컨트롤 플레인이 이미지를 ECR 로 push 한다.
+      // buildx(buildkit)는 push 전에 매니페스트를 HEAD 로 확인하므로 read 권한(BatchGetImage,
+      // GetDownloadUrlForLayer)도 필요하다 — 없으면 매니페스트 HEAD 가 403 으로 push 실패한다
+      // (실계정 e2e 2026-09-04 에서 확인 — 고전 docker push 는 이 read-check 가 없어 안 드러났다).
+      // 기본 S3 전달이면 이 권한은 불필요. EC2 의 pull 권한은 인스턴스 역할(아래)에 자동 부여.
     }
   ]
 }
 ```
 
-> **런타임 검증 상태(2026-09-03):** 위 액션·리소스 스코프는 실제 호출부(`Ec2Provisioner`,
-> `S3ArtifactStore`, `SsmParameterStore`, `Ec2InstanceRoleProvisioner`, `RdsProvisioner`)와
-> 1:1 대조해 확정했다. 다만 **이 최소권한 키만으로 실배포가 도는지의 e2e 검증은 EC2·IAM 경로가
-> 오늘(A) 진행 중이고, RDS 경로는 아직 미검증이다.** 지난 e2e 는 AWS Academy 의 넓은 키였다 —
-> 그때 RDS 가 된 것은 키가 넓어서였지 이 정책 때문이 아니다.
+> **런타임 검증 상태(2026-09-03):** EC2·IAM·EIP·SSM·S3 경로는 개인 계정 실배포로 검증 완료.
+> RDS 경로 검증 중 두 실계정 함정을 잡았다: (1) RDS 전용 SG(`qeploy-db`)를 명시하지 않으면 기본
+> SG 가 붙어 `qeploy-backend` SG 의 EC2 가 3306 에 못 붙는다 → `ensureDatabaseSecurityGroup`
+> 추가로 해결. (2) 처음 RDS 를 쓰는 계정은 서비스 연결 역할 자동 생성에 `iam:CreateServiceLinkedRole`
+> 이 필요하다 → 위 `RdsServiceLinkedRole` 로 해결. 지난 e2e 는 AWS Academy 의 넓은 키였다 — 그때
+> RDS 가 된 것은 키가 넓어서였지 이 정책 때문이 아니다.
 
 ## 인스턴스 자신이 받는 역할 (우리가 `/qeploy/` 아래 생성)
 
@@ -112,9 +204,13 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       "Resource": "arn:aws:ssm:*:*:parameter/qeploy/{projectId}/*" },
     { "Effect": "Allow", "Action": ["s3:GetObject"],
       "Resource": "arn:aws:s3:::qeploy-artifacts-*/{projectId}/*" }
+    // image-transfer=ECR 이면 아래 두 문장이 추가된다(우리가 자동 부여, 사용자 조치 불필요):
+    // { "Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*" },
+    // { "Effect": "Allow", "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
+    //     "ecr:BatchCheckLayerAvailability"], "Resource": "arn:aws:ecr:*:*:repository/qeploy-app-{projectId}" }
   ]
 }
 ```
 
 > 인스턴스 역할은 자기 프로젝트 경로만 참조하므로, 앱이 탈취돼도 다른 프로젝트의 비밀·아티팩트에
-> 닿지 못한다.
+> 닿지 못한다. ECR pull 권한도 자기 프로젝트 저장소(`qeploy-app-{projectId}`)로만 좁힌다.

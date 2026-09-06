@@ -15,9 +15,42 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties(prefix = "qeploy.provisioning.ec2")
 public record Ec2ProvisioningProperties(
-        String instanceProfileOverride
+        String instanceProfileOverride,
+        String tlsAskBaseUrl,
+        String imageTransfer,
+        String buildIsolation
 ) {
     public boolean hasInstanceProfileOverride() {
         return instanceProfileOverride != null && !instanceProfileOverride.isBlank();
+    }
+
+    /**
+     * DOCKER 배포 모드에서 이미지를 EC2 로 넘기는 방식. 기본(빈 값/미설정)은 S3(`docker save`→S3→
+     * 인스턴스가 `docker load`) — 추가 IAM 권한이 필요 없어 안전한 기본값이다. {@code ECR} 로 켜면
+     * 사용자 계정 ECR 로 push/pull 한다(레이어 캐시·속도 유리). ECR 은 사용자 BYOC 정책에 ECR 권한
+     * 추가가 필요하므로 명시적으로만 켠다. NATIVE(jar) 모드에는 영향 없다.
+     */
+    public boolean useEcr() {
+        return imageTransfer != null && imageTransfer.trim().equalsIgnoreCase("ECR");
+    }
+
+    /**
+     * 이미지 빌드 격리 방식. 기본(빈 값/미설정)은 {@code BUILDX} — 호스트 buildkit 로 빌드하며 크로스빌드
+     * (arm64 컨트롤 플레인→amd64 이미지)를 지원한다(개발기·현행). {@code KANIKO} 로 켜면 신뢰할 수 없는
+     * Dockerfile 의 빌드 스텝이 <b>호스트 데몬이 아니라 격리된 kaniko 컨테이너 안</b>에서 돈다(멀티테넌트
+     * 하드닝). 단 kaniko 는 컨트롤 플레인 arch 로만 빌드하므로(크로스빌드 없음) <b>amd64 컨트롤 플레인에서만</b>
+     * 켠다 — arm64 개발기에서 켜면 arm64 이미지가 나와 amd64 EC2 에서 안 뜬다.
+     */
+    public boolean useKaniko() {
+        return buildIsolation != null && buildIsolation.trim().equalsIgnoreCase("KANIKO");
+    }
+
+    /**
+     * 배포 인스턴스의 Caddy on-demand TLS ask 가 커스텀 도메인 발급 여부를 물어볼 BE 공개 base URL
+     * (예: https://api.qeploy.com). 비면(기본) 커스텀 도메인은 인증서 발급을 못 하고 *.qeploy.com 만
+     * HTTPS 가 붙는다 — 로컬 개발처럼 인스턴스가 BE 에 닿지 못하는 환경 대비 안전한 기본값.
+     */
+    public String tlsAskBaseUrlOrEmpty() {
+        return tlsAskBaseUrl == null ? "" : tlsAskBaseUrl.trim();
     }
 }

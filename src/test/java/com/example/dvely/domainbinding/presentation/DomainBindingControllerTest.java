@@ -29,10 +29,13 @@ class DomainBindingControllerTest {
     @Mock
     private DomainBindingSubmissionService submissionService;
 
+    @Mock
+    private com.example.dvely.domainbinding.application.service.DomainHostingAdapterRegistry hostingAdapterRegistry;
+
     @Test
     void bindDomainReturnsApprovalAwareTaskSubmission() {
         DomainBindingController controller =
-                new DomainBindingController(domainBindingFacade, submissionService);
+                new DomainBindingController(domainBindingFacade, submissionService, hostingAdapterRegistry);
         when(submissionService.submit(
                 org.mockito.ArgumentMatchers.eq(1L),
                 org.mockito.ArgumentMatchers.eq(11L),
@@ -68,7 +71,7 @@ class DomainBindingControllerTest {
     @Test
     void deleteDomainReturnsApprovalAwareTaskSubmission() {
         DomainBindingController controller =
-                new DomainBindingController(domainBindingFacade, submissionService);
+                new DomainBindingController(domainBindingFacade, submissionService, hostingAdapterRegistry);
         when(submissionService.submitDelete(1L, 31L))
                 .thenReturn(new AgentSubmission("task-delete", TaskStatus.WAITING_APPROVAL, List.of(41L)));
 

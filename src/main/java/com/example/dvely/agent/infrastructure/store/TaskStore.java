@@ -2,6 +2,7 @@ package com.example.dvely.agent.infrastructure.store;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.dto.ClarificationRequest;
 import com.example.dvely.agent.application.dto.AgentTaskEvent;
 import com.example.dvely.agent.application.dto.AgentTaskFailure;
 import com.example.dvely.agent.application.dto.TaskStatus;
@@ -82,6 +83,44 @@ public class TaskStore {
                 .filter(json -> !json.isBlank())
                 .map(this::readPlan)
                 .orElse(null);
+    }
+
+    private static final List<String> TERMINAL_STATUSES = List.of("DONE", "FAILED", "CANCELLED");
+
+    /**
+     * 대화의 현재 살아있는(비-terminal) 태스크 포인터. 새로고침 후 FE 가 WAITING_INPUT(되묻기) 폼이나
+     * 진행 상태를 복구하는 데 쓴다 — 없으면 empty. 소유자만 보고, terminal(DONE/FAILED/CANCELLED)은 제외.
+     */
+    @Transactional(readOnly = true)
+    public java.util.Optional<ActiveTask> findActiveTask(Long conversationId, Long userId) {
+        if (conversationId == null || userId == null) {
+            return java.util.Optional.empty();
+        }
+        return runRepository.findActiveRuns(
+                        conversationId, userId, TERMINAL_STATUSES,
+                        org.springframework.data.domain.PageRequest.of(0, 1))
+                .stream().findFirst()
+                .map(run -> new ActiveTask(run.getTaskId(), TaskStatus.valueOf(run.getStatus())));
+    }
+
+    /** 대화의 현재 살아있는 태스크 포인터(id + 상태). */
+    public record ActiveTask(String taskId, TaskStatus status) {}
+
+    /** WAITING_INPUT 인 CLARIFY 태스크의 구조화 질문. 없거나 단순 텍스트 입력이면 null(FE 는 텍스트로 폴백). */
+    @Transactional(readOnly = true)
+    public ClarificationRequest getClarification(String taskId) {
+        String json = runRepository.findById(taskId)
+                .map(AgentRunEntity::getClarificationJson)
+                .filter(s -> s != null && !s.isBlank())
+                .orElse(null);
+        if (json == null) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, ClarificationRequest.class);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @Transactional
@@ -303,6 +342,22 @@ public class TaskStore {
     }
 
     /**
+     * 시작되지 않은 채 방치된 PENDING 태스크 후보. {@code ChatCommandService} 의 비동기 Decision 이
+     * {@code createPending} 으로 PENDING 을 먼저 커밋한 뒤 프로세스가 죽으면(배포 재기동 등) 계획
+     * 없이 PENDING 으로 남는데, 워커도 다른 스윕도 이 상태를 집지 않는다 — 이 스윕이 유일한 출구다.
+     *
+     * 비잠금 스칼라 읽기다. 재확인은 {@code AgentOrchestrator#failStalePendingTask} 가 태스크 행
+     * 잠금 아래에서 하므로, 오검출(예: 방금 확정으로 넘어간 태스크)은 상태 재검사로 조용히 no-op 된다.
+     */
+    @Transactional(readOnly = true)
+    public List<String> findStalePendingTaskIds(Duration grace) {
+        return runRepository.findStalePendingTaskIds(
+                TaskStatus.PENDING.name(),
+                LocalDateTime.now().minus(grace)
+        );
+    }
+
+    /**
      * ADR-Y2's actual state transition for a sweep-recovered task — mirrors {@link #enqueue}
      * (WAITING_APPROVAL -&gt; QUEUED) but appends a distinctly-named audit event instead of the
      * generic "QUEUED" one, so this recovery path is distinguishable from an ordinary approve on
@@ -480,12 +535,40 @@ public class TaskStore {
 
     @Transactional
     public void markWaitingInput(String taskId, String question) {
+        markWaitingInput(taskId, question, null);
+    }
+
+    /** 구조화 되묻기(CLARIFY)면 clarification 을 함께 싣는다 — FE 가 컨트롤을 렌더하도록. 단순 텍스트면 null. */
+    @Transactional
+    public void markWaitingInput(String taskId, String question, ClarificationRequest clarification) {
         AgentRunEntity run = requireRun(taskId);
         if (TaskStatus.valueOf(run.getStatus()) == TaskStatus.CANCELLED) {
             return;
         }
-        run.waitForInput(question);
+        run.waitForInput(question, clarification == null ? null : writeClarification(clarification));
         appendEvent(taskId, "WAITING_INPUT", TaskStatus.WAITING_INPUT, question);
+    }
+
+    /**
+     * 스펙 되묻기 답을 반영해 재-decide 한 새 플랜으로 교체하고 처음부터 재실행하도록 재큐한다.
+     * CLARIFY 스텝이 답을 소비한 뒤 실행기가 부른다 — 이후 워커가 새 플랜(스택 일관)을 처음부터 돌린다.
+     */
+    @Transactional
+    public void replacePlanAndRequeue(String taskId, AgentPlan newPlan) {
+        AgentRunEntity run = requireRun(taskId);
+        if (TaskStatus.valueOf(run.getStatus()) == TaskStatus.CANCELLED) {
+            return;
+        }
+        run.replacePlan(writePlan(newPlan));
+        appendEvent(taskId, "REPLANNED", TaskStatus.QUEUED, "되묻기 답을 반영해 재계획했습니다.");
+    }
+
+    private String writeClarification(ClarificationRequest clarification) {
+        try {
+            return objectMapper.writeValueAsString(clarification);
+        } catch (Exception e) {
+            throw new IllegalStateException("clarification 직렬화 실패", e);
+        }
     }
 
     @Transactional

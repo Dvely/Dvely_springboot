@@ -3,6 +3,7 @@ package com.example.dvely.provisioning.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -20,6 +21,7 @@ import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepos
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import com.example.dvely.provisioning.infrastructure.Ec2InstanceRoleProvisioner;
+import com.example.dvely.provisioning.application.port.out.FrontendOriginPort;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner.LaunchSpec;
 import com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties;
@@ -43,7 +45,7 @@ class BackendDeployRunnerTest {
 
     @Mock private ProvisionedServerRepository serverRepository;
     @Mock private CloudConnectionRepository cloudConnectionRepository;
-    @Mock private BackendJarBuildService buildService;
+    @Mock private NativeBuildService nativeBuildService;
     @Mock private S3ArtifactStore s3;
     @Mock private SsmParameterStore ssm;
     @Mock private Ec2InstanceRoleProvisioner roleProvisioner;
@@ -51,6 +53,7 @@ class BackendDeployRunnerTest {
     @Mock private ProvisionedDatabaseRepository databaseRepository;
     @Mock private EnvironmentVariableRepository environmentVariableRepository;
     @Mock private Ec2ProvisioningProperties ec2Properties;
+    @Mock private FrontendOriginPort frontendOriginPort;
 
     @InjectMocks private BackendDeployRunner runner;
 
@@ -66,12 +69,12 @@ class BackendDeployRunnerTest {
 
     private void stubHappyPath(Path jar) {
         when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection()));
-        when(buildService.buildJar(OWNER, PROJECT)).thenReturn(jar);
+        when(nativeBuildService.build(OWNER, PROJECT)).thenReturn(new NativeBuildService.NativeArtifact(jar, NativeBuildService.NativeRuntime.JAVA));
         when(s3.bucketNameFor(any())).thenReturn("qeploy-artifacts-x");
         when(s3.jarKeyFor(PROJECT)).thenReturn("10/app.jar");
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
         when(environmentVariableRepository.findByProjectIdOrderByScopeAscKeyAsc(PROJECT)).thenReturn(List.of());
-        when(roleProvisioner.ensureInstanceProfile(any(), eq(PROJECT), anyString())).thenReturn("qeploy-instance-10");
+        when(roleProvisioner.ensureInstanceProfile(any(), eq(PROJECT), anyString(), anyBoolean())).thenReturn("qeploy-instance-10");
         when(ec2.ensureSecurityGroup(any(), eq(8080))).thenReturn("sg-1");
         when(ssm.latestAmazonLinux2023Ami(any())).thenReturn("ami-1");
         when(ec2.allocateAndAssociateElasticIp(any(), anyString(), anyString()))
@@ -97,7 +100,7 @@ class BackendDeployRunnerTest {
     @Test
     void buildFailureMarksServerFailedAndNeverLaunches() {
         when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection()));
-        when(buildService.buildJar(OWNER, PROJECT)).thenThrow(new BackendBuildException("gradle 빌드 실패"));
+        when(nativeBuildService.build(OWNER, PROJECT)).thenThrow(new BackendBuildException("gradle 빌드 실패"));
 
         runner.deploy(building());
 
@@ -116,7 +119,7 @@ class BackendDeployRunnerTest {
         ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
         verify(serverRepository).save(saved.capture());
         assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.FAILED);
-        verify(buildService, never()).buildJar(anyLong(), anyLong());
+        verify(nativeBuildService, never()).build(anyLong(), anyLong());
     }
 
     @Test
@@ -134,7 +137,7 @@ class BackendDeployRunnerTest {
         ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
         verify(serverRepository).save(saved.capture());
         assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.FAILED);
-        verify(buildService, never()).buildJar(anyLong(), anyLong());
+        verify(nativeBuildService, never()).build(anyLong(), anyLong());
         verify(ec2, never()).launch(any(), any());
     }
 
@@ -158,7 +161,7 @@ class BackendDeployRunnerTest {
         // roleProvisioner(IAM 생성)를 아예 부르지 않아야 한다.
         Path jar = Files.createTempFile("test-app", ".jar");
         when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection()));
-        when(buildService.buildJar(OWNER, PROJECT)).thenReturn(jar);
+        when(nativeBuildService.build(OWNER, PROJECT)).thenReturn(new NativeBuildService.NativeArtifact(jar, NativeBuildService.NativeRuntime.JAVA));
         when(s3.bucketNameFor(any())).thenReturn("qeploy-artifacts-x");
         when(s3.jarKeyFor(PROJECT)).thenReturn("10/app.jar");
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
@@ -173,7 +176,7 @@ class BackendDeployRunnerTest {
 
         runner.deploy(building());
 
-        verify(roleProvisioner, never()).ensureInstanceProfile(any(), any(), any());
+        verify(roleProvisioner, never()).ensureInstanceProfile(any(), any(), any(), anyBoolean());
         ArgumentCaptor<LaunchSpec> spec = ArgumentCaptor.forClass(LaunchSpec.class);
         verify(ec2).launch(any(), spec.capture());
         assertThat(spec.getValue().iamInstanceProfileName()).isEqualTo("LabInstanceProfile");

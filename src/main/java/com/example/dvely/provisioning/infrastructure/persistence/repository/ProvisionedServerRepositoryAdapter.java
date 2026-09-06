@@ -53,9 +53,57 @@ public class ProvisionedServerRepositoryAdapter implements ProvisionedServerRepo
     }
 
     @Override
+    public List<ProvisionedServer> findRunningWithPendingReplacement(int limit) {
+        return springDataRepository.findByStatusAndSupersedesServerIdIsNotNullOrderByCreatedAtAsc(
+                        ServerStatus.RUNNING.name(), PageRequest.of(0, limit))
+                .stream().map(ProvisionedServerEntity::toDomain).toList();
+    }
+
+    @Override
     @Transactional
     public boolean claimForBuild(Long id) {
         return springDataRepository.claimForBuild(id, LocalDateTime.now()) == 1;
+    }
+
+    /** 교체 리스 유지 시간. 한 틱의 교체 처리보다 넉넉하되, 인스턴스가 죽으면 다른 곳이 이어받을 만큼 짧게. */
+    private static final java.time.Duration REPLACEMENT_LEASE = java.time.Duration.ofMinutes(2);
+
+    @Override
+    @Transactional
+    public boolean claimForReplacement(Long id, String owner) {
+        LocalDateTime now = LocalDateTime.now();
+        return springDataRepository.claimForReplacement(id, owner, now.plus(REPLACEMENT_LEASE), now) == 1;
+    }
+
+    @Override
+    @Transactional
+    public boolean claimBootTimeout(Long id) {
+        return springDataRepository.claimBootTimeout(id, LocalDateTime.now()) == 1;
+    }
+
+    @Override
+    @Transactional
+    public void recordHealth(Long id, boolean healthy) {
+        springDataRepository.updateHealth(id, healthy, LocalDateTime.now());
+    }
+
+    @Override
+    @Transactional
+    public boolean claimRecovery(Long id) {
+        return springDataRepository.claimRecovery(id, LocalDateTime.now()) == 1;
+    }
+
+    @Override
+    @Transactional
+    public void clearRecoveryAttempt(Long id) {
+        springDataRepository.clearRecoveryAttempt(id);
+    }
+
+    @Override
+    @Transactional
+    public boolean claimRecoveryOutcomeReport(Long id, java.time.Duration settleWindow) {
+        LocalDateTime now = LocalDateTime.now();
+        return springDataRepository.claimRecoveryOutcomeReport(id, now.minus(settleWindow), now) == 1;
     }
 
     @Override

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.value.DeployStatus;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
@@ -36,6 +37,26 @@ class ProjectEntityTest {
         // Sanity check that updateFrom() did apply the other field changes it's supposed to —
         // otherwise an updateFrom() that touched nothing at all would trivially "pass" this test.
         assertThat(entity.getName()).isEqualTo("renamed");
+    }
+
+    @Test
+    void frontendHostingTypeDefaultsToGithubPagesAndRoundTripsThroughTheEntity() {
+        // 미지정 프로젝트는 기존 동작(GITHUB_PAGES)으로 떨어진다.
+        ProjectEntity fresh = ProjectEntity.from(newProject());
+        assertThat(fresh.toDomain().getFrontendHostingType()).isEqualTo(FrontendHostingType.GITHUB_PAGES);
+
+        // 명시값은 도메인→엔티티(from)→도메인(toDomain) 왕복에서 보존된다.
+        Project s3Project = newProject();
+        s3Project.changeFrontendHosting(FrontendHostingType.S3);
+        assertThat(ProjectEntity.from(s3Project).toDomain().getFrontendHostingType())
+                .isEqualTo(FrontendHostingType.S3);
+
+        // updateFrom 도 값을 반영한다.
+        ProjectEntity entity = ProjectEntity.from(newProject());
+        Project ec2Project = renamedProject();
+        ec2Project.changeFrontendHosting(FrontendHostingType.EC2);
+        entity.updateFrom(ec2Project);
+        assertThat(entity.toDomain().getFrontendHostingType()).isEqualTo(FrontendHostingType.EC2);
     }
 
     private void setVersion(ProjectEntity entity, Long version) throws Exception {

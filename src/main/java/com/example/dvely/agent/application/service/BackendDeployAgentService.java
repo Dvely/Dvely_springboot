@@ -10,6 +10,8 @@ import com.example.dvely.provisioning.application.result.ServerProvisionSubmitRe
 import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
 import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepository;
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
+import com.example.dvely.provisioning.domain.value.ServerDeployMode;
+import com.example.dvely.provisioning.domain.value.WebFrontendSpec;
 import com.example.dvely.provisioning.domain.value.ProvisionMethod;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import java.util.ArrayList;
@@ -48,26 +50,38 @@ public class BackendDeployAgentService {
 
         String instanceType = blankToNull(step.parameters().get("instanceType"));
         DatabaseEngine dbEngine = parseEngine(step.parameters().get("dbEngine"));
+        ServerDeployMode deployMode = parseDeployMode(step.parameters().get("deployMode"));
+        DatabaseEngine bundledDb = parseEngine(step.parameters().get("bundledDbEngine"));
+        WebFrontendSpec web = new WebFrontendSpec(
+                blankToNull(step.parameters().get("frontendRepo")),
+                blankToNull(step.parameters().get("frontendDir")),
+                blankToNull(step.parameters().get("apiPathPrefix")));
+        // 번들 DB·웹 컨테이너(같은 EC2 에 compose)는 DOCKER 배포에서만 가능하므로 편의상 DOCKER 로 승격.
+        if (bundledDb != null || web.hasWeb()) {
+            deployMode = ServerDeployMode.DOCKER;
+        }
 
         try {
             List<Long> approvalIds = new ArrayList<>();
             boolean dbRequested = false;
 
             // DB 를 원하는데(dbEngine 지정) 아직 RDS DB 가 없으면 함께 요청한다. 이미 있거나 생성 중이면
-            // 중복으로 만들지 않는다.
-            if (dbEngine != null && !hasActiveRdsDatabase(projectId)) {
+            // 중복으로 만들지 않는다. 단 번들 DB 를 쓰면(그게 곧 DB 다) RDS 는 만들지 않는다 — 둘은 대안.
+            if (dbEngine != null && bundledDb == null && !hasActiveRdsDatabase(projectId)) {
                 ProvisionSubmitResult db = databaseCommandService.provision(
                         userId, projectId, ProvisionMethod.RDS, dbEngine);
                 approvalIds.addAll(db.approvalIds());
                 dbRequested = true;
             }
 
-            ServerProvisionSubmitResult server = serverCommandService.submit(userId, projectId, instanceType);
+            // 에이전트 백엔드 배포 경로는 백엔드를 포함하므로 웹 전용이 아니다(webOnly=false).
+            ServerProvisionSubmitResult server =
+                    serverCommandService.submit(userId, projectId, instanceType, deployMode, bundledDb, web, false);
             approvalIds.addAll(server.approvalIds());
 
-            log.info("[BACKEND_DEPLOY] 배포 요청 접수 | projectId={} dbRequested={} approvalIds={}",
-                    projectId, dbRequested, approvalIds);
-            return new CodeResult(null, buildSummary(dbRequested));
+            log.info("[BACKEND_DEPLOY] 배포 요청 접수 | projectId={} dbRequested={} bundledDb={} web={} approvalIds={}",
+                    projectId, dbRequested, bundledDb, web.hasWeb(), approvalIds);
+            return new CodeResult(null, buildSummary(dbRequested, bundledDb != null));
         } catch (NotFoundException | IllegalStateException e) {
             // "클라우드 연결이 필요합니다" 같은 사용자 조치 안내 — 태스크를 실패로 떨구지 않고 그대로 보여준다.
             log.info("[BACKEND_DEPLOY] 배포 요청 불가(사용자 조치 필요) | projectId={} 사유={}", projectId, e.getMessage());
@@ -86,11 +100,15 @@ public class BackendDeployAgentService {
         return s == ProvisionStatus.READY || s == ProvisionStatus.PENDING || s == ProvisionStatus.PROVISIONING;
     }
 
-    private String buildSummary(boolean dbRequested) {
+    private String buildSummary(boolean dbRequested, boolean bundledDb) {
         if (dbRequested) {
             return "운영 백엔드 배포를 요청했습니다. 과금 자원이라 승인이 필요합니다 — 데이터베이스와 "
                     + "서버 생성 각각을 승인해주세요. DB 를 먼저 승인하면 서버가 그 DB 가 준비된 뒤 자동으로 "
                     + "연결되어 뜹니다. 승인 후 몇 분 뒤 접속 주소가 나옵니다.";
+        }
+        if (bundledDb) {
+            return "운영 백엔드 서버 배포를 요청했습니다(DB 포함). 과금 자원이라 승인이 필요합니다 — 승인하면 "
+                    + "같은 서버에 앱과 데이터베이스를 함께 띄웁니다(별도 RDS 없이). 승인 후 몇 분 뒤 접속 주소가 나옵니다.";
         }
         return "운영 백엔드 서버 배포를 요청했습니다. 과금 자원이라 승인이 필요합니다 — 승인하면 소스를 "
                 + "빌드해 서버를 띄웁니다. 승인 후 몇 분 뒤 접속 주소가 나옵니다.";
@@ -104,6 +122,18 @@ public class BackendDeployAgentService {
             return DatabaseEngine.valueOf(value.trim().toUpperCase());
         } catch (RuntimeException e) {
             return null;   // 알 수 없는 엔진은 DB 없이 서버만 배포
+        }
+    }
+
+    /** 배포 형태(step 파라미터). 생략/알 수 없으면 NATIVE(jar). LLM 이 "docker"를 주면 이미지 배포. */
+    private ServerDeployMode parseDeployMode(String value) {
+        if (value == null || value.isBlank()) {
+            return ServerDeployMode.NATIVE;
+        }
+        try {
+            return ServerDeployMode.valueOf(value.trim().toUpperCase());
+        } catch (RuntimeException e) {
+            return ServerDeployMode.NATIVE;
         }
     }
 

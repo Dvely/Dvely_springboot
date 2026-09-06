@@ -10,6 +10,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
@@ -859,6 +860,52 @@ class AgentOrchestratorTest {
         orchestrator.recoverStuckApprovedTask("task-1");
 
         verify(taskStore, never()).recoverStuckApproval(anyString());
+    }
+
+    // ── 시작되지 않은 채 방치된 PENDING 태스크 정리 (메시지 Decision 비동기화) ────────────────
+
+    @Test
+    void failStalePendingTaskClosesAPendingTaskAndNotifiesTheConversation() {
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                messageService
+        );
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.PENDING));
+
+        boolean closed = orchestrator.failStalePendingTask("task-1");
+
+        assertThat(closed).isTrue();
+        verify(taskStore).markFailed("task-1", "요청 처리가 시작되지 않아 종료했습니다.");
+        verify(messageService).appendAssistant(21L, "요청 처리가 시작되지 않아 이 작업을 종료했습니다. 다시 시도해주세요.");
+    }
+
+    @Test
+    void failStalePendingTaskNoOpsWhenTheDecisionAlreadyMovedTheTaskOn() {
+        // grace 안에 살아 있는 Decision 이 확정(예: QUEUED)했다면 잠금 아래 상태가 PENDING 이 아니다
+        // — 조용히 no-op 해야지, 이미 진행 중인 태스크를 FAILED 로 덮어써서는 안 된다.
+        TaskStore taskStore = mock(TaskStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                messageService
+        );
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.QUEUED));
+
+        boolean closed = orchestrator.failStalePendingTask("task-1");
+
+        assertThat(closed).isFalse();
+        verify(taskStore, never()).markFailed(anyString(), anyString());
+        verifyNoInteractions(messageService);
     }
 
     // ── Y6-b (#55): dedupe summary merge — multiple steps of the same type ─────────────────────

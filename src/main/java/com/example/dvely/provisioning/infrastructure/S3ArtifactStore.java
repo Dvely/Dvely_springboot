@@ -3,21 +3,33 @@ package com.example.dvely.provisioning.infrastructure;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.infrastructure.external.AwsCredentialsResolver;
 import com.example.dvely.cloudconnection.infrastructure.external.AwsCredentialsResolver.AwsAccess;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.AbortMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CompletedMultipartUpload;
+import software.amazon.awssdk.services.s3.model.CompletedPart;
 import software.amazon.awssdk.services.s3.model.CreateBucketConfiguration;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
-import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.ServerSideEncryption;
+import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 
 /**
  * 빌드 산출물(jar)을 사용자 AWS 계정의 S3 에 올린다. 샌드박스 컨테이너가 만든 jar 를 EC2 로 넘기는
@@ -48,9 +60,24 @@ public class S3ArtifactStore {
         return "qeploy-artifacts-" + accountId + "-" + connection.getRegion();
     }
 
-    /** 프로젝트별 jar 키. IAM 정책이 {projectId}/* 로 인스턴스 접근을 좁히므로 이 접두사를 지킨다. */
+    /** 프로젝트별 jar 키(NATIVE/Java 배포). IAM 정책이 {projectId}/* 로 인스턴스 접근을 좁히므로 접두사 유지. */
     public String jarKeyFor(Long projectId) {
         return projectId + "/app.jar";
+    }
+
+    /** 프로젝트별 Node 소스 tar 키(NATIVE/Node 배포). EC2 가 받아 압축 풀고 npm ci→npm start. */
+    public String nodeSourceKeyFor(Long projectId) {
+        return projectId + "/app-src.tar";
+    }
+
+    /** 프로젝트별 이미지 tar 키(DOCKER 배포). jar 와 같은 {projectId}/ 접두사(IAM 스코프 유지). */
+    public String imageKeyFor(Long projectId) {
+        return projectId + "/image.tar";
+    }
+
+    /** 프로젝트별 웹(프론트) 이미지 tar 키. 앱 이미지와 같은 {projectId}/ 접두사(IAM 스코프 유지). */
+    public String webImageKeyFor(Long projectId) {
+        return projectId + "/web.tar";
     }
 
     /** 버킷이 없으면 만든다(멱등). 이미 있으면 아무것도 안 한다. */
@@ -76,15 +103,65 @@ public class S3ArtifactStore {
         }
     }
 
-    /** jar 파일을 올린다(서버측 암호화). 같은 키면 덮어쓴다. */
+    /** S3 멀티파트 최소 파트 크기는 5MB. 8MB 로 잡아 파트 수를 줄이되 소켓 write 는 작게 유지한다. */
+    private static final int PART_SIZE = 8 * 1024 * 1024;
+
+    /**
+     * jar 파일을 올린다(서버측 암호화). 같은 키면 덮어쓴다. <b>멀티파트로 쪼개 올린다.</b>
+     *
+     * <p>단일 PutObject 로 수십 MB 를 올리면 macOS + JDK 의 {@code NioSocketImpl} 대용량 단일 소켓
+     * write 버그에 걸려 {@code java.net.SocketException: Result too large} 로 실패한다(HTTP 클라이언트
+     * 종류와 무관 — 둘 다 내부적으로 {@code sun.nio.ch} 를 쓴다). 실계정에서 54MB jar 로 재현
+     * (2026-09-03). 파트를 8MB 로 나누면 각 소켓 write 가 작아 이 버그를 피한다. 대용량 업로드의
+     * 정석이기도 하다(중간 실패 시 abort).</p>
+     */
     public void uploadJar(CloudConnection connection, String bucket, String key, Path jarFile) {
         AwsAccess access = credentialsResolver.resolve(connection);
+        long size;
+        try {
+            size = Files.size(jarFile);
+        } catch (IOException e) {
+            throw new IllegalStateException("배포 jar 크기 확인 실패: " + jarFile, e);
+        }
         try (S3Client s3 = client(access)) {
-            s3.putObject(PutObjectRequest.builder()
+            String uploadId = s3.createMultipartUpload(CreateMultipartUploadRequest.builder()
                     .bucket(bucket).key(key)
                     .serverSideEncryption(ServerSideEncryption.AES256)
-                    .build(), RequestBody.fromFile(jarFile));
-            log.info("S3 jar 업로드: bucket={} key={}", bucket, key);
+                    .build()).uploadId();
+            try (FileChannel ch = FileChannel.open(jarFile)) {
+                List<CompletedPart> parts = new ArrayList<>();
+                byte[] buf = new byte[PART_SIZE];
+                int partNumber = 1;
+                long uploaded = 0;
+                while (uploaded < size) {
+                    int toRead = (int) Math.min(PART_SIZE, size - uploaded);
+                    ByteBuffer bb = ByteBuffer.wrap(buf, 0, toRead);
+                    while (bb.hasRemaining() && ch.read(bb) >= 0) { /* 파트 하나를 다 읽는다 */ }
+                    int read = bb.position();
+                    var resp = s3.uploadPart(UploadPartRequest.builder()
+                            .bucket(bucket).key(key).uploadId(uploadId).partNumber(partNumber).build(),
+                            RequestBody.fromBytes(Arrays.copyOf(buf, read)));
+                    parts.add(CompletedPart.builder().partNumber(partNumber).eTag(resp.eTag()).build());
+                    uploaded += read;
+                    partNumber++;
+                }
+                s3.completeMultipartUpload(CompleteMultipartUploadRequest.builder()
+                        .bucket(bucket).key(key).uploadId(uploadId)
+                        .multipartUpload(CompletedMultipartUpload.builder().parts(parts).build())
+                        .build());
+                log.info("S3 jar 멀티파트 업로드: bucket={} key={} bytes={} parts={}",
+                        bucket, key, size, parts.size());
+            } catch (IOException | RuntimeException e) {
+                // 실패 시 미완성 멀티파트를 정리한다(안 하면 잔여 파트가 스토리지 과금). abort 권한이
+                // 없어도(happy path 는 PutObject 만 필요) 본 오류를 가리지 않게 best-effort 로 둔다.
+                try {
+                    s3.abortMultipartUpload(AbortMultipartUploadRequest.builder()
+                            .bucket(bucket).key(key).uploadId(uploadId).build());
+                } catch (RuntimeException ignore) {
+                    log.warn("멀티파트 abort 실패(무시): bucket={} key={} uploadId={}", bucket, key, uploadId);
+                }
+                throw new IllegalStateException("jar 멀티파트 업로드 실패: " + e.getMessage(), e);
+            }
         }
     }
 

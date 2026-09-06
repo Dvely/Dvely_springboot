@@ -36,7 +36,13 @@ public enum AuditAction {
     PREVIEW_RESTARTED(AuditCategory.INFRA),
     INFRA_CONFIG_CHANGE_REQUESTED(AuditCategory.INFRA),
     INFRA_CONFIG_APPLIED(AuditCategory.INFRA),
-    INFRA_CONFIG_REJECTED(AuditCategory.INFRA);
+    INFRA_CONFIG_REJECTED(AuditCategory.INFRA),
+    // 카탈로그 개정(2026-09-06): 배포 EC2 서버 앱이 무응답이라 헬스 모니터가 자동 재시작(자가치유)한
+    // 시스템 이벤트. PREVIEW_RESTARTED 와 동형(재시작 이벤트) — 사용자가 감사 로그에서 앱 불안정을 본다.
+    SERVER_RECOVERY_ATTEMPTED(AuditCategory.INFRA),
+    // 카탈로그 개정(2026-09-06): 자동 재시작(SERVER_RECOVERY_ATTEMPTED)을 했는데도 settle 유예가 지나도록
+    // 앱이 계속 무응답 — 자가치유 실패라 사용자 개입(로그·재배포)이 필요하다는 시스템 신호. 에피소드당 1회.
+    SERVER_RECOVERY_FAILED(AuditCategory.INFRA);
 
     private final AuditCategory category;
 

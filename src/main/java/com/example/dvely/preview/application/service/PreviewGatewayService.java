@@ -1,11 +1,14 @@
 package com.example.dvely.preview.application.service;
 
+import com.example.dvely.preview.application.port.out.DeadPreviewSessionReclaimer;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -13,6 +16,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 @Slf4j
 @Service
@@ -58,10 +62,22 @@ public class PreviewGatewayService {
             .build();
 
     private final String contentSecurityPolicy;
+    private final boolean reclaimEnabled;
+    private final DeadPreviewSessionReclaimer reclaimer;
+
+    // 임시 진단(기본 off). cross-origin iframe 안의 콘솔/DOM 을 밖에서 못 보므로, 프리뷰 문서에 에러·상태를
+    // 화면(body)에 그리는 오버레이를 주입해 iframe 스크린샷만으로 렌더 실패 원인을 잡는다. 필드 주입이라
+    // 기존 생성자·테스트를 안 건드린다(테스트에선 기본값 false). 원인 확인 후 끈다.
+    @Value("${qeploy.preview.gateway-diagnostic-enabled:false}")
+    private boolean diagnosticEnabled;
 
     public PreviewGatewayService(
-            @Value("${qeploy.preview.frame-ancestors:'self'}") String frameAncestors) {
+            @Value("${qeploy.preview.frame-ancestors:'self'}") String frameAncestors,
+            @Value("${qeploy.preview.gateway-reclaim-enabled:true}") boolean reclaimEnabled,
+            DeadPreviewSessionReclaimer reclaimer) {
         this.contentSecurityPolicy = SANDBOX_DIRECTIVES + "; frame-ancestors " + frameAncestors.trim();
+        this.reclaimEnabled = reclaimEnabled;
+        this.reclaimer = reclaimer;
     }
 
     // 테스트가 조립 결과를 직접 확인하기 위한 접근자.
@@ -69,14 +85,32 @@ public class PreviewGatewayService {
         return contentSecurityPolicy;
     }
 
+    /** GET 편의 오버로드(본문 없음). 기존 호출부·테스트가 그대로 쓴다. */
     public ResponseEntity<byte[]> proxy(PreviewSessionInfo session,
                                         String gatewayPrefix,
                                         String path,
                                         String query) {
+        return proxy("GET", session, gatewayPrefix, path, query, null, null);
+    }
+
+    /**
+     * 프리뷰 컨테이너로 요청을 프록시한다. GET 뿐 아니라 쓰기(POST/PUT/DELETE/PATCH)도 method·본문을 그대로
+     * 전달한다 — 에이전트가 만든 앱의 등록·폼이 동작하려면 필요하다. 응답의 HTML 재작성(base 흡수·경로 shim)은
+     * GET 문서에만 적용되고, 쓰기 응답(대개 JSON)은 그대로 돌려준다.
+     */
+    public ResponseEntity<byte[]> proxy(String method,
+                                        PreviewSessionInfo session,
+                                        String gatewayPrefix,
+                                        String path,
+                                        String query,
+                                        byte[] requestBody,
+                                        String requestContentType) {
         try {
             String safePath = sanitizePath(path);
-            HttpResponse<byte[]> response = fetch(session, safePath, query);
-            response = absorbBuildBasePath(session, safePath, query, response);
+            HttpResponse<byte[]> response = fetch(method, session, safePath, query, requestBody, requestContentType);
+            if ("GET".equalsIgnoreCase(method)) {
+                response = absorbBuildBasePath(session, safePath, query, response);
+            }
 
             String contentType = response.headers()
                     .firstValue(HttpHeaders.CONTENT_TYPE)
@@ -105,20 +139,126 @@ public class PreviewGatewayService {
             Thread.currentThread().interrupt();
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
         } catch (Exception exception) {
+            // 안쪽 앱에 아예 도달하지 못했다(연결 거부/리셋). 컨테이너는 살아있어도 그 안의 서버 프로세스가
+            // 죽으면 이 자리에 온다 — attach·findCurrent 의 컨테이너-생존 확인으로는 못 걸러지는 사각이다.
+            // 한 번 더 빠르게 확인해 일시적 실패가 아니면 세션을 회수한다(EXPIRED + 컨테이너 제거). 그러면
+            // findCurrent 가 "없음"으로 답해 FE 가 새 빌드 CTA 로 자동 복귀한다. 게이트웨이는 host-affine 이라
+            // 이 판정은 항상 로컬 컨테이너에 대한 것이다.
+            if (reclaimEnabled && isInnerAppUnreachable(session)) {
+                reclaimer.reclaimUnreachable(session.sessionId());
+            }
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
         }
     }
 
+    /**
+     * SSE({@code text/event-stream})를 <b>스트리밍</b>으로 프록시한다. 버퍼링 {@code proxy} 는 응답을
+     * {@code ofByteArray} 로 통째로 모아서 SSE 처럼 끝나지 않는 응답에선 영원히 막힌다 — 그래서 SSE 는
+     * 이 전용 경로로 온다({@code EventSource} 는 {@code Accept: text/event-stream} 을 보내므로 컨트롤러가
+     * {@code produces} 로 갈라 여기로 라우팅한다).
+     *
+     * <p>{@code ofInputStream} 은 본문을 모으지 않고 <b>헤더가 도착하는 즉시</b> 스트림을 돌려주므로,
+     * 업스트림이 이벤트를 흘릴 때마다 청크를 그대로 내려보내며 매 청크 {@code flush} 한다(서블릿 컨테이너·
+     * 앞단 프록시가 이벤트를 쌓지 않게). {@code X-Accel-Buffering: no} 로 nginx 버퍼링을, {@code no-transform}
+     * 으로 CDN 변형을 끈다. 재연결 시 브라우저가 보내는 {@code Last-Event-ID} 는 그대로 앞으로 전달한다.
+     * SSE 는 문서가 아니라 데이터라 sandbox CSP 는 붙이지 않는다.</p>
+     *
+     * <p>업스트림이 SSE 가 아닌 응답을 줘도(엔드포인트 없음 등) 그 {@code Content-Type} 을 그대로 흘려
+     * 일반 스트리밍 패스스루로 동작한다. 도달 실패는 버퍼링 경로와 같은 규칙으로 502 + (재확인 후) 회수.</p>
+     */
+    public ResponseEntity<StreamingResponseBody> proxyEventStream(PreviewSessionInfo session,
+                                                                  String path,
+                                                                  String query,
+                                                                  String lastEventId) {
+        String target = "http://127.0.0.1:" + session.hostPort() + "/" + sanitizePath(path);
+        if (query != null && !query.isBlank()) {
+            target += "?" + query;
+        }
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(target)).GET()
+                .header(HttpHeaders.ACCEPT, MediaType.TEXT_EVENT_STREAM_VALUE);
+        if (lastEventId != null && !lastEventId.isBlank()) {
+            builder.header("Last-Event-ID", lastEventId);
+        }
+
+        HttpResponse<InputStream> upstream;
+        try {
+            upstream = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+        } catch (Exception exception) {
+            if (reclaimEnabled && isInnerAppUnreachable(session)) {
+                reclaimer.reclaimUnreachable(session.sessionId());
+            }
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
+        }
+
+        InputStream upstreamBody = upstream.body();
+        StreamingResponseBody stream = out -> {
+            try (upstreamBody) {
+                byte[] buffer = new byte[512];
+                int read;
+                while ((read = upstreamBody.read(buffer)) != -1) {
+                    out.write(buffer, 0, read);
+                    out.flush();   // 이벤트를 쌓지 않고 즉시 흘려보낸다
+                }
+            } catch (Exception ignored) {
+                // 클라이언트 끊김/업스트림 종료 — EventSource 가 알아서 재연결한다. 남은 스트림은 try-with 로 닫힌다.
+            }
+        };
+        String contentType = upstream.headers()
+                .firstValue(HttpHeaders.CONTENT_TYPE)
+                .orElse(MediaType.TEXT_EVENT_STREAM_VALUE);
+        return ResponseEntity.status(upstream.statusCode())
+                .header(HttpHeaders.CONTENT_TYPE, contentType)
+                .header(HttpHeaders.CACHE_CONTROL, "no-cache, no-transform")
+                // nginx 등 리버스 프록시가 이 응답을 버퍼링하지 않게 한다(안 그러면 이벤트가 뭉쳐서 온다).
+                .header("X-Accel-Buffering", "no")
+                .body(stream);
+    }
+
+    /**
+     * 안쪽 앱이 정말 무응답인지 짧게 재확인한다 — 프록시 한 번의 실패로 세션을 지우지 않기 위한 확인
+     * 프로브다. 어떤 HTTP 응답이든(상태 코드 무관) 오면 서버 프로세스는 살아있는 것으로 본다. 재확인도
+     * 도달하지 못하면(연결 거부/리셋/타임아웃) 프로세스가 죽은 것으로 판정한다. 프리뷰 앱은 스스로
+     * 재시작하지 않으므로(agent 가 한 번 띄운 프로세스) 한 번 죽으면 계속 죽어 있어 재확인이 안정적이다.
+     */
+    private boolean isInnerAppUnreachable(PreviewSessionInfo session) {
+        try {
+            httpClient.send(
+                    HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + session.hostPort() + "/"))
+                            .timeout(Duration.ofSeconds(2)).GET().build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            return false;   // 응답이 왔다 — 프로세스는 살아있다(일시적 실패였음)
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;   // 인터럽트는 앱 상태의 증거가 아니다 — 회수하지 않는다
+        } catch (Exception e) {
+            return true;    // 재확인도 도달 실패 — 안쪽 서버 프로세스가 죽었다
+        }
+    }
+
+    /** GET 편의 오버로드(base 흡수의 내부 재시도용 — 본문 없음). */
     private HttpResponse<byte[]> fetch(PreviewSessionInfo session, String path, String query)
+            throws java.io.IOException, InterruptedException {
+        return fetch("GET", session, path, query, null, null);
+    }
+
+    private HttpResponse<byte[]> fetch(String method, PreviewSessionInfo session, String path, String query,
+                                       byte[] body, String contentType)
             throws java.io.IOException, InterruptedException {
         String target = "http://127.0.0.1:" + session.hostPort() + "/" + path;
         if (query != null && !query.isBlank()) {
             target += "?" + query;
         }
-        return httpClient.send(
-                HttpRequest.newBuilder(URI.create(target)).GET().build(),
-                HttpResponse.BodyHandlers.ofByteArray()
-        );
+        HttpRequest.BodyPublisher publisher = (body == null || body.length == 0)
+                ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofByteArray(body);
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(target)).method(method, publisher);
+        if (contentType != null && !contentType.isBlank() && body != null && body.length > 0) {
+            builder.header(HttpHeaders.CONTENT_TYPE, contentType);
+        }
+        return httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
     }
 
     /**
@@ -195,7 +335,112 @@ public class PreviewGatewayService {
                 .replace("href=\"/", "href=\"" + gatewayPrefix)
                 .replace("src='/", "src='" + gatewayPrefix)
                 .replace("href='/", "href='" + gatewayPrefix);
+        html = injectClientShim(html, gatewayPrefix);
+        if (diagnosticEnabled) {
+            html = injectDiagnostic(html);
+        }
         return html.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 임시 진단 오버레이 주입(플래그 on 일 때만). cross-origin iframe 은 밖에서 콘솔·DOM 을 못 읽으므로,
+     * 문서 안에서 에러·상태를 화면 맨 위 박스에 그려 iframe 스크린샷만으로 원인을 잡게 한다.
+     * window.onerror / unhandledrejection / 리소스(스크립트) 로드 에러 / origin·readyState·framed 를 찍는다.
+     */
+    private String injectDiagnostic(String html) {
+        String s = "<script>(function(){"
+                + "function b(){var d=document.getElementById('__qd');if(!d){d=document.createElement('div');"
+                + "d.id='__qd';d.style.cssText='position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#111;"
+                + "color:#0f0;font:12px/1.4 monospace;padding:6px;white-space:pre-wrap;max-height:70%;overflow:auto';"
+                + "(document.body||document.documentElement).appendChild(d);}return d;}"
+                + "function L(m){try{b().appendChild(document.createTextNode(m+'\\n'));}catch(e){}}"
+                + "try{L('origin='+window.origin+' readyState='+document.readyState+' framed='+(window.top!==window.self));}catch(e){L('origin/framed threw: '+e);}"
+                + "window.onerror=function(m,src,ln){L('onerror: '+m+' @ '+(src||'')+':'+ln);};"
+                + "window.addEventListener('unhandledrejection',function(e){L('reject: '+((e.reason&&e.reason.message)||e.reason));});"
+                + "window.addEventListener('error',function(e){var t=e.target;if(t&&t!==window&&(t.src||t.href))L('resErr: '+t.tagName+' '+(t.src||t.href));},true);"
+                + "document.addEventListener('DOMContentLoaded',function(){L('DOMContentLoaded');});"
+                + "window.addEventListener('load',function(){L('load; #root children='+((document.getElementById('root')||{}).childElementCount));});"
+                + "})();</script>";
+        int headOpen = html.indexOf("<head");
+        if (headOpen >= 0) {
+            int headEnd = html.indexOf('>', headOpen);
+            if (headEnd >= 0) {
+                return html.substring(0, headEnd + 1) + s + html.substring(headEnd + 1);
+            }
+        }
+        return s + html;
+    }
+
+    /**
+     * 프리뷰는 {@code /api/v1/previews/{sid}/{token}/} 아래서 서빙되는데, 에이전트가 만든 앱은 보통
+     * 루트절대경로({@code /api/...})로 자기 백엔드를 부르고, 링크·폼도 루트절대({@code /}, {@code /about})로
+     * 건다. 그러면 브라우저가 iframe 오리진 루트로 보내 게이트웨이(앱이 아님)에 닿는다 — API 는
+     * "Network error", <b>내비게이션은 401 + XFO 로 프레임 자체가 깨진다</b>(사용자가 처음 본 그 에러).
+     * {@code rewriteHtml} 은 <b>초기 HTML</b> 안의 정적 경로만 고칠 뿐 JS 번들의 fetch 나 라우터가
+     * <b>런타임에 그리는</b> 앵커는 못 건드린다 — 그래서 앱 스크립트보다 <b>먼저</b> 실행되는 작은 shim 을
+     * head 맨 앞에 주입한다. 앱 소스는 건드리지 않고, 같은 오리진 루트절대만 프리뷰 prefix 아래로 다시 쓴다.
+     * cross-origin(전체 URL)·protocol-relative({@code //host})·이미 prefix 가 붙은 것·{@code #}·{@code mailto:}
+     * 등은 그대로 둔다({@code r()} 이 선행 단일 {@code /} 만 손댄다). 정적 프리뷰는 {@code /api} 호출도 루트절대
+     * 링크도 없어 no-op 이다.
+     *
+     * <p><b>덮는 범위</b>:
+     * <ol>
+     *   <li><b>데이터</b> — {@code fetch}, {@code XMLHttpRequest}(axios 등). 루트절대를 재작성하므로 SPA
+     *       라우팅으로 현재 경로가 바뀌어도 견고하다(상대경로 방식과 달리 base 변화에 안 흔들림).</li>
+     *   <li><b>프레임 내비게이션</b> — 캡처 단계 {@code click}/{@code auxclick} 에서 클릭된 앵커의 루트절대
+     *       {@code href} 를, {@code submit} 에서 폼의 루트절대 {@code action} 을, 그 자리에서 prefix 로 고친다.
+     *       라우터의 {@code <Link>} 는 자체 {@code onClick} 이 {@code preventDefault} 하므로 이 재작성이
+     *       무해하고(라우터는 DOM href 가 아니라 {@code to} 로 동작), 평범한 앵커·폼은 prefix 안에서 이동해
+     *       프레임이 안 깨진다. 새 탭(cmd/중클릭)도 재작성된 href 를 열어 살아난다. {@code window.open} 도
+     *       감싼다(팝업이 루트절대로 열려도 prefix 로 간다).</li>
+     * </ol>
+     *
+     * <p><b>아직 안 덮는 것</b>(의도적, 후속):
+     * <ul>
+     *   <li>{@code location.assign('/x')}/{@code replace('/x')}, {@code location.href='/x'},
+     *       {@code window.location='/x'} — 프로그램적 {@code location} 이동. {@code window.location} 은
+     *       보호(unforgeable)돼 있어 그 메서드 재정의가 <b>조용히 무시</b>되고(Chrome 실측 2026-09-06 —
+     *       {@code location.assign=fn} 이 no-op), {@code href} 대입은 setter 라 애초에 트랩이 안 된다.
+     *       앵커·폼이 압도적 다수라 실효 영향은 작다. 근본 해결은 게이트웨이가 탈출 응답에 프레임 안에서의
+     *       복귀 스크립트를 주는 것(별개).</li>
+     *   <li>{@code history.pushState}/{@code replaceState} 로 루트절대 — 재작성하면 URL 은 prefix 로 정직해지나
+     *       클라이언트 라우터가 {@code basename} 없이 그 prefix 경로를 매칭 못 해 <b>새로고침 초기 렌더가
+     *       깨진다</b>. 안 하면 딥링크 새로고침만 깨진다(전진 내비게이션은 라우터 내부 상태로 동작). 둘 다
+     *       trade-off 라 건드리지 않는다 — 근본 해결은 생성 앱이 prefix 를 basename 으로 쓰는 것(앱측).</li>
+     *   <li>{@code WebSocket} — URL 재작성만으로 안 된다. HTTP Upgrade(101) 핸드셰이크와 양방향 프레임
+     *       펌핑이 필요해 이 요청/응답 프록시로는 안 되고, Spring WebSocket 인프라가 있어야 한다(별개 작업).
+     *       그래서 WS URL 은 아직 재작성하지 않는다 — prefix 로 보내봐야 업그레이드 못 하는 게이트웨이에
+     *       닿아 더 나빠지기 때문. ({@code EventSource}(SSE)는 {@code proxyEventStream} 이 스트리밍으로
+     *       지원하므로 위에서 URL 을 재작성한다.)</li>
+     * </ul>
+     */
+    private String injectClientShim(String html, String gatewayPrefix) {
+        String prefix = gatewayPrefix.endsWith("/")
+                ? gatewayPrefix.substring(0, gatewayPrefix.length() - 1)
+                : gatewayPrefix;
+        String shim = "<script>(function(){var P=\"" + prefix + "\";"
+                + "function r(u){try{if(typeof u===\"string\"&&u.charAt(0)===\"/\"&&u.charAt(1)!==\"/\"&&u.indexOf(P+\"/\")!==0)return P+u;}catch(e){}return u;}"
+                // 데이터: fetch / XHR / EventSource(SSE)
+                + "if(window.fetch){var f=window.fetch;window.fetch=function(i,o){try{if(typeof i===\"string\")i=r(i);else if(i&&i.url)i=new Request(r(i.url),i);}catch(e){}return f.call(this,i,o);};}"
+                + "if(window.XMLHttpRequest&&XMLHttpRequest.prototype&&XMLHttpRequest.prototype.open){var x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){try{arguments[1]=r(arguments[1]);}catch(e){}return x.apply(this,arguments);};}"
+                + "if(window.EventSource){var E=window.EventSource;var NE=function(u,c){return new E(r(u),c);};NE.prototype=E.prototype;try{NE.CONNECTING=E.CONNECTING;NE.OPEN=E.OPEN;NE.CLOSED=E.CLOSED;}catch(e){}window.EventSource=NE;}"
+                // 내비게이션: 앵커 href(클릭/중클릭 시점 재작성 — 캡처 단계라 기본 이동 전에 고쳐짐, 라우터 onClick 은 뒤에서 그대로 동작)
+                + "function fixA(e){try{var t=e.target;var a=t&&t.closest?t.closest(\"a[href]\"):null;if(!a)return;var h=a.getAttribute(\"href\");var n=r(h);if(n!==h)a.setAttribute(\"href\",n);}catch(e2){}}"
+                + "document.addEventListener(\"click\",fixA,true);document.addEventListener(\"auxclick\",fixA,true);"
+                // 내비게이션: 폼 action
+                + "document.addEventListener(\"submit\",function(e){try{var f=e.target;if(f&&f.tagName===\"FORM\"){var a=f.getAttribute(\"action\");var n=r(a);if(a&&n!==a)f.setAttribute(\"action\",n);}}catch(e2){}},true);"
+                // 내비게이션: window.open(팝업). location.assign/replace 는 window.location 이 보호돼 재정의가
+                // 조용히 무시되므로(Chrome 실측) 시도하지 않는다 — 위 doc 의 "안 덮는 것" 참고.
+                + "try{var wo=window.open;if(wo)window.open=function(){var a=[].slice.call(arguments);if(a.length)a[0]=r(a[0]);return wo.apply(window,a);};}catch(e){}"
+                + "})();</script>";
+        int headOpen = html.indexOf("<head");
+        if (headOpen >= 0) {
+            int headEnd = html.indexOf('>', headOpen);
+            if (headEnd >= 0) {
+                return html.substring(0, headEnd + 1) + shim + html.substring(headEnd + 1);
+            }
+        }
+        return shim + html;
     }
 
     private String sanitizePath(String path) {

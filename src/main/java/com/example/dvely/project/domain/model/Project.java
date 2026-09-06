@@ -1,6 +1,7 @@
 package com.example.dvely.project.domain.model;
 
 import com.example.dvely.project.domain.value.DeployStatus;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
@@ -43,6 +44,12 @@ public class Project {
     // not-yet-persisted Project or one built through a legacy fixture constructor; the adapter
     // treats null as "skip the version guard" (nothing to compare against).
     private final Long version;
+
+    // 프론트 호스팅 방식(GitHub Pages / S3 / EC2). 거대한 생성자·수많은 호출부에 파라미터를 더하지
+    // 않으려고 version 처럼 생성자 밖 필드로 둔다. 기본값은 기존 동작인 GITHUB_PAGES 라, DB·복원·
+    // 기존 테스트 어디서도 명시하지 않으면 지금과 똑같이 동작한다. DB 복원은 ProjectEntity#toDomain
+    // 이 changeFrontendHosting 으로 실제 저장값을 덮어쓴다.
+    private FrontendHostingType frontendHostingType = FrontendHostingType.GITHUB_PAGES;
 
     public Project(Long ownerUserId,
                    String name,
@@ -372,6 +379,20 @@ public class Project {
         this.deployStatus = Objects.requireNonNull(deployStatus, "deployStatus must not be null");
         this.currentUrl = currentUrl;
         this.currentVersion = currentVersion;
+    }
+
+    public FrontendHostingType getFrontendHostingType() {
+        return frontendHostingType;
+    }
+
+    /**
+     * 프론트 호스팅 방식을 바꾼다. null 은 기본값(GITHUB_PAGES)으로 떨어뜨린다 — 레거시 행 복원이나
+     * 값 미지정 요청이 프론트 호스팅을 알 수 없는 상태로 만들지 않게 한다.
+     */
+    public void changeFrontendHosting(FrontendHostingType frontendHostingType) {
+        this.frontendHostingType = frontendHostingType == null
+                ? FrontendHostingType.GITHUB_PAGES
+                : frontendHostingType;
     }
 
     public void softDelete() {

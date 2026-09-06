@@ -26,6 +26,7 @@ import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.provisioning.domain.value.ProvisionMethod;
 import com.example.dvely.provisioning.domain.value.ProvisionOrigin;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
+import com.example.dvely.provisioning.infrastructure.DockerDbProvisioner;
 import com.example.dvely.provisioning.infrastructure.RdsProvisioner;
 import com.example.dvely.provisioning.infrastructure.config.ProvisioningProperties;
 import java.time.LocalDateTime;
@@ -61,6 +62,7 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
     private final CloudConnectionRepository cloudConnectionRepository;
     private final ApprovalRepository approvalRepository;
     private final RdsProvisioner rdsProvisioner;
+    private final DockerDbProvisioner dockerDbProvisioner;
     private final ProjectRepository projectRepository;
 
     // 일부러 메서드 전체를 한 트랜잭션으로 묶지 않는다. provisioner.provision() 이 수 분 걸리는
@@ -72,11 +74,30 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
         return switch (method) {
             case LOCAL -> provisionLocal(ownerUserId, projectId, engine);
             case RDS -> submitRds(ownerUserId, projectId, engine);
-            case DOCKER -> {
-                provisionerRegistry.resolve(method);   // throws (DOCKER 미구현)
-                throw new IllegalStateException(method + " 방식은 아직 지원되지 않습니다.");
-            }
+            case DOCKER -> submitDocker(ownerUserId, projectId, engine);
         };
+    }
+
+    /**
+     * DOCKER 는 사용자 AWS 에 EC2 위 DB 컨테이너를 만든다(RDS 대안, 앱과 독립된 영속 DB). RDS 와 동형 —
+     * CONNECTED 연결이 있어야 하고 승인을 거친다. pending 행 + 승인을 만들어 requiresApproval 로 돌려주고,
+     * 실제 EC2 생성은 승인 시 {@link com.example.dvely.provisioning.application.service.DatabaseProvisionApprovalHandler}
+     * 가 method 로 갈라 시작한다(비동기).
+     */
+    private ProvisionSubmitResult submitDocker(Long ownerUserId, Long projectId, DatabaseEngine engine) {
+        resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
+
+        ProvisionedDatabase record = databaseRepository.save(
+                ProvisionedDatabase.pending(projectId, ProvisionMethod.DOCKER, engine, ProvisionOrigin.MANUAL));
+        Approval approval = approvalRepository.save(Approval.standalone(
+                ownerUserId, projectId, ApprovalType.DATABASE_PROVISION,
+                "DB 컨테이너(EC2) " + engine + " 생성 (과금)"));
+        record.linkApproval(approval.getId());
+        databaseRepository.save(record);
+
+        log.info("DOCKER DB 프로비저닝 승인 대기: databaseId={} approvalId={} projectId={}",
+                record.getId(), approval.getId(), projectId);
+        return new ProvisionSubmitResult(true, null, null, java.util.List.of(approval.getId()));
     }
 
     /**
@@ -118,8 +139,8 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
         if (record.getStatus() == ProvisionStatus.EXPIRED) {
             return;   // 이미 정리됨
         }
-        if (record.getMethod() == ProvisionMethod.RDS) {
-            // 소유권 확인 겸 자격 획득 — 생성에 쓴 연결로만 지운다.
+        if (record.getMethod() == ProvisionMethod.RDS || record.getMethod() == ProvisionMethod.DOCKER) {
+            // RDS·DOCKER 는 사용자 AWS 의 과금 자원 — 생성에 쓴 연결로만 자격을 얻어 지운다(소유권 확인 겸).
             CloudConnection connection = record.getCloudConnectionId() == null ? null
                     : cloudConnectionRepository
                         .findByIdAndOwnerUserId(record.getCloudConnectionId(), ownerUserId).orElse(null);
@@ -128,10 +149,14 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
                         "데이터베이스를 찾을 수 없거나 접근 권한이 없습니다(클라우드 연결 없음). id=" + databaseId);
             }
             if (record.getResourceId() != null) {
-                rdsProvisioner.deleteInstance(connection, record.getResourceId());
+                if (record.getMethod() == ProvisionMethod.RDS) {
+                    rdsProvisioner.deleteInstance(connection, record.getResourceId());
+                } else {
+                    dockerDbProvisioner.teardown(connection, record.getProjectId(), record.getResourceId());
+                }
             }
         } else if (record.getResourceId() != null) {
-            // LOCAL/DOCKER: 자격이 필요 없는 정리(컨테이너 등).
+            // LOCAL: 자격이 필요 없는 정리(프리뷰 컨테이너 등).
             provisionerRegistry.resolve(record.getMethod()).deprovision(record.getResourceId());
         }
         record.markExpired();

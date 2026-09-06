@@ -47,7 +47,8 @@ public class SecurityConfig {
                                 "/api/v1/auth/github/app/callback",
                                 "/api/v1/auth/refresh",
                                 "/api/v1/webhook/github",
-                                "/api/v1/previews/**"
+                                "/api/v1/previews/**",
+                                "/api/v1/tls/allow"
                         ).permitAll()
                         // Swagger UI
                         .requestMatchers(
@@ -98,7 +99,11 @@ public class SecurityConfig {
         // 좁혀도 효과가 없다. 등록 순서 유의: 먼저 등록해야 "/**" 보다 우선한다.
         CorsConfiguration previewConfig = new CorsConfiguration();
         previewConfig.setAllowedOrigins(List.of(CorsConfiguration.ALL));
-        previewConfig.setAllowedMethods(List.of("GET", "OPTIONS"));
+        // 읽기(GET/모듈 스크립트)뿐 아니라 쓰기(POST/PUT/DELETE/PATCH)도 허용 — 에이전트가 만든 앱의
+        // 등록·폼이 불투명 오리진 프레임 안에서 자기 백엔드로 쓰려면 필요하다. application/json 은 단순
+        // 요청이 아니라 프리플라이트(OPTIONS)가 오는데, 아래 메서드·헤더 허용으로 통과한다. 자격은 쿠키가
+        // 아니라 URL 회전 토큰이라 credentials 없이 연다(위 GET 주석과 동일 근거).
+        previewConfig.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
         previewConfig.setAllowedHeaders(List.of("*"));
         previewConfig.setAllowCredentials(false);
         previewConfig.setMaxAge(3600L);

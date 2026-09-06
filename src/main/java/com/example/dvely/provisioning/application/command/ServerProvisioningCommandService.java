@@ -10,11 +10,16 @@ import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
+import com.example.dvely.provisioning.domain.value.DatabaseEngine;
+import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
+import com.example.dvely.provisioning.domain.value.WebFrontendSpec;
 import com.example.dvely.provisioning.application.port.out.ProjectDomainCleanupPort;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
+import com.example.dvely.provisioning.infrastructure.EcrImageRegistry;
 import com.example.dvely.provisioning.infrastructure.S3ArtifactStore;
 import com.example.dvely.provisioning.infrastructure.SsmParameterStore;
+import com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties;
 import com.example.dvely.provisioning.application.result.ServerProvisionSubmitResult;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
@@ -47,17 +52,51 @@ public class ServerProvisioningCommandService {
     private final ProjectDomainCleanupPort projectDomainCleanupPort;
     private final SsmParameterStore ssm;
     private final S3ArtifactStore s3;
+    private final EcrImageRegistry ecr;
+    private final Ec2ProvisioningProperties ec2Properties;
 
-    public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType) {
+    public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType,
+                                              ServerDeployMode deployMode, DatabaseEngine bundledDbEngine,
+                                              WebFrontendSpec web, boolean webOnly) {
         resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
 
         String tier = (instanceType == null || instanceType.isBlank())
                 ? DEFAULT_INSTANCE_TYPE : instanceType;
-        ProvisionedServer record = serverRepository.save(
-                ProvisionedServer.pending(projectId, tier, APP_PORT));
+        ServerDeployMode mode = deployMode == null ? ServerDeployMode.NATIVE : deployMode;
+        WebFrontendSpec webSpec = web == null ? new WebFrontendSpec(null, null, null) : web;
+        // 웹 전용(독립 프론트 EC2): 백엔드 없이 프론트 nginx 만. 프론트 소스가 있어야 하고, 백엔드가 없어
+        // 번들 DB 를 쓸 수 없다. DOCKER 강제는 아래 웹 컨테이너 가드가 겸한다(웹 전용 ⇒ hasWeb).
+        if (webOnly && !webSpec.hasWeb()) {
+            throw new IllegalStateException(
+                    "웹 전용 서버는 프론트 소스(frontendRepo 또는 frontendDir)가 필요합니다.");
+        }
+        if (webOnly && bundledDbEngine != null) {
+            throw new IllegalStateException("웹 전용 서버는 백엔드가 없어 번들 DB 를 쓸 수 없습니다.");
+        }
+        // 번들 DB·웹 컨테이너는 DOCKER 배포에서만 의미가 있다(같은 EC2 에 compose 로 컨테이너를 띄우므로).
+        // NATIVE 인데 요청하면 조용히 무시하지 않고 명확히 거절한다.
+        if (bundledDbEngine != null && mode != ServerDeployMode.DOCKER) {
+            throw new IllegalStateException("번들 DB 는 DOCKER 배포 모드에서만 지원됩니다. deployMode=DOCKER 로 요청하세요.");
+        }
+        if (webSpec.hasWeb() && mode != ServerDeployMode.DOCKER) {
+            throw new IllegalStateException("웹 컨테이너는 DOCKER 배포 모드에서만 지원됩니다. deployMode=DOCKER 로 요청하세요.");
+        }
+        ProvisionedServer server = ProvisionedServer.pending(projectId, tier, APP_PORT, mode, bundledDbEngine, webSpec);
+        server.assignWebOnly(webOnly);
+        // 재배포면 같은 webOnly 의 '최신 비종착 서버'(체인의 머리)를 교체 대상으로 기록한다. RUNNING 뿐 아니라
+        // 아직 뜨는 중(PENDING/QUEUED/BUILDING/PROVISIONING)인 서버도 후보다 — 그래야 앞선 재배포가 RUNNING
+        // 되기 전에 또 재배포해도(더블 재배포) 새 서버가 '현재 RUNNING'(A)이 아니라 '직전 재배포'(B)를 가리켜
+        // A←B←C 체인이 만들어진다. 그래야 교체 워커가 순서대로 A→B→C 로 EIP 를 넘겨 C 만 남는다(고아 없음).
+        // 옛 방식(RUNNING 만)에서는 B·C 가 둘 다 A 를 가리켜, B 가 A 를 교체한 뒤 C 가 할 일을 잃고 고아가 됐다.
+        // webOnly 로 갈라 백엔드 재배포는 백엔드만, 프론트 재배포는 프론트만 교체한다(둘은 정상 공존).
+        serverRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
+                .filter(existing -> existing.isWebOnly() == webOnly && !existing.getStatus().isTerminal())
+                .findFirst()
+                .ifPresent(existing -> server.assignSupersedes(existing.getId()));
+        ProvisionedServer record = serverRepository.save(server);
         Approval approval = approvalRepository.save(Approval.standalone(
                 ownerUserId, projectId, ApprovalType.SERVER_PROVISION,
-                "EC2 백엔드 서버 생성 (" + tier + ", 과금)"));
+                (webOnly ? "EC2 프론트 서버 생성 (" : "EC2 백엔드 서버 생성 (") + tier + ", 과금)"));
         record.linkApproval(approval.getId());
         serverRepository.save(record);
 
@@ -96,11 +135,11 @@ public class ServerProvisioningCommandService {
                                 server.getElasticIpAllocationId(), e.getMessage());
                     }
                 }
-                // EIP 가 해제되면 그 IP 를 가리키던 백엔드 도메인은 dangling DNS(서브도메인 탈취) 위험이
-                // 된다 — Cloudflare 레코드를 지운다. best-effort(실패해도 종료는 계속, 경고는 남는다).
+                // EIP 가 해제되면 그 IP 를 가리키던 도메인(백엔드·독립 프론트)은 dangling DNS(서브도메인
+                // 탈취) 위험이 된다 — Cloudflare 레코드를 지운다. best-effort(실패해도 종료는 계속, 경고는 남는다).
                 if (server.getPublicHost() != null) {
                     try {
-                        projectDomainCleanupPort.releaseBackendDomains(server.getProjectId(), server.getPublicHost());
+                        projectDomainCleanupPort.releaseServerDomains(server.getProjectId(), server.getPublicHost());
                     } catch (RuntimeException e) {
                         log.warn("서버 종료 후 도메인 정리 실패(수동 확인 필요, dangling DNS 위험): projectId={} ip={} 원인={}",
                                 server.getProjectId(), server.getPublicHost(), e.getMessage());
@@ -116,11 +155,38 @@ public class ServerProvisioningCommandService {
                     log.warn("서버 종료 후 SSM 파라미터 정리 실패(수동 정리 필요): projectId={} 원인={}",
                             server.getProjectId(), e.getMessage());
                 }
+                // 이미지 전달 방식대로 아티팩트를 지운다: ECR 전달이면 ECR 저장소(이미지째), 아니면 S3 객체
+                // (DOCKER=image.tar / NATIVE=app.jar). 전달 방식은 배포 당시 설정(useEcr)을 따른다 — 배포와
+                // 종료 사이에 설정을 바꾸면 반대편 아티팩트가 남을 수 있다(실험 기능, 문서화된 한계).
+                boolean useEcr = server.getDeployMode() == ServerDeployMode.DOCKER && ec2Properties.useEcr();
                 try {
-                    s3.deleteJar(connection, s3.bucketNameFor(connection), s3.jarKeyFor(server.getProjectId()));
+                    String bucket = s3.bucketNameFor(connection);
+                    if (useEcr) {
+                        ecr.deleteRepository(connection, server.getProjectId());
+                    } else if (server.getDeployMode() == ServerDeployMode.DOCKER) {
+                        s3.deleteJar(connection, bucket, s3.imageKeyFor(server.getProjectId()));
+                    } else {
+                        // NATIVE — Java=app.jar / Node=app-src.tar. 런타임을 안 저장하므로 둘 다 지운다(멱등).
+                        s3.deleteJar(connection, bucket, s3.jarKeyFor(server.getProjectId()));
+                        s3.deleteJar(connection, bucket, s3.nodeSourceKeyFor(server.getProjectId()));
+                    }
                 } catch (RuntimeException e) {
-                    log.warn("서버 종료 후 S3 아티팩트 정리 실패(수동 정리 필요): projectId={} 원인={}",
-                            server.getProjectId(), e.getMessage());
+                    log.warn("서버 종료 후 이미지 아티팩트 정리 실패(수동 정리 필요): projectId={} useEcr={} 원인={}",
+                            server.getProjectId(), useEcr, e.getMessage());
+                }
+                // 웹(프론트) 컨테이너를 썼으면 웹 이미지도 정리한다(전달방식대로).
+                if (server.hasWebFrontend()) {
+                    try {
+                        if (useEcr) {
+                            ecr.deleteWebRepository(connection, server.getProjectId());
+                        } else {
+                            s3.deleteJar(connection, s3.bucketNameFor(connection),
+                                    s3.webImageKeyFor(server.getProjectId()));
+                        }
+                    } catch (RuntimeException e) {
+                        log.warn("서버 종료 후 웹 이미지 정리 실패(수동 정리 필요): projectId={} 원인={}",
+                                server.getProjectId(), e.getMessage());
+                    }
                 }
             });
         }

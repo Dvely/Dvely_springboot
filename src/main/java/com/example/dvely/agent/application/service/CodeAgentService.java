@@ -99,10 +99,18 @@ public class CodeAgentService {
             - CRITICAL: scaffold → implement feature → build. Never build before implementing.
             - If a command fails, read the error and fix it before continuing.
             - Each execute_command runs independently; chain with: cd /path && command
-            - When the build succeeds, respond with TEXT ONLY (no tool calls) containing:
-              1. What was created or modified (project name, framework, key files changed)
-              2. Result: success or any issues encountered
-              3. Suggestions for improvement or next steps
+            - When the build succeeds, respond with TEXT ONLY (no tool calls). This closing text is
+              shown DIRECTLY TO THE END USER — the non-technical owner of the app, not a developer —
+              so write a short, friendly product summary, NOT a build log. Rules for it:
+              * Write in the same language the user used in their request.
+              * Say what the app can do now, in plain terms the owner cares about (the features they
+                can use), in a few sentences.
+              * NEVER mention internals: the container, /workspace, file paths, framework or tool
+                names, database engine/version, environment variables, ports, or smoke tests. Never
+                say things like "the container was empty" or "no database was reachable" — to a user
+                these read as errors, not progress.
+              * You may end with one or two things they could ask for next, phrased as product
+                features (e.g. "you could add a photo to each entry"), never as code or dev tasks.
             """;
 
     private static final List<ToolDefinition> TOOLS = List.of(

@@ -19,8 +19,40 @@ public interface ProvisionedServerRepository {
     /** 워커가 집을 대상(QUEUED·PROVISIONING 등). */
     List<ProvisionedServer> findByStatus(ServerStatus status, int limit);
 
+    /** RUNNING 이 됐지만 아직 교체 대상(이전 서버)을 정리하지 않은 서버 — 리플레이스 워커가 집는다. */
+    List<ProvisionedServer> findRunningWithPendingReplacement(int limit);
+
     /** 원자적 claim: QUEUED 인 행만 BUILDING 으로 넘긴다. 진 워커 하나만 true — 이중 launch(과금) 방지. */
     boolean claimForBuild(Long id);
+
+    /**
+     * 재배포 교체 워커의 다중 인스턴스 리스 claim. 리스가 비었거나 만료됐거나 내가 쥔 것이면 true —
+     * 그때만 이 서버의 EIP 재연결·종료를 진행한다(두 인스턴스가 동시에 못 하게). 같은 owner 는 여러 틱에
+     * 걸쳐 이어받는다.
+     */
+    boolean claimForReplacement(Long id, String owner);
+
+    /**
+     * 부트 타임아웃 처리 권한 claim(PROVISIONING→FAILED status-CAS). 진 인스턴스 하나만 true — 그것만
+     * 인스턴스를 종료하고 부트 로그를 뜬다(중복 terminate·SSM 방지).
+     */
+    boolean claimBootTimeout(Long id);
+
+    /** 헬스 결과만 targeted 로 기록(전체-엔티티 저장 대신) — 다중 인스턴스 겹침·교체 저장과 충돌 없이 안전. */
+    void recordHealth(Long id, boolean healthy);
+
+    /** 자동복구 권한 원자 claim(recovery_attempted_at null→now). 진 인스턴스 하나만 true — 이중 재시작 방지. */
+    boolean claimRecovery(Long id);
+
+    /** 앱 회복 시 복구 시도 표시 해제 — 다음 무응답에 다시 복구할 수 있게. */
+    void clearRecoveryAttempt(Long id);
+
+    /**
+     * "복구 실패(재시작 후에도 무응답)" 이벤트를 에피소드당 1회 남길 권한을 원자적으로 claim 한다. 재시작
+     * 시도가 settle 유예를 지나도록 여전히 무응답이면 진 인스턴스 하나만 true — 다중 인스턴스에서 중복
+     * 보고를 막고, 아직 유예 안이거나 이미 보고했거나 방금 회복했으면 false.
+     */
+    boolean claimRecoveryOutcomeReport(Long id, java.time.Duration settleWindow);
 
     /** 서버가 존재하는(했던) 클라우드 연결 ID 들. 고아 EIP 청소가 연결별로 계정을 훑을 때 쓴다. */
     List<Long> findDistinctCloudConnectionIds();

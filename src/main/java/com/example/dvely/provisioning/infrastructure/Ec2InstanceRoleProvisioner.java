@@ -47,33 +47,83 @@ public class Ec2InstanceRoleProvisioner {
      * 인스턴스 프로파일을 보장하고 그 이름을 돌려준다. 없으면 역할+인라인 최소권한 정책+프로파일을
      * 만들고, 있으면 그대로 재사용한다.
      */
-    public String ensureInstanceProfile(CloudConnection connection, Long projectId, String bucket) {
+    public String ensureInstanceProfile(CloudConnection connection, Long projectId, String bucket, boolean ecr) {
         String name = "qeploy-instance-" + projectId;
         AwsAccess access = credentialsResolver.resolve(connection);
         try (IamClient iam = client(access)) {
-            ensureRole(iam, name, projectId, bucket);
+            ensureRole(iam, name, projectId, bucket, ecr);
             ensureProfileWithRole(iam, name);
             return name;
         }
     }
 
-    private void ensureRole(IamClient iam, String name, Long projectId, String bucket) {
+    private void ensureRole(IamClient iam, String name, Long projectId, String bucket, boolean ecr) {
+        boolean exists;
         try {
             iam.getRole(r -> r.roleName(name));
-            return;   // 이미 있다 — 정책은 처음 만들 때 붙였으므로 재부착 안 함
+            exists = true;
         } catch (NoSuchEntityException e) {
-            // 아래에서 만든다
+            exists = false;
         }
-        iam.createRole(CreateRoleRequest.builder()
-                .roleName(name)
-                .assumeRolePolicyDocument(TRUST_POLICY)
-                .description("Qeploy backend instance role for project " + projectId)
-                .build());
+        if (!exists) {
+            iam.createRole(CreateRoleRequest.builder()
+                    .roleName(name)
+                    .assumeRolePolicyDocument(TRUST_POLICY)
+                    .description("Qeploy backend instance role for project " + projectId)
+                    .build());
+            log.info("IAM 인스턴스 역할 생성: role={} projectId={}", name, projectId);
+        }
+        // 인라인 정책은 항상 현재 모드(ecr)에 맞게 재부착한다(PutRolePolicy 는 멱등 덮어쓰기). 기존
+        // 역할이라도 전달방식 전환(S3→ECR)이 반영되게 — 안 그러면 예전에 만들어진 역할이 ECR pull
+        // 권한 없이 남아 인스턴스의 docker pull 이 조용히 실패하고, 앱이 안 떠 부팅 타임아웃으로만
+        // 드러난다(실계정 e2e 2026-09-04 에서 확인). 우리가 소유·관리하는 인라인 정책이라 덮어써도 안전하다.
         iam.putRolePolicy(PutRolePolicyRequest.builder()
                 .roleName(name).policyName("qeploy-instance-access")
-                .policyDocument(instancePolicy(projectId, bucket))
+                .policyDocument(instancePolicy(projectId, bucket, ecr))
                 .build());
-        log.info("IAM 인스턴스 역할 생성: role={} projectId={}", name, projectId);
+        log.info("IAM 인스턴스 역할 정책 반영: role={} projectId={} ecr={} (기존={})", name, projectId, ecr, exists);
+    }
+
+    /**
+     * DOCKER DB EC2 용 인스턴스 프로파일을 보장한다. 백엔드 역할과 달리 이 역할은 <b>준비되면 자기 사설
+     * IP 를 SSM 에 self-report(PutParameter)</b> 하는 권한만 갖는다 — 컨트롤 플레인은 사설망의 DB 를 직접
+     * 헬스체크할 수 없어 이 신호로 준비를 판단한다. 이름 접두사 qeploy-instance-* 를 유지해 기존 BYOC IAM
+     * 스코프(role/qeploy-instance-*) 안에서 만들어진다(새 정책 추가 불필요).
+     */
+    public String ensureDbWriterInstanceProfile(CloudConnection connection, Long projectId) {
+        String name = "qeploy-instance-dbw-" + projectId;
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (IamClient iam = client(access)) {
+            boolean exists;
+            try {
+                iam.getRole(r -> r.roleName(name));
+                exists = true;
+            } catch (NoSuchEntityException e) {
+                exists = false;
+            }
+            if (!exists) {
+                iam.createRole(CreateRoleRequest.builder()
+                        .roleName(name)
+                        .assumeRolePolicyDocument(TRUST_POLICY)
+                        .description("Qeploy DB-writer instance role for project " + projectId)
+                        .build());
+                log.info("IAM DB-writer 역할 생성: role={} projectId={}", name, projectId);
+            }
+            iam.putRolePolicy(PutRolePolicyRequest.builder()
+                    .roleName(name).policyName("qeploy-db-writer")
+                    .policyDocument(dbWriterPolicy(projectId))
+                    .build());
+            ensureProfileWithRole(iam, name);
+            return name;
+        }
+    }
+
+    /** DB EC2 준비 self-report 전용 — 자기 프로젝트 경로에 PutParameter 만. */
+    private String dbWriterPolicy(Long projectId) {
+        return """
+                {"Version":"2012-10-17","Statement":[\
+                {"Effect":"Allow","Action":["ssm:PutParameter"],\
+                "Resource":"arn:aws:ssm:*:*:parameter/qeploy/%d/*"}]}""".formatted(projectId);
     }
 
     private void ensureProfileWithRole(IamClient iam, String name) {
@@ -95,14 +145,34 @@ public class Ec2InstanceRoleProvisioner {
         log.info("IAM 인스턴스 프로파일 생성: profile={}", name);
     }
 
-    /** 인스턴스가 받을 최소권한: 자기 프로젝트의 SSM 파라미터 읽기 + 자기 S3 아티팩트 읽기. */
-    private String instancePolicy(Long projectId, String bucket) {
+    /**
+     * 인스턴스가 받을 최소권한: 자기 프로젝트의 SSM 파라미터 읽기 + 자기 S3 아티팩트 읽기. ECR 전달을
+     * 켜면(ecr=true) 자기 프로젝트 ECR 저장소 pull 권한을 더한다({@code GetAuthorizationToken} 은 계정
+     * 레벨이라 Resource *, 나머지 pull 은 저장소 ARN 으로 좁힌다).
+     */
+    private String instancePolicy(Long projectId, String bucket, boolean ecr) {
+        // qeploy-*-{projectId} 로 이 프로젝트의 app·web 저장소를 함께 커버(여전히 프로젝트 스코프).
+        String ecrStatements = ecr ? """
+                ,{"Effect":"Allow","Action":["ecr:GetAuthorizationToken"],"Resource":"*"},\
+                {"Effect":"Allow","Action":["ecr:BatchGetImage","ecr:GetDownloadUrlForLayer",\
+                "ecr:BatchCheckLayerAvailability"],\
+                "Resource":"arn:aws:ecr:*:*:repository/qeploy-*-%d"}""".formatted(projectId) : "";
+        // SSM core — 인스턴스를 SSM managed instance 로 등록해 Run Command(로그 조회)를 받게 한다. AL2023 은
+        // 에이전트 기본 탑재라 설치는 불필요하고 이 권한만 있으면 된다. 리소스 스코프 불가라 Resource:"*".
+        // (관리형 정책 AttachRolePolicy 는 BYOC 에 없으므로 인라인으로 넣는다 — putRolePolicy 로 멱등 갱신.)
+        String ssmCore = """
+                ,{"Effect":"Allow","Action":["ssm:UpdateInstanceInformation",\
+                "ssmmessages:CreateControlChannel","ssmmessages:CreateDataChannel",\
+                "ssmmessages:OpenControlChannel","ssmmessages:OpenDataChannel",\
+                "ec2messages:AcknowledgeMessage","ec2messages:DeleteMessage","ec2messages:FailMessage",\
+                "ec2messages:GetEndpoint","ec2messages:GetMessages","ec2messages:SendReply"],"Resource":"*"}""";
         return """
                 {"Version":"2012-10-17","Statement":[\
                 {"Effect":"Allow","Action":["ssm:GetParameter","ssm:GetParameters","ssm:GetParametersByPath"],\
                 "Resource":"arn:aws:ssm:*:*:parameter/qeploy/%d/*"},\
                 {"Effect":"Allow","Action":["s3:GetObject"],\
-                "Resource":"arn:aws:s3:::%s/%d/*"}]}""".formatted(projectId, bucket, projectId);
+                "Resource":"arn:aws:s3:::%s/%d/*"}%s%s]}"""
+                .formatted(projectId, bucket, projectId, ssmCore, ecrStatements);
     }
 
     private IamClient client(AwsAccess access) {

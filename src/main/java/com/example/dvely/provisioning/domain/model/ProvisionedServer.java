@@ -1,7 +1,10 @@
 package com.example.dvely.provisioning.domain.model;
 
+import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
+import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
+import com.example.dvely.provisioning.domain.value.WebFrontendSpec;
 import java.time.LocalDateTime;
 
 /**
@@ -18,9 +21,37 @@ public class ProvisionedServer {
     private ServerStatus status;
     private Long cloudConnectionId;      // 생성에 쓴 연결. 워커가 같은 계정으로 조회한다.
     private String instanceId;           // EC2 인스턴스 ID — 정리 대상 지목
+    // 실행 형태(NATIVE=java -jar / DOCKER=docker run). 기본 NATIVE. 생성자 밖: elasticIp 와 같은 이유로
+    // 로드·설정 시 세팅(생성자 시그니처 churn 최소화). 모드 선택 배선(요청→submit)은 docker 경로에서.
+    private ServerDeployMode deployMode = ServerDeployMode.NATIVE;
+    // 번들 DB 엔진(null=없음). 있으면 DOCKER 배포가 같은 EC2 에 이 엔진의 DB 컨테이너를 docker compose 로
+    // 함께 띄우고 앱을 그 DB 로 배선한다(RDS 없이 앱+DB 한 인스턴스). deployMode 와 같은 이유로 생성자 밖 세팅.
+    private DatabaseEngine bundledDbEngine;
+    // 웹(프론트) 컨테이너: 값이 있으면 같은 EC2 에 프론트 nginx 컨테이너를 compose 로 함께 띄운다. deployMode
+    // 와 같은 이유로 생성자 밖 세팅. frontendRepo/frontendDir 중 하나라도 있으면 활성(hasWebFrontend).
+    private String frontendRepo;
+    private String frontendDir;
+    private String apiPathPrefix;
+    // 웹 전용(프론트 전용) 서버 — 백엔드 앱 없이 프론트 nginx 컨테이너만 띄운다(독립 프론트 EC2).
+    // deployMode 와 같은 이유로 생성자 밖 세팅. frontendRepo/frontendDir 과 함께 활성.
+    private boolean webOnly = false;
+    // 재배포 시 이 서버가 교체하는 이전 서버 id(블루그린). submit 시점에 같은 프로젝트+동일 webOnly 의
+    // 현재 RUNNING 서버 id 를 기록하고, 새 서버가 RUNNING 되면 EIP 를 넘겨받은 뒤 옛 서버를 종료한다.
+    // 최초 배포·비-EC2 는 null. 생성자 밖 세팅(로드 복원·submit 배선).
+    private Long supersedesServerId;
     private String elasticIpAllocationId; // EIP 할당 ID — 종료 시 release 대상(생성자 밖: 로드·연결 시 세팅)
     private String publicHost;           // running 이후 채워짐
     private int port;                    // 앱 포트(기본 8080)
+    // RUNNING 이후 앱 건강 상태(주기 TCP 헬스체크). null=아직 미확인. status(인스턴스 수준)와 별개 —
+    // 인스턴스는 RUNNING 인데 앱이 죽으면 healthy=false 로, 종료하지 않고 "앱 죽음"만 드러낸다.
+    private Boolean healthy;
+    private LocalDateTime lastHealthCheckAt;
+    // 부트 타임아웃으로 실패·종료할 때, 종료 직전에 뜬 부트 로그(cloud-init) 스냅샷. 인스턴스가
+    // 사라진 뒤에도 "왜 안 떴나"를 볼 수 있게 보존한다. 정상 기동 서버는 null(라이브 조회로 충분).
+    private String bootDiagnostics;
+    // 앱이 무응답(healthy=false)일 때 자동복구(재시작)를 시도한 시각. 한 장애 에피소드당 1회만 시도하려
+    // 표시로 쓴다 — 회복되면(healthy=true) 지운다. null=아직 이번 무응답에 복구를 안 시도함.
+    private LocalDateTime recoveryAttemptedAt;
     private Long approvalId;             // 승인 대상 연결
     private ProvisionFailureCode failureCode;
     private String errorMessage;
@@ -46,11 +77,20 @@ public class ProvisionedServer {
         this.updatedAt = updatedAt;
     }
 
-    /** 새 서버 배포 요청 — PENDING 으로 시작(승인 대기). */
-    public static ProvisionedServer pending(Long projectId, String instanceType, int port) {
+    /**
+     * 새 서버 배포 요청 — PENDING 으로 시작(승인 대기). deployMode 는 실행 형태(null 이면 NATIVE),
+     * bundledDbEngine 은 같은 EC2 에 함께 띄울 DB 엔진(null 이면 번들 DB 없음, DOCKER 모드에서만 유효).
+     */
+    public static ProvisionedServer pending(Long projectId, String instanceType, int port,
+                                            ServerDeployMode deployMode, DatabaseEngine bundledDbEngine,
+                                            WebFrontendSpec web) {
         LocalDateTime now = LocalDateTime.now();
-        return new ProvisionedServer(null, projectId, instanceType, ServerStatus.PENDING,
+        ProvisionedServer server = new ProvisionedServer(null, projectId, instanceType, ServerStatus.PENDING,
                 null, null, null, port, null, null, null, now, now);
+        server.assignDeployMode(deployMode);
+        server.assignBundledDbEngine(bundledDbEngine);
+        server.assignWebFrontend(web);
+        return server;
     }
 
     /** 이 배포를 특정 승인에 연결한다(승인 후 실행되는 경우). */
@@ -68,8 +108,81 @@ public class ProvisionedServer {
      * EIP 할당 ID 를 기록한다. 배포에서 EIP 를 연결한 뒤(안정 주소), 그리고 영속 계층 로드 시 복원할 때
      * 부른다. 종료 정리가 이 값으로 release 한다 — 없으면 유휴 EIP 가 계속 과금된다.
      */
+    /** 실행 형태를 지정한다(로드 시 복원, 또는 배포 요청 시 선택). null 이면 NATIVE 유지. */
+    public void assignDeployMode(ServerDeployMode deployMode) {
+        if (deployMode != null) {
+            this.deployMode = deployMode;
+        }
+    }
+
+    /** 번들 DB 엔진을 지정한다(로드 시 복원, 또는 배포 요청 시 선택). null 이면 번들 DB 없음. */
+    public void assignBundledDbEngine(DatabaseEngine bundledDbEngine) {
+        this.bundledDbEngine = bundledDbEngine;
+    }
+
+    /** 웹 프론트 스펙을 지정한다(로드 시 복원, 또는 배포 요청 시 선택). null 이면 웹 컨테이너 없음. */
+    public void assignWebFrontend(WebFrontendSpec web) {
+        if (web != null) {
+            this.frontendRepo = blankToNull(web.frontendRepo());
+            this.frontendDir = blankToNull(web.frontendDir());
+            this.apiPathPrefix = blankToNull(web.apiPathPrefix());
+        }
+    }
+
+    /** 웹 전용 여부를 지정한다(로드 시 복원, 또는 배포 요청 시 선택). true 면 백엔드 앱 없이 프론트만. */
+    public void assignWebOnly(boolean webOnly) {
+        this.webOnly = webOnly;
+    }
+
+    public boolean isWebOnly() {
+        return webOnly;
+    }
+
+    private static String blankToNull(String s) {
+        return (s == null || s.isBlank()) ? null : s;
+    }
+
     public void assignElasticIp(String elasticIpAllocationId) {
         this.elasticIpAllocationId = elasticIpAllocationId;   // updatedAt 은 건드리지 않음(로드 복원 겸용)
+    }
+
+    /** 재배포 교체 대상(이전 서버) 지정. submit 시 세팅, 로드 시 복원. null 이면 최초 배포(교체 아님). */
+    public void assignSupersedes(Long supersedesServerId) {
+        this.supersedesServerId = supersedesServerId;
+    }
+
+    public Long getSupersedesServerId() {
+        return supersedesServerId;
+    }
+
+    /** 아직 교체할 대상이 남아 있는지(재배포 체인에서 '정착 전'인지 판별). */
+    public boolean hasSupersedes() {
+        return supersedesServerId != null;
+    }
+
+    /**
+     * 재배포 교체 완료 시, 옛 서버의 EIP·공개주소를 이 새 서버로 넘겨받는다(EIP 를 새 인스턴스로 reassociate
+     * 한 뒤 호출). 이후 종료 정리가 이 새 서버 기준으로 EIP·도메인을 다룬다 — dnsTarget(IP)이 안 바뀌어
+     * 도메인은 그대로 새 인스턴스를 가리킨다.
+     */
+    public void reassignElasticIp(String elasticIpAllocationId, String publicHost) {
+        this.elasticIpAllocationId = elasticIpAllocationId;
+        this.publicHost = publicHost;
+    }
+
+    /**
+     * EIP·공개주소를 이 서버에서 분리한다(재배포 교체 시 옛 서버에 대해 호출). 종료 시 이 값들이 비어 있어야
+     * releaseElasticIp(방금 새 서버로 옮긴 EIP)·releaseServerDomains(도메인)를 건너뛴다 — 안 그러면 새 서버로
+     * 넘긴 EIP 를 해제하거나 살아있는 도메인을 지워버린다.
+     */
+    public void detachElasticIp() {
+        this.elasticIpAllocationId = null;
+        this.publicHost = null;
+    }
+
+    /** 재배포 교체 완료(옛 서버 종료) 후, 교체 표시를 지운다(재시도 폴링에서 다시 잡히지 않게). */
+    public void clearSupersedes() {
+        this.supersedesServerId = null;
     }
 
     /**
@@ -95,13 +208,38 @@ public class ProvisionedServer {
         this.updatedAt = LocalDateTime.now();
     }
 
-    /** 헬스체크 통과 — 접속 가능. */
+    /** 헬스체크 통과 — 접속 가능. RUNNING 전이 자체가 TCP 통과라 healthy=true 로 시작한다. */
     public void markRunning(String publicHost) {
         this.status = ServerStatus.RUNNING;
         this.publicHost = publicHost;
         this.failureCode = null;
         this.errorMessage = null;
+        this.healthy = true;
+        this.lastHealthCheckAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
+    }
+
+    /**
+     * RUNNING 이후 주기 헬스체크 결과를 기록한다(모니터 워커). 인스턴스 상태(RUNNING)는 안 건드리고 앱
+     * 건강만 갱신한다 — 앱이 죽으면 healthy=false 가 되지만 인스턴스는 그대로라(로그 조회·재배포 가능).
+     */
+    public void recordHealthCheck(boolean healthy) {
+        this.healthy = healthy;
+        this.lastHealthCheckAt = LocalDateTime.now();
+    }
+
+    /** 이번 무응답 에피소드에 자동복구(재시작)를 시도했음을 표시한다(에피소드당 1회 한정용). */
+    public void markRecoveryAttempted() {
+        this.recoveryAttemptedAt = LocalDateTime.now();
+    }
+
+    /** 앱이 회복되면 복구 시도 표시를 지운다 — 다음 무응답 때 다시 복구를 시도할 수 있게. */
+    public void clearRecoveryAttempt() {
+        this.recoveryAttemptedAt = null;
+    }
+
+    public boolean hasRecoveryBeenAttempted() {
+        return recoveryAttemptedAt != null;
     }
 
     public void markFailed(ProvisionFailureCode code, String message) {
@@ -109,6 +247,14 @@ public class ProvisionedServer {
         this.failureCode = code;
         this.errorMessage = message;
         this.updatedAt = LocalDateTime.now();
+    }
+
+    /**
+     * 부트 타임아웃 종료 직전에 뜬 부트 로그를 보존한다. 인스턴스를 terminate 하면 SSM 으로 로그에 닿을
+     * 길이 사라지므로, 그 전에 한 번 떠서 여기 담아 두면 실패한 서버 카드에서도 원인을 볼 수 있다.
+     */
+    public void recordBootDiagnostics(String log) {
+        this.bootDiagnostics = blankToNull(log);
     }
 
     /**
@@ -134,6 +280,14 @@ public class ProvisionedServer {
     public ServerStatus getStatus() { return status; }
     public Long getCloudConnectionId() { return cloudConnectionId; }
     public String getInstanceId() { return instanceId; }
+    public ServerDeployMode getDeployMode() { return deployMode; }
+    public DatabaseEngine getBundledDbEngine() { return bundledDbEngine; }
+    public boolean hasBundledDb() { return bundledDbEngine != null; }
+    public String getFrontendRepo() { return frontendRepo; }
+    public String getFrontendDir() { return frontendDir; }
+    public String getApiPathPrefix() { return apiPathPrefix; }
+    public WebFrontendSpec getWebFrontend() { return new WebFrontendSpec(frontendRepo, frontendDir, apiPathPrefix); }
+    public boolean hasWebFrontend() { return frontendRepo != null || frontendDir != null; }
     public String getElasticIpAllocationId() { return elasticIpAllocationId; }
     public String getPublicHost() { return publicHost; }
     public int getPort() { return port; }
@@ -142,4 +296,25 @@ public class ProvisionedServer {
     public String getErrorMessage() { return errorMessage; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public Boolean getHealthy() { return healthy; }
+    public LocalDateTime getLastHealthCheckAt() { return lastHealthCheckAt; }
+    public String getBootDiagnostics() { return bootDiagnostics; }
+    public boolean hasBootDiagnostics() { return bootDiagnostics != null; }
+    public LocalDateTime getRecoveryAttemptedAt() { return recoveryAttemptedAt; }
+
+    /** DB 로드 시 헬스 상태 복원(생성자 밖 필드). */
+    public void restoreHealth(Boolean healthy, LocalDateTime lastHealthCheckAt) {
+        this.healthy = healthy;
+        this.lastHealthCheckAt = lastHealthCheckAt;
+    }
+
+    /** DB 로드 시 보존된 부트 진단 로그 복원(생성자 밖 필드). */
+    public void restoreBootDiagnostics(String bootDiagnostics) {
+        this.bootDiagnostics = bootDiagnostics;
+    }
+
+    /** DB 로드 시 자동복구 시도 시각 복원(생성자 밖 필드). */
+    public void restoreRecoveryAttemptedAt(LocalDateTime recoveryAttemptedAt) {
+        this.recoveryAttemptedAt = recoveryAttemptedAt;
+    }
 }

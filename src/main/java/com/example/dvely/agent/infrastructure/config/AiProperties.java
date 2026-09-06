@@ -1,5 +1,6 @@
 package com.example.dvely.agent.infrastructure.config;
 
+import com.example.dvely.agent.domain.value.AiProvider;
 import java.util.List;
 import lombok.Getter;
 import lombok.Setter;
@@ -15,6 +16,13 @@ public class AiProperties {
     private Glm glm = new Glm();
     private Retry retry = new Retry();
     private CodeAgent codeAgent = new CodeAgent();
+
+    /**
+     * 요청이 제공자를 지정하지 않을 때 쓰는 기본 제공자. 배포가 유효한 키를 가진 것으로 맞춘다 —
+     * 하드코딩된 기본이 크레딧 없는 제공자를 가리키면 지정 안 한 모든 요청이 실패한다(그 문제로
+     * ANTHROPIC 고정을 걷어냄). 기본은 GLM(OpenRouter 경유) 이다.
+     */
+    private AiProvider defaultProvider = AiProvider.GLM;
 
     /**
      * Settings shared by every provider. Clients may now ask for a specific model and for extended

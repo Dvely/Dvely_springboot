@@ -21,6 +21,10 @@ import com.example.dvely.agent.application.service.DomainBindAgentService;
 import com.example.dvely.agent.application.service.InfraOpsAgentService;
 import com.example.dvely.agent.application.service.RuntimeSetupAgentService;
 import com.example.dvely.agent.application.service.BackendDeployAgentService;
+import com.example.dvely.agent.application.dto.ClarificationRequest;
+import com.example.dvely.agent.application.service.DecisionAgentService;
+import com.example.dvely.agent.infrastructure.store.InputWaitStore;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.dvely.agent.application.service.RepositoryBindingGate;
 import com.example.dvely.agent.application.service.ResultApprovalGate;
 import com.example.dvely.agent.domain.value.AgentType;
@@ -78,7 +82,10 @@ class AgentPlanExecutorTest {
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
                 mock(RepositoryBindingGate.class),
-                registry
+                registry,
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
@@ -112,7 +119,10 @@ class AgentPlanExecutorTest {
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
                 mock(RepositoryBindingGate.class),
-                registry
+                registry,
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         when(codeService.execute(any(), any(), any(), any(), any(), any()))
@@ -147,7 +157,10 @@ class AgentPlanExecutorTest {
                 changeService,
                 gate,
                 mock(RepositoryBindingGate.class),
-                mock(AgentExecutionRegistry.class)
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
@@ -188,7 +201,10 @@ class AgentPlanExecutorTest {
                 changeService,
                 resultGate,
                 bindingGate,
-                mock(AgentExecutionRegistry.class)
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
@@ -232,7 +248,10 @@ class AgentPlanExecutorTest {
                 mock(ChangeService.class),
                 resultGate,
                 bindingGate,
-                mock(AgentExecutionRegistry.class)
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
@@ -265,7 +284,10 @@ class AgentPlanExecutorTest {
                 mock(ChangeService.class),
                 gate,
                 mock(RepositoryBindingGate.class),
-                mock(AgentExecutionRegistry.class)
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
@@ -339,7 +361,10 @@ class AgentPlanExecutorTest {
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
                 mock(RepositoryBindingGate.class),
-                mock(AgentExecutionRegistry.class)
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper()
         );
 
         AgentStep step = new AgentStep(AgentType.DOMAIN_BIND, Map.of());
@@ -352,8 +377,77 @@ class AgentPlanExecutorTest {
                 1L
         );
 
-        verify(taskStore).markWaitingInput("task-1", "도메인을 입력해주세요.");
+        // 단순 텍스트 입력(DOMAIN_BIND)이면 clarification 은 null 로 3-인자 오버로드가 호출된다.
+        verify(taskStore).markWaitingInput("task-1", "도메인을 입력해주세요.", null);
         verify(messageService).appendAssistant(21L, "도메인을 입력해주세요.");
+    }
+
+    // ── A① 스펙 되묻기(CLARIFY) ─────────────────────────────────────────────────
+
+    @Test
+    void clarifyWithoutAnswer_asksStructuredQuestion() throws Exception {
+        TaskStore taskStore = taskStore();
+        InputWaitStore inputWaitStore = mock(InputWaitStore.class);
+        ObjectMapper mapper = new ObjectMapper();
+        AgentPlanExecutor executor = clarifyExecutor(
+                taskStore, mock(DecisionAgentService.class), inputWaitStore, mock(AgentMessageService.class));
+
+        ClarificationRequest cr = new ClarificationRequest(
+                "백엔드 스택?", ClarificationRequest.InputType.SINGLE_SELECT,
+                java.util.List.of(new ClarificationRequest.Option("java", "Java/Spring", true)), false);
+        AgentStep clarify = new AgentStep(AgentType.CLARIFY,
+                Map.of("clarification", mapper.writeValueAsString(cr)));
+        when(inputWaitStore.consume("task-1")).thenReturn(java.util.Optional.empty());
+
+        executor.execute(new AgentPlan(java.util.List.of(clarify), "r", AiProvider.OPENAI, 11L), "task-1", 1L);
+
+        // 답이 없으면 구조화 질문으로 WAITING_INPUT 에 멈춘다(재계획 없음).
+        org.mockito.ArgumentCaptor<ClarificationRequest> captor =
+                org.mockito.ArgumentCaptor.forClass(ClarificationRequest.class);
+        verify(taskStore).markWaitingInput(eq("task-1"), eq("백엔드 스택?"), captor.capture());
+        org.assertj.core.api.Assertions.assertThat(captor.getValue().inputType())
+                .isEqualTo(ClarificationRequest.InputType.SINGLE_SELECT);
+        verify(taskStore, never()).replacePlanAndRequeue(any(), any());
+    }
+
+    @Test
+    void clarifyWithAnswer_replansWithTheAnswer() throws Exception {
+        TaskStore taskStore = taskStore();
+        InputWaitStore inputWaitStore = mock(InputWaitStore.class);
+        DecisionAgentService decision = mock(DecisionAgentService.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        when(messageService.getUserIntentHistory(21L)).thenReturn(java.util.List.of());
+        ObjectMapper mapper = new ObjectMapper();
+        AgentPlanExecutor executor = clarifyExecutor(taskStore, decision, inputWaitStore, messageService);
+
+        ClarificationRequest cr = new ClarificationRequest(
+                "백엔드 스택?", ClarificationRequest.InputType.SINGLE_SELECT,
+                java.util.List.of(new ClarificationRequest.Option("java", "Java/Spring", true)), false);
+        AgentStep clarify = new AgentStep(AgentType.CLARIFY,
+                Map.of("clarification", mapper.writeValueAsString(cr)));
+        when(inputWaitStore.consume("task-1")).thenReturn(java.util.Optional.of("Java로 해줘"));
+        AgentPlan replanned = new AgentPlan(
+                java.util.List.of(new AgentStep(AgentType.CODE, Map.of())), "r2", AiProvider.OPENAI, 11L);
+        when(decision.decide(org.mockito.ArgumentMatchers.anyList(), eq(AiProvider.OPENAI), eq(11L), any(), eq(false)))
+                .thenReturn(replanned);
+
+        executor.execute(new AgentPlan(java.util.List.of(clarify), "r", AiProvider.OPENAI, 11L), "task-1", 1L);
+
+        // 답을 반영해 CLARIFY 금지(false)로 재-decide → 새 플랜으로 교체·재큐. WAITING_INPUT 안 함.
+        verify(decision).decide(org.mockito.ArgumentMatchers.anyList(), eq(AiProvider.OPENAI), eq(11L), any(), eq(false));
+        verify(taskStore).replacePlanAndRequeue("task-1", replanned);
+        verify(taskStore, never()).markWaitingInput(any(), any(), any());
+    }
+
+    private AgentPlanExecutor clarifyExecutor(TaskStore taskStore, DecisionAgentService decision,
+                                              InputWaitStore inputWaitStore, AgentMessageService messageService) {
+        return new AgentPlanExecutor(
+                mock(CodeAgentService.class), mock(DeployAgentService.class), mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class), mock(InfraOpsAgentService.class), mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class), taskStore, messageService,
+                mock(BuildFailureRecoveryService.class), mock(ChangeService.class), mock(ResultApprovalGate.class),
+                mock(RepositoryBindingGate.class), mock(AgentExecutionRegistry.class),
+                decision, inputWaitStore, new ObjectMapper());
     }
 
     @Test
@@ -375,7 +469,10 @@ class AgentPlanExecutorTest {
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
                 mock(RepositoryBindingGate.class),
-                mock(AgentExecutionRegistry.class)
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper()
         );
         AgentStep step = new AgentStep(AgentType.RUNTIME_SETUP,
                 Map.of("runtimeType", "NODE_SERVER", "dbEngine", "MYSQL"));
@@ -406,7 +503,10 @@ class AgentPlanExecutorTest {
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
                 mock(RepositoryBindingGate.class),
-                mock(AgentExecutionRegistry.class)
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper()
         );
         AgentStep step = new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "STATUS_CHECK"));
         when(infraOpsAgentService.execute(step, 1L, "task-1", 11L))
@@ -445,7 +545,10 @@ class AgentPlanExecutorTest {
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
                 mock(RepositoryBindingGate.class),
-                mock(AgentExecutionRegistry.class)
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         LlmProviderException failure = new LlmProviderException(
@@ -487,7 +590,10 @@ class AgentPlanExecutorTest {
                 mock(ChangeService.class),
                 mock(ResultApprovalGate.class),
                 mock(RepositoryBindingGate.class),
-                mock(AgentExecutionRegistry.class)
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper()
         );
     }
 

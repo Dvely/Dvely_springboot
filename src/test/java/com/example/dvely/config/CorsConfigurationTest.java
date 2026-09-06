@@ -49,7 +49,9 @@ class CorsConfigurationTest {
         assertThat(configuration.checkOrigin("null")).isEqualTo("*");
         // 쿠키 기반 CORS 가 아니다 — credentials 를 허용하면 '*' 를 쓸 수 없게 되고, 열 이유도 없다.
         assertThat(configuration.getAllowCredentials()).isFalse();
-        assertThat(configuration.getAllowedMethods()).containsExactly("GET", "OPTIONS");
+        // 읽기(GET/모듈)뿐 아니라 쓰기(POST/PUT/DELETE/PATCH)도 허용 — 앱의 등록·폼이 프레임 안에서 동작해야 한다.
+        assertThat(configuration.getAllowedMethods())
+                .containsExactly("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS");
     }
 
     /** previews 전용 설정이 다른 API 경로의 FE 오리진·credentials 정책을 건드리면 안 된다. */

@@ -28,7 +28,7 @@ class DeploymentControllerTest {
 
     @Test
     void retryDeployment_delegatesUsingAuthenticatedUserIdAndDeploymentId() {
-        DeployResult result = new DeployResult(52L, 11L, "VERSION", "v3", "PENDING", null, LocalDateTime.now());
+        DeployResult result = new DeployResult(52L, 11L, "VERSION", "v3", "PENDING", null, LocalDateTime.now(), java.util.List.of());
         when(deploymentFacade.retryDeployment(1L, 51L)).thenReturn(result);
 
         DeployResponse response = controller.retryDeployment(1L, 51L);

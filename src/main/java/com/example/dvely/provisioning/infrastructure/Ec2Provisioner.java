@@ -37,6 +37,7 @@ import software.amazon.awssdk.services.ec2.model.RunInstancesRequest;
 import software.amazon.awssdk.services.ec2.model.Tag;
 import software.amazon.awssdk.services.ec2.model.TagSpecification;
 import software.amazon.awssdk.services.ec2.model.TerminateInstancesRequest;
+import software.amazon.awssdk.services.ec2.model.Vpc;
 
 /**
  * EC2 백엔드 서버를 사용자 AWS 계정(BYOC)에 프로비저닝한다. RDS 와 마찬가지로 <b>비동기</b>다 —
@@ -155,11 +156,12 @@ public class Ec2Provisioner {
         }
     }
 
-    private static final String SG_NAME = "qeploy-backend-8080";
+    private static final String SG_NAME = "qeploy-backend";
 
     /**
-     * 앱 포트(8080)만 인터넷에 여는 보안그룹을 기본 VPC 에 보장하고 그 ID 를 돌려준다(멱등). SSH(22)는
-     * 열지 않는다 — 우리는 인스턴스에 접속하지 않으므로. 이미 있으면 그대로 재사용한다.
+     * 백엔드 인바운드 보안그룹을 기본 VPC 에 보장하고 그 ID 를 돌려준다(멱등, 이미 있으면 재사용).
+     * 여는 포트: 앱(8080, 직접 접속·헬스체크) + 443(Caddy HTTPS) + 80(Let's Encrypt ACME 챌린지).
+     * SSH(22)는 열지 않는다 — 인스턴스에 접속하지 않는다(재설정이 필요 없게 Caddy on-demand 를 쓴다).
      */
     public String ensureSecurityGroup(CloudConnection connection, int appPort) {
         AwsAccess access = credentialsResolver.resolve(connection);
@@ -176,24 +178,72 @@ public class Ec2Provisioner {
                     .vpcId(vpcId).build()).groupId();
             ec2.authorizeSecurityGroupIngress(AuthorizeSecurityGroupIngressRequest.builder()
                     .groupId(groupId)
-                    .ipPermissions(IpPermission.builder()
-                            .ipProtocol("tcp").fromPort(appPort).toPort(appPort)
-                            .ipRanges(IpRange.builder().cidrIp("0.0.0.0/0").build())
-                            .build())
+                    .ipPermissions(tcpFromAnywhere(appPort), tcpFromAnywhere(443), tcpFromAnywhere(80))
                     .build());
-            log.info("EC2 보안그룹 생성: name={} groupId={} port={}", SG_NAME, groupId, appPort);
+            log.info("EC2 보안그룹 생성: name={} groupId={} ports={},443,80", SG_NAME, groupId, appPort);
             return groupId;
         }
     }
 
+    private static final String DB_SG_NAME = "qeploy-db";
+
+    /**
+     * RDS 인바운드 보안그룹을 기본 VPC 에 보장하고 그 ID 를 돌려준다(멱등, 이미 있으면 재사용).
+     * MySQL(3306)·Postgres(5432)를 <b>기본 VPC CIDR 안에서만</b> 연다 — RDS 는
+     * {@code publiclyAccessible=false} 라 사설 주소뿐이고, 같은 VPC 의 백엔드 EC2 만 닿으면 된다.
+     *
+     * <p>이 SG 를 명시하지 않고 RDS 를 만들면 <b>기본 VPC 보안그룹</b>이 붙는데, 그건 자기 SG 멤버의
+     * 인바운드만 허용한다. 백엔드 EC2 는 {@code qeploy-backend} SG 라 멤버가 아니어서 3306 에 못 붙는다
+     * (실계정 확인, 2026-09-03). 그래서 RDS 생성 시 이 SG 를 붙여야 한다.</p>
+     */
+    public String ensureDatabaseSecurityGroup(CloudConnection connection) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (Ec2Client ec2 = client(access)) {
+            var existing = ec2.describeSecurityGroups(DescribeSecurityGroupsRequest.builder()
+                    .filters(Filter.builder().name("group-name").values(DB_SG_NAME).build())
+                    .build()).securityGroups();
+            if (!existing.isEmpty()) {
+                return existing.get(0).groupId();
+            }
+            Vpc vpc = defaultVpc(ec2);
+            String groupId = ec2.createSecurityGroup(CreateSecurityGroupRequest.builder()
+                    .groupName(DB_SG_NAME).description("Qeploy managed database")
+                    .vpcId(vpc.vpcId()).build()).groupId();
+            ec2.authorizeSecurityGroupIngress(AuthorizeSecurityGroupIngressRequest.builder()
+                    .groupId(groupId)
+                    .ipPermissions(tcpFromCidr(3306, vpc.cidrBlock()), tcpFromCidr(5432, vpc.cidrBlock()))
+                    .build());
+            log.info("RDS 보안그룹 생성: name={} groupId={} cidr={} ports=3306,5432",
+                    DB_SG_NAME, groupId, vpc.cidrBlock());
+            return groupId;
+        }
+    }
+
+    /** 임의 출처(0.0.0.0/0)에서 해당 TCP 포트를 여는 인그레스 규칙. */
+    private IpPermission tcpFromAnywhere(int port) {
+        return tcpFromCidr(port, "0.0.0.0/0");
+    }
+
+    /** 주어진 CIDR 에서 해당 TCP 포트를 여는 인그레스 규칙. */
+    private IpPermission tcpFromCidr(int port, String cidr) {
+        return IpPermission.builder()
+                .ipProtocol("tcp").fromPort(port).toPort(port)
+                .ipRanges(IpRange.builder().cidrIp(cidr).build())
+                .build();
+    }
+
     private String defaultVpcId(Ec2Client ec2) {
+        return defaultVpc(ec2).vpcId();
+    }
+
+    private Vpc defaultVpc(Ec2Client ec2) {
         var vpcs = ec2.describeVpcs(DescribeVpcsRequest.builder()
                 .filters(Filter.builder().name("isDefault").values("true").build())
                 .build()).vpcs();
         if (vpcs.isEmpty()) {
             throw new IllegalStateException("기본 VPC 를 찾지 못했습니다. 계정에 기본 VPC 가 필요합니다.");
         }
-        return vpcs.get(0).vpcId();
+        return vpcs.get(0);
     }
 
     /** 할당·연결한 Elastic IP. publicIp 는 안정 주소가 된다. */
@@ -237,6 +287,24 @@ public class Ec2Provisioner {
             log.info("EIP 할당·연결: allocationId={} publicIp={} instanceId={}",
                     allocationId, alloc.publicIp(), instanceId);
             return new ElasticIp(allocationId, alloc.publicIp());
+        }
+    }
+
+    /**
+     * 이미 다른 인스턴스에 연결된 EIP 를 새 인스턴스로 <b>재연결</b>한다(재배포 블루그린 cutover). VPC EIP 는
+     * {@code allowReassociation=true} 로 associate 한 번이면 옛 인스턴스에서 풀려 새 인스턴스로 옮겨간다
+     * (별도 Disassociate 불필요). 새 인스턴스는 이미 RUNNING 이라 pending 재시도는 필요 없다. dnsTarget(IP)
+     * 이 그대로라 도메인·인증서를 안 건드리고 트래픽만 새 인스턴스로 넘어간다.
+     */
+    public void reassociateElasticIp(CloudConnection connection, String allocationId, String newInstanceId) {
+        AwsAccess access = credentialsResolver.resolve(connection);
+        try (Ec2Client ec2 = client(access)) {
+            ec2.associateAddress(AssociateAddressRequest.builder()
+                    .allocationId(allocationId)
+                    .instanceId(newInstanceId)
+                    .allowReassociation(true)
+                    .build());
+            log.info("EIP 재연결(재배포 cutover): allocationId={} → newInstanceId={}", allocationId, newInstanceId);
         }
     }
 

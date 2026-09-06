@@ -60,6 +60,12 @@ public class ProvisionedDatabaseRepositoryAdapter implements ProvisionedDatabase
     }
 
     @Override
+    @Transactional
+    public boolean claimBootTimeout(Long id) {
+        return springDataRepository.claimBootTimeout(id, LocalDateTime.now()) == 1;
+    }
+
+    @Override
     public List<ProvisionedDatabase> findExpirable(LocalDateTime now, int limit) {
         return springDataRepository.findByStatusAndExpiresAtBefore(
                         ProvisionStatus.READY.name(), now, PageRequest.of(0, limit))

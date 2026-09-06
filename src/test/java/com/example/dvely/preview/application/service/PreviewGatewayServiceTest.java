@@ -6,6 +6,7 @@ import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.AfterEach;
@@ -25,6 +26,8 @@ class PreviewGatewayServiceTest {
 
     private HttpServer container;
     private PreviewGatewayService service;
+    // 안쪽 앱 무응답으로 회수 요청된 sessionId 를 기록한다(게이트웨이가 부르는 reclaimer 대역).
+    private final java.util.List<String> reclaimed = new java.util.ArrayList<>();
 
     @BeforeEach
     void startFakeContainer() throws IOException {
@@ -37,7 +40,10 @@ class PreviewGatewayServiceTest {
             exchange.close();
         });
         container.start();
-        service = new PreviewGatewayService("'self'");
+        service = new PreviewGatewayService("'self'", true, id -> {
+            reclaimed.add(id);
+            return true;
+        });
     }
 
     @AfterEach
@@ -52,7 +58,7 @@ class PreviewGatewayServiceTest {
      */
     @Test
     void configuredFrameAncestorsWidenFramingButNeverTheSandbox() {
-        var widened = new PreviewGatewayService("'self' http://localhost:5173");
+        var widened = new PreviewGatewayService("'self' http://localhost:5173", true, id -> false);
 
         String policy = widened.sandboxPolicy();
 
@@ -195,6 +201,148 @@ class PreviewGatewayServiceTest {
         ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
 
         assertThat(response.getHeaders().getAccessControlAllowOrigin()).isNull();
+    }
+
+    /**
+     * 컨테이너는 있으나 안쪽 앱이 죽어 도달 불가면(연결 거부) 502 를 돌려주고, 재확인 후 세션을 회수하도록
+     * reclaimer 를 부른다 — attach·findCurrent 가 못 걸러내는 "컨테이너 alive + 앱 死" 사각을 게이트웨이가
+     * 관찰해 닫는다. 닫힌 포트를 가리켜 도달 실패를 만든다.
+     */
+    @Test
+    void reclaimsTheSessionWhenTheInnerAppIsUnreachable() throws IOException {
+        int closedPort;
+        try (ServerSocket probe = new ServerSocket(0)) {
+            closedPort = probe.getLocalPort();
+        }   // 닫힘 — 이 포트에는 아무도 리슨하지 않는다
+        PreviewSessionInfo dead = new PreviewSessionInfo(
+                "session-dead", 1L, 11L, null, null, "container-dead", closedPort,
+                "https://qeploy.com/api/v1/previews/session-dead/token/", LocalDateTime.now().plusMinutes(30));
+
+        ResponseEntity<byte[]> response = service.proxy(dead, "/api/v1/previews/s/t/", "", null);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(502);
+        assertThat(reclaimed).containsExactly("session-dead");   // 안쪽 앱 死 → 세션 회수 요청
+    }
+
+    /**
+     * 킬스위치가 꺼져 있으면(gateway-reclaim-enabled=false) 도달 불가여도 회수하지 않는다 — 502 만 돌려준다.
+     * host_port 재할당 등으로 회수가 오판할 때 재배포 없이 즉시 끌 수 있는 안전장치.
+     */
+    @Test
+    void reclaimDisabled_returns502ButNeverReclaims() throws IOException {
+        int closedPort;
+        try (ServerSocket probe = new ServerSocket(0)) {
+            closedPort = probe.getLocalPort();
+        }
+        PreviewGatewayService disabled = new PreviewGatewayService("'self'", false, reclaimed::add);
+        PreviewSessionInfo dead = new PreviewSessionInfo(
+                "session-dead", 1L, 11L, null, null, "container-dead", closedPort,
+                "https://qeploy.com/api/v1/previews/session-dead/token/", LocalDateTime.now().plusMinutes(30));
+
+        ResponseEntity<byte[]> response = disabled.proxy(dead, "/api/v1/previews/s/t/", "", null);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(502);
+        assertThat(reclaimed).isEmpty();   // 킬스위치 off — 회수 안 함
+    }
+
+    /** 정상 응답이면 절대 회수하지 않는다 — 멀쩡한 프리뷰를 관찰만으로 지우면 안 된다. */
+    @Test
+    void doesNotReclaimAHealthySession() {
+        service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+
+        assertThat(reclaimed).isEmpty();
+    }
+
+    /**
+     * 앱이 루트절대경로(/api/entries)로 자기 백엔드를 부르면 iframe 오리진 루트(게이트웨이)로 나가 실패한다.
+     * HTML 에 fetch/XHR 를 감싸 그 요청을 프리뷰 prefix 아래로 재작성하는 shim 이 주입돼야 데이터가 앱에 닿는다.
+     */
+    @Test
+    void injectsApiPathShimIntoHtmlSoRootAbsoluteApiCallsReachTheApp() {
+        ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+
+        String html = new String(response.getBody(), StandardCharsets.UTF_8);
+        assertThat(html).contains("window.fetch");                       // fetch 래핑
+        assertThat(html).contains("XMLHttpRequest.prototype.open");      // XHR 래핑(axios 등)
+        assertThat(html).contains("/api/v1/previews/s/t");               // prefix(슬래시 뺀)가 shim 에 박힘
+    }
+
+    /**
+     * 앱이 루트절대 링크(/about)·폼(action="/submit")을 걸면 프레임이 게이트웨이 루트로 이동해
+     * 401 + XFO 로 통째로 깨진다(사용자가 처음 본 그 에러). fetch/XHR 뿐 아니라 <b>내비게이션</b>도
+     * prefix 안에 붙잡는 shim(클릭/중클릭 앵커 href·폼 action 재작성, window.open 래핑)이 주입돼야 한다.
+     * 실제 브라우저 동작(재작성이 실제로 일어나는지)은 별도로 실측 검증했고, 여기서는 그 조각들이
+     * 문서에 주입된다는 계약을 회귀 가드로 고정한다.
+     */
+    @Test
+    void injectsNavigationShimSoRootAbsoluteLinksAndFormsStayInThePrefix() {
+        ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+
+        String html = new String(response.getBody(), StandardCharsets.UTF_8);
+        assertThat(html).contains("addEventListener(\"click\",fixA,true)");    // 앵커 클릭 가로채기
+        assertThat(html).contains("addEventListener(\"auxclick\",fixA,true)"); // 중클릭(새 탭)도
+        assertThat(html).contains("addEventListener(\"submit\"");              // 폼 action 가로채기
+        assertThat(html).contains("setAttribute(\"action\"");                  // 폼 action 재작성
+        assertThat(html).contains("window.open=function");                     // 팝업 래핑
+    }
+
+    /**
+     * 쓰기(POST)도 method·본문을 그대로 컨테이너로 전달하고 응답을 돌려준다 — 에이전트가 만든 앱의 등록·폼이
+     * 프리뷰에서 동작하려면 필요하다. 앱이 method 와 본문을 되돌려주는 엔드포인트로 왕복을 확인한다.
+     */
+    @Test
+    void proxiesWriteMethodsWithTheirBodyToTheApp() {
+        container.createContext("/api/entries", exchange -> {
+            byte[] in = exchange.getRequestBody().readAllBytes();
+            String out = "{\"method\":\"" + exchange.getRequestMethod() + "\",\"echo\":"
+                    + new String(in, StandardCharsets.UTF_8) + "}";
+            byte[] b = out.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, "application/json");
+            exchange.sendResponseHeaders(201, b.length);
+            exchange.getResponseBody().write(b);
+            exchange.close();
+        });
+        byte[] reqBody = "{\"name\":\"a\",\"message\":\"hi\"}".getBytes(StandardCharsets.UTF_8);
+
+        ResponseEntity<byte[]> response = service.proxy(
+                "POST", session(), "/api/v1/previews/s/t/", "api/entries", null, reqBody, "application/json");
+
+        assertThat(response.getStatusCode().value()).isEqualTo(201);   // 상태 그대로
+        String body = new String(response.getBody(), StandardCharsets.UTF_8);
+        assertThat(body).contains("\"method\":\"POST\"");   // 메서드 그대로 전달
+        assertThat(body).contains("\"name\":\"a\"");        // 본문 그대로 전달
+    }
+
+    /**
+     * SSE({@code text/event-stream})는 버퍼링이 아니라 스트리밍으로 프록시돼야 한다 — 버퍼링 경로는
+     * 끝나지 않는 SSE 응답에서 영원히 막힌다. 업스트림이 이벤트를 흘리고 닫으면, 스트리밍 응답이
+     * 그 이벤트를 그대로 통과시키고 SSE 계약 헤더(text/event-stream, no-cache/no-transform, 프록시
+     * 버퍼링 끄기)를 단다는 것을 고정한다.
+     */
+    @Test
+    void streamsServerSentEventsWithTheStreamingContract() throws Exception {
+        container.createContext("/events", exchange -> {
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, "text/event-stream");
+            exchange.sendResponseHeaders(200, 0);   // 0 = 청크(길이 미정) — SSE 처럼 열린 채로 흘린다
+            var os = exchange.getResponseBody();
+            os.write("data: one\n\n".getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            os.write("data: two\n\n".getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            exchange.close();   // 유한 스트림으로 닫아 writeTo 가 끝나게 한다
+        });
+
+        ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> response =
+                service.proxyEventStream(session(), "events", null, null);
+
+        assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE)).contains("text/event-stream");
+        assertThat(response.getHeaders().getCacheControl()).contains("no-cache").contains("no-transform");
+        assertThat(response.getHeaders().getFirst("X-Accel-Buffering")).isEqualTo("no");
+
+        java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
+        response.getBody().writeTo(sink);   // 업스트림이 닫힐 때까지 청크를 흘려보낸다
+        String streamed = sink.toString(StandardCharsets.UTF_8);
+        assertThat(streamed).contains("data: one").contains("data: two");
     }
 
     /** 이 경로에만 실제 파일이 있는 상태를 만든다. 나머지 경로는 @BeforeEach 의 "/" 가 받아 index.html 을 돌려준다(serve -s 와 같은 동작). */

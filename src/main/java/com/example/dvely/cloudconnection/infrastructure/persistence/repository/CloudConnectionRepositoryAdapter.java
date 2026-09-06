@@ -27,6 +27,13 @@ public class CloudConnectionRepositoryAdapter implements CloudConnectionReposito
     }
 
     @Override
+    public List<CloudConnection> findAllByProvider(com.example.dvely.cloudconnection.domain.value.CloudProvider provider) {
+        return springDataRepository.findAllByProvider(provider.name()).stream()
+                .map(CloudConnectionEntity::toDomain)
+                .toList();
+    }
+
+    @Override
     public List<CloudConnection> findAllByOwnerUserIdOrderByCreatedAtDesc(Long ownerUserId) {
         return springDataRepository.findAllByOwnerUserIdOrderByCreatedAtDesc(ownerUserId).stream()
                 .map(CloudConnectionEntity::toDomain)

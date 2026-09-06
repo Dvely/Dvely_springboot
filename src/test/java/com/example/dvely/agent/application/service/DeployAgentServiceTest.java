@@ -103,7 +103,8 @@ class DeployAgentServiceTest {
                 null,
                 "PENDING",
                 null,
-                LocalDateTime.now()
+                LocalDateTime.now(),
+                java.util.List.of()
         ));
 
         CodeAgentService.CodeResult result = service.execute(
@@ -173,7 +174,7 @@ class DeployAgentServiceTest {
                 .thenReturn(Optional.empty());
         when(projectRepository.save(any(Project.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(deploymentFacade.deploy(eq(1L), isNull(), any(DeployCommand.class))).thenReturn(
-                new DeployResult(51L, null, "LATEST", null, "PENDING", null, LocalDateTime.now())
+                new DeployResult(51L, null, "LATEST", null, "PENDING", null, LocalDateTime.now(), java.util.List.of())
         );
 
         service.execute(
@@ -230,7 +231,7 @@ class DeployAgentServiceTest {
                 new ObjectOptimisticLockingFailureException(Project.class, 11L));
         when(projectRepository.save(reloaded)).thenAnswer(invocation -> invocation.getArgument(0));
         when(deploymentFacade.deploy(eq(1L), eq(11L), any(DeployCommand.class))).thenReturn(
-                new DeployResult(51L, 11L, "LATEST", null, "PENDING", null, LocalDateTime.now())
+                new DeployResult(51L, 11L, "LATEST", null, "PENDING", null, LocalDateTime.now(), java.util.List.of())
         );
 
         service.execute(new AgentStep(AgentType.DEPLOY, Map.of()), 1L, "task123", 11L);
@@ -275,7 +276,7 @@ class DeployAgentServiceTest {
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(notBound), Optional.of(alreadyBound));
         when(deploymentFacade.deploy(eq(1L), eq(11L), any(DeployCommand.class))).thenReturn(
-                new DeployResult(51L, 11L, "LATEST", null, "PENDING", null, LocalDateTime.now())
+                new DeployResult(51L, 11L, "LATEST", null, "PENDING", null, LocalDateTime.now(), java.util.List.of())
         );
 
         service.execute(new AgentStep(AgentType.DEPLOY, Map.of()), 1L, "task123", 11L);
@@ -399,7 +400,7 @@ class DeployAgentServiceTest {
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(project));
         DeployCommand command = new DeployCommand(DeployTargetType.LATEST, null, "task123");
-        DeployResult success = new DeployResult(51L, 11L, "LATEST", null, "PENDING", null, LocalDateTime.now());
+        DeployResult success = new DeployResult(51L, 11L, "LATEST", null, "PENDING", null, LocalDateTime.now(), java.util.List.of());
         when(deploymentFacade.deploy(1L, 11L, command))
                 .thenThrow(new ObjectOptimisticLockingFailureException(Project.class, 11L))
                 .thenReturn(success);

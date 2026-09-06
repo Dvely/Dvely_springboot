@@ -34,6 +34,7 @@ import com.example.dvely.domainbinding.infrastructure.config.CloudflarePropertie
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
@@ -79,6 +80,12 @@ class DomainBindingCommandServiceTest {
 
     @Mock
     private AuditRecorder auditRecorder;
+
+    @Mock
+    private com.example.dvely.domainbinding.application.port.out.S3CdnProvisioningPort s3CdnProvisioningPort;
+
+    @Mock
+    private com.example.dvely.domainbinding.application.port.out.BackendAddressPort backendAddressPort;
 
     private DomainBindingCommandService commandService;
 
@@ -159,6 +166,104 @@ class DomainBindingCommandServiceTest {
         verify(auditRecorder).record(auditCaptor.capture());
         assertThat(auditCaptor.getValue().actorType()).isEqualTo(AuditActorType.AGENT);
         assertThat(auditCaptor.getValue().taskId()).isEqualTo("task-77");
+    }
+
+    @Test
+    void bindManagedSubdomain_frontendEc2_createsARecordToFrontendEipNotCname() {
+        // 독립 프론트(AWS_EC2_FRONTEND)는 백엔드처럼 EC2 대상이라 대상이 IP(프론트 EIP) → A 레코드
+        // (proxied=false, Cloudflare 프록시 미경유). Caddy 가 인스턴스에서 HTTPS 를 종단한다. CNAME 아님.
+        Project project = boundProject("https://frontend.example.com/");
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(hostingAdapterRegistry.resolve(DomainHostingTarget.AWS_EC2_FRONTEND)).thenReturn(hostingAdapter);
+        when(domainBindingRepository.existsByHostnameIgnoreCase("fe-app.qeploy.com")).thenReturn(false);
+        when(hostingAdapter.resolveDnsTarget(any())).thenReturn("54.180.1.2");   // RUNNING 프론트 서버 EIP
+        when(cloudflareDnsPort.createARecord("fe-app.qeploy.com", "54.180.1.2", false))
+                .thenReturn("cf-fe-rec");
+        when(domainBindingRepository.save(any(DomainBinding.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DomainBindingResult result = commandService.bindDomain(
+                1L, 11L,
+                new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "fe-app", null, null,
+                        DomainHostingTarget.AWS_EC2_FRONTEND));
+
+        assertThat(result.hostingTarget()).isEqualTo(DomainHostingTarget.AWS_EC2_FRONTEND);
+        assertThat(result.verificationMethod())
+                .isEqualTo(com.example.dvely.domainbinding.domain.value.VerificationMethod.A);
+        assertThat(result.dnsTarget()).isEqualTo("54.180.1.2");
+        verify(cloudflareDnsPort).createARecord("fe-app.qeploy.com", "54.180.1.2", false);
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any());
+        // 프론트 EC2 도 GitHub 토큰 게이트를 안 탄다(백엔드와 동일) — 유저 조회가 없어야 한다.
+        verifyNoInteractions(userRepository);
+    }
+
+    @Test
+    void bindS3Frontend_managedSubdomain_requestsCertAndSavesProvisioning() {
+        // S3 프론트 HTTPS 는 CloudFront+ACM 비동기 — 바인딩은 인증서만 요청하고 PROVISIONING 으로 둔다.
+        // 최종 CNAME 은 워커가 배포 후 걸므로 이 시점엔 Cloudflare 레코드를 안 만든다.
+        Project project = boundProject("http://qeploy-site-1.s3-website.ap-northeast-2.amazonaws.com");
+        project.changeFrontendHosting(FrontendHostingType.S3);
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(domainBindingRepository.existsByHostnameIgnoreCase("s3app.qeploy.com")).thenReturn(false);
+        when(s3CdnProvisioningPort.requestCertificate(11L, "s3app.qeploy.com"))
+                .thenReturn("arn:aws:acm:us-east-1:123:certificate/abc");
+        when(domainBindingRepository.save(any(DomainBinding.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DomainBindingResult result = commandService.bindDomain(
+                1L, 11L,
+                new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "s3app", null, null,
+                        DomainHostingTarget.AWS_S3_FRONTEND));
+
+        assertThat(result.hostingTarget()).isEqualTo(DomainHostingTarget.AWS_S3_FRONTEND);
+        assertThat(result.status()).isEqualTo(DomainStatus.PROVISIONING);
+        assertThat(result.verificationMethod())
+                .isEqualTo(com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME);
+        verify(s3CdnProvisioningPort).requestCertificate(11L, "s3app.qeploy.com");
+        // 바인딩 시점엔 아직 DNS 레코드를 안 만든다(워커 몫).
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any());
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
+        verify(cloudflareDnsPort, never()).createARecord(any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
+    }
+
+    @Test
+    void bindS3Frontend_customDomain_requestsCertAndDoesNotTouchOurDns() {
+        // 커스텀 도메인도 인증서만 요청해 PROVISIONING. 검증 CNAME·최종 CNAME 은 사용자가 자기 존에 넣으므로
+        // 우리 Cloudflare 존은 건드리지 않는다(가이드로 안내).
+        Project project = boundProject("http://qeploy-site-1.s3-website.ap-northeast-2.amazonaws.com");
+        project.changeFrontendHosting(FrontendHostingType.S3);
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(domainBindingRepository.existsByHostnameIgnoreCase("www.mysite.com")).thenReturn(false);
+        when(s3CdnProvisioningPort.requestCertificate(11L, "www.mysite.com"))
+                .thenReturn("arn:aws:acm:us-east-1:123:certificate/custom");
+        when(domainBindingRepository.save(any(DomainBinding.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DomainBindingResult result = commandService.bindDomain(
+                1L, 11L,
+                new BindDomainCommand(DomainType.CUSTOM_DOMAIN, null, "www.mysite.com", null,
+                        DomainHostingTarget.AWS_S3_FRONTEND));
+
+        assertThat(result.hostingTarget()).isEqualTo(DomainHostingTarget.AWS_S3_FRONTEND);
+        assertThat(result.type()).isEqualTo(DomainType.CUSTOM_DOMAIN);
+        assertThat(result.status()).isEqualTo(DomainStatus.PROVISIONING);
+        verify(s3CdnProvisioningPort).requestCertificate(11L, "www.mysite.com");
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any());
+        verify(cloudflareDnsPort, never()).createCnameRecord(any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
+    }
+
+    @Test
+    void bindS3Frontend_nonS3Project_rejected() {
+        // 프론트를 S3 로 배포하지 않은 프로젝트엔 오리진(버킷)이 없어 거절한다.
+        Project project = boundProject("https://octo.github.io/repo/");   // 기본 GITHUB_PAGES
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+
+        assertThatThrownBy(() -> commandService.bindDomain(
+                1L, 11L,
+                new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "s3app", null, null,
+                        DomainHostingTarget.AWS_S3_FRONTEND)))
+                .isInstanceOf(IllegalStateException.class);
+        verifyNoInteractions(s3CdnProvisioningPort);
     }
 
     @Test
@@ -429,22 +534,32 @@ class DomainBindingCommandServiceTest {
     }
 
     @org.junit.jupiter.api.Test
-    void releaseBackendDomains_deletesOnlyAwsBindingsPointingAtReleasedIp() {
+    void releaseServerDomains_deletesEc2BindingsPointingAtReleasedIp_backendAndFrontend() {
         DomainBinding awsMatch = backendBinding(1L, "be.qeploy.com", "1.2.3.4", "rec-1");
-        DomainBinding frontend = new DomainBinding(2L, 7L, DomainType.MANAGED_SUBDOMAIN,
+        // GitHub Pages 프론트: EC2 대상이 아니고 대상이 IP 도 아니라 정리 대상이 아니다.
+        DomainBinding pagesFrontend = new DomainBinding(2L, 7L, DomainType.MANAGED_SUBDOMAIN,
                 DomainHostingTarget.GITHUB_PAGES, "app.qeploy.com", DomainStatus.CONNECTED,
                 com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME,
                 "octo.github.io", "rec-2", true, CertificateStatus.ACTIVE, null,
                 LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now());
         DomainBinding awsOtherIp = backendBinding(3L, "be2.qeploy.com", "9.9.9.9", "rec-3");
+        // 독립 프론트 EC2 도메인이 같은 해제 EIP 를 가리키면 함께 정리돼야 한다(dangling DNS 방지).
+        DomainBinding frontendEc2Match = new DomainBinding(4L, 7L, DomainType.MANAGED_SUBDOMAIN,
+                DomainHostingTarget.AWS_EC2_FRONTEND, "fe.qeploy.com", DomainStatus.CONNECTED,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.A,
+                "1.2.3.4", "rec-4", false, CertificateStatus.ACTIVE, null,
+                LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now());
         when(domainBindingRepository.findByProjectIdOrderByCreatedAtDesc(7L))
-                .thenReturn(java.util.List.of(awsMatch, frontend, awsOtherIp));
+                .thenReturn(java.util.List.of(awsMatch, pagesFrontend, awsOtherIp, frontendEc2Match));
 
-        commandService.releaseBackendDomains(7L, "1.2.3.4");
+        commandService.releaseServerDomains(7L, "1.2.3.4");
 
-        // 매칭(AWS + IP) 만 Cloudflare 레코드·행 삭제. 프론트·다른 IP 는 그대로.
+        // EC2 대상(백엔드 AWS · 프론트 AWS_EC2_FRONTEND) 이면서 해제 IP 를 가리키던 것만 삭제.
         verify(cloudflareDnsPort).deleteRecord("be.qeploy.com", "rec-1");
+        verify(cloudflareDnsPort).deleteRecord("fe.qeploy.com", "rec-4");
         verify(domainBindingRepository).deleteById(1L);
+        verify(domainBindingRepository).deleteById(4L);
+        // GitHub Pages 프론트·다른 IP 백엔드는 그대로.
         verify(domainBindingRepository, never()).deleteById(2L);
         verify(domainBindingRepository, never()).deleteById(3L);
     }
@@ -468,7 +583,9 @@ class DomainBindingCommandServiceTest {
                 dnsLookupPort,
                 hostingAdapterRegistry,
                 cloudflareProperties,
-                auditRecorder
+                auditRecorder,
+                s3CdnProvisioningPort,
+                backendAddressPort
         );
     }
 

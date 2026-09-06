@@ -1,5 +1,6 @@
 package com.example.dvely.agent.presentation.dto;
 
+import com.example.dvely.agent.application.dto.ClarificationRequest;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -68,5 +69,14 @@ public record TaskStatusResponse(
                 재실행을 트리거한다), 그 전까지 retryable은 false로 고정된다.
                 """,
                 example = "42", nullable = true)
-        Long pendingApprovalId
+        Long pendingApprovalId,
+
+        @Schema(description = """
+                구조화 되묻기(CLARIFY). status=WAITING_INPUT 이고 에이전트가 선택형 질문을 할 때만 채워진다
+                (null 이면 단순 텍스트 입력 — question 만 보여주고 입력창을 띄운다). FE 는 inputType 을 보고
+                TEXT=입력창 / SINGLE_SELECT=라디오 / MULTI_SELECT=체크박스를 렌더하고, 사용자가 고른 답을
+                사람이 읽는 문자열(예: 체크박스면 "로그인, 이미지 업로드")로 만들어 /input 으로 보낸다.
+                """,
+                nullable = true)
+        ClarificationRequest clarification
 ) {}

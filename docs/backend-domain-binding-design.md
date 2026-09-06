@@ -120,3 +120,28 @@ BYOC 신뢰 이슈. 현재 비용은 **추정치**(`ProjectCostBudgetService.est
 
 **FE 닫힌 enum 주의(FE 제보):** `resourceCostSchema.resourceType{COMPUTE,STORAGE,NETWORK}` — EIP 는
 NETWORK 로 덮인다(지금 OK). 비용 자원 종류를 늘리면 예산 화면이 빈다 → BE·FE 같이.
+
+## B — 백엔드 도메인 HTTPS (2026-09-03 결정: 인스턴스 리버스프록시)
+
+A 는 DNS-only http. B 는 `https://label.qeploy.com`. 세 접근을 비교(현재 Cloudflare 토큰은 DNS 편집
+전용 — SSL 설정·Rulesets 조회 403 확인)한 끝에 **인스턴스 리버스프록시(Caddy)** 채택.
+
+| 접근 | 토큰 | 인스턴스 | 비용 | 커스텀도메인 | TLS 구간 |
+|---|---|---|---|---|---|
+| ①CF Origin Rule | 권한 확대 필요 | 그대로 | 무료 | 별도 | CF→오리진 평문 |
+| **②Caddy(채택)** | 지금 그대로 | Caddy 추가 | 무료 | 자동 | 종단간 |
+| ③ALB+ACM | 그대로 | 그대로 | ~$16/월/서버 | 별도 | 종단간 관리형 |
+
+**①CF Origin Rule(문서 보존, 미채택):** proxied A레코드 + `http_request_origin` 룰셋으로 443→8080
+오버라이드 + SSL 모드 Flexible. **채택 안 함 이유:** 운영 qeploy.com 토큰에 Rulesets:Edit 를 줘야
+하는데 그건 존 전체 origin 라우팅 권한이라 blast radius 가 크다(최소권한 위배) — **토큰 권한 변경은
+팀 합의 필요**. 나중에 합의되면 이 경로도 가능(코드는 rulesets API 추가면 됨).
+
+**②Caddy(채택) 설계:**
+- 도메인은 배포 후에 붙고 인스턴스에 SSH 없음 → Caddy **on-demand TLS**(요청 시 Let's Encrypt 자동 발급).
+- 남용 방지 ask 는 **자기완결적**: 인스턴스에 작은 ask 서비스(`*.qeploy.com` 만 200). 우리가 qeploy.com
+  DNS 를 통제하니 남의 도메인은 우리 인스턴스로 안 온다 → 안전, BE 의존 없음(로컬 검증 가능).
+- user-data: java(8080, localhost) + Caddy(443 https, 80 ACME) + ask 서비스. SG 에 443·80 추가(8080 유지 —
+  직접 접속·헬스체크).
+- domainUrl: 도메인 있으면 `https://{hostname}`(443), 없으면 `http://EIP:8080`.
+- **커스텀 도메인 HTTPS 는 다음** — `*.qeploy.com` 스코프 ask 로는 커버 안 됨, DB-기반 ask(BE 공개 엔드포인트) 필요.

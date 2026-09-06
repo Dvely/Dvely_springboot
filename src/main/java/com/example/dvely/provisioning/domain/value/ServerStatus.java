@@ -13,5 +13,10 @@ public enum ServerStatus {
     PROVISIONING,   // 인스턴스 생성됨, running/헬스체크 대기
     RUNNING,        // 헬스체크 통과 — 접속 가능
     FAILED,
-    TERMINATED      // 종료됨(과금 정지)
+    TERMINATED;     // 종료됨(과금 정지)
+
+    /** 더 진행하지 않는 종착 상태(RUNNING 이 될 일이 없다). 재배포 체인에서 교체 대상 후보에서 제외한다. */
+    public boolean isTerminal() {
+        return this == FAILED || this == TERMINATED;
+    }
 }

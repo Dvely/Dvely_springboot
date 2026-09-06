@@ -94,10 +94,16 @@ public class ProjectPreviewService {
     /**
      * 살아 있으면 그 세션에 붙이고, 없으면 새로 띄운다.
      *
+     * <p>{@code force=true} 면 붙지 않고 <b>항상 새로 띄운다</b> — 기존 세션(ACTIVE·PROVISIONING)을
+     * 먼저 닫고 컨테이너를 회수한 뒤 preview 브랜치를 새로 clone→build 한다. 두 가지를 푼다: ①컨테이너는
+     * 살아 있는데(그래서 attach·findCurrent 는 못 걷어냄) 안쪽 앱만 죽어 502 만 나오는 세션을 되살리고,
+     * ②방금 저장소를 연결한 직후 아직 살아 있는 Agent 작업 컨테이너에 붙어 옛 코드를 보여주는 어긋남을
+     * 없앤다. force 는 언제나 브랜치의 현재 내용을 새로 띄우므로 결과가 {@code started=true}(202)다.</p>
+     *
      * @return {@code started=false} 면 이미 서빙 중인 세션에 그대로 붙은 것(즉시 사용 가능),
      *         {@code started=true} 면 준비를 시작했거나 이미 준비 중인 것(폴링 필요)
      */
-    public ProvisionOutcome provision(Long projectId, Long ownerUserId) {
+    public ProvisionOutcome provision(Long projectId, Long ownerUserId, boolean force) {
         Project project = requireProject(projectId, ownerUserId);
         String sourceRepo = project.getSourceRepository();
         if (sourceRepo == null || sourceRepo.isBlank()) {
@@ -107,9 +113,13 @@ public class ProjectPreviewService {
                     "GitHub 저장소가 연결되지 않아 프리뷰를 띄울 수 없습니다. 저장소를 먼저 연결해주세요.");
         }
 
-        Optional<ProvisionOutcome> attached = attachToLiveSession(projectId, ownerUserId);
-        if (attached.isPresent()) {
-            return attached.get();
+        if (force) {
+            discardLiveSessions(projectId, ownerUserId);
+        } else {
+            Optional<ProvisionOutcome> attached = attachToLiveSession(projectId, ownerUserId);
+            if (attached.isPresent()) {
+                return attached.get();
+            }
         }
 
         String sessionId = UUID.randomUUID().toString();
@@ -178,6 +188,23 @@ public class ProjectPreviewService {
         // ACTIVE 인데 컨테이너가 없다 — 행을 닫고 아래에서 새로 띄운다.
         discard(live, PreviewSessionStatus.EXPIRED);
         return Optional.empty();
+    }
+
+    /**
+     * 이 프로젝트의 살아 있는 세션(ACTIVE·PROVISIONING)을 모두 닫고 컨테이너를 회수한다. force 리빌드가
+     * 새 세션을 만들기 <b>전에</b> 부른다. 남겨 두면 두 가지가 어긋난다: ①{@link #resolveConcurrentProvisioning}
+     * 이 옛 PROVISIONING 세션을 승자로 골라 force 요청이 그 낡은 준비에 흡수돼 무력화되고, ②옛 컨테이너가
+     * TTL 이 다할 때까지 놀며 과금된다. CLOSED 로 닫는 것은 사용자의 명시적 재띄우기 행동의 결과라 만료
+     * (EXPIRED)가 아니라 명시적 종료가 맞다.
+     */
+    private void discardLiveSessions(Long projectId, Long ownerUserId) {
+        List<PreviewSessionEntity> live = repository.findByProjectIdAndOwnerUserIdAndStatusIn(
+                projectId, ownerUserId, LIVE_STATUSES);
+        for (PreviewSessionEntity session : live) {
+            log.info("[ProjectPreview] force 리빌드 — 기존 세션 정리: projectId={} sessionId={} status={}",
+                    projectId, session.getId(), session.getStatus());
+            discard(session, PreviewSessionStatus.CLOSED);
+        }
     }
 
     /**

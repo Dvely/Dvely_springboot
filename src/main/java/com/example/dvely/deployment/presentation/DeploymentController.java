@@ -55,7 +55,8 @@ public class DeploymentController {
             @Parameter(description = "배포할 프로젝트 ID") @PathVariable Long projectId,
             @Valid @RequestBody DeployRequest request
     ) {
-        DeployCommand command = new DeployCommand(request.deployTargetType(), request.versionName());
+        DeployCommand command = new DeployCommand(
+                request.deployTargetType(), request.versionName(), null, request.frontendHostingType());
         return toDeployResponse(deploymentFacade.deploy(userId, projectId, command));
     }
 
@@ -240,7 +241,8 @@ public class DeploymentController {
                 result.versionName(),
                 result.status(),
                 result.pagesUrl(),
-                result.createdAt()
+                result.createdAt(),
+                result.approvalIds()
         );
     }
 

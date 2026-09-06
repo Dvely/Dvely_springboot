@@ -10,7 +10,7 @@ public record ProjectDomainSummaryResponse(
         @Schema(description = "전체 hostname") String hostname,
         @Schema(description = "https://hostname 형식의 접속 URL") String url,
         @Schema(description = "도메인 타입", allowableValues = {"managed_subdomain", "custom_domain", "purchasable_domain"}) String type,
-        @Schema(description = "배포 대상", allowableValues = {"GITHUB_PAGES", "AWS", "GCP"}) String hostingTarget,
+        @Schema(description = "배포 대상", allowableValues = {"GITHUB_PAGES", "AWS", "AWS_EC2_FRONTEND", "AWS_S3_FRONTEND", "GCP"}) String hostingTarget,
         @Schema(description = "연결 상태", allowableValues = {"REQUESTED", "PROVISIONING", "VERIFYING", "CONNECTED", "FAILED"}) String status,
         @Schema(description = "HTTPS 강제 여부") boolean httpsEnforced,
         @Schema(description = "TLS 인증서 발급 상태", allowableValues = {"PENDING", "PROVISIONING", "ACTIVE", "FAILED"}) String certificateStatus,

@@ -34,6 +34,7 @@ import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
 import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
@@ -61,6 +62,10 @@ class DeploymentCommandServiceTest {
     @Mock private ProjectApprovalPolicyRepository policyRepository;
     @Mock private ResultApprovalService resultApprovalService;
     @Mock private AuditRecorder auditRecorder;
+    @Mock private com.example.dvely.deployment.application.port.out.FrontendStaticHostingPort frontendStaticHostingPort;
+    @Mock private com.example.dvely.deployment.application.service.DeploymentOutcomeService deploymentOutcomeService;
+    @Mock private com.example.dvely.deployment.application.port.out.FrontendServerHostingPort frontendServerHostingPort;
+    @Mock private com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
 
     private DeploymentCommandService service;
 
@@ -76,7 +81,11 @@ class DeploymentCommandServiceTest {
                 deploymentHistoryRepository,
                 policyRepository,
                 resultApprovalService,
-                auditRecorder
+                auditRecorder,
+                frontendStaticHostingPort,
+                deploymentOutcomeService,
+                frontendServerHostingPort,
+                cloudConnectionSettingRepository
         );
     }
 
@@ -136,6 +145,113 @@ class DeploymentCommandServiceTest {
     }
 
     @Test
+    void deploy_withoutHostingTypeKeepsProjectOnGithubPagesAndSucceeds() {
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> persisted(invocation.getArgument(0), 51L));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DeployResult result = service.deploy(1L, 11L, new DeployCommand(DeployTargetType.LATEST, null));
+
+        assertThat(result.status()).isEqualTo("PENDING");
+        assertThat(project.getFrontendHostingType()).isEqualTo(FrontendHostingType.GITHUB_PAGES);
+    }
+
+    @Test
+    void deploy_withExplicitGithubPagesHostingPersistsTheSettingAndSucceeds() {
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> persisted(invocation.getArgument(0), 51L));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DeployResult result = service.deploy(
+                1L, 11L,
+                new DeployCommand(DeployTargetType.LATEST, null, null, FrontendHostingType.GITHUB_PAGES));
+
+        assertThat(result.status()).isEqualTo("PENDING");
+        assertThat(project.getFrontendHostingType()).isEqualTo(FrontendHostingType.GITHUB_PAGES);
+    }
+
+    @Test
+    void deploy_withS3HostingButNoCloudConnectionIsRejectedBeforeQueuing() {
+        // S3 배포는 사용자 AWS 연결이 있어야 한다. 없으면 헛되이 큐잉·빌드까지 갔다 실패하지 않도록
+        // 요청 시점에 즉시 거절한다(@Transactional 이라 이력 저장·호스팅 변경 모두 롤백).
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(cloudConnectionSettingRepository.findByProjectId(11L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.deploy(
+                1L, 11L,
+                new DeployCommand(DeployTargetType.LATEST, null, null, FrontendHostingType.S3)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("클라우드 연결");
+
+        verify(deploymentHistoryRepository, never()).save(any(DeploymentHistory.class));
+        verifyNoInteractions(userRepository, githubPagesPort, githubActionsPort, githubRepoPort);
+    }
+
+    @Test
+    void deploy_withS3HostingAndACloudConnectionQueuesTheJobAndPersistsTheSetting() {
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(cloudConnectionSettingRepository.findByProjectId(11L)).thenReturn(Optional.of(
+                org.mockito.Mockito.mock(com.example.dvely.project.domain.model.ProjectCloudConnectionSetting.class)));
+        when(deploymentHistoryRepository.save(any(DeploymentHistory.class)))
+                .thenAnswer(invocation -> persisted(invocation.getArgument(0), 51L));
+        when(projectRepository.save(any(Project.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        DeployResult result = service.deploy(
+                1L, 11L,
+                new DeployCommand(DeployTargetType.LATEST, null, null, FrontendHostingType.S3));
+
+        // 배포 요청(deploy)은 큐잉만 한다 — 실제 빌드(execute)는 워커가 나중에 돌리므로 여기선 호출 안 됨.
+        assertThat(result.status()).isEqualTo("PENDING");
+        assertThat(project.getFrontendHostingType()).isEqualTo(FrontendHostingType.S3);
+        verifyNoInteractions(frontendStaticHostingPort);
+    }
+
+    @Test
+    void deploy_withEc2HostingDelegatesToWebOnlyServerProvisioningAndReturnsApprovalIds() {
+        // EC2 프론트 호스팅은 비동기·과금·승인 게이트라 배포 이력이 아니라 웹 전용 서버 프로비저닝으로
+        // 위임한다. 배포 응답은 대기 서버 id + 승인 id 를 담아 FE 가 승인 화면으로 연결한다.
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(projectRepository.save(any(Project.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(frontendServerHostingPort.provisionWebOnly(any()))
+                .thenReturn(new com.example.dvely.deployment.application.port.out.FrontendServerHostingPort.ServerSubmission(
+                        77L, java.util.List.of(88L)));
+
+        DeployResult result = service.deploy(
+                1L, 11L,
+                new DeployCommand(DeployTargetType.LATEST, null, null, FrontendHostingType.EC2));
+
+        assertThat(result.deploymentId()).isEqualTo(77L);   // 대기 서버 id
+        assertThat(result.status()).isEqualTo("PENDING");
+        assertThat(result.approvalIds()).containsExactly(88L);
+        assertThat(project.getFrontendHostingType()).isEqualTo(FrontendHostingType.EC2);
+
+        ArgumentCaptor<com.example.dvely.deployment.application.port.out.FrontendServerHostingPort.Request> captor =
+                ArgumentCaptor.forClass(com.example.dvely.deployment.application.port.out.FrontendServerHostingPort.Request.class);
+        verify(frontendServerHostingPort).provisionWebOnly(captor.capture());
+        assertThat(captor.getValue().projectId()).isEqualTo(11L);
+        assertThat(captor.getValue().ownerUserId()).isEqualTo(1L);
+        assertThat(captor.getValue().frontendRepo()).isEqualTo("octo/repo");   // 프로젝트 소스 레포
+        // EC2 는 배포 이력을 만들지 않고(서버 프로비저닝이 단위), Pages/S3 파이프라인을 안 건드린다.
+        verify(deploymentHistoryRepository, never()).save(any(DeploymentHistory.class));
+        verifyNoInteractions(githubPagesPort, githubActionsPort, frontendStaticHostingPort);
+    }
+
+    @Test
     void retry_createsNewHistoryLinkedToTheFailedOneAndCopiesTargetTypeAndVersion() {
         Project project = boundProject();
         DeploymentHistory failed = failedHistory(DeployTargetType.VERSION, "v3");
@@ -189,6 +305,31 @@ class DeploymentCommandServiceTest {
         // LATEST retries re-resolve the current head commit at execute() time (worker), not the
         // version that was live when the original attempt failed — so no version is carried over.
         assertThat(captor.getValue().getVersionLabel()).isNull();
+    }
+
+    @Test
+    void retry_ofEc2HostedProject_delegatesToServerProvisioningNotQueuePipeline() {
+        // 프로젝트가 EC2 프론트로 설정된 뒤 재시도하면, deploy() 와 똑같이 서버 프로비저닝으로 위임한다
+        // (배포 이력/큐 파이프라인·지원검사를 안 탄다 — 예전엔 여기서 "EC2 준비 중"으로 잘못 거절했다).
+        Project project = boundProject();
+        project.changeFrontendHosting(FrontendHostingType.EC2);
+        DeploymentHistory failed = failedHistory(DeployTargetType.LATEST, "v3");
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(failed));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(project));
+        when(frontendServerHostingPort.provisionWebOnly(any()))
+                .thenReturn(new com.example.dvely.deployment.application.port.out.FrontendServerHostingPort.ServerSubmission(
+                        77L, java.util.List.of(88L)));
+
+        DeployResult result = service.retryDeployment(1L, 51L);
+
+        assertThat(result.deploymentId()).isEqualTo(77L);   // 대기 서버 id
+        assertThat(result.status()).isEqualTo("PENDING");
+        assertThat(result.approvalIds()).containsExactly(88L);
+        verify(frontendServerHostingPort).provisionWebOnly(any());
+        // EC2 는 배포 이력/Pages/S3 파이프라인을 안 만든다.
+        verify(deploymentHistoryRepository, never()).save(any(DeploymentHistory.class));
+        verifyNoInteractions(githubPagesPort, githubActionsPort, frontendStaticHostingPort);
     }
 
     @Test
@@ -707,6 +848,48 @@ class DeploymentCommandServiceTest {
                 source.getUpdatedAt(),
                 source.getRetriedFromHistoryId()
         );
+    }
+
+    @Test
+    void execute_forAnS3Project_buildsAndPublishesToS3ThenDelegatesToStandardSuccessWithoutTouchingGithubPages() {
+        Project project = boundProject();
+        project.changeFrontendHosting(FrontendHostingType.S3);
+        DeploymentHistory history = claimedHistory();
+        ReleaseMetadata metadata = new ReleaseMetadata(
+                "abc123", "title", "body", "octo", "https://avatars.example/octo", 17,
+                LocalDateTime.of(2026, 6, 10, 9, 30));
+        String siteUrl = "http://qeploy-site-123-ap-northeast-2-11.s3-website.ap-northeast-2.amazonaws.com";
+
+        when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(history));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));   // 저장 직전 신선 재조회
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        // 정책 OFF → mergeAllowed 단락평가로 resultApprovalService 는 호출되지 않는다.
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, true, true, true, true, false)));
+        when(githubRepoPort.hasNewCommits("user-token", "octo/repo", "main", "preview")).thenReturn(false);
+        when(githubRepoPort.getHeadCommitSha("user-token", "octo/repo", "main")).thenReturn("abc123");
+        when(githubRepoPort.findSequentialTagForCommit("user-token", "octo/repo", "abc123")).thenReturn("v7");
+        when(githubRepoPort.getReleaseMetadata("user-token", "octo/repo", "abc123", null)).thenReturn(metadata);
+        when(frontendStaticHostingPort.publishToS3(any())).thenReturn(siteUrl);
+
+        service.execute(51L);
+
+        // 서버측 빌드→S3 발행이 호출됐고, LATEST 라 checkoutRef 는 null(clone 된 기본 브랜치 그대로).
+        ArgumentCaptor<com.example.dvely.deployment.application.port.out.FrontendStaticHostingPort.PublishRequest> captor =
+                ArgumentCaptor.forClass(com.example.dvely.deployment.application.port.out.FrontendStaticHostingPort.PublishRequest.class);
+        verify(frontendStaticHostingPort).publishToS3(captor.capture());
+        assertThat(captor.getValue().projectId()).isEqualTo(11L);
+        assertThat(captor.getValue().ownerUserId()).isEqualTo(1L);
+        assertThat(captor.getValue().sourceRepo()).isEqualTo("octo/repo");
+        assertThat(captor.getValue().checkoutRef()).isNull();
+        // 이력엔 S3 URL·버전이 실렸고(prepare), 완료(LIVE 전이+변경표시+대화알림+감사)는 Pages 와 동일한
+        // 표준 성공 처리(신선 재조회한 프로젝트 대상)로 위임한다.
+        assertThat(history.getDeployedUrl()).isEqualTo(siteUrl);
+        assertThat(history.getVersionLabel()).isEqualTo("v7");
+        verify(deploymentOutcomeService).applySuccess(history, project);
+        // GitHub Pages 파이프라인(워크플로우/Pages)은 S3 경로에서 전혀 건드리지 않는다.
+        verifyNoInteractions(githubPagesPort, githubActionsPort);
     }
 
     private DeploymentHistory claimedHistory() {

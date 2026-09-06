@@ -65,7 +65,7 @@ class DeploymentRetryContractTest {
 
     @Test
     void retryReturnsHttp201WithTheNewDeploymentId() throws Exception {
-        DeployResult result = new DeployResult(52L, 11L, "VERSION", "v3", "PENDING", null, LocalDateTime.now());
+        DeployResult result = new DeployResult(52L, 11L, "VERSION", "v3", "PENDING", null, LocalDateTime.now(), java.util.List.of());
         when(facade.retryDeployment(1L, 51L)).thenReturn(result);
 
         mockMvc.perform(post("/api/v1/deployments/51/retry"))

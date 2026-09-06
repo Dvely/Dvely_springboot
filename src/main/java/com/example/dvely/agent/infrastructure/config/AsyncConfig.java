@@ -31,6 +31,22 @@ public class AsyncConfig {
         return executor;
     }
 
+    // 메시지 한 건의 Decision(LLM 호출→AgentPlan) 을 요청 스레드에서 떼어내 여기서 돈다
+    // (ChatCommandService#sendMessage 비동기화). 한 건은 LLM 응답을 기다리는 I/O 대기라 CPU 를
+    // 거의 안 쓰므로 코어 수보다 넉넉히 잡는다. read timeout(#238, 180s)이 개별 호출을 유계로
+    // 묶으므로 스레드가 무한 점유되지 않는다. 큐를 크게 둬 실질적으로 거부가 나지 않게 하되,
+    // 거부가 나더라도 호출부(sendMessage)가 그 태스크를 FAILED 로 닫으므로 PENDING 고착은 없다.
+    @Bean("agentDecisionExecutor")
+    public Executor agentDecisionExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(6);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("agent-decision-");
+        executor.initialize();
+        return executor;
+    }
+
     @Bean("agentEventExecutor")
     public Executor agentEventExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
