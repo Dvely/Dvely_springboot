@@ -232,7 +232,45 @@ public class PreviewGatewayService {
                 .replace("href=\"/", "href=\"" + gatewayPrefix)
                 .replace("src='/", "src='" + gatewayPrefix)
                 .replace("href='/", "href='" + gatewayPrefix);
+        html = injectApiPathShim(html, gatewayPrefix);
         return html.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 프리뷰는 {@code /api/v1/previews/{sid}/{token}/} 아래서 서빙되는데, 에이전트가 만든 앱은 보통
+     * 루트절대경로({@code /api/...})로 자기 백엔드를 부른다. 그러면 브라우저가 iframe 오리진 루트로 보내
+     * 게이트웨이(앱이 아님)에 닿아 실패한다("Network error"). {@code rewriteHtml} 은 HTML 안의 정적 경로만
+     * 고칠 뿐 JS 번들 안의 fetch 는 못 건드린다 — 그래서 앱 스크립트보다 <b>먼저</b> 실행되는 작은 shim 을
+     * head 맨 앞에 주입해 fetch/XHR 를 감싸, <b>같은 오리진 루트절대</b> 요청을 프리뷰 prefix 아래로 다시
+     * 쓴다. 앱 소스는 건드리지 않는다. cross-origin(전체 URL)·protocol-relative({@code //host})·이미 prefix 가
+     * 붙은 요청은 그대로 둔다. 프리뷰 앱은 자기 컨테이너로만 요청하므로 루트절대 재작성이 안전하고, 정적
+     * 프리뷰는 {@code /api} 호출이 없어 no-op 이다.
+     *
+     * <p><b>덮는 범위</b>: {@code fetch} 와 {@code XMLHttpRequest}(axios 등이 그 위에 있다). 루트절대를
+     * 재작성하므로 SPA 라우팅으로 현재 경로가 바뀌어도 영향받지 않는다(상대경로 방식과 달리 base 변화에
+     * 견고). <b>아직 안 덮는 것</b>(후속): ①<b>프레임 내비게이션</b> — {@code <a href="/">} 클릭,
+     * {@code window.location='/'}, {@code form action="/"} — 이건 게이트웨이 루트로 이동해 401 + XFO 로
+     * 프레임이 깨진다(사용자가 처음 본 그 에러). anchor 클릭·form submit 가로채기로 닫을 수 있으나
+     * {@code location} 대입은 못 막는다. ②{@code EventSource}(SSE)·{@code WebSocket}·서비스워커 등록.
+     * 지금 방명록 앱엔 둘 다 없지만 에이전트가 라우터/실시간을 만들면 나온다.</p>
+     */
+    private String injectApiPathShim(String html, String gatewayPrefix) {
+        String prefix = gatewayPrefix.endsWith("/")
+                ? gatewayPrefix.substring(0, gatewayPrefix.length() - 1)
+                : gatewayPrefix;
+        String shim = "<script>(function(){var P=\"" + prefix + "\";"
+                + "function r(u){try{if(typeof u===\"string\"&&u.charAt(0)===\"/\"&&u.charAt(1)!==\"/\"&&u.indexOf(P+\"/\")!==0)return P+u;}catch(e){}return u;}"
+                + "if(window.fetch){var f=window.fetch;window.fetch=function(i,o){try{if(typeof i===\"string\")i=r(i);else if(i&&i.url)i=new Request(r(i.url),i);}catch(e){}return f.call(this,i,o);};}"
+                + "if(window.XMLHttpRequest&&XMLHttpRequest.prototype&&XMLHttpRequest.prototype.open){var x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){try{arguments[1]=r(arguments[1]);}catch(e){}return x.apply(this,arguments);};}"
+                + "})();</script>";
+        int headOpen = html.indexOf("<head");
+        if (headOpen >= 0) {
+            int headEnd = html.indexOf('>', headOpen);
+            if (headEnd >= 0) {
+                return html.substring(0, headEnd + 1) + shim + html.substring(headEnd + 1);
+            }
+        }
+        return shim + html;
     }
 
     private String sanitizePath(String path) {

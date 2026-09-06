@@ -253,6 +253,20 @@ class PreviewGatewayServiceTest {
         assertThat(reclaimed).isEmpty();
     }
 
+    /**
+     * 앱이 루트절대경로(/api/entries)로 자기 백엔드를 부르면 iframe 오리진 루트(게이트웨이)로 나가 실패한다.
+     * HTML 에 fetch/XHR 를 감싸 그 요청을 프리뷰 prefix 아래로 재작성하는 shim 이 주입돼야 데이터가 앱에 닿는다.
+     */
+    @Test
+    void injectsApiPathShimIntoHtmlSoRootAbsoluteApiCallsReachTheApp() {
+        ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+
+        String html = new String(response.getBody(), StandardCharsets.UTF_8);
+        assertThat(html).contains("window.fetch");                       // fetch 래핑
+        assertThat(html).contains("XMLHttpRequest.prototype.open");      // XHR 래핑(axios 등)
+        assertThat(html).contains("/api/v1/previews/s/t");               // prefix(슬래시 뺀)가 shim 에 박힘
+    }
+
     /** 이 경로에만 실제 파일이 있는 상태를 만든다. 나머지 경로는 @BeforeEach 의 "/" 가 받아 index.html 을 돌려준다(serve -s 와 같은 동작). */
     private void serveAsset(String path, String contentType, String content) {
         container.createContext(path, exchange -> {
