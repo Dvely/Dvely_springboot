@@ -97,6 +97,15 @@ module.exports = {
         // 프리뷰 URL 이 이 값을 앞에 붙여 만들어진다. localhost 로 두면 다른 사람 브라우저에서
         // 열리지 않으므로 반드시 EIP 로 바꾼다.
         QEPLOY_PREVIEW_GATEWAY_BASE_URL: 'http://<EIP>',
+        // 프리뷰 문서를 iframe 으로 띄울 수 있는 오리진(CSP frame-ancestors). 기본값 'self' 는 FE 와
+        // 게이트웨이가 같은 오리진이라는 전제라, dev 처럼 로컬 FE(cross-origin)에서는 프리뷰 iframe 이
+        // 브라우저에 통째로 차단된다("프리뷰 안 보임"). 로컬 FE 오리진을 더한다 — 공백 구분, 각 오리진은
+        // scheme+host+port. 넓히는 것은 frame-ancestors 뿐이고 sandbox 는 그대로라 부모 토큰 탈취는 안 열린다.
+        QEPLOY_PREVIEW_FRAME_ANCESTORS: "'self' http://localhost:5173 http://localhost:5174 http://localhost:3000",
+        // 프리뷰 접근 쿠키(SameSite=Lax)는 cross-site iframe 에 실리지 않아 dev 에서 401 을 낸다. dev 는
+        // http(EIP)라 Secure 를 못 붙여 SameSite=None 으로도 못 바꾸므로 쿠키 게이트를 끈다. 로컬 개발
+        // 편의용 스위치이며, 운영은 FE·게이트웨이가 같은 오리진이라 기본값(true)으로 닫혀 있다.
+        QEPLOY_PREVIEW_REQUIRE_ACCESS_COOKIE: 'false',
       },
     },
   ],
