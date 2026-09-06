@@ -47,6 +47,13 @@ public interface ProvisionedServerRepository {
     /** 앱 회복 시 복구 시도 표시 해제 — 다음 무응답에 다시 복구할 수 있게. */
     void clearRecoveryAttempt(Long id);
 
+    /**
+     * "복구 실패(재시작 후에도 무응답)" 이벤트를 에피소드당 1회 남길 권한을 원자적으로 claim 한다. 재시작
+     * 시도가 settle 유예를 지나도록 여전히 무응답이면 진 인스턴스 하나만 true — 다중 인스턴스에서 중복
+     * 보고를 막고, 아직 유예 안이거나 이미 보고했거나 방금 회복했으면 false.
+     */
+    boolean claimRecoveryOutcomeReport(Long id, java.time.Duration settleWindow);
+
     /** 서버가 존재하는(했던) 클라우드 연결 ID 들. 고아 EIP 청소가 연결별로 계정을 훑을 때 쓴다. */
     List<Long> findDistinctCloudConnectionIds();
 

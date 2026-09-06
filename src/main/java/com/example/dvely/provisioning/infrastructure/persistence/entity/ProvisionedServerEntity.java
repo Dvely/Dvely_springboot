@@ -83,6 +83,12 @@ public class ProvisionedServerEntity {
     @Column(name = "recovery_attempted_at")
     private java.time.LocalDateTime recoveryAttemptedAt;   // 무응답 자동복구 시도 시각. 회복되면 null
 
+    // 재시작해도 앱이 계속 무응답일 때 "복구 실패" 감사 이벤트를 에피소드당 1회만 남기기 위한 dedup 표시.
+    // 순수 인프라 — 도메인 모델·applyFrom 에 싣지 않아(lease 와 동형) 도메인 저장이 건드리지 않는다.
+    // 회복 시 clearRecoveryAttempt 가 recovery_attempted_at 과 함께 지운다. 전용 UPDATE 로만 set 한다.
+    @Column(name = "recovery_outcome_reported_at")
+    private java.time.LocalDateTime recoveryOutcomeReportedAt;
+
     // 다중 인스턴스 리스(교체 워커 claim). 순수 인프라 — 도메인 모델·applyFrom 에 싣지 않아 도메인 저장
     // (findById→applyFrom→save)이 이 값을 건드리지 않고 보존한다. claim/해제는 전용 UPDATE 로만 한다.
     @Column(name = "lease_owner", length = 100)
