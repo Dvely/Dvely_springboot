@@ -40,8 +40,10 @@ public class DecisionAgentService {
             and (b) materially changes WHAT gets built or deployed, ask the user instead of guessing.
             The main cases:
             - Backend stack/language is unspecified for a backend/full-stack/deploy request
-              (e.g. "make a full-stack todo and deploy it") — Node vs Java/Spring materially changes the
-              plan, and production backend deploy currently targets Java/Spring.
+              (e.g. "make a full-stack todo and deploy it") — Node vs Java/Spring is a materially
+              different app to build. Both run as a preview and both deploy to production (Node and
+              Java/Spring are each supported), so do NOT claim one is required for deployment; ask
+              which the user wants, and only recommend a default if the request itself hints at one.
             - The request is so vague you cannot tell what app to build (e.g. "make me an app").
             - Essential scope is unclear in a way that changes the build (e.g. "does it need login / a database?").
 
@@ -161,7 +163,7 @@ public class DecisionAgentService {
                 "inputType": "SINGLE_SELECT",
                 "options": [
                   { "value": "node", "label": "Node/Express (JS)", "recommended": false },
-                  { "value": "java", "label": "Java/Spring Boot", "recommended": true }
+                  { "value": "java", "label": "Java/Spring Boot", "recommended": false }
                 ],
                 "allowOther": false
               },
