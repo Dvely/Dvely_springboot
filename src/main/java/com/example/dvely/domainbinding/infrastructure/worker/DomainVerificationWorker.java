@@ -30,6 +30,11 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class DomainVerificationWorker {
 
+    // CONNECTED 후 HTTPS 뱃지(httpsEnforced)를 채우려 재검증하는 창. EC2(Caddy on-demand TLS)는 첫 https
+    // 요청 때 인증서를 발급하므로, 바인딩 직후 프로브가 미발급으로 false 였던 것이 재검증(프로브가 그 요청을
+    // 보내 warming)으로 곧 true 가 된다. 무한 프로브를 막으려 생성 후 이 창 안에서만 재검증한다(#6).
+    private static final int HTTPS_RECHECK_WINDOW_MINUTES = 30;
+
     private final DomainBindingRepository domainBindingRepository;
     private final DomainBindingCommandService domainBindingCommandService;
     private final DomainVerificationProperties properties;
@@ -48,6 +53,38 @@ public class DomainVerificationWorker {
             }
             verify(domain);
         }
+        recheckHttpsForConnectedDomains();
+    }
+
+    /**
+     * CONNECTED 지만 httpsEnforced 가 아직 false 인 도메인을 재검증해 HTTPS 뱃지를 채운다(#6). 바인딩 직후엔
+     * Caddy 인증서가 아직 없어 프로브가 false 였는데, 워커가 CONNECTED 이후엔 재검증을 안 해 사용자가 수동
+     * "검증 재시도" 를 눌러야만 뱃지가 떴다. 재검증 프로브가 https 요청을 보내 인증서를 warming 하므로 다음
+     * 주기엔 true 로 바뀌고 이 목록에서 빠진다. warming 창 안에서만 돌아 무한 프로브를 막는다.
+     */
+    private void recheckHttpsForConnectedDomains() {
+        for (DomainBinding domain : domainBindingRepository.findConnectedPendingHttps(
+                properties.batchSizeOrDefault())) {
+            if (domain.getType() == DomainType.PURCHASABLE_DOMAIN) {
+                continue;
+            }
+            if (!withinHttpsRecheckWindow(domain)) {
+                continue;   // 창을 지났는데도 https 미확인 — 수동 재검증에 맡긴다(무한 프로브 방지).
+            }
+            try {
+                // verify() 와 달리 "검증 완료" 로그를 남기지 않는다 — 이미 CONNECTED 라 매 주기 스팸이 된다.
+                domainBindingCommandService.checkVerificationAsSystem(domain.getId());
+            } catch (RuntimeException exception) {
+                log.debug("HTTPS 재검증 실패(다음 주기 재시도): domainId={} 원인={}",
+                        domain.getId(), exception.toString());
+            }
+        }
+    }
+
+    private boolean withinHttpsRecheckWindow(DomainBinding domain) {
+        LocalDateTime createdAt = domain.getCreatedAt();
+        return createdAt != null
+                && createdAt.plusMinutes(HTTPS_RECHECK_WINDOW_MINUTES).isAfter(LocalDateTime.now());
     }
 
     private void verify(DomainBinding domain) {

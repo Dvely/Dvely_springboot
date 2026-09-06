@@ -115,6 +115,41 @@ class DomainVerificationWorkerTest {
         verify(commandService, never()).abandonVerification(anyLong());
     }
 
+    @Test
+    void rechecksConnectedDomainStillWithoutHttps_toWarmTheCertAndFillTheBadge() {
+        // 배포 e2e 발견 #6: EC2(Caddy on-demand TLS)는 첫 https 요청 때 인증서를 발급하므로 바인딩 직후엔
+        // httpsEnforced=false. 워커가 CONNECTED 후 재검증을 안 하면 사용자가 수동 "검증 재시도" 를 눌러야만
+        // 뱃지가 떴다. 재검증 프로브가 인증서를 warming 하므로 다음 주기엔 true 가 된다.
+        when(domainBindingRepository.findByStatus(DomainStatus.VERIFYING, 20)).thenReturn(List.of());
+        when(domainBindingRepository.findConnectedPendingHttps(20))
+                .thenReturn(List.of(connectedNoHttps(9L, LocalDateTime.now())));   // 방금 CONNECTED
+        when(commandService.checkVerificationAsSystem(9L)).thenReturn(result(DomainStatus.CONNECTED));
+
+        worker.verifyPendingDomains();
+
+        verify(commandService).checkVerificationAsSystem(9L);   // 재검증(프로브가 인증서 warm)
+    }
+
+    @Test
+    void stopsRecheckingConnectedDomainPastTheWarmingWindow() {
+        // 창(30분)을 지나도록 https 가 안 붙었으면 무한 프로브를 막는다 — 수동 재검증에 맡긴다.
+        when(domainBindingRepository.findByStatus(DomainStatus.VERIFYING, 20)).thenReturn(List.of());
+        when(domainBindingRepository.findConnectedPendingHttps(20))
+                .thenReturn(List.of(connectedNoHttps(9L, LocalDateTime.now().minusMinutes(31))));
+
+        worker.verifyPendingDomains();
+
+        verify(commandService, never()).checkVerificationAsSystem(anyLong());
+    }
+
+    private DomainBinding connectedNoHttps(Long id, LocalDateTime createdAt) {
+        return new DomainBinding(
+                id, 11L, DomainType.MANAGED_SUBDOMAIN, DomainHostingTarget.AWS,
+                "app.qeploy.com", DomainStatus.CONNECTED, VerificationMethod.A,
+                "1.2.3.4", "record-1", false, CertificateStatus.PENDING, null, null,
+                createdAt, createdAt);
+    }
+
     private void givenVerifyingDomains(DomainBinding... domains) {
         when(domainBindingRepository.findByStatus(DomainStatus.VERIFYING, 20))
                 .thenReturn(List.of(domains));

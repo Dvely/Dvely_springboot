@@ -19,6 +19,9 @@ public interface DomainBindingRepository {
      */
     List<DomainBinding> findByStatus(DomainStatus status, int limit);
 
+    /** CONNECTED 이지만 httpsEnforced 가 아직 false 인 도메인 — 인증서 warming 후 HTTPS 뱃지를 채우려 재검증한다(#6). */
+    List<DomainBinding> findConnectedPendingHttps(int limit);
+
     /**
      * S3 CDN 프로비저닝 워커의 다중 인스턴스 리스 claim. 리스가 비었거나 만료됐거나 내가 쥔 것이면 true —
      * 그때만 이 도메인의 CloudFront 배포·ACM 인증서 생성을 진행한다(두 인스턴스가 중복 자원을 만들지 않게).
