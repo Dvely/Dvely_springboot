@@ -196,6 +196,55 @@ class PreviewSessionServiceTest {
     }
 
     /**
+     * 게이트웨이가 안쪽 앱 도달 실패를 확인하면(컨테이너는 살아있으나 서버 프로세스 死), ACTIVE 세션을
+     * EXPIRED 로 닫고 컨테이너를 회수한다 — findCurrent 가 "없음"으로 답해 FE 가 CTA 로 self-heal 한다.
+     */
+    @Test
+    void reclaimUnreachableExpiresActiveSessionAndRemovesContainer() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository, dockerService, mock(TaskStore.class),
+                properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
+        );
+        PreviewSessionEntity active = new PreviewSessionEntity(
+                "session-1", "token", 1L, 11L, 21L, "task-1", "container-1", 32768,
+                "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30)
+        );   // 10-arg 생성자 → status 기본 ACTIVE
+        when(repository.findById("session-1")).thenReturn(Optional.of(active));
+        when(repository.save(active)).thenReturn(active);
+
+        boolean reclaimed = service.reclaimUnreachable("session-1");
+
+        assertThat(reclaimed).isTrue();
+        assertThat(active.getStatus()).isEqualTo(PreviewSessionStatus.EXPIRED.name());
+        verify(dockerService).removeContainer("container-1");
+    }
+
+    /** 이미 ACTIVE 가 아니면(다른 요청이 방금 회수했거나 만료) 아무것도 하지 않는다 — 이중 회수 방지. */
+    @Test
+    void reclaimUnreachableIsNoOpWhenSessionNotActive() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository, dockerService, mock(TaskStore.class),
+                properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
+        );
+        PreviewSessionEntity alreadyClosed = new PreviewSessionEntity(
+                "session-1", "token", 1L, 11L, 21L, "task-1", "container-1", 32768,
+                "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30),
+                PreviewSessionStatus.EXPIRED
+        );
+        when(repository.findById("session-1")).thenReturn(Optional.of(alreadyClosed));
+
+        boolean reclaimed = service.reclaimUnreachable("session-1");
+
+        assertThat(reclaimed).isFalse();
+        verify(dockerService, org.mockito.Mockito.never())
+                .removeContainer(org.mockito.ArgumentMatchers.anyString());
+    }
+
+    /**
      * 프로젝트 단위 프리뷰의 준비(clone/install/build)는 비동기라, 그 도중 앱이 재시작되면 어느
      * 상태로도 가지 못한 PROVISIONING 행이 컨테이너를 붙든 채 남는다. 청소기가 이 행을 EXPIRED 로
      * 닫아버리면 사용자 화면에는 "프리뷰 없음"만 남아 왜 안 떴는지 알 수 없으므로, 사유가 남는

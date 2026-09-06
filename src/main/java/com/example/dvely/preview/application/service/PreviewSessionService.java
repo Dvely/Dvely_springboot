@@ -4,6 +4,7 @@ import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.preview.application.port.out.DeadPreviewSessionReclaimer;
 import com.example.dvely.preview.application.result.PreviewAccessGrant;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
@@ -26,7 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class PreviewSessionService {
+public class PreviewSessionService implements DeadPreviewSessionReclaimer {
 
     private final SpringDataPreviewSessionRepository repository;
     private final DockerContainerService dockerService;
@@ -234,6 +235,29 @@ public class PreviewSessionService {
                 .filter(session -> session.getExpiresAt().isAfter(LocalDateTime.now()))
                 .map(this::touch)
                 .map(PreviewSessionEntity::toInfo);
+    }
+
+    /**
+     * 게이트웨이가 컨테이너 안쪽 앱에 도달하지 못했을 때({@link DeadPreviewSessionReclaimer}) 그 ACTIVE
+     * 세션을 회수한다 — EXPIRED 로 닫고 컨테이너를 제거한다. 컨테이너는 살아있어도(그래서 attach·findCurrent
+     * 는 못 걸러냄) 안쪽 서버가 죽어 502 만 나오는 세션을, "컨테이너가 사라진" 상태로 바꿔 {@code findCurrent}
+     * 의 self-heal 에 태운다 — FE 는 다음 폴링에서 "없음"을 보고 새 빌드 CTA 로 복귀한다.
+     *
+     * <p>ACTIVE 가 아니면(다른 요청이 방금 회수했거나 만료) no-op — 동시 실패 요청이 여럿 들어와도 회수는
+     * 사실상 1회다({@code expire} 가 상태를 바꾸고 {@code removeContainer} 는 멱등). 게이트웨이만 호출하므로
+     * (host-affine) 이 판정은 항상 로컬 컨테이너에 대한 것이다.</p>
+     */
+    @Override
+    @Transactional
+    public boolean reclaimUnreachable(String sessionId) {
+        PreviewSessionEntity session = repository.findById(sessionId).orElse(null);
+        if (session == null || !PreviewSessionStatus.ACTIVE.name().equals(session.getStatus())) {
+            return false;
+        }
+        log.warn("[PreviewSession] 안쪽 앱 무응답으로 회수(컨테이너는 살아있으나 서버 프로세스가 죽음): sessionId={} projectId={}",
+                session.getId(), session.getProjectId());
+        expire(session, PreviewSessionStatus.EXPIRED);
+        return true;
     }
 
     @Transactional

@@ -1,11 +1,13 @@
 package com.example.dvely.preview.application.service;
 
+import com.example.dvely.preview.application.port.out.DeadPreviewSessionReclaimer;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -58,10 +60,13 @@ public class PreviewGatewayService {
             .build();
 
     private final String contentSecurityPolicy;
+    private final DeadPreviewSessionReclaimer reclaimer;
 
     public PreviewGatewayService(
-            @Value("${qeploy.preview.frame-ancestors:'self'}") String frameAncestors) {
+            @Value("${qeploy.preview.frame-ancestors:'self'}") String frameAncestors,
+            DeadPreviewSessionReclaimer reclaimer) {
         this.contentSecurityPolicy = SANDBOX_DIRECTIVES + "; frame-ancestors " + frameAncestors.trim();
+        this.reclaimer = reclaimer;
     }
 
     // 테스트가 조립 결과를 직접 확인하기 위한 접근자.
@@ -105,7 +110,36 @@ public class PreviewGatewayService {
             Thread.currentThread().interrupt();
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
         } catch (Exception exception) {
+            // 안쪽 앱에 아예 도달하지 못했다(연결 거부/리셋). 컨테이너는 살아있어도 그 안의 서버 프로세스가
+            // 죽으면 이 자리에 온다 — attach·findCurrent 의 컨테이너-생존 확인으로는 못 걸러지는 사각이다.
+            // 한 번 더 빠르게 확인해 일시적 실패가 아니면 세션을 회수한다(EXPIRED + 컨테이너 제거). 그러면
+            // findCurrent 가 "없음"으로 답해 FE 가 새 빌드 CTA 로 자동 복귀한다. 게이트웨이는 host-affine 이라
+            // 이 판정은 항상 로컬 컨테이너에 대한 것이다.
+            if (isInnerAppUnreachable(session)) {
+                reclaimer.reclaimUnreachable(session.sessionId());
+            }
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
+        }
+    }
+
+    /**
+     * 안쪽 앱이 정말 무응답인지 짧게 재확인한다 — 프록시 한 번의 실패로 세션을 지우지 않기 위한 확인
+     * 프로브다. 어떤 HTTP 응답이든(상태 코드 무관) 오면 서버 프로세스는 살아있는 것으로 본다. 재확인도
+     * 도달하지 못하면(연결 거부/리셋/타임아웃) 프로세스가 죽은 것으로 판정한다. 프리뷰 앱은 스스로
+     * 재시작하지 않으므로(agent 가 한 번 띄운 프로세스) 한 번 죽으면 계속 죽어 있어 재확인이 안정적이다.
+     */
+    private boolean isInnerAppUnreachable(PreviewSessionInfo session) {
+        try {
+            httpClient.send(
+                    HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + session.hostPort() + "/"))
+                            .timeout(Duration.ofSeconds(2)).GET().build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            return false;   // 응답이 왔다 — 프로세스는 살아있다(일시적 실패였음)
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;   // 인터럽트는 앱 상태의 증거가 아니다 — 회수하지 않는다
+        } catch (Exception e) {
+            return true;    // 재확인도 도달 실패 — 안쪽 서버 프로세스가 죽었다
         }
     }
 
