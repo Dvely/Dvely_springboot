@@ -41,6 +41,7 @@ class BackendDeployAgentServiceTest {
 
     private static final Long USER = 7L;
     private static final Long PROJECT = 10L;
+    private static final Long CONV = 39L;   // #1 저위험: 배포 승인에 실리는 대화 id
 
     private AgentStep step(Map<String, String> params) {
         return new AgentStep(AgentType.BACKEND_DEPLOY, params);
@@ -49,15 +50,15 @@ class BackendDeployAgentServiceTest {
     @Test
     void provisionsDatabaseAndServerWhenDbRequestedAndNoneExists() {
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
-        when(databaseCommandService.provision(USER, PROJECT, ProvisionMethod.RDS, DatabaseEngine.MYSQL))
+        when(databaseCommandService.provision(USER, PROJECT, ProvisionMethod.RDS, DatabaseEngine.MYSQL, CONV))
                 .thenReturn(new ProvisionSubmitResult(true, null, null, List.of(1L)));
-        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false))
+        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false, CONV))
                 .thenReturn(new ServerProvisionSubmitResult(true, 5L, List.of(2L)));
 
-        CodeResult result = service.execute(step(Map.of("dbEngine", "MYSQL")), USER, PROJECT);
+        CodeResult result = service.execute(step(Map.of("dbEngine", "MYSQL")), USER, PROJECT, CONV);
 
-        verify(databaseCommandService).provision(USER, PROJECT, ProvisionMethod.RDS, DatabaseEngine.MYSQL);
-        verify(serverCommandService).submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false);
+        verify(databaseCommandService).provision(USER, PROJECT, ProvisionMethod.RDS, DatabaseEngine.MYSQL, CONV);
+        verify(serverCommandService).submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false, CONV);
         assertThat(result.summary()).contains("데이터베이스");
     }
 
@@ -66,41 +67,41 @@ class BackendDeployAgentServiceTest {
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT))
                 .thenReturn(List.of(ProvisionedDatabase.pending(PROJECT, ProvisionMethod.RDS,
                         DatabaseEngine.MYSQL, ProvisionOrigin.MANUAL)));
-        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false))
+        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false, CONV))
                 .thenReturn(new ServerProvisionSubmitResult(true, 5L, List.of(2L)));
 
-        service.execute(step(Map.of("dbEngine", "MYSQL")), USER, PROJECT);
+        service.execute(step(Map.of("dbEngine", "MYSQL")), USER, PROJECT, CONV);
 
-        verify(databaseCommandService, never()).provision(any(), any(), any(), any());
-        verify(serverCommandService).submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false);
+        verify(databaseCommandService, never()).provision(any(), any(), any(), any(), any());
+        verify(serverCommandService).submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false, CONV);
     }
 
     @Test
     void serverOnlyWhenNoDbEngine() {
-        when(serverCommandService.submit(USER, PROJECT, "t3.small", ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false))
+        when(serverCommandService.submit(USER, PROJECT, "t3.small", ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false, CONV))
                 .thenReturn(new ServerProvisionSubmitResult(true, 5L, List.of(2L)));
 
-        service.execute(step(Map.of("instanceType", "t3.small")), USER, PROJECT);
+        service.execute(step(Map.of("instanceType", "t3.small")), USER, PROJECT, CONV);
 
         verify(databaseRepository, never()).findByProjectIdOrderByCreatedAtDesc(anyLong());
-        verify(databaseCommandService, never()).provision(any(), any(), any(), any());
-        verify(serverCommandService).submit(USER, PROJECT, "t3.small", ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false);
+        verify(databaseCommandService, never()).provision(any(), any(), any(), any(), any());
+        verify(serverCommandService).submit(USER, PROJECT, "t3.small", ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false, CONV);
     }
 
     @Test
     void skipsWhenProjectMissing() {
-        CodeResult result = service.execute(step(Map.of("dbEngine", "MYSQL")), USER, null);
+        CodeResult result = service.execute(step(Map.of("dbEngine", "MYSQL")), USER, null, CONV);
 
         assertThat(result.summary()).contains("프로젝트");
-        verify(serverCommandService, never()).submit(any(), any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
+        verify(serverCommandService, never()).submit(any(), any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any());
     }
 
     @Test
     void returnsActionableMessageWhenNoCloudConnected() {
-        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false))
+        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, new com.example.dvely.provisioning.domain.value.WebFrontendSpec(null, null, null), false, CONV))
                 .thenThrow(new NotFoundException("백엔드 서버는 연결된 클라우드가 있어야 만들 수 있습니다."));
 
-        CodeResult result = service.execute(step(Map.of()), USER, PROJECT);
+        CodeResult result = service.execute(step(Map.of()), USER, PROJECT, CONV);
 
         assertThat(result.summary()).contains("클라우드");
     }

@@ -76,6 +76,19 @@ public class Approval {
         return new Approval(null, ownerUserId, projectId, null, null, type, ApprovalStatus.PENDING, summary, null, null);
     }
 
+    /**
+     * {@link #standalone}와 같되 {@code conversationId}만 채운다 — {@code taskId}는 여전히 null 이라
+     * {@link #isStandalone()}는 그대로 true(승인 라우팅·프로비저닝 핸들러 경로 불변). 배포(RDS/EC2)
+     * 프로비저닝 승인처럼 실행은 standalone 핸들러가 하되, 채팅이 대화 스코프로 이 승인을 찾아 카드로
+     * 띄울 수 있게 하려는 용도다(배포 e2e 발견 #1 저위험 1단계). {@code conversationId}가 null 이면
+     * {@link #standalone}과 완전히 동일하다.
+     */
+    public static Approval standaloneInConversation(Long ownerUserId, Long projectId, ApprovalType type,
+                                                    String summary, Long conversationId) {
+        return new Approval(null, ownerUserId, projectId, conversationId, null, type,
+                ApprovalStatus.PENDING, summary, null, null);
+    }
+
     public boolean isStandalone() {
         return taskId == null;
     }

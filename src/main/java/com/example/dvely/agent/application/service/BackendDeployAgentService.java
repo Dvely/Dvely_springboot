@@ -41,7 +41,7 @@ public class BackendDeployAgentService {
     private final DatabaseProvisioningCommandService databaseCommandService;
     private final ProvisionedDatabaseRepository databaseRepository;
 
-    public CodeResult execute(AgentStep step, Long userId, Long projectId) {
+    public CodeResult execute(AgentStep step, Long userId, Long projectId, Long conversationId) {
         if (projectId == null) {
             log.warn("[BACKEND_DEPLOY] 프로젝트가 없어 배포를 건너뜁니다 | userId={}", userId);
             return new CodeResult(null,
@@ -69,14 +69,14 @@ public class BackendDeployAgentService {
             // 중복으로 만들지 않는다. 단 번들 DB 를 쓰면(그게 곧 DB 다) RDS 는 만들지 않는다 — 둘은 대안.
             if (dbEngine != null && bundledDb == null && !hasActiveRdsDatabase(projectId)) {
                 ProvisionSubmitResult db = databaseCommandService.provision(
-                        userId, projectId, ProvisionMethod.RDS, dbEngine);
+                        userId, projectId, ProvisionMethod.RDS, dbEngine, conversationId);
                 approvalIds.addAll(db.approvalIds());
                 dbRequested = true;
             }
 
             // 에이전트 백엔드 배포 경로는 백엔드를 포함하므로 웹 전용이 아니다(webOnly=false).
             ServerProvisionSubmitResult server =
-                    serverCommandService.submit(userId, projectId, instanceType, deployMode, bundledDb, web, false);
+                    serverCommandService.submit(userId, projectId, instanceType, deployMode, bundledDb, web, false, conversationId);
             approvalIds.addAll(server.approvalIds());
 
             log.info("[BACKEND_DEPLOY] 배포 요청 접수 | projectId={} dbRequested={} bundledDb={} web={} approvalIds={}",

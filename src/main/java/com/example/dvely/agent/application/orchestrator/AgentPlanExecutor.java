@@ -222,7 +222,7 @@ public class AgentPlanExecutor {
             case DOMAIN_BIND   -> handleDomainBind(step, userId, taskId, projectId);
             case INFRA_OPERATE -> handleInfraOperate(step, userId, taskId, projectId);
             case RUNTIME_SETUP -> handleRuntimeSetup(step, userId, projectId);
-            case BACKEND_DEPLOY -> handleBackendDeploy(step, userId, projectId);
+            case BACKEND_DEPLOY -> handleBackendDeploy(step, userId, taskId, projectId);
             case CHAT          -> handleChat(step, aiProvider, modelOptions, taskId);
             // CLARIFY 는 dispatch 이전(루프)에서 처리된다 — 여기 오면 로직 오류.
             case CLARIFY       -> throw new IllegalStateException("CLARIFY 는 dispatch 앞에서 처리되어야 한다");
@@ -303,11 +303,15 @@ public class AgentPlanExecutor {
         return runtimeSetupAgentService.execute(step, userId, projectId);
     }
 
-    private CodeResult handleBackendDeploy(AgentStep step, Long userId, Long projectId) {
+    private CodeResult handleBackendDeploy(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[BACKEND_DEPLOY 에이전트] 운영 백엔드 배포 요청 | userId={} projectId={} instanceType={} dbEngine={}",
                 userId, projectId, step.parameters().getOrDefault("instanceType", ""),
                 step.parameters().getOrDefault("dbEngine", ""));
-        return backendDeployAgentService.execute(step, userId, projectId);
+        // 배포 승인(DB/서버)에 대화 id 를 실어 채팅이 대화 스코프로 그 승인을 찾아 카드로 띄우게 한다
+        // (배포 e2e 발견 #1 저위험 1단계). 승인은 여전히 standalone 이라 라우팅은 불변.
+        AgentTask task = taskStore.get(taskId);
+        Long conversationId = task == null ? null : task.conversationId();
+        return backendDeployAgentService.execute(step, userId, projectId, conversationId);
     }
 
     private CodeResult handleChat(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, AiModelOptions modelOptions, String taskId) {
