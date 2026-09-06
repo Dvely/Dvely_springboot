@@ -12,6 +12,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -58,14 +59,18 @@ public class ProjectPreviewController {
                     + "`GET /api/v1/preview-sessions/{sessionId}/status`로 폴링하다가 `status=ACTIVE`가 되면 엽니다. "
                     + "npm install·build를 포함하므로 보통 수십 초에서 수 분이 걸립니다.\n"
                     + "- **409**: GitHub 저장소가 연결되지 않은 프로젝트입니다(가져올 코드가 없음).\n\n"
-                    + "요청이 겹쳐도 프로젝트당 컨테이너는 하나만 남습니다(먼저 만들어진 세션이 유지되고 나머지는 즉시 정리)."
+                    + "요청이 겹쳐도 프로젝트당 컨테이너는 하나만 남습니다(먼저 만들어진 세션이 유지되고 나머지는 즉시 정리).\n\n"
+                    + "`force=true` 를 붙이면 붙지 않고 **항상 새로 띄웁니다** — 기존 세션을 닫고 preview 브랜치를 "
+                    + "다시 clone→build 합니다(따라서 언제나 202). 컨테이너는 살아 있는데 안쪽 앱만 죽어 502만 나오는 "
+                    + "세션을 되살리거나, 저장소 연결 직후 옛 작업 컨테이너 대신 브랜치의 현재 내용을 띄우고 싶을 때 씁니다."
     )
     @PostMapping("/api/v1/projects/{projectId}/preview-session")
     public ResponseEntity<ProjectPreviewSessionResponse> provision(
             @AuthenticationPrincipal Long ownerUserId,
-            @PathVariable Long projectId
+            @PathVariable Long projectId,
+            @RequestParam(name = "force", defaultValue = "false") boolean force
     ) {
-        ProvisionOutcome outcome = projectPreviewService.provision(projectId, ownerUserId);
+        ProvisionOutcome outcome = projectPreviewService.provision(projectId, ownerUserId, force);
         ProjectPreviewSessionResponse body = ProjectPreviewSessionResponse.from(outcome.session());
         return outcome.started()
                 ? ResponseEntity.status(HttpStatus.ACCEPTED).body(body)

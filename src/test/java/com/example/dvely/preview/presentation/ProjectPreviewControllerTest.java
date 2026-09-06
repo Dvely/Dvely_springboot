@@ -52,16 +52,29 @@ class ProjectPreviewControllerTest {
         ProjectPreviewService service = mock(ProjectPreviewService.class);
         ProjectPreviewController controller = new ProjectPreviewController(service);
 
-        when(service.provision(11L, 1L)).thenReturn(new ProvisionOutcome(
+        when(service.provision(11L, 1L, false)).thenReturn(new ProvisionOutcome(
                 result(PreviewSessionStatus.ACTIVE, "https://qeploy.test/api/v1/previews/s/t/", null), false));
-        assertThat(controller.provision(1L, 11L).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(controller.provision(1L, 11L, false).getStatusCode()).isEqualTo(HttpStatus.OK);
 
-        when(service.provision(11L, 1L)).thenReturn(new ProvisionOutcome(
+        when(service.provision(11L, 1L, false)).thenReturn(new ProvisionOutcome(
                 result(PreviewSessionStatus.PROVISIONING, null, null), true));
-        ResponseEntity<ProjectPreviewSessionResponse> accepted = controller.provision(1L, 11L);
+        ResponseEntity<ProjectPreviewSessionResponse> accepted = controller.provision(1L, 11L, false);
         assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
         assertThat(accepted.getBody()).isNotNull();
         assertThat(accepted.getBody().previewUrl()).isNull();
+    }
+
+    /** force=true 는 그대로 서비스에 전달되고(강제 리빌드) 결과는 준비 시작(202)이다. */
+    @Test
+    void forceRebuildIsForwardedAndAccepted() {
+        ProjectPreviewService service = mock(ProjectPreviewService.class);
+        when(service.provision(11L, 1L, true)).thenReturn(new ProvisionOutcome(
+                result(PreviewSessionStatus.PROVISIONING, null, null), true));
+
+        ResponseEntity<ProjectPreviewSessionResponse> response =
+                new ProjectPreviewController(service).provision(1L, 11L, true);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
     }
 
     @Test

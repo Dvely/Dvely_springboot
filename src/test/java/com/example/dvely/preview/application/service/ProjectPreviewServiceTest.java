@@ -140,12 +140,48 @@ class ProjectPreviewServiceTest {
                 eq(PROJECT_ID), eq(USER_ID), any())).thenReturn(Optional.of(active));
         when(dockerService.isContainerRunning("container-1")).thenReturn(true);
 
-        ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID);
+        ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID, false);
 
         assertThat(outcome.started()).isFalse();
         assertThat(outcome.session().previewUrl()).isNotNull();
         verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any(), anyLong());
         verify(provisioner, never()).provision(anyString());
+    }
+
+    /**
+     * force 리빌드: 컨테이너가 살아 있어(평소라면 attach 였을 상황) 앱만 죽었거나 저장소 연결 직후라도,
+     * 기존 세션을 닫고 컨테이너를 회수한 뒤 preview 브랜치를 새로 빌드한다. attach 를 건너뛰므로
+     * isContainerRunning 을 아예 보지 않는다.
+     */
+    @Test
+    void forceRebuildClosesTheLiveSessionAndStartsFresh() {
+        PreviewSessionEntity active = session(PreviewSessionStatus.ACTIVE, "container-old", "task-1");
+        // discardLiveSessions 는 [ACTIVE,PROVISIONING] 로, resolveConcurrentProvisioning 은 [PROVISIONING]
+        // 으로 조회한다 — 요청 상태로 갈라 각각 옛 세션과 새 세션을 돌려준다.
+        when(repository.findByProjectIdAndOwnerUserIdAndStatusIn(eq(PROJECT_ID), eq(USER_ID), any()))
+                .thenAnswer(invocation -> {
+                    List<String> statuses = invocation.getArgument(2);
+                    if (statuses.contains(PreviewSessionStatus.ACTIVE.name())) {
+                        return List.of(active);   // discardLiveSessions
+                    }
+                    return saved.stream()
+                            .filter(s -> PreviewSessionStatus.PROVISIONING.name().equals(s.getStatus()))
+                            .toList();            // resolveConcurrentProvisioning — 새로 만든 세션
+                });
+        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
+                .thenReturn("container-new");
+        when(dockerService.getMappedPort("container-new")).thenReturn(32772);
+
+        ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID, true);
+
+        // 기존 세션은 CLOSED 로 닫히고 그 컨테이너는 회수된다.
+        assertThat(active.getStatus()).isEqualTo(PreviewSessionStatus.CLOSED.name());
+        verify(dockerService).removeContainer("container-old");
+        // 붙지 않고(attach 의 컨테이너 생존 확인조차 안 함) 새로 띄운다.
+        verify(dockerService, never()).isContainerRunning(anyString());
+        verify(dockerService).createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong());
+        verify(provisioner).provision(anyString());
+        assertThat(outcome.started()).isTrue();
     }
 
     @Test
@@ -154,7 +190,7 @@ class ProjectPreviewServiceTest {
                 eq(PROJECT_ID), eq(USER_ID), any()))
                 .thenReturn(Optional.of(session(PreviewSessionStatus.PROVISIONING, "container-1", null)));
 
-        ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID);
+        ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID, false);
 
         assertThat(outcome.started()).isTrue();
         verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any(), anyLong());
@@ -171,7 +207,7 @@ class ProjectPreviewServiceTest {
         when(repository.findByProjectIdAndOwnerUserIdAndStatusIn(eq(PROJECT_ID), eq(USER_ID), any()))
                 .thenAnswer(invocation -> List.of(savedSession()));
 
-        ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID);
+        ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID, false);
 
         assertThat(outcome.started()).isTrue();
         assertThat(outcome.session().status()).isEqualTo(PreviewSessionStatus.PROVISIONING.name());
@@ -192,7 +228,7 @@ class ProjectPreviewServiceTest {
         when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
                 .thenThrow(new RuntimeException("Cannot connect to the Docker daemon at unix:///var/run/docker.sock"));
 
-        assertThatThrownBy(() -> service.provision(PROJECT_ID, USER_ID))
+        assertThatThrownBy(() -> service.provision(PROJECT_ID, USER_ID, false))
                 .isInstanceOf(PreviewEnvironmentUnavailableException.class)
                 .hasMessageContaining("Docker")
                 .hasMessageContaining("docker.sock");
@@ -205,7 +241,7 @@ class ProjectPreviewServiceTest {
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(PROJECT_ID, USER_ID))
                 .thenReturn(Optional.of(disconnected));
 
-        assertThatThrownBy(() -> service.provision(PROJECT_ID, USER_ID))
+        assertThatThrownBy(() -> service.provision(PROJECT_ID, USER_ID, false))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("저장소");
         verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any(), anyLong());
@@ -226,7 +262,7 @@ class ProjectPreviewServiceTest {
         when(repository.findByProjectIdAndOwnerUserIdAndStatusIn(eq(PROJECT_ID), eq(USER_ID), any()))
                 .thenAnswer(invocation -> List.of(earlier, savedSession()));
 
-        ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID);
+        ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID, false);
 
         assertThat(outcome.session().sessionId()).isEqualTo(earlier.getId());
         assertThat(outcome.started()).isTrue();
