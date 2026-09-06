@@ -549,7 +549,11 @@ public class AgentOrchestrator {
         return switch (step.agentType()) {
             case CODE -> ApprovalType.CHANGE;
             case DEPLOY -> ApprovalType.DEPLOYMENT;
-            case DOMAIN_BIND -> ApprovalType.DOMAIN_BINDING;
+            // 해제(operation=DELETE)는 별도 유형 — 되돌리기 어려운 삭제라 화면이 "연결"이라 오표시하지
+            // 않게(#8). bind 는 그대로 DOMAIN_BINDING.
+            case DOMAIN_BIND -> "DELETE".equalsIgnoreCase(step.parameters().getOrDefault("operation", ""))
+                    ? ApprovalType.DOMAIN_UNBIND
+                    : ApprovalType.DOMAIN_BINDING;
             case INFRA_OPERATE -> InfraOperation.parse(step.parameters().get("operation"))
                     .filter(InfraOperation::approvalRequired)
                     .map(op -> ApprovalType.INFRA_OPERATION)

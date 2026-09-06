@@ -57,6 +57,8 @@ public class ProjectApprovalPolicy {
             case CHANGE -> changeApprovalRequired;
             case DEPLOYMENT -> deploymentApprovalRequired;
             case DOMAIN_BINDING -> domainApprovalRequired;
+            // 해제도 연결과 같은 정책 스위치를 따른다 — #8 은 승인 요구 여부가 아니라 유형 라벨만 나눈다.
+            case DOMAIN_UNBIND -> domainApprovalRequired;
             case INFRA_OPERATION -> infraApprovalRequired;
             case RESULT -> resultApprovalRequired;
             // 정책으로 끌 수 없는 유일한 타입이다. 나머지는 "끄면 사람 확인 없이 그대로 진행"이라는
