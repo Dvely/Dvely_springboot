@@ -9,7 +9,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Schema-level guards for {@code ai_provider_credentials} (V47), mirroring
+ * Schema-level guards for {@code ai_provider_credentials} (V55), mirroring
  * {@code EnvironmentVariableSchemaTest}. Hibernate's {@code ddl-auto: validate} checks column
  * existence and type, but not the two properties this table actually depends on for correctness:
  * the ciphertext column being wide enough, and the (user, provider) uniqueness that makes
@@ -22,12 +22,12 @@ class AiProviderCredentialSchemaTest {
     private JdbcTemplate jdbcTemplate;
 
     @Test
-    void v47MigrationAppliedSuccessfully() {
+    void v55MigrationAppliedSuccessfully() {
         String applied = jdbcTemplate.queryForObject(
                 """
                         select coalesce(max(success), 0)
                         from flyway_schema_history
-                        where version = '47'
+                        where version = '55'
                         """,
                 String.class
         );
