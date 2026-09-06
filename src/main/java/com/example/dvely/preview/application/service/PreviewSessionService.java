@@ -99,9 +99,14 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
     public void markServing(String taskId) {
         repository.findByTaskIdAndStatus(taskId, PreviewSessionStatus.PROVISIONING.name())
                 .ifPresent(session -> {
+                    // 런타임 준비(서버형의 DB 자동 프로비저닝→세션 네트워크 연결)가 컨테이너의 :0 랜덤 발행
+                    // 포트를 재할당해, 생성 시점에 저장한 host_port 가 어긋날 수 있다. 게이트웨이가 이 포트로
+                    // 프록시하므로, ACTIVE 로 올리기 직전 지금의 실제 포트로 다시 맞춘다(어긋나면 502).
+                    session.rebindPort(dockerService.getMappedPort(session.getContainerId()));
                     session.activate(nextExpiry());
                     repository.save(session);
-                    log.info("[PreviewSession] 서빙 시작: sessionId={} taskId={}", session.getId(), taskId);
+                    log.info("[PreviewSession] 서빙 시작: sessionId={} taskId={} hostPort={}",
+                            session.getId(), taskId, session.getHostPort());
                 });
     }
 

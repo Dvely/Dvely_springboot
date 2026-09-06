@@ -40,7 +40,7 @@ class PreviewGatewayServiceTest {
             exchange.close();
         });
         container.start();
-        service = new PreviewGatewayService("'self'", id -> {
+        service = new PreviewGatewayService("'self'", true, id -> {
             reclaimed.add(id);
             return true;
         });
@@ -58,7 +58,7 @@ class PreviewGatewayServiceTest {
      */
     @Test
     void configuredFrameAncestorsWidenFramingButNeverTheSandbox() {
-        var widened = new PreviewGatewayService("'self' http://localhost:5173", id -> false);
+        var widened = new PreviewGatewayService("'self' http://localhost:5173", true, id -> false);
 
         String policy = widened.sandboxPolicy();
 
@@ -222,6 +222,27 @@ class PreviewGatewayServiceTest {
 
         assertThat(response.getStatusCode().value()).isEqualTo(502);
         assertThat(reclaimed).containsExactly("session-dead");   // 안쪽 앱 死 → 세션 회수 요청
+    }
+
+    /**
+     * 킬스위치가 꺼져 있으면(gateway-reclaim-enabled=false) 도달 불가여도 회수하지 않는다 — 502 만 돌려준다.
+     * host_port 재할당 등으로 회수가 오판할 때 재배포 없이 즉시 끌 수 있는 안전장치.
+     */
+    @Test
+    void reclaimDisabled_returns502ButNeverReclaims() throws IOException {
+        int closedPort;
+        try (ServerSocket probe = new ServerSocket(0)) {
+            closedPort = probe.getLocalPort();
+        }
+        PreviewGatewayService disabled = new PreviewGatewayService("'self'", false, reclaimed::add);
+        PreviewSessionInfo dead = new PreviewSessionInfo(
+                "session-dead", 1L, 11L, null, null, "container-dead", closedPort,
+                "https://qeploy.com/api/v1/previews/session-dead/token/", LocalDateTime.now().plusMinutes(30));
+
+        ResponseEntity<byte[]> response = disabled.proxy(dead, "/api/v1/previews/s/t/", "", null);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(502);
+        assertThat(reclaimed).isEmpty();   // 킬스위치 off — 회수 안 함
     }
 
     /** 정상 응답이면 절대 회수하지 않는다 — 멀쩡한 프리뷰를 관찰만으로 지우면 안 된다. */

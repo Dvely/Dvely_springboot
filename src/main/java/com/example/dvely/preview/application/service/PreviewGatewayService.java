@@ -60,12 +60,15 @@ public class PreviewGatewayService {
             .build();
 
     private final String contentSecurityPolicy;
+    private final boolean reclaimEnabled;
     private final DeadPreviewSessionReclaimer reclaimer;
 
     public PreviewGatewayService(
             @Value("${qeploy.preview.frame-ancestors:'self'}") String frameAncestors,
+            @Value("${qeploy.preview.gateway-reclaim-enabled:true}") boolean reclaimEnabled,
             DeadPreviewSessionReclaimer reclaimer) {
         this.contentSecurityPolicy = SANDBOX_DIRECTIVES + "; frame-ancestors " + frameAncestors.trim();
+        this.reclaimEnabled = reclaimEnabled;
         this.reclaimer = reclaimer;
     }
 
@@ -115,7 +118,7 @@ public class PreviewGatewayService {
             // 한 번 더 빠르게 확인해 일시적 실패가 아니면 세션을 회수한다(EXPIRED + 컨테이너 제거). 그러면
             // findCurrent 가 "없음"으로 답해 FE 가 새 빌드 CTA 로 자동 복귀한다. 게이트웨이는 host-affine 이라
             // 이 판정은 항상 로컬 컨테이너에 대한 것이다.
-            if (isInnerAppUnreachable(session)) {
+            if (reclaimEnabled && isInnerAppUnreachable(session)) {
                 reclaimer.reclaimUnreachable(session.sessionId());
             }
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
