@@ -1,8 +1,14 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
+import com.example.dvely.agent.application.dto.ClarificationRequest;
+import com.example.dvely.agent.application.exception.AgentInputRequiredException;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
+import com.example.dvely.agent.infrastructure.store.InputWaitStore;
+import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
+import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
 import com.example.dvely.provisioning.application.command.DatabaseProvisioningCommandService;
 import com.example.dvely.provisioning.application.command.ServerProvisioningCommandService;
 import com.example.dvely.provisioning.application.result.ProvisionSubmitResult;
@@ -40,12 +46,28 @@ public class BackendDeployAgentService {
     private final ServerProvisioningCommandService serverCommandService;
     private final DatabaseProvisioningCommandService databaseCommandService;
     private final ProvisionedDatabaseRepository databaseRepository;
+    private final ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
+    private final CloudConnectionRepository cloudConnectionRepository;
+    private final InputWaitStore inputWaitStore;
 
-    public CodeResult execute(AgentStep step, Long userId, Long projectId, Long conversationId) {
+    public CodeResult execute(AgentStep step, Long userId, Long projectId, Long conversationId, String taskId) {
         if (projectId == null) {
             log.warn("[BACKEND_DEPLOY] 프로젝트가 없어 배포를 건너뜁니다 | userId={}", userId);
             return new CodeResult(null,
                     "프로젝트가 아직 없어 백엔드 배포를 건너뛰었습니다. 프로젝트를 먼저 만든 뒤 다시 요청해주세요.");
+        }
+
+        // 운영 배포는 항상 사용자 AWS 계정에 자원을 만드므로 클라우드 연결이 필수다. 없으면 태스크를
+        // WAITING_INPUT 으로 멈추고 FE 가 연결 가이드(#296)를 프리뷰 위로 슬라이드해 띄우게 한다. 사용자가
+        // 연결한 뒤 "다시 시도"(/input)하면 이 스텝이 재실행되어 여기서 다시 확인한다 — input 값 자체는
+        // 쓰지 않고(연결 여부만 본다) 재시도 신호로만 쓴다. 연결 검증(GetCallerIdentity)은 권한을 확인하지
+        // 않으므로, 연결이 CONNECTED 여도 승인 후 권한부족으로 실패할 수 있다 — 그래서 가이드가 정책을 함께 준다.
+        inputWaitStore.consume(taskId);
+        if (!hasConnectedCloud(userId, projectId)) {
+            log.info("[BACKEND_DEPLOY] 클라우드 연결 없음 → 연결 가이드 요청 | userId={} projectId={}", userId, projectId);
+            throw new AgentInputRequiredException(ClarificationRequest.connectCloud(
+                    "운영 백엔드 배포에는 AWS 클라우드 연결이 필요합니다. 연결 가이드대로 계정을 연결하고 "
+                            + "이 프로젝트에 선택한 뒤 다시 시도해주세요."));
         }
 
         String instanceType = blankToNull(step.parameters().get("instanceType"));
@@ -87,6 +109,19 @@ public class BackendDeployAgentService {
             log.info("[BACKEND_DEPLOY] 배포 요청 불가(사용자 조치 필요) | projectId={} 사유={}", projectId, e.getMessage());
             return new CodeResult(null, e.getMessage());
         }
+    }
+
+    /**
+     * 이 프로젝트가 실제 배포에 쓸 수 있는 클라우드 연결이 있는지. 두 층이 모두 필요하다 — 프로젝트가
+     * 연결을 선택했고(project_cloud_connection_settings), 그 연결이 사용자 소유이며 CONNECTED 상태여야
+     * 한다. 프로비저닝 핸들러가 요구하는 것과 같은 조건이라, 여기서 통과하면 승인 후 연결 없음으로 죽지 않는다.
+     */
+    private boolean hasConnectedCloud(Long userId, Long projectId) {
+        return cloudConnectionSettingRepository.findByProjectId(projectId)
+                .flatMap(setting ->
+                        cloudConnectionRepository.findByIdAndOwnerUserId(setting.getCloudConnectionId(), userId))
+                .map(connection -> connection.getStatus() == CloudConnectionStatus.CONNECTED)
+                .orElse(false);
     }
 
     private boolean hasActiveRdsDatabase(Long projectId) {

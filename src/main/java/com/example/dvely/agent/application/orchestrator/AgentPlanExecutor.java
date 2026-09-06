@@ -311,7 +311,7 @@ public class AgentPlanExecutor {
         // (배포 e2e 발견 #1 저위험 1단계). 승인은 여전히 standalone 이라 라우팅은 불변.
         AgentTask task = taskStore.get(taskId);
         Long conversationId = task == null ? null : task.conversationId();
-        return backendDeployAgentService.execute(step, userId, projectId, conversationId);
+        return backendDeployAgentService.execute(step, userId, projectId, conversationId, taskId);
     }
 
     private CodeResult handleChat(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, AiModelOptions modelOptions, String taskId) {
