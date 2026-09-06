@@ -16,8 +16,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CookieValue;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(name = "Preview", description = "Agent CODE 작업이 띄운 Docker 프리뷰 컨테이너에 대한 리버스 프록시 및 운영(상태/로그) 조회 API.")
@@ -44,10 +45,13 @@ public class PreviewGatewayController {
                           "공통 응답 envelope로 감싸지 않습니다(@RawApiResponse). 세션이 없거나 토큰이 일치하지 않으면 404입니다. " +
                           "Swagger UI \"Try it out\"으로 직접 호출하기보다는 taskId 폴링으로 받은 previewUrl을 브라우저에서 여는 용도입니다."
     )
-    @GetMapping({
-            "/api/v1/previews/{sessionId}/{accessToken}",
-            "/api/v1/previews/{sessionId}/{accessToken}/**"
-    })
+    @RequestMapping(
+            method = { RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT,
+                    RequestMethod.DELETE, RequestMethod.PATCH },
+            value = {
+                    "/api/v1/previews/{sessionId}/{accessToken}",
+                    "/api/v1/previews/{sessionId}/{accessToken}/**"
+            })
     public ResponseEntity<byte[]> proxy(
             @Parameter(description = "Preview 세션 ID") @PathVariable String sessionId,
             @Parameter(description = "세션 발급 시 함께 생성된 1회성 접근 토큰(랜덤 UUID)") @PathVariable String accessToken,
@@ -68,11 +72,23 @@ public class PreviewGatewayController {
         String requestUri = request.getRequestURI();
         int prefixIndex = requestUri.indexOf(prefix);
         String path = prefixIndex < 0 ? "" : requestUri.substring(prefixIndex + prefix.length());
+        // 쓰기(POST/PUT/PATCH)의 본문을 그대로 전달한다. GET/DELETE 는 보통 본문이 없어 빈 배열이 된다.
+        // 앱이 JSON 으로 fetch 하므로 Spring 이 본문을 파라미터로 소비하지 않아 원문이 그대로 읽힌다.
+        // 본문을 다 읽지 못하면(클라이언트 중단 등) 400 — 컨테이너로 반쪽 요청을 보내지 않는다.
+        byte[] body;
+        try {
+            body = request.getInputStream().readAllBytes();
+        } catch (java.io.IOException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        }
         return previewGatewayService.proxy(
+                request.getMethod(),
                 session,
                 prefix,
                 path,
-                request.getQueryString()
+                request.getQueryString(),
+                body,
+                request.getContentType()
         );
     }
 
