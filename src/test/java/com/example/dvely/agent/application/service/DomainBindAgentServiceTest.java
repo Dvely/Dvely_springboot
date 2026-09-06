@@ -6,6 +6,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.dto.AgentStep;
+import com.example.dvely.agent.application.port.out.DeployedHostingTargetPort;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.domainbinding.application.command.dto.BindDomainCommand;
@@ -33,9 +34,13 @@ class DomainBindAgentServiceTest {
     @Mock
     private InputWaitStore inputWaitStore;
 
+    @Mock
+    private DeployedHostingTargetPort deployedHostingTargetPort;
+
     @Test
     void executesApprovedRequestWithSubmittedHostingTargetAndVerificationMethod() {
-        DomainBindAgentService service = new DomainBindAgentService(domainBindingFacade, inputWaitStore);
+        DomainBindAgentService service =
+                new DomainBindAgentService(domainBindingFacade, inputWaitStore, deployedHostingTargetPort);
         AgentStep step = new AgentStep(AgentType.DOMAIN_BIND, Map.of(
                 "domain", "www.example.com",
                 "domainType", "CUSTOM_DOMAIN",
@@ -65,9 +70,41 @@ class DomainBindAgentServiceTest {
         assertThat(execution.summary()).contains("GITHUB_PAGES", "PENDING");
     }
 
+    /**
+     * hostingTarget 을 명시하지 않으면(대개 그렇다) 프로젝트가 실제 배포된 곳에서 유추해야 한다 —
+     * RUNNING EC2 백엔드가 있으면 AWS. 무조건 GITHUB_PAGES 로 떨어지면 EC2 배포 앱에 도메인을 붙일 때
+     * Pages 를 설정하려다 404 가 난다(배포 e2e 실측 회귀 가드).
+     */
+    @Test
+    void defaultsHostingTargetFromDeploymentWhenUnspecified() {
+        DomainBindAgentService service =
+                new DomainBindAgentService(domainBindingFacade, inputWaitStore, deployedHostingTargetPort);
+        AgentStep step = new AgentStep(AgentType.DOMAIN_BIND, Map.of(
+                "domain", "myapp"   // hostingTarget 명시 안 함
+        ));
+        when(deployedHostingTargetPort.resolveDeployedHostingTarget(11L))
+                .thenReturn(java.util.Optional.of(DomainHostingTarget.AWS));   // RUNNING EC2 백엔드
+        when(domainBindingFacade.bindDomain(
+                org.mockito.ArgumentMatchers.eq(1L),
+                org.mockito.ArgumentMatchers.eq(11L),
+                any(BindDomainCommand.class)
+        )).thenReturn(result());
+
+        service.execute(step, 1L, "task-2", 11L);
+
+        ArgumentCaptor<BindDomainCommand> commandCaptor = ArgumentCaptor.forClass(BindDomainCommand.class);
+        verify(domainBindingFacade).bindDomain(
+                org.mockito.ArgumentMatchers.eq(1L),
+                org.mockito.ArgumentMatchers.eq(11L),
+                commandCaptor.capture()
+        );
+        assertThat(commandCaptor.getValue().hostingTarget()).isEqualTo(DomainHostingTarget.AWS);
+    }
+
     @Test
     void executesApprovedDomainDeleteRequest() {
-        DomainBindAgentService service = new DomainBindAgentService(domainBindingFacade, inputWaitStore);
+        DomainBindAgentService service =
+                new DomainBindAgentService(domainBindingFacade, inputWaitStore, deployedHostingTargetPort);
         AgentStep step = new AgentStep(AgentType.DOMAIN_BIND, Map.of(
                 "operation", "DELETE",
                 "domainId", "31",
