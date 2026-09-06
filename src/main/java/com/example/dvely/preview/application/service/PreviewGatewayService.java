@@ -63,6 +63,12 @@ public class PreviewGatewayService {
     private final boolean reclaimEnabled;
     private final DeadPreviewSessionReclaimer reclaimer;
 
+    // 임시 진단(기본 off). cross-origin iframe 안의 콘솔/DOM 을 밖에서 못 보므로, 프리뷰 문서에 에러·상태를
+    // 화면(body)에 그리는 오버레이를 주입해 iframe 스크린샷만으로 렌더 실패 원인을 잡는다. 필드 주입이라
+    // 기존 생성자·테스트를 안 건드린다(테스트에선 기본값 false). 원인 확인 후 끈다.
+    @Value("${qeploy.preview.gateway-diagnostic-enabled:false}")
+    private boolean diagnosticEnabled;
+
     public PreviewGatewayService(
             @Value("${qeploy.preview.frame-ancestors:'self'}") String frameAncestors,
             @Value("${qeploy.preview.gateway-reclaim-enabled:true}") boolean reclaimEnabled,
@@ -233,7 +239,39 @@ public class PreviewGatewayService {
                 .replace("src='/", "src='" + gatewayPrefix)
                 .replace("href='/", "href='" + gatewayPrefix);
         html = injectApiPathShim(html, gatewayPrefix);
+        if (diagnosticEnabled) {
+            html = injectDiagnostic(html);
+        }
         return html.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 임시 진단 오버레이 주입(플래그 on 일 때만). cross-origin iframe 은 밖에서 콘솔·DOM 을 못 읽으므로,
+     * 문서 안에서 에러·상태를 화면 맨 위 박스에 그려 iframe 스크린샷만으로 원인을 잡게 한다.
+     * window.onerror / unhandledrejection / 리소스(스크립트) 로드 에러 / origin·readyState·framed 를 찍는다.
+     */
+    private String injectDiagnostic(String html) {
+        String s = "<script>(function(){"
+                + "function b(){var d=document.getElementById('__qd');if(!d){d=document.createElement('div');"
+                + "d.id='__qd';d.style.cssText='position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#111;"
+                + "color:#0f0;font:12px/1.4 monospace;padding:6px;white-space:pre-wrap;max-height:70%;overflow:auto';"
+                + "(document.body||document.documentElement).appendChild(d);}return d;}"
+                + "function L(m){try{b().appendChild(document.createTextNode(m+'\\n'));}catch(e){}}"
+                + "try{L('origin='+window.origin+' readyState='+document.readyState+' framed='+(window.top!==window.self));}catch(e){L('origin/framed threw: '+e);}"
+                + "window.onerror=function(m,src,ln){L('onerror: '+m+' @ '+(src||'')+':'+ln);};"
+                + "window.addEventListener('unhandledrejection',function(e){L('reject: '+((e.reason&&e.reason.message)||e.reason));});"
+                + "window.addEventListener('error',function(e){var t=e.target;if(t&&t!==window&&(t.src||t.href))L('resErr: '+t.tagName+' '+(t.src||t.href));},true);"
+                + "document.addEventListener('DOMContentLoaded',function(){L('DOMContentLoaded');});"
+                + "window.addEventListener('load',function(){L('load; #root children='+((document.getElementById('root')||{}).childElementCount));});"
+                + "})();</script>";
+        int headOpen = html.indexOf("<head");
+        if (headOpen >= 0) {
+            int headEnd = html.indexOf('>', headOpen);
+            if (headEnd >= 0) {
+                return html.substring(0, headEnd + 1) + s + html.substring(headEnd + 1);
+            }
+        }
+        return s + html;
     }
 
     /**
