@@ -17,6 +17,25 @@ public interface SpringDataAgentRunRepository extends JpaRepository<AgentRunEnti
 
     Optional<AgentRunEntity> findByTaskIdAndOwnerUserId(String taskId, Long ownerUserId);
 
+    // 대화의 현재 "살아있는"(비-terminal) 태스크. 새로고침 후 FE 가 WAITING_INPUT(되묻기) 폼이나
+    // 진행 중 상태를 복구할 포인터로 쓴다 — 메시지가 taskId 를 안 실어(과거 조회 시 null) 잃어버린
+    // 태스크에 다시 닿는 유일한 길이었다. 소유자로 필터해 남의 태스크가 새지 않고, terminal(DONE/
+    // FAILED/CANCELLED)은 제외해 이미 끝난 태스크의 낡은 상태는 돌려주지 않는다. 가장 최근 하나만 본다.
+    @Query("""
+            select run
+            from AgentRunEntity run
+            where run.conversationId = :conversationId
+              and run.ownerUserId = :ownerUserId
+              and run.status not in :terminalStatuses
+            order by run.createdAt desc
+            """)
+    List<AgentRunEntity> findActiveRuns(
+            @Param("conversationId") Long conversationId,
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("terminalStatuses") List<String> terminalStatuses,
+            Pageable pageable
+    );
+
     // Review follow-up (BLOCKING-3): backs TaskStore#requireWaitingResultApproval — acquires and
     // holds a row lock (SELECT ... FOR UPDATE) for the rest of the caller's transaction. Design
     // ADR-Y1 (#55) reuses this exact query as TaskStore#lockTask, the task-row mutex every

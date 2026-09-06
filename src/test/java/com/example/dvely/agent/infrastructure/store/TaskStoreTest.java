@@ -432,6 +432,28 @@ class TaskStoreTest {
         assertThat(taskStore.getOwned("task-1", 1L).status()).isEqualTo(TaskStatus.QUEUED);
     }
 
+    @Test
+    void findActiveTask_returnsLatestNonTerminalTask() {
+        AgentRunEntity run = mock(AgentRunEntity.class);
+        when(run.getTaskId()).thenReturn("task-live");
+        when(run.getStatus()).thenReturn("WAITING_INPUT");
+        when(runRepository.findActiveRuns(eq(21L), eq(7L), any(), any())).thenReturn(List.of(run));
+
+        Optional<TaskStore.ActiveTask> result = taskStore.findActiveTask(21L, 7L);
+
+        assertThat(result).isPresent();
+        assertThat(result.get().taskId()).isEqualTo("task-live");
+        assertThat(result.get().status()).isEqualTo(TaskStatus.WAITING_INPUT);
+    }
+
+    @Test
+    void findActiveTask_emptyWhenNoLiveTaskOrNullArgs() {
+        when(runRepository.findActiveRuns(eq(21L), eq(7L), any(), any())).thenReturn(List.of());
+        assertThat(taskStore.findActiveTask(21L, 7L)).isEmpty();
+        assertThat(taskStore.findActiveTask(null, 7L)).isEmpty();
+        assertThat(taskStore.findActiveTask(21L, null)).isEmpty();
+    }
+
     private AgentTask task(TaskStatus status) {
         return new AgentTask(
                 "task-1",
