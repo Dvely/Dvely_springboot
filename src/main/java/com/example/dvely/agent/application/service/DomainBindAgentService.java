@@ -2,6 +2,7 @@ package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.exception.AgentInputRequiredException;
+import com.example.dvely.agent.application.port.out.DeployedHostingTargetPort;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.domainbinding.application.command.dto.BindDomainCommand;
@@ -24,6 +25,7 @@ public class DomainBindAgentService {
 
     private final DomainBindingFacade domainBindingFacade;
     private final InputWaitStore      inputWaitStore;
+    private final DeployedHostingTargetPort deployedHostingTargetPort;
 
     public CodeResult execute(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[DomainBindAgent] 도메인 연결 시작 | userId={} taskId={} projectId={}", userId, taskId, projectId);
@@ -41,7 +43,7 @@ public class DomainBindAgentService {
             domain = askUserForDomain(userId, taskId);
         }
 
-        BindDomainCommand command = buildCommand(step, domain, taskId);
+        BindDomainCommand command = buildCommand(step, domain, taskId, projectId);
         log.info("[DomainBindAgent] 도메인 연결 요청 | domain={} type={}", domain, command.type());
 
         DomainBindingResult result = domainBindingFacade.bindDomain(userId, projectId, command);
@@ -77,7 +79,7 @@ public class DomainBindAgentService {
 
     // ── 도메인 타입 판별 및 커맨드 생성 ────────────────────────────────────────
 
-    private BindDomainCommand buildCommand(AgentStep step, String domain, String taskId) {
+    private BindDomainCommand buildCommand(AgentStep step, String domain, String taskId, Long projectId) {
         DomainType type = parseEnum(
                 step.parameters().get("domainType"),
                 DomainType.class,
@@ -88,14 +90,25 @@ public class DomainBindAgentService {
                 VerificationMethod.class,
                 null
         );
-        DomainHostingTarget hostingTarget = parseEnum(
-                step.parameters().get("hostingTarget"),
-                DomainHostingTarget.class,
-                DomainHostingTarget.GITHUB_PAGES
-        );
+        DomainHostingTarget hostingTarget = resolveHostingTarget(step, projectId);
         return type == DomainType.MANAGED_SUBDOMAIN
                 ? new BindDomainCommand(type, domain, null, method, hostingTarget, taskId)
                 : new BindDomainCommand(type, null, domain, method, hostingTarget, taskId);
+    }
+
+    /**
+     * 도메인 hostingTarget 결정. 결정 에이전트가 명시하면 그 값이 우선한다. 명시 안 됐을 때만 프로젝트가
+     * 실제 배포된 곳에서 유추한다 — RUNNING EC2 백엔드가 있으면 {@code AWS}. 무조건 {@code GITHUB_PAGES}
+     * 로 떨어지면 EC2 배포 앱에 도메인을 붙일 때 Pages 를 설정하려다 404 가 난다(배포 e2e 실측). 유추도
+     * 안 되면(EC2 서버 없음 = 정적/Pages 프로젝트) 기존 기본값 {@code GITHUB_PAGES}.
+     */
+    private DomainHostingTarget resolveHostingTarget(AgentStep step, Long projectId) {
+        String value = step.parameters().get("hostingTarget");
+        if (value != null && !value.isBlank()) {
+            return parseEnum(value, DomainHostingTarget.class, DomainHostingTarget.GITHUB_PAGES);
+        }
+        return deployedHostingTargetPort.resolveDeployedHostingTarget(projectId)
+                .orElse(DomainHostingTarget.GITHUB_PAGES);
     }
 
     private <T extends Enum<T>> T parseEnum(String value, Class<T> type, T defaultValue) {
