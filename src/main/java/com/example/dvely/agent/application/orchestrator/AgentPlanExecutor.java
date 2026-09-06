@@ -17,7 +17,15 @@ import com.example.dvely.agent.application.service.BackendDeployAgentService;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.application.service.RepositoryBindingGate;
 import com.example.dvely.agent.application.service.ResultApprovalGate;
+import com.example.dvely.agent.application.dto.ClarificationRequest;
+import com.example.dvely.agent.application.port.out.LlmMessage;
+import com.example.dvely.agent.application.service.DecisionAgentService;
+import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.domain.value.AgentType;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
 import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
@@ -49,6 +57,9 @@ public class AgentPlanExecutor {
     // ADR-Y4 (#55): paired with AgentRunWorker's register-before-submit call — see
     // AgentExecutionRegistry's javadoc for why registration itself must NOT happen here.
     private final AgentExecutionRegistry executionRegistry;
+    private final DecisionAgentService decisionAgentService;   // 되묻기 답 반영 재-decide
+    private final InputWaitStore inputWaitStore;               // CLARIFY 답 consume
+    private final ObjectMapper objectMapper;                   // CLARIFY 구조화 질문 파싱
 
     @Async("agentExecutor")
     public void execute(AgentPlan plan, String taskId, Long userId) {
@@ -78,6 +89,11 @@ public class AgentPlanExecutor {
                 }
                 AgentStep step = withSuggestedFix(plan.steps().get(i), taskId, userId);
                 log.info("--- Step [{}/{}] agentType={} ---", i + 1, plan.steps().size(), step.agentType());
+                if (step.agentType() == AgentType.CLARIFY) {
+                    // 답이 없으면 던져서 WAITING_INPUT, 있으면 재-decide 후 재큐한다 — 어느 쪽이든 이 실행은 종료.
+                    handleClarify(step, plan, taskId, initialTask);
+                    return;
+                }
                 CodeResult result = dispatch(step, plan.aiProvider(), plan.modelOptions(), userId, taskId, plan.projectId());
                 if (taskStore.isCancelled(taskId)) {
                     log.info("=== AgentPlan step 완료 후 취소 확인: taskId={} ===", taskId);
@@ -124,7 +140,7 @@ public class AgentPlanExecutor {
             log.info("=== AgentPlan 실행 완료: taskId={} | previewUrl={} ===", taskId, previewUrl);
 
         } catch (AgentInputRequiredException exception) {
-            taskStore.markWaitingInput(taskId, exception.getMessage());
+            taskStore.markWaitingInput(taskId, exception.getMessage(), exception.getClarification());
             AgentTask task = taskStore.get(taskId);
             agentMessageService.appendAssistant(
                     task == null ? null : task.conversationId(),
@@ -208,7 +224,43 @@ public class AgentPlanExecutor {
             case RUNTIME_SETUP -> handleRuntimeSetup(step, userId, projectId);
             case BACKEND_DEPLOY -> handleBackendDeploy(step, userId, projectId);
             case CHAT          -> handleChat(step, aiProvider, modelOptions, taskId);
+            // CLARIFY 는 dispatch 이전(루프)에서 처리된다 — 여기 오면 로직 오류.
+            case CLARIFY       -> throw new IllegalStateException("CLARIFY 는 dispatch 앞에서 처리되어야 한다");
         };
+    }
+
+    /**
+     * 스펙 되묻기(CLARIFY) 처리. 아직 답이 없으면 {@link AgentInputRequiredException}(구조화 질문)을 던져
+     * WAITING_INPUT 으로 멈춘다. 답이 있으면 <b>그 답으로 재-decide</b>(CLARIFY 재출력 금지)해 스택이 일관된
+     * 새 플랜을 만들고, 플랜을 교체·재큐한다 — 워커가 새 플랜을 처음부터 실행한다. 답을 CODE 지시문에만 끼워
+     * 넣지 않고 재-decide 하는 이유: 스택 선택은 RUNTIME_SETUP·CODE·BACKEND_DEPLOY 를 함께 바꿔야 일관되다.
+     */
+    private void handleClarify(AgentStep step, AgentPlan plan, String taskId, AgentTask task) {
+        ClarificationRequest request = parseClarification(step);
+        Optional<String> answer = inputWaitStore.consume(taskId);
+        if (answer.isEmpty()) {
+            throw new AgentInputRequiredException(request);
+        }
+        Long conversationId = task == null ? null : task.conversationId();
+        List<LlmMessage> conversation = conversationId == null
+                ? new ArrayList<>()
+                : new ArrayList<>(agentMessageService.getUserIntentHistory(conversationId));
+        conversation.add(new LlmMessage("assistant", request.question()));
+        conversation.add(new LlmMessage("user", answer.get()));
+        AgentPlan replanned = decisionAgentService.decide(
+                conversation, plan.aiProvider(), plan.projectId(), plan.modelOptions(), false);
+        taskStore.replacePlanAndRequeue(taskId, replanned);
+        log.info("=== 스펙 되묻기 답 반영 → 재계획: taskId={} newSteps={} ===",
+                taskId, replanned.steps().stream().map(AgentStep::agentType).toList());
+    }
+
+    private ClarificationRequest parseClarification(AgentStep step) {
+        try {
+            return objectMapper.readValue(
+                    step.parameters().getOrDefault("clarification", ""), ClarificationRequest.class);
+        } catch (Exception e) {
+            throw new IllegalStateException("CLARIFY 스텝의 clarification 파싱 실패", e);
+        }
     }
 
     private CodeResult handleCode(AgentStep step,

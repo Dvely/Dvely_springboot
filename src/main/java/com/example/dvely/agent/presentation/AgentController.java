@@ -147,7 +147,8 @@ public class AgentController {
                 failure == null ? 0 : failure.attempt(),
                 failure == null ? 0 : failure.maxAttempts(),
                 retryable,
-                pendingApprovalId
+                pendingApprovalId,
+                taskStore.getClarification(taskId)
         ));
     }
 

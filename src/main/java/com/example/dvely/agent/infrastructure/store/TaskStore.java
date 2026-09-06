@@ -2,6 +2,7 @@ package com.example.dvely.agent.infrastructure.store;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.dto.ClarificationRequest;
 import com.example.dvely.agent.application.dto.AgentTaskEvent;
 import com.example.dvely.agent.application.dto.AgentTaskFailure;
 import com.example.dvely.agent.application.dto.TaskStatus;
@@ -82,6 +83,23 @@ public class TaskStore {
                 .filter(json -> !json.isBlank())
                 .map(this::readPlan)
                 .orElse(null);
+    }
+
+    /** WAITING_INPUT 인 CLARIFY 태스크의 구조화 질문. 없거나 단순 텍스트 입력이면 null(FE 는 텍스트로 폴백). */
+    @Transactional(readOnly = true)
+    public ClarificationRequest getClarification(String taskId) {
+        String json = runRepository.findById(taskId)
+                .map(AgentRunEntity::getClarificationJson)
+                .filter(s -> s != null && !s.isBlank())
+                .orElse(null);
+        if (json == null) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, ClarificationRequest.class);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @Transactional
@@ -496,12 +514,40 @@ public class TaskStore {
 
     @Transactional
     public void markWaitingInput(String taskId, String question) {
+        markWaitingInput(taskId, question, null);
+    }
+
+    /** 구조화 되묻기(CLARIFY)면 clarification 을 함께 싣는다 — FE 가 컨트롤을 렌더하도록. 단순 텍스트면 null. */
+    @Transactional
+    public void markWaitingInput(String taskId, String question, ClarificationRequest clarification) {
         AgentRunEntity run = requireRun(taskId);
         if (TaskStatus.valueOf(run.getStatus()) == TaskStatus.CANCELLED) {
             return;
         }
-        run.waitForInput(question);
+        run.waitForInput(question, clarification == null ? null : writeClarification(clarification));
         appendEvent(taskId, "WAITING_INPUT", TaskStatus.WAITING_INPUT, question);
+    }
+
+    /**
+     * 스펙 되묻기 답을 반영해 재-decide 한 새 플랜으로 교체하고 처음부터 재실행하도록 재큐한다.
+     * CLARIFY 스텝이 답을 소비한 뒤 실행기가 부른다 — 이후 워커가 새 플랜(스택 일관)을 처음부터 돌린다.
+     */
+    @Transactional
+    public void replacePlanAndRequeue(String taskId, AgentPlan newPlan) {
+        AgentRunEntity run = requireRun(taskId);
+        if (TaskStatus.valueOf(run.getStatus()) == TaskStatus.CANCELLED) {
+            return;
+        }
+        run.replacePlan(writePlan(newPlan));
+        appendEvent(taskId, "REPLANNED", TaskStatus.QUEUED, "되묻기 답을 반영해 재계획했습니다.");
+    }
+
+    private String writeClarification(ClarificationRequest clarification) {
+        try {
+            return objectMapper.writeValueAsString(clarification);
+        } catch (Exception e) {
+            throw new IllegalStateException("clarification 직렬화 실패", e);
+        }
     }
 
     @Transactional
