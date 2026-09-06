@@ -421,6 +421,42 @@ class AgentOrchestratorTest {
                 .contains("preview 서버를 재시작해줘");
     }
 
+    /**
+     * 도메인 "해제"(operation=DELETE)는 연결과 별개 유형 {@code DOMAIN_UNBIND} 로 승인이 만들어져야 한다 —
+     * 되돌리기 어려운 삭제라 화면이 "연결 승인"으로 오표시하지 않게(배포 e2e 발견 #8). operation 없는 연결은
+     * 그대로 {@code DOMAIN_BINDING}.
+     */
+    @Test
+    void domainUnbindCreatesDomainUnbindApprovalType() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ProjectApprovalPolicyRepository policyRepository = mock(ProjectApprovalPolicyRepository.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore, projectRepository, mock(ConversationRepository.class),
+                policyRepository, approvalRepository, mock(AgentMessageService.class));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(mock(Project.class)));
+        when(policyRepository.findByProjectId(11L)).thenReturn(Optional.empty());   // fail-safe: 전부 required
+        when(approvalRepository.save(any(Approval.class))).thenAnswer(invocation -> {
+            Approval source = invocation.getArgument(0);
+            return new Approval(202L, source.getOwnerUserId(), source.getProjectId(), source.getConversationId(),
+                    source.getTaskId(), source.getType(), ApprovalStatus.PENDING, source.getSummary(),
+                    LocalDateTime.now(), null);
+        });
+        AgentPlan plan = new AgentPlan(
+                List.of(new AgentStep(AgentType.DOMAIN_BIND,
+                        Map.of("operation", "DELETE", "domainId", "4",
+                                "instruction", "도메인 연결 해제: guestbook-app.qeploy.com"))),
+                "reason", AiProvider.ANTHROPIC, 11L);
+
+        orchestrator.submit(plan, 1L, null);
+
+        ArgumentCaptor<Approval> captor = ArgumentCaptor.forClass(Approval.class);
+        verify(approvalRepository).save(captor.capture());
+        assertThat(captor.getValue().getType()).isEqualTo(ApprovalType.DOMAIN_UNBIND);
+    }
+
     @Test
     void infraOperateRestartWithPolicyOffSkipsApprovalAndQueuesImmediately() {
         TaskStore taskStore = mock(TaskStore.class);
