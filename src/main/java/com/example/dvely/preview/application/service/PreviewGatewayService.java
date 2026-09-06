@@ -245,6 +245,14 @@ public class PreviewGatewayService {
      * 쓴다. 앱 소스는 건드리지 않는다. cross-origin(전체 URL)·protocol-relative({@code //host})·이미 prefix 가
      * 붙은 요청은 그대로 둔다. 프리뷰 앱은 자기 컨테이너로만 요청하므로 루트절대 재작성이 안전하고, 정적
      * 프리뷰는 {@code /api} 호출이 없어 no-op 이다.
+     *
+     * <p><b>덮는 범위</b>: {@code fetch} 와 {@code XMLHttpRequest}(axios 등이 그 위에 있다). 루트절대를
+     * 재작성하므로 SPA 라우팅으로 현재 경로가 바뀌어도 영향받지 않는다(상대경로 방식과 달리 base 변화에
+     * 견고). <b>아직 안 덮는 것</b>(후속): ①<b>프레임 내비게이션</b> — {@code <a href="/">} 클릭,
+     * {@code window.location='/'}, {@code form action="/"} — 이건 게이트웨이 루트로 이동해 401 + XFO 로
+     * 프레임이 깨진다(사용자가 처음 본 그 에러). anchor 클릭·form submit 가로채기로 닫을 수 있으나
+     * {@code location} 대입은 못 막는다. ②{@code EventSource}(SSE)·{@code WebSocket}·서비스워커 등록.
+     * 지금 방명록 앱엔 둘 다 없지만 에이전트가 라우터/실시간을 만들면 나온다.</p>
      */
     private String injectApiPathShim(String html, String gatewayPrefix) {
         String prefix = gatewayPrefix.endsWith("/")
