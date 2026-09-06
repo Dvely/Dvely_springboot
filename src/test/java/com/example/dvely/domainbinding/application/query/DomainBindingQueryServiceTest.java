@@ -37,13 +37,17 @@ class DomainBindingQueryServiceTest {
     @Mock
     private com.example.dvely.domainbinding.application.port.out.S3CdnProvisioningPort s3CdnProvisioningPort;
 
+    @Mock
+    private com.example.dvely.domainbinding.application.port.out.BackendAddressPort backendAddressPort;
+
     @Test
     void searchReturnsOnlyActuallySupportedManagedSubdomain() {
         DomainBindingQueryService service = new DomainBindingQueryService(
                 projectRepository,
                 domainBindingRepository,
                 new CloudflareProperties(null, null, "qeploy.com", null, null, null, null),
-                s3CdnProvisioningPort
+                s3CdnProvisioningPort,
+                backendAddressPort
         );
         when(domainBindingRepository.existsByHostnameIgnoreCase("sample.qeploy.com"))
                 .thenReturn(false);
@@ -62,7 +66,8 @@ class DomainBindingQueryServiceTest {
                 projectRepository,
                 domainBindingRepository,
                 new CloudflareProperties(null, null, "qeploy.com", null, null, null, null),
-                s3CdnProvisioningPort
+                s3CdnProvisioningPort,
+                backendAddressPort
         );
         // 미매칭 조회는 기본값(false) — lenient 로 둬 strict stubbing 이 미스텁 호출에 예외를 던지지 않게 한다
         // (isEc2DomainRegistered 는 AWS 를 먼저 물어보고 false 면 AWS_EC2_FRONTEND 를 묻는다).
@@ -85,7 +90,8 @@ class DomainBindingQueryServiceTest {
                 projectRepository,
                 domainBindingRepository,
                 new CloudflareProperties(null, null, "qeploy.com", null, null, null, null),
-                s3CdnProvisioningPort);
+                s3CdnProvisioningPort,
+                backendAddressPort);
     }
 
     private DomainBinding customS3Domain() {

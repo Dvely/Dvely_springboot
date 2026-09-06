@@ -84,6 +84,9 @@ class DomainBindingCommandServiceTest {
     @Mock
     private com.example.dvely.domainbinding.application.port.out.S3CdnProvisioningPort s3CdnProvisioningPort;
 
+    @Mock
+    private com.example.dvely.domainbinding.application.port.out.BackendAddressPort backendAddressPort;
+
     private DomainBindingCommandService commandService;
 
     @BeforeEach
@@ -581,7 +584,8 @@ class DomainBindingCommandServiceTest {
                 hostingAdapterRegistry,
                 cloudflareProperties,
                 auditRecorder,
-                s3CdnProvisioningPort
+                s3CdnProvisioningPort,
+                backendAddressPort
         );
     }
 

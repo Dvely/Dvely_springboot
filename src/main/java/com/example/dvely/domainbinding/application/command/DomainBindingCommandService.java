@@ -11,6 +11,7 @@ import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import com.example.dvely.domainbinding.application.command.dto.BindDomainCommand;
+import com.example.dvely.domainbinding.application.port.out.BackendAddressPort;
 import com.example.dvely.domainbinding.application.port.out.CloudflareDnsPort;
 import com.example.dvely.domainbinding.application.port.out.DnsLookupPort;
 import com.example.dvely.domainbinding.application.port.out.DomainHostingAdapter;
@@ -51,6 +52,7 @@ public class DomainBindingCommandService {
     private final CloudflareProperties cloudflareProperties;
     private final AuditRecorder auditRecorder;
     private final S3CdnProvisioningPort s3CdnProvisioningPort;
+    private final BackendAddressPort backendAddressPort;
 
     @Transactional
     public DomainBindingResult bindDomain(Long ownerUserId, Long projectId, BindDomainCommand command) {
@@ -565,7 +567,8 @@ public class DomainBindingCommandService {
                 domain.getCertificateExpiresAt(),
                 domain.getLastCheckedAt(),
                 domain.getCreatedAt(),
-                domain.getUpdatedAt()
+                domain.getUpdatedAt(),
+                backendAddressPort.resolveServerId(domain.getProjectId(), domain.getHostingTarget()).orElse(null)
         );
     }
 }

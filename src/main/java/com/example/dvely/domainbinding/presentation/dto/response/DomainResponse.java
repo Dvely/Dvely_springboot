@@ -34,6 +34,10 @@ public record DomainResponse(
         @Schema(description = "인증서 만료일. 미발급 시 null", nullable = true) LocalDate certificateExpiresAt,
         @Schema(description = "마지막 DNS 검증 확인 시각") LocalDateTime lastCheckedAt,
         @Schema(description = "생성 시각") LocalDateTime createdAt,
-        @Schema(description = "마지막 수정 시각") LocalDateTime updatedAt
+        @Schema(description = "마지막 수정 시각") LocalDateTime updatedAt,
+
+        @Schema(description = "이 도메인이 가리키는 RUNNING EC2 서버 ID(상세·로그로 이어가기용). EC2 대상"
+                + "(AWS 백엔드·AWS_EC2_FRONTEND)이 아니거나 서버가 안 떠 있으면 null", nullable = true, example = "42")
+        Long serverId
 ) {
 }

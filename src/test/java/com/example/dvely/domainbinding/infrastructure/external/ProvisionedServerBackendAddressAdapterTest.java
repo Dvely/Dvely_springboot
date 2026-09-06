@@ -3,6 +3,7 @@ package com.example.dvely.domainbinding.infrastructure.external;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
@@ -49,6 +50,36 @@ class ProvisionedServerBackendAddressAdapterTest {
 
         assertThat(adapter.resolveRunningBackendIp(7L)).isEmpty();
         assertThat(adapter.resolveRunningFrontendHost(7L)).contains("10.0.0.2");
+    }
+
+    @Test
+    void resolvesServerIdByHostingTarget_frontendVsBackend() {
+        ProvisionedServer backend = running(1L, "10.0.0.1", false);
+        ProvisionedServer frontend = running(2L, "10.0.0.2", true);
+        when(serverRepository.findByProjectIdOrderByCreatedAtDesc(7L))
+                .thenReturn(List.of(frontend, backend));
+
+        // 도메인이 가리키는 서버는 hostingTarget 이 정한다 — host 해석과 같은 서버를 가리켜야 한다.
+        assertThat(adapter.resolveServerId(7L, DomainHostingTarget.AWS_EC2_FRONTEND)).contains(2L);
+        assertThat(adapter.resolveServerId(7L, DomainHostingTarget.AWS)).contains(1L);
+    }
+
+    @Test
+    void resolvesEmptyServerIdForNonEc2Targets() {
+        // GitHub Pages·S3·GCP 는 가리킬 EC2 서버가 없다 — 레포 조회 없이 바로 empty.
+        assertThat(adapter.resolveServerId(7L, DomainHostingTarget.GITHUB_PAGES)).isEmpty();
+        assertThat(adapter.resolveServerId(7L, DomainHostingTarget.AWS_S3_FRONTEND)).isEmpty();
+    }
+
+    @Test
+    void resolvesEmptyServerIdWhenTheTargetServerIsNotRunning() {
+        // 프론트만 떠 있는데 백엔드 도메인의 serverId 를 물으면, 백엔드 서버가 없어 empty(오분류 방지).
+        ProvisionedServer frontend = running(2L, "10.0.0.2", true);
+        when(serverRepository.findByProjectIdOrderByCreatedAtDesc(7L))
+                .thenReturn(List.of(frontend));
+
+        assertThat(adapter.resolveServerId(7L, DomainHostingTarget.AWS)).isEmpty();
+        assertThat(adapter.resolveServerId(7L, DomainHostingTarget.AWS_EC2_FRONTEND)).contains(2L);
     }
 
     @Test
