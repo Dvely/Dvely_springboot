@@ -38,9 +38,17 @@ public class SsmRunCommandClient {
     public static final String BOOT_LOG_TAIL =
             "sudo tail -n 200 /var/log/cloud-init-output.log 2>/dev/null || echo '부트 로그 없음'";
 
-    private static final int MAX_POLLS = 20;
     private static final long POLL_INTERVAL_MS = 700;
+    // SSM SendCommand 의 실행 타임아웃 — 인스턴스가 명령을 받아 실행을 마칠 때까지 SSM 이 기다리는 시간.
     private static final int COMMAND_TIMEOUT_SECONDS = 30;
+    // 클라이언트 폴링 예산은 SSM 명령 타임아웃을 반드시 덮어야 한다. 더 짧으면 SSM 이 아직 실행할 의사가
+    // 있는 명령(Pending/InProgress)을 클라이언트가 먼저 포기해 "응답 시간 초과"가 난다 — 예전 예산은
+    // 20×700ms=14초로 명령 타임아웃 30초보다 짧아, 인스턴스의 SSM 에이전트 픽업이 늦으면(부팅 직후·TLS
+    // 발급 중 등) CADDY·부트 로그 조회가 조용히 잘렸다. 명령 타임아웃 + 결과 수신 여유(8초)에서 폴 수를
+    // 도출해 둘이 어긋나지 않게 한다. (동기 요청이라 예산은 FE·게이트웨이 HTTP 타임아웃 아래여야 하므로
+    // 무한정 늘리지 않는다 — ~38초.)
+    private static final int MAX_POLLS =
+            (int) Math.ceil((COMMAND_TIMEOUT_SECONDS * 1000L + 8000L) / (double) POLL_INTERVAL_MS);
     // 더 진행하지 않는 종료 상태(Success 는 별도 처리).
     private static final Set<String> TERMINAL_FAILURES = Set.of(
             "Cancelled", "Failed", "TimedOut", "Cancelling");
@@ -80,7 +88,8 @@ public class SsmRunCommandClient {
                 }
                 // Pending/InProgress/Delayed — 계속 폴링
             }
-            throw new IllegalStateException("명령 응답 시간 초과(instanceId=" + instanceId + ")");
+            throw new IllegalStateException("명령 응답 시간 초과("
+                    + (MAX_POLLS * POLL_INTERVAL_MS / 1000) + "초, instanceId=" + instanceId + ")");
         }
     }
 
