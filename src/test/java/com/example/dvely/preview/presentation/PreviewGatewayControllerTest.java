@@ -14,7 +14,11 @@ import com.example.dvely.preview.application.service.PreviewGatewayService;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.preview.infrastructure.config.PreviewProperties;
 import com.example.dvely.preview.infrastructure.security.PreviewAccessCookies;
+import jakarta.servlet.ReadListener;
+import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Optional;
@@ -51,7 +55,7 @@ class PreviewGatewayControllerTest {
         controller = new PreviewGatewayController(sessionService, gatewayService, accessCookies, properties);
 
         when(sessionService.resolveGateway(SESSION_ID, ACCESS_TOKEN)).thenReturn(Optional.of(session()));
-        when(gatewayService.proxy(any(), anyString(), anyString(), any()))
+        when(gatewayService.proxy(anyString(), any(), anyString(), anyString(), any(), any(), any()))
                 .thenReturn(ResponseEntity.ok("body".getBytes()));
     }
 
@@ -60,7 +64,7 @@ class PreviewGatewayControllerTest {
         ResponseEntity<byte[]> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-        verify(gatewayService, never()).proxy(any(), anyString(), anyString(), any());
+        verify(gatewayService, never()).proxy(anyString(), any(), anyString(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -88,7 +92,7 @@ class PreviewGatewayControllerTest {
         ResponseEntity<byte[]> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, cookie, request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        verify(gatewayService).proxy(any(), anyString(), anyString(), any());
+        verify(gatewayService).proxy(anyString(), any(), anyString(), anyString(), any(), any(), any());
     }
 
     /** 세션 자체가 없으면(만료·오토큰) 쿠키 이전에 404다 — 존재 여부를 인가로 흘리지 않는다. */
@@ -145,7 +149,25 @@ class PreviewGatewayControllerTest {
     private HttpServletRequest request() {
         HttpServletRequest request = mock(HttpServletRequest.class);
         when(request.getRequestURI()).thenReturn("/api/v1/previews/" + SESSION_ID + "/" + ACCESS_TOKEN + "/");
+        // 프록시가 method·본문을 읽으므로 스텁한다(인가 통과 경로에서만 실제로 읽힘).
+        when(request.getMethod()).thenReturn("GET");
+        try {
+            when(request.getInputStream()).thenReturn(emptyStream());
+        } catch (IOException ignored) {
+            // getInputStream 스텁은 실제 IO 를 하지 않는다 — checked 예외는 형식상일 뿐.
+        }
         return request;
+    }
+
+    /** 본문 없는 ServletInputStream(빈 배열). 프록시가 readAllBytes() 로 읽어 빈 본문을 얻는다. */
+    private ServletInputStream emptyStream() {
+        ByteArrayInputStream backing = new ByteArrayInputStream(new byte[0]);
+        return new ServletInputStream() {
+            @Override public int read() { return backing.read(); }
+            @Override public boolean isFinished() { return backing.available() == 0; }
+            @Override public boolean isReady() { return true; }
+            @Override public void setReadListener(ReadListener listener) { }
+        };
     }
 
     private HttpServletRequest request(String secFetchDest) {

@@ -267,6 +267,33 @@ class PreviewGatewayServiceTest {
         assertThat(html).contains("/api/v1/previews/s/t");               // prefix(슬래시 뺀)가 shim 에 박힘
     }
 
+    /**
+     * 쓰기(POST)도 method·본문을 그대로 컨테이너로 전달하고 응답을 돌려준다 — 에이전트가 만든 앱의 등록·폼이
+     * 프리뷰에서 동작하려면 필요하다. 앱이 method 와 본문을 되돌려주는 엔드포인트로 왕복을 확인한다.
+     */
+    @Test
+    void proxiesWriteMethodsWithTheirBodyToTheApp() {
+        container.createContext("/api/entries", exchange -> {
+            byte[] in = exchange.getRequestBody().readAllBytes();
+            String out = "{\"method\":\"" + exchange.getRequestMethod() + "\",\"echo\":"
+                    + new String(in, StandardCharsets.UTF_8) + "}";
+            byte[] b = out.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, "application/json");
+            exchange.sendResponseHeaders(201, b.length);
+            exchange.getResponseBody().write(b);
+            exchange.close();
+        });
+        byte[] reqBody = "{\"name\":\"a\",\"message\":\"hi\"}".getBytes(StandardCharsets.UTF_8);
+
+        ResponseEntity<byte[]> response = service.proxy(
+                "POST", session(), "/api/v1/previews/s/t/", "api/entries", null, reqBody, "application/json");
+
+        assertThat(response.getStatusCode().value()).isEqualTo(201);   // 상태 그대로
+        String body = new String(response.getBody(), StandardCharsets.UTF_8);
+        assertThat(body).contains("\"method\":\"POST\"");   // 메서드 그대로 전달
+        assertThat(body).contains("\"name\":\"a\"");        // 본문 그대로 전달
+    }
+
     /** 이 경로에만 실제 파일이 있는 상태를 만든다. 나머지 경로는 @BeforeEach 의 "/" 가 받아 index.html 을 돌려준다(serve -s 와 같은 동작). */
     private void serveAsset(String path, String contentType, String content) {
         container.createContext(path, exchange -> {

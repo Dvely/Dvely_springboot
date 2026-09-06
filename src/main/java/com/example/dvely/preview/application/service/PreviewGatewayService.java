@@ -83,14 +83,32 @@ public class PreviewGatewayService {
         return contentSecurityPolicy;
     }
 
+    /** GET 편의 오버로드(본문 없음). 기존 호출부·테스트가 그대로 쓴다. */
     public ResponseEntity<byte[]> proxy(PreviewSessionInfo session,
                                         String gatewayPrefix,
                                         String path,
                                         String query) {
+        return proxy("GET", session, gatewayPrefix, path, query, null, null);
+    }
+
+    /**
+     * 프리뷰 컨테이너로 요청을 프록시한다. GET 뿐 아니라 쓰기(POST/PUT/DELETE/PATCH)도 method·본문을 그대로
+     * 전달한다 — 에이전트가 만든 앱의 등록·폼이 동작하려면 필요하다. 응답의 HTML 재작성(base 흡수·경로 shim)은
+     * GET 문서에만 적용되고, 쓰기 응답(대개 JSON)은 그대로 돌려준다.
+     */
+    public ResponseEntity<byte[]> proxy(String method,
+                                        PreviewSessionInfo session,
+                                        String gatewayPrefix,
+                                        String path,
+                                        String query,
+                                        byte[] requestBody,
+                                        String requestContentType) {
         try {
             String safePath = sanitizePath(path);
-            HttpResponse<byte[]> response = fetch(session, safePath, query);
-            response = absorbBuildBasePath(session, safePath, query, response);
+            HttpResponse<byte[]> response = fetch(method, session, safePath, query, requestBody, requestContentType);
+            if ("GET".equalsIgnoreCase(method)) {
+                response = absorbBuildBasePath(session, safePath, query, response);
+            }
 
             String contentType = response.headers()
                     .firstValue(HttpHeaders.CONTENT_TYPE)
@@ -152,16 +170,27 @@ public class PreviewGatewayService {
         }
     }
 
+    /** GET 편의 오버로드(base 흡수의 내부 재시도용 — 본문 없음). */
     private HttpResponse<byte[]> fetch(PreviewSessionInfo session, String path, String query)
+            throws java.io.IOException, InterruptedException {
+        return fetch("GET", session, path, query, null, null);
+    }
+
+    private HttpResponse<byte[]> fetch(String method, PreviewSessionInfo session, String path, String query,
+                                       byte[] body, String contentType)
             throws java.io.IOException, InterruptedException {
         String target = "http://127.0.0.1:" + session.hostPort() + "/" + path;
         if (query != null && !query.isBlank()) {
             target += "?" + query;
         }
-        return httpClient.send(
-                HttpRequest.newBuilder(URI.create(target)).GET().build(),
-                HttpResponse.BodyHandlers.ofByteArray()
-        );
+        HttpRequest.BodyPublisher publisher = (body == null || body.length == 0)
+                ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofByteArray(body);
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(target)).method(method, publisher);
+        if (contentType != null && !contentType.isBlank() && body != null && body.length > 0) {
+            builder.header(HttpHeaders.CONTENT_TYPE, contentType);
+        }
+        return httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
     }
 
     /**
