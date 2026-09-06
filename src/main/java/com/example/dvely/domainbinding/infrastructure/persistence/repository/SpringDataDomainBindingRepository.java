@@ -16,6 +16,9 @@ public interface SpringDataDomainBindingRepository extends JpaRepository<DomainB
     // status 컬럼은 enum 이 아니라 String 이다(DomainBindingEntity:46).
     List<DomainBindingEntity> findByStatusOrderByCreatedAtAsc(String status, Pageable pageable);
 
+    // CONNECTED 인데 httpsEnforced 가 아직 false 인 것 — 인증서 warming 후 뱃지를 채우려 재검증할 대상(#6).
+    List<DomainBindingEntity> findByStatusAndHttpsEnforcedFalseOrderByCreatedAtAsc(String status, Pageable pageable);
+
     boolean existsByHostnameIgnoreCase(String hostname);
 
     // hosting_target 는 String 컬럼.
