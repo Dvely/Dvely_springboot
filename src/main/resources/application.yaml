@@ -140,6 +140,11 @@ qeploy:
   cloud-connection:
     worker:
       poll-interval-ms: ${QEPLOY_CLOUD_CONNECTION_WORKER_POLL_INTERVAL_MS:1000}
+    guide:
+      # ROLE_ARN 방식 신뢰 정책에 박히는 값 — 사용자 역할을 AssumeRole 하는 Qeploy 컨트롤 플레인의
+      # AWS identity ARN. 환경마다 다르므로 배포 환경에서 설정한다. 비면 가이드가 placeholder 를
+      # 노출하고 대체를 안내한다(그 신뢰 정책은 그대로 쓸 수 없다).
+      platform-principal-arn: ${QEPLOY_CLOUD_CONNECTION_PLATFORM_PRINCIPAL_ARN:}
   provisioning:
     # LOCAL DB 의 수명. 프리뷰 세션 TTL(preview.ttl, 기본 30m)과 맞춘다 — DB 가 프리뷰 컨테이너
     # 옆에 사는데 세션보다 오래 살면 의미가 없고, 짧으면 프리뷰가 도는 중에 DB 가 먼저 사라진다.

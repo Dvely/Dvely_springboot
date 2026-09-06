@@ -1,0 +1,13 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowQeployControlPlaneToAssume",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "__PLATFORM_PRINCIPAL_ARN__"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}

@@ -8,6 +8,7 @@ import com.example.dvely.cloudconnection.application.result.CloudConnectionVerif
 import com.example.dvely.cloudconnection.application.result.CreateCloudConnectionResult;
 import com.example.dvely.cloudconnection.presentation.dto.request.CreateCloudConnectionRequest;
 import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnectionHealthResponse;
+import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnectionRequirementsResponse;
 import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnectionResponse;
 import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnectionVerificationJobResponse;
 import com.example.dvely.cloudconnection.presentation.dto.response.CreateCloudConnectionResponse;
@@ -23,6 +24,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -39,6 +41,21 @@ public class CloudConnectionController {
         return cloudConnectionFacade.getCloudConnections(ownerUserId).stream()
                 .map(this::toResponse)
                 .toList();
+    }
+
+    @Operation(
+            summary = "클라우드 연결 가이드 조회",
+            description = "연결을 만들기 전에 사용자가 자기 계정에서 준비해야 할 값(어디서 얻는지)과, 우리가 접근·처리하려면 붙여야 할 "
+                    + "추천 IAM 정책(전체본)을 반환합니다. 연결 검증은 자격 유효성만 확인하고 프로비저닝 권한은 확인하지 않으므로, "
+                    + "이 정책을 미리 붙이지 않으면 연결이 성공해도 배포에서 권한 부족으로 실패합니다. 지금은 provider=AWS만 지원합니다."
+    )
+    @GetMapping("/api/v1/cloud-connections/requirements")
+    public CloudConnectionRequirementsResponse getRequirements(
+            @RequestParam(defaultValue = "AWS") String provider,
+            @RequestParam(defaultValue = "ROLE_ARN") String credentialType
+    ) {
+        return CloudConnectionRequirementsResponse.from(
+                cloudConnectionFacade.getRequirements(provider, credentialType));
     }
 
     @Operation(summary = "클라우드 연결 등록", description = "AWS 또는 GCP 연결 정보를 등록하고 health check 추적 ID를 반환합니다.")
