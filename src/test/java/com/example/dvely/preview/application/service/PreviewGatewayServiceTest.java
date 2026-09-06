@@ -268,6 +268,25 @@ class PreviewGatewayServiceTest {
     }
 
     /**
+     * 앱이 루트절대 링크(/about)·폼(action="/submit")을 걸면 프레임이 게이트웨이 루트로 이동해
+     * 401 + XFO 로 통째로 깨진다(사용자가 처음 본 그 에러). fetch/XHR 뿐 아니라 <b>내비게이션</b>도
+     * prefix 안에 붙잡는 shim(클릭/중클릭 앵커 href·폼 action 재작성, window.open 래핑)이 주입돼야 한다.
+     * 실제 브라우저 동작(재작성이 실제로 일어나는지)은 별도로 실측 검증했고, 여기서는 그 조각들이
+     * 문서에 주입된다는 계약을 회귀 가드로 고정한다.
+     */
+    @Test
+    void injectsNavigationShimSoRootAbsoluteLinksAndFormsStayInThePrefix() {
+        ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+
+        String html = new String(response.getBody(), StandardCharsets.UTF_8);
+        assertThat(html).contains("addEventListener(\"click\",fixA,true)");    // 앵커 클릭 가로채기
+        assertThat(html).contains("addEventListener(\"auxclick\",fixA,true)"); // 중클릭(새 탭)도
+        assertThat(html).contains("addEventListener(\"submit\"");              // 폼 action 가로채기
+        assertThat(html).contains("setAttribute(\"action\"");                  // 폼 action 재작성
+        assertThat(html).contains("window.open=function");                     // 팝업 래핑
+    }
+
+    /**
      * 쓰기(POST)도 method·본문을 그대로 컨테이너로 전달하고 응답을 돌려준다 — 에이전트가 만든 앱의 등록·폼이
      * 프리뷰에서 동작하려면 필요하다. 앱이 method 와 본문을 되돌려주는 엔드포인트로 왕복을 확인한다.
      */

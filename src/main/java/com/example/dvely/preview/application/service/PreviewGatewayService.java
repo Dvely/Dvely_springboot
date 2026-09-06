@@ -267,7 +267,7 @@ public class PreviewGatewayService {
                 .replace("href=\"/", "href=\"" + gatewayPrefix)
                 .replace("src='/", "src='" + gatewayPrefix)
                 .replace("href='/", "href='" + gatewayPrefix);
-        html = injectApiPathShim(html, gatewayPrefix);
+        html = injectClientShim(html, gatewayPrefix);
         if (diagnosticEnabled) {
             html = injectDiagnostic(html);
         }
@@ -305,30 +305,62 @@ public class PreviewGatewayService {
 
     /**
      * 프리뷰는 {@code /api/v1/previews/{sid}/{token}/} 아래서 서빙되는데, 에이전트가 만든 앱은 보통
-     * 루트절대경로({@code /api/...})로 자기 백엔드를 부른다. 그러면 브라우저가 iframe 오리진 루트로 보내
-     * 게이트웨이(앱이 아님)에 닿아 실패한다("Network error"). {@code rewriteHtml} 은 HTML 안의 정적 경로만
-     * 고칠 뿐 JS 번들 안의 fetch 는 못 건드린다 — 그래서 앱 스크립트보다 <b>먼저</b> 실행되는 작은 shim 을
-     * head 맨 앞에 주입해 fetch/XHR 를 감싸, <b>같은 오리진 루트절대</b> 요청을 프리뷰 prefix 아래로 다시
-     * 쓴다. 앱 소스는 건드리지 않는다. cross-origin(전체 URL)·protocol-relative({@code //host})·이미 prefix 가
-     * 붙은 요청은 그대로 둔다. 프리뷰 앱은 자기 컨테이너로만 요청하므로 루트절대 재작성이 안전하고, 정적
-     * 프리뷰는 {@code /api} 호출이 없어 no-op 이다.
+     * 루트절대경로({@code /api/...})로 자기 백엔드를 부르고, 링크·폼도 루트절대({@code /}, {@code /about})로
+     * 건다. 그러면 브라우저가 iframe 오리진 루트로 보내 게이트웨이(앱이 아님)에 닿는다 — API 는
+     * "Network error", <b>내비게이션은 401 + XFO 로 프레임 자체가 깨진다</b>(사용자가 처음 본 그 에러).
+     * {@code rewriteHtml} 은 <b>초기 HTML</b> 안의 정적 경로만 고칠 뿐 JS 번들의 fetch 나 라우터가
+     * <b>런타임에 그리는</b> 앵커는 못 건드린다 — 그래서 앱 스크립트보다 <b>먼저</b> 실행되는 작은 shim 을
+     * head 맨 앞에 주입한다. 앱 소스는 건드리지 않고, 같은 오리진 루트절대만 프리뷰 prefix 아래로 다시 쓴다.
+     * cross-origin(전체 URL)·protocol-relative({@code //host})·이미 prefix 가 붙은 것·{@code #}·{@code mailto:}
+     * 등은 그대로 둔다({@code r()} 이 선행 단일 {@code /} 만 손댄다). 정적 프리뷰는 {@code /api} 호출도 루트절대
+     * 링크도 없어 no-op 이다.
      *
-     * <p><b>덮는 범위</b>: {@code fetch} 와 {@code XMLHttpRequest}(axios 등이 그 위에 있다). 루트절대를
-     * 재작성하므로 SPA 라우팅으로 현재 경로가 바뀌어도 영향받지 않는다(상대경로 방식과 달리 base 변화에
-     * 견고). <b>아직 안 덮는 것</b>(후속): ①<b>프레임 내비게이션</b> — {@code <a href="/">} 클릭,
-     * {@code window.location='/'}, {@code form action="/"} — 이건 게이트웨이 루트로 이동해 401 + XFO 로
-     * 프레임이 깨진다(사용자가 처음 본 그 에러). anchor 클릭·form submit 가로채기로 닫을 수 있으나
-     * {@code location} 대입은 못 막는다. ②{@code EventSource}(SSE)·{@code WebSocket}·서비스워커 등록.
-     * 지금 방명록 앱엔 둘 다 없지만 에이전트가 라우터/실시간을 만들면 나온다.</p>
+     * <p><b>덮는 범위</b>:
+     * <ol>
+     *   <li><b>데이터</b> — {@code fetch}, {@code XMLHttpRequest}(axios 등). 루트절대를 재작성하므로 SPA
+     *       라우팅으로 현재 경로가 바뀌어도 견고하다(상대경로 방식과 달리 base 변화에 안 흔들림).</li>
+     *   <li><b>프레임 내비게이션</b> — 캡처 단계 {@code click}/{@code auxclick} 에서 클릭된 앵커의 루트절대
+     *       {@code href} 를, {@code submit} 에서 폼의 루트절대 {@code action} 을, 그 자리에서 prefix 로 고친다.
+     *       라우터의 {@code <Link>} 는 자체 {@code onClick} 이 {@code preventDefault} 하므로 이 재작성이
+     *       무해하고(라우터는 DOM href 가 아니라 {@code to} 로 동작), 평범한 앵커·폼은 prefix 안에서 이동해
+     *       프레임이 안 깨진다. 새 탭(cmd/중클릭)도 재작성된 href 를 열어 살아난다. {@code window.open} 도
+     *       감싼다(팝업이 루트절대로 열려도 prefix 로 간다).</li>
+     * </ol>
+     *
+     * <p><b>아직 안 덮는 것</b>(의도적, 후속):
+     * <ul>
+     *   <li>{@code location.assign('/x')}/{@code replace('/x')}, {@code location.href='/x'},
+     *       {@code window.location='/x'} — 프로그램적 {@code location} 이동. {@code window.location} 은
+     *       보호(unforgeable)돼 있어 그 메서드 재정의가 <b>조용히 무시</b>되고(Chrome 실측 2026-09-06 —
+     *       {@code location.assign=fn} 이 no-op), {@code href} 대입은 setter 라 애초에 트랩이 안 된다.
+     *       앵커·폼이 압도적 다수라 실효 영향은 작다. 근본 해결은 게이트웨이가 탈출 응답에 프레임 안에서의
+     *       복귀 스크립트를 주는 것(별개).</li>
+     *   <li>{@code history.pushState}/{@code replaceState} 로 루트절대 — 재작성하면 URL 은 prefix 로 정직해지나
+     *       클라이언트 라우터가 {@code basename} 없이 그 prefix 경로를 매칭 못 해 <b>새로고침 초기 렌더가
+     *       깨진다</b>. 안 하면 딥링크 새로고침만 깨진다(전진 내비게이션은 라우터 내부 상태로 동작). 둘 다
+     *       trade-off 라 건드리지 않는다 — 근본 해결은 생성 앱이 prefix 를 basename 으로 쓰는 것(앱측).</li>
+     *   <li>{@code EventSource}(SSE)·{@code WebSocket} — URL 재작성만으로 안 된다. 게이트웨이가 응답을
+     *       통째로 버퍼링({@code ofByteArray})하고 업그레이드도 안 하므로, prefix 로 보내도 이벤트가 안 온다.
+     *       스트리밍/업그레이드 프록시라는 별개의 큰 작업이 필요하다.</li>
+     * </ul>
      */
-    private String injectApiPathShim(String html, String gatewayPrefix) {
+    private String injectClientShim(String html, String gatewayPrefix) {
         String prefix = gatewayPrefix.endsWith("/")
                 ? gatewayPrefix.substring(0, gatewayPrefix.length() - 1)
                 : gatewayPrefix;
         String shim = "<script>(function(){var P=\"" + prefix + "\";"
                 + "function r(u){try{if(typeof u===\"string\"&&u.charAt(0)===\"/\"&&u.charAt(1)!==\"/\"&&u.indexOf(P+\"/\")!==0)return P+u;}catch(e){}return u;}"
+                // 데이터: fetch / XHR
                 + "if(window.fetch){var f=window.fetch;window.fetch=function(i,o){try{if(typeof i===\"string\")i=r(i);else if(i&&i.url)i=new Request(r(i.url),i);}catch(e){}return f.call(this,i,o);};}"
                 + "if(window.XMLHttpRequest&&XMLHttpRequest.prototype&&XMLHttpRequest.prototype.open){var x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){try{arguments[1]=r(arguments[1]);}catch(e){}return x.apply(this,arguments);};}"
+                // 내비게이션: 앵커 href(클릭/중클릭 시점 재작성 — 캡처 단계라 기본 이동 전에 고쳐짐, 라우터 onClick 은 뒤에서 그대로 동작)
+                + "function fixA(e){try{var t=e.target;var a=t&&t.closest?t.closest(\"a[href]\"):null;if(!a)return;var h=a.getAttribute(\"href\");var n=r(h);if(n!==h)a.setAttribute(\"href\",n);}catch(e2){}}"
+                + "document.addEventListener(\"click\",fixA,true);document.addEventListener(\"auxclick\",fixA,true);"
+                // 내비게이션: 폼 action
+                + "document.addEventListener(\"submit\",function(e){try{var f=e.target;if(f&&f.tagName===\"FORM\"){var a=f.getAttribute(\"action\");var n=r(a);if(a&&n!==a)f.setAttribute(\"action\",n);}}catch(e2){}},true);"
+                // 내비게이션: window.open(팝업). location.assign/replace 는 window.location 이 보호돼 재정의가
+                // 조용히 무시되므로(Chrome 실측) 시도하지 않는다 — 위 doc 의 "안 덮는 것" 참고.
+                + "try{var wo=window.open;if(wo)window.open=function(){var a=[].slice.call(arguments);if(a.length)a[0]=r(a[0]);return wo.apply(window,a);};}catch(e){}"
                 + "})();</script>";
         int headOpen = html.indexOf("<head");
         if (headOpen >= 0) {
