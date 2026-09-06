@@ -6,6 +6,7 @@ import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.AfterEach;
@@ -25,6 +26,8 @@ class PreviewGatewayServiceTest {
 
     private HttpServer container;
     private PreviewGatewayService service;
+    // 안쪽 앱 무응답으로 회수 요청된 sessionId 를 기록한다(게이트웨이가 부르는 reclaimer 대역).
+    private final java.util.List<String> reclaimed = new java.util.ArrayList<>();
 
     @BeforeEach
     void startFakeContainer() throws IOException {
@@ -37,7 +40,10 @@ class PreviewGatewayServiceTest {
             exchange.close();
         });
         container.start();
-        service = new PreviewGatewayService("'self'");
+        service = new PreviewGatewayService("'self'", id -> {
+            reclaimed.add(id);
+            return true;
+        });
     }
 
     @AfterEach
@@ -52,7 +58,7 @@ class PreviewGatewayServiceTest {
      */
     @Test
     void configuredFrameAncestorsWidenFramingButNeverTheSandbox() {
-        var widened = new PreviewGatewayService("'self' http://localhost:5173");
+        var widened = new PreviewGatewayService("'self' http://localhost:5173", id -> false);
 
         String policy = widened.sandboxPolicy();
 
@@ -195,6 +201,35 @@ class PreviewGatewayServiceTest {
         ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
 
         assertThat(response.getHeaders().getAccessControlAllowOrigin()).isNull();
+    }
+
+    /**
+     * 컨테이너는 있으나 안쪽 앱이 죽어 도달 불가면(연결 거부) 502 를 돌려주고, 재확인 후 세션을 회수하도록
+     * reclaimer 를 부른다 — attach·findCurrent 가 못 걸러내는 "컨테이너 alive + 앱 死" 사각을 게이트웨이가
+     * 관찰해 닫는다. 닫힌 포트를 가리켜 도달 실패를 만든다.
+     */
+    @Test
+    void reclaimsTheSessionWhenTheInnerAppIsUnreachable() throws IOException {
+        int closedPort;
+        try (ServerSocket probe = new ServerSocket(0)) {
+            closedPort = probe.getLocalPort();
+        }   // 닫힘 — 이 포트에는 아무도 리슨하지 않는다
+        PreviewSessionInfo dead = new PreviewSessionInfo(
+                "session-dead", 1L, 11L, null, null, "container-dead", closedPort,
+                "https://qeploy.com/api/v1/previews/session-dead/token/", LocalDateTime.now().plusMinutes(30));
+
+        ResponseEntity<byte[]> response = service.proxy(dead, "/api/v1/previews/s/t/", "", null);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(502);
+        assertThat(reclaimed).containsExactly("session-dead");   // 안쪽 앱 死 → 세션 회수 요청
+    }
+
+    /** 정상 응답이면 절대 회수하지 않는다 — 멀쩡한 프리뷰를 관찰만으로 지우면 안 된다. */
+    @Test
+    void doesNotReclaimAHealthySession() {
+        service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+
+        assertThat(reclaimed).isEmpty();
     }
 
     /** 이 경로에만 실제 파일이 있는 상태를 만든다. 나머지 경로는 @BeforeEach 의 "/" 가 받아 index.html 을 돌려준다(serve -s 와 같은 동작). */
