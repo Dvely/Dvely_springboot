@@ -71,10 +71,20 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
     // 전체를 롤백해 FAILED 감사 행마저 사라진다. 각 save 는 자체 트랜잭션으로 독립 커밋된다.
     public ProvisionSubmitResult provision(Long ownerUserId, Long projectId,
                                            ProvisionMethod method, DatabaseEngine engine) {
+        return provision(ownerUserId, projectId, method, engine, null);
+    }
+
+    /**
+     * {@code conversationId}를 실으면(에이전트 BACKEND_DEPLOY 경로) 만들어지는 과금 승인이 그 대화 스코프로
+     * 조회돼 채팅 카드로 뜬다 — 승인은 여전히 standalone(taskId=null)이라 라우팅·프로비저닝 핸들러는 불변
+     * (배포 e2e 발견 #1 저위험 1단계). null 이면(HTTP 수동 프로비저닝) 기존과 완전히 동일하다.
+     */
+    public ProvisionSubmitResult provision(Long ownerUserId, Long projectId,
+                                           ProvisionMethod method, DatabaseEngine engine, Long conversationId) {
         return switch (method) {
             case LOCAL -> provisionLocal(ownerUserId, projectId, engine);
-            case RDS -> submitRds(ownerUserId, projectId, engine);
-            case DOCKER -> submitDocker(ownerUserId, projectId, engine);
+            case RDS -> submitRds(ownerUserId, projectId, engine, conversationId);
+            case DOCKER -> submitDocker(ownerUserId, projectId, engine, conversationId);
         };
     }
 
@@ -84,14 +94,15 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
      * 실제 EC2 생성은 승인 시 {@link com.example.dvely.provisioning.application.service.DatabaseProvisionApprovalHandler}
      * 가 method 로 갈라 시작한다(비동기).
      */
-    private ProvisionSubmitResult submitDocker(Long ownerUserId, Long projectId, DatabaseEngine engine) {
+    private ProvisionSubmitResult submitDocker(Long ownerUserId, Long projectId, DatabaseEngine engine,
+                                               Long conversationId) {
         resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
 
         ProvisionedDatabase record = databaseRepository.save(
                 ProvisionedDatabase.pending(projectId, ProvisionMethod.DOCKER, engine, ProvisionOrigin.MANUAL));
-        Approval approval = approvalRepository.save(Approval.standalone(
+        Approval approval = approvalRepository.save(Approval.standaloneInConversation(
                 ownerUserId, projectId, ApprovalType.DATABASE_PROVISION,
-                "DB 컨테이너(EC2) " + engine + " 생성 (과금)"));
+                "DB 컨테이너(EC2) " + engine + " 생성 (과금)", conversationId));
         record.linkApproval(approval.getId());
         databaseRepository.save(record);
 
@@ -105,14 +116,15 @@ public class DatabaseProvisioningCommandService implements PreviewDatabaseProvis
      * 거친다. 여기서는 pending 행과 승인을 만들어 requiresApproval 로 돌려주고, 실제 인스턴스 생성은
      * 승인 시 RdsProvisionApprovalHandler 가 시작한다(생성이 비동기라 즉시 만들 수 없다).
      */
-    private ProvisionSubmitResult submitRds(Long ownerUserId, Long projectId, DatabaseEngine engine) {
+    private ProvisionSubmitResult submitRds(Long ownerUserId, Long projectId, DatabaseEngine engine,
+                                            Long conversationId) {
         resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
 
         ProvisionedDatabase record = databaseRepository.save(
                 ProvisionedDatabase.pending(projectId, ProvisionMethod.RDS, engine, ProvisionOrigin.MANUAL));
-        Approval approval = approvalRepository.save(Approval.standalone(
+        Approval approval = approvalRepository.save(Approval.standaloneInConversation(
                 ownerUserId, projectId, ApprovalType.DATABASE_PROVISION,
-                "RDS " + engine + " 데이터베이스 생성 (과금)"));
+                "RDS " + engine + " 데이터베이스 생성 (과금)", conversationId));
         record.linkApproval(approval.getId());
         databaseRepository.save(record);
 

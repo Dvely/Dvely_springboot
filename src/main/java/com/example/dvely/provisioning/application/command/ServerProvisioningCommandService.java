@@ -58,6 +58,17 @@ public class ServerProvisioningCommandService {
     public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType,
                                               ServerDeployMode deployMode, DatabaseEngine bundledDbEngine,
                                               WebFrontendSpec web, boolean webOnly) {
+        return submit(ownerUserId, projectId, instanceType, deployMode, bundledDbEngine, web, webOnly, null);
+    }
+
+    /**
+     * {@code conversationId}를 실으면(에이전트 BACKEND_DEPLOY 경로) 과금 승인이 그 대화 스코프로 조회돼
+     * 채팅 카드로 뜬다 — 승인은 여전히 standalone(taskId=null)이라 라우팅·프로비저닝 핸들러는 불변
+     * (배포 e2e 발견 #1 저위험 1단계). null 이면(HTTP 수동) 기존과 동일하다.
+     */
+    public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType,
+                                              ServerDeployMode deployMode, DatabaseEngine bundledDbEngine,
+                                              WebFrontendSpec web, boolean webOnly, Long conversationId) {
         resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
 
         String tier = (instanceType == null || instanceType.isBlank())
@@ -94,9 +105,9 @@ public class ServerProvisioningCommandService {
                 .findFirst()
                 .ifPresent(existing -> server.assignSupersedes(existing.getId()));
         ProvisionedServer record = serverRepository.save(server);
-        Approval approval = approvalRepository.save(Approval.standalone(
+        Approval approval = approvalRepository.save(Approval.standaloneInConversation(
                 ownerUserId, projectId, ApprovalType.SERVER_PROVISION,
-                (webOnly ? "EC2 프론트 서버 생성 (" : "EC2 백엔드 서버 생성 (") + tier + ", 과금)"));
+                (webOnly ? "EC2 프론트 서버 생성 (" : "EC2 백엔드 서버 생성 (") + tier + ", 과금)", conversationId));
         record.linkApproval(approval.getId());
         serverRepository.save(record);
 
