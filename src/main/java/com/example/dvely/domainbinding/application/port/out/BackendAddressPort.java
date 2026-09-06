@@ -1,5 +1,6 @@
 package com.example.dvely.domainbinding.application.port.out;
 
+import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
 import java.util.Optional;
 
 /**
@@ -18,4 +19,12 @@ public interface BackendAddressPort {
 
     /** 이 프로젝트의 RUNNING 독립 프론트(webOnly=true) 서버 공개 IP. 없으면 empty. */
     Optional<String> resolveRunningFrontendHost(Long projectId);
+
+    /**
+     * 이 도메인({@code hostingTarget})이 가리키는, 프로젝트의 RUNNING 서버 id. FE 가 도메인에서 그 서버로
+     * 이어가는(상세·로그) 데 쓴다. 위 host 해석과 <b>같은 RUNNING+webOnly 규칙</b>을 재사용하므로, 이 값이
+     * 있다는 것은 dnsTarget 이 가리키는 그 서버가 실제 실행 중이라는 뜻이다({@code AWS_EC2_FRONTEND}→프론트,
+     * {@code AWS}→백엔드). EC2 대상이 아니면(GitHub Pages·S3·GCP = 가리킬 서버 없음) empty.
+     */
+    Optional<Long> resolveServerId(Long projectId, DomainHostingTarget hostingTarget);
 }

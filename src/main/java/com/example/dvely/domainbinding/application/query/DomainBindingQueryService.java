@@ -7,6 +7,7 @@ import com.example.dvely.domainbinding.application.result.DomainSearchResult;
 import com.example.dvely.domainbinding.application.result.VerificationGuideResult;
 import com.example.dvely.domainbinding.application.result.VerificationRecordResult;
 import com.example.dvely.domainbinding.domain.model.DomainBinding;
+import com.example.dvely.domainbinding.application.port.out.BackendAddressPort;
 import com.example.dvely.domainbinding.application.port.out.S3CdnProvisioningPort;
 import com.example.dvely.domainbinding.domain.repository.DomainBindingRepository;
 import com.example.dvely.domainbinding.domain.value.DomainHostingTarget;
@@ -30,6 +31,7 @@ public class DomainBindingQueryService {
     private final DomainBindingRepository domainBindingRepository;
     private final CloudflareProperties cloudflareProperties;
     private final S3CdnProvisioningPort s3CdnProvisioningPort;
+    private final BackendAddressPort backendAddressPort;
 
     /**
      * 이 호스트네임이 우리가 관리하는 EC2 도메인(백엔드 AWS · 독립 프론트 AWS_EC2_FRONTEND)으로
@@ -160,7 +162,8 @@ public class DomainBindingQueryService {
                 domain.getCertificateExpiresAt(),
                 domain.getLastCheckedAt(),
                 domain.getCreatedAt(),
-                domain.getUpdatedAt()
+                domain.getUpdatedAt(),
+                backendAddressPort.resolveServerId(domain.getProjectId(), domain.getHostingTarget()).orElse(null)
         );
     }
 

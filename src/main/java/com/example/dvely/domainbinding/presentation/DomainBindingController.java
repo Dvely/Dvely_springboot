@@ -164,7 +164,8 @@ public class DomainBindingController {
                 result.certificateExpiresAt(),
                 result.lastCheckedAt(),
                 result.createdAt(),
-                result.updatedAt()
+                result.updatedAt(),
+                result.serverId()
         );
     }
 
