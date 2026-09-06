@@ -20,6 +20,7 @@ import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,6 +37,10 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
     private final PreviewGatewayUrlResolver gatewayUrlResolver;
     private final PreviewAccessCookies accessCookies;
     private final PreviewRuntimeConfigService runtimeConfigService;
+
+    // 필드 주입(null-safe). 단위 테스트는 Spring 없이 생성자로 만드므로 null 이면 도달 게이트를 건너뛴다.
+    @Autowired(required = false)
+    private PreviewReadinessProbe readinessProbe;
 
     public PreviewSessionInfo acquire(String taskId) {
         AgentTask task = taskStore.get(taskId);
@@ -103,6 +108,10 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
                     // 포트를 재할당해, 생성 시점에 저장한 host_port 가 어긋날 수 있다. 게이트웨이가 이 포트로
                     // 프록시하므로, ACTIVE 로 올리기 직전 지금의 실제 포트로 다시 맞춘다(어긋나면 502).
                     session.rebindPort(dockerService.getMappedPort(session.getContainerId()));
+                    // ACTIVE 직전 게이트웨이 경유 도달 확인 — 첫 iframe 로드의 503(깨진 이미지) 레이스를 닫는다.
+                    if (readinessProbe != null) {
+                        readinessProbe.awaitReachable(session.getHostPort());
+                    }
                     session.activate(nextExpiry());
                     repository.save(session);
                     log.info("[PreviewSession] 서빙 시작: sessionId={} taskId={} hostPort={}",
