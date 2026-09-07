@@ -93,12 +93,14 @@ cd /var/www/dvely/backend && pm2 startOrRestart ecosystem.config.js --update-env
 ```bash
 pm2 install pm2-logrotate
 pm2 set pm2-logrotate:max_size 100M          # 이 크기를 넘으면 회전
-pm2 set pm2-logrotate:retain 14              # 14개 보관 (압축 후 합계 수백 MB)
+pm2 set pm2-logrotate:retain 30              # 30개 보관
 pm2 set pm2-logrotate:compress true
 pm2 set pm2-logrotate:rotateInterval '0 0 * * *'   # 크기와 별개로 매일 0시에도 회전
 pm2 set pm2-logrotate:workerInterval 60      # 크기 확인 주기(초)
 pm2 save
 ```
+
+보관 개수는 **로그 증가율로 정한다.** dev 는 하루 약 265MB 를 쓰므로(SQL 을 전부 찍는다) 100MB 마다 하루 2~3회 회전하고, 30개면 약 11일치·압축 후 200MB 남짓이다. 이 시스템은 에이전트 실행 내역을 로그로만 되짚을 수 있어서, 며칠 전 일을 못 보면 원인 추적이 막힌다 — 며칠치만 남기지 말 것.
 
 확인:
 
