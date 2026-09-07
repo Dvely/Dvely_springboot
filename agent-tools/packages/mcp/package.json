@@ -1,0 +1,13 @@
+{
+  "name": "@qeploy/mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing Qeploy to coding agents",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": { "qeploy-mcp": "src/index.js" },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@qeploy/client": "0.1.0"
+  }
+}

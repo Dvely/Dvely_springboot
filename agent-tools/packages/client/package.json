@@ -1,0 +1,8 @@
+{
+  "name": "@qeploy/client",
+  "version": "0.1.0",
+  "description": "Qeploy REST client",
+  "type": "module",
+  "main": "src/index.js",
+  "license": "MIT"
+}

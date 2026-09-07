@@ -1008,6 +1008,23 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 ---
 
+## 4.23 P1: 에이전트 연동 — 읽기 전용 MCP 서버 (PRD 부록 A-2)
+
+상태: 구현 완료(로컬), 미머지. 브랜치 `danto/agent-pat`.
+
+무엇: 사용자의 Claude Code·Codex 가 Qeploy 를 도구로 호출한다. §4.21(BYOK)과 호출 방향이 반대라 Qeploy 는 추론하지 않고 AI 자격증명을 보지도 중계하지도 않는다 — 컴플라이언스 이슈가 없고 이 경로의 AI 비용은 0 이다.
+
+- `agent-tools/` 워크스페이스: `@qeploy/client`(REST 클라이언트, 봉투 해제·에러 번역), `@qeploy/mcp`(stdio MCP 서버).
+- **읽기 전용 도구 11개.** 되돌리기 어려운 조작(프로젝트·서버 삭제, 승인, 비용예산)은 앞으로도 노출하지 않는다. 도구 이름 집합을 테스트로 못박아 추가가 의도적 편집이 되게 했다.
+- 인증은 §4.22 의 PAT. 서버가 READ 스코프에서 변경 메서드를 403 으로 막으므로 읽기 보장이 클라이언트 규약이 아니라 서버 강제다.
+- API 실패는 프로토콜 예외가 아니라 **에러 결과**로 반환한다. 예외면 에이전트가 읽지 못하지만 결과면 모델이 읽고 대응한다(만료 토큰이면 재발급을 안내).
+
+**실 stdio 검증 완료**: MCP 클라이언트로 실제 서버 프로세스를 띄워 initialize → tools/list(11개) → tools/call 왕복까지 확인. 없는 프로젝트는 에러 결과, 토큰 미설정이면 종료코드 1 이고 안내가 stdout(프로토콜 채널)을 오염시키지 않는다.
+
+남은 것: 쓰기 도구(deploy·set_env·bind_domain)와 확인 규약, `@qeploy/cli`, FE 의 PAT 발급 화면. 공개 저장소 분리와 npm 배포는 오픈소스 공개 결정 시점의 일이다.
+
+---
+
 # 5. 권장 구현 순서
 
 `.notion/ROADMAP.md`가 단위(Unit) 단위 실행 순서의 SSOT다. 아래는 지금까지 진행해 온 Phase 이력이며, U1~U7·Issue #45·Cost & Budget·Cloud Ops Agent·Issue #56·Issue #55·Issue #57·Issue #74(Audit Log)·Issue #76(Preview 외부 노출 차단, BI-081/G1)·Issue #77(게이트웨이 인가, G2·G4)이 모두 완료된 이후 신규 작업은 ROADMAP의 "이후 백로그"(`BI-163~165` Project Settings 나머지)와 U-sec 단위를 따른다.
