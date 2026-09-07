@@ -1,5 +1,6 @@
 package com.example.dvely.deployment.application.service;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
@@ -102,13 +103,17 @@ public class DeploymentOutcomeService {
         if (task == null || task.conversationId() == null) {
             return;
         }
-        agentMessageService.appendAssistant(task.conversationId(), history.getStatus() == DeployStatus.LIVE
-                ? "배포가 완료되었습니다.\n"
-                        + "- 주소: " + history.getDeployedUrl() + "\n"
-                        + "- 버전: " + history.getVersionLabel()
-                : "배포가 실패했습니다.\n"
-                        + "- 사유: " + history.getErrorMessage() + "\n"
-                        + "다시 배포를 요청하면 같은 저장소로 재시도합니다.");
+        boolean live = history.getStatus() == DeployStatus.LIVE;
+        agentMessageService.appendAssistant(
+                task.conversationId(),
+                live
+                        ? "배포가 완료되었습니다.\n"
+                                + "- 주소: " + history.getDeployedUrl() + "\n"
+                                + "- 버전: " + history.getVersionLabel()
+                        : "배포가 실패했습니다.\n"
+                                + "- 사유: " + history.getErrorMessage() + "\n"
+                                + "다시 배포를 요청하면 같은 저장소로 재시도합니다.",
+                live ? ChatMessageKind.AGENT_RESULT : ChatMessageKind.TASK_FAILED);
     }
 
     private boolean isLatestProjectDeployment(DeploymentHistory history) {

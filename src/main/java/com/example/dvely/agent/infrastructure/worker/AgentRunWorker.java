@@ -1,5 +1,6 @@
 package com.example.dvely.agent.infrastructure.worker;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.orchestrator.AgentPlanExecutor;
@@ -147,7 +148,8 @@ public class AgentRunWorker {
                 }
                 agentMessageService.appendAssistant(
                         task.conversationId(),
-                        "실행이 중단되어 작업을 종료했습니다. 다시 요청해주세요."
+                        "실행이 중단되어 작업을 종료했습니다. 다시 요청해주세요.",
+                        ChatMessageKind.TASK_CANCELLED
                 );
             } catch (Exception exception) {
                 log.warn("[AgentRunWorker] 리스 소진 안내 실패 — taskId={}", taskId, exception);

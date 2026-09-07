@@ -1,5 +1,6 @@
 package com.example.dvely.approval.application.command;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -76,7 +77,8 @@ class ApprovalCommandServiceTest {
         service.approve(7L, 2L);
 
         verify(orchestrator).executeApproved("task-1");
-        verify(messageService).appendAssistant(21L, "모든 승인이 완료되어 작업을 시작합니다.");
+        verify(messageService).appendAssistant(21L, "모든 승인이 완료되어 작업을 시작합니다.",
+                ChatMessageKind.TASK_PROGRESS);
     }
 
     @Test
@@ -109,7 +111,8 @@ class ApprovalCommandServiceTest {
         verify(messageService).appendAssistant(
                 21L,
                 "작업이 거절되어 실행하지 않았습니다: 요청 작업"
-        );
+        ,
+                ChatMessageKind.TASK_CANCELLED);
     }
 
     @Test
@@ -198,7 +201,8 @@ class ApprovalCommandServiceTest {
         service.approve(7L, 1L);
 
         verify(orchestrator).executeApproved("task-1");
-        verify(messageService).appendAssistant(21L, "모든 승인이 완료되어 작업을 시작합니다.");
+        verify(messageService).appendAssistant(21L, "모든 승인이 완료되어 작업을 시작합니다.",
+                ChatMessageKind.TASK_PROGRESS);
         verifyNoInteractions(infraHandler);
     }
 
@@ -386,7 +390,8 @@ class ApprovalCommandServiceTest {
         verify(messageService).appendAssistant(
                 21L,
                 "결과가 승인되어 main에 반영되었습니다.\n- PR: #42\n- commit: abcdef1\n남은 작업을 이어서 진행합니다."
-        );
+        ,
+                ChatMessageKind.TASK_PROGRESS);
     }
 
     @Test
@@ -451,7 +456,8 @@ class ApprovalCommandServiceTest {
                 21L,
                 "결과가 거절되어 main에 반영하지 않았습니다. 변경은 preview 브랜치에만 남아 있습니다.\n"
                         + "이어서 수정을 요청하면 현재 preview 상태 위에서 작업합니다."
-        );
+        ,
+                ChatMessageKind.TASK_CANCELLED);
         // RESULT is never standalone (taskId always set by the gate) — must not divert to a
         // registered handler even though one exists for a different type.
         verifyNoInteractions(handler);
@@ -484,7 +490,8 @@ class ApprovalCommandServiceTest {
         verify(messageService).appendAssistant(
                 21L,
                 "결과가 승인되어 main에 반영되었습니다.\n- commit: 1234567\n남은 작업을 이어서 진행합니다."
-        );
+        ,
+                ChatMessageKind.TASK_PROGRESS);
     }
 
     // ── REPOSITORY_BINDING approval branch ─────────────────────────────────────────────────
@@ -530,7 +537,8 @@ class ApprovalCommandServiceTest {
                 "GitHub 저장소를 새로 만들어 연결했습니다.\n"
                         + "- 저장소: https://github.com/dldnsgkr/apgujeong-hyundai\n"
                         + "- 작업물을 preview 브랜치에 올렸습니다. 프리뷰가 만료돼도 코드는 남습니다."
-        );
+        ,
+                ChatMessageKind.TASK_PROGRESS);
     }
 
     @Test
@@ -599,7 +607,8 @@ class ApprovalCommandServiceTest {
                 21L,
                 "저장소를 연결하지 않았습니다. 작업물은 프리뷰에만 남아 있으며 프리뷰가 만료되면 사라집니다.\n"
                         + "나중에 연결하려면 프로젝트 설정에서 저장소를 연결하거나 배포를 요청해주세요."
-        );
+        ,
+                ChatMessageKind.TASK_CANCELLED);
     }
 
     @Test
@@ -642,7 +651,8 @@ class ApprovalCommandServiceTest {
                 21L,
                 "프리뷰가 만료되어 작업물이 사라졌기 때문에 저장소를 연결하지 못했습니다.\n"
                         + "같은 내용을 다시 요청하면 새로 만들어 연결할 수 있습니다."
-        );
+        ,
+                ChatMessageKind.TASK_FAILED);
     }
 
     private void routingFor(ApprovalRepository repository, Long approvalId, Long ownerUserId,

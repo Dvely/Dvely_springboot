@@ -3,6 +3,7 @@ package com.example.dvely.agent.application.service;
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.chat.domain.model.ChatMessage;
 import com.example.dvely.chat.domain.repository.ChatMessageRepository;
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.chat.domain.value.ChatRole;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -23,8 +24,18 @@ public class AgentMessageService {
 
     private final ChatMessageRepository chatMessageRepository;
 
+    /** 종류를 붙이지 않는 줄(순수 대화 답변 등). */
     @Transactional
     public void appendAssistant(Long conversationId, String content) {
+        appendAssistant(conversationId, content, null);
+    }
+
+    /**
+     * 종류를 붙여 남긴다. 화면이 본문 문자열로 의미를 추론하지 않게 하는 것이 목적이다 —
+     * 그 추론은 이미 한 번 사고를 냈다(존재하지 않는 승인 버튼). {@link ChatMessageKind} 참고.
+     */
+    @Transactional
+    public void appendAssistant(Long conversationId, String content, ChatMessageKind kind) {
         if (conversationId == null || content == null || content.isBlank()) {
             return;
         }
@@ -32,7 +43,8 @@ public class AgentMessageService {
                 conversationId,
                 ChatRole.ASSISTANT,
                 content.trim(),
-                0
+                0,
+                kind
         ));
     }
 

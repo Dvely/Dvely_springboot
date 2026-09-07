@@ -228,7 +228,8 @@ public class ChatCommandService {
                 message.getContent(),
                 message.getTokenCount(),
                 message.getCreatedAt(),
-                taskId
+                taskId,
+                message.getKind()
         );
     }
 }
