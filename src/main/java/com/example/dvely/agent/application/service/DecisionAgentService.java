@@ -27,9 +27,9 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class DecisionAgentService {
 
-    private final LlmRouter                   llmRouter;
-    private final DeployTargetContextResolver deployTargetContextResolver;
-    private final ObjectMapper                objectMapper = new ObjectMapper();
+    private final LlmRouter                       llmRouter;
+    private final ProjectDecisionContextResolver  projectDecisionContextResolver;
+    private final ObjectMapper                    objectMapper = new ObjectMapper();
 
     /** 교정 프롬프트에 되돌려 보여줄 직전 응답의 상한. 어디가 틀렸는지 보는 데는 앞부분이면 된다. */
     private static final int MAX_REPAIR_ECHO_CHARS = 2000;
@@ -55,11 +55,19 @@ public class DecisionAgentService {
               which the user wants, and only recommend a default if the request itself hints at one.
             - The request is so vague you cannot tell what app to build (e.g. "make me an app").
             - Essential scope is unclear in a way that changes the build (e.g. "does it need login / a database?").
+            - A new app is to be built (project facts say hasCode=false) and the user did not say which
+              frontend framework to use. React, Vue and plain HTML/CSS/JS produce materially different
+              codebases that the user then lives with — picking one silently is a decision made FOR
+              them. Ask with SINGLE_SELECT, offering "react" (React + Vite), "vue" (Vue + Vite) and
+              "vanilla" (plain HTML/CSS/JS, no build step); mark none as recommended unless the
+              request hints at one. Do NOT ask when the project already has code (the stack is
+              already settled), when the user named a framework or library, or when the request is a
+              small edit rather than a new app.
             - A frontend DEPLOY is requested, the user did not say WHERE, the project has never been
-              deployed, and the frontend hosting context below lists more than one available target.
+              deployed, and the project facts below list more than one available target.
               GitHub Pages, S3 and an EC2 server are different places with different URLs and costs,
               and the choice sticks to the project. Ask with SINGLE_SELECT, offering ONLY the targets
-              that context lists as available, with the target name as each option's "value".
+              the project facts list as available, with the target name as each option's "value".
               Do NOT ask when the project was deployed before (keep its current target), and do NOT
               ask when GITHUB_PAGES is the only available target.
 
@@ -71,8 +79,10 @@ public class DecisionAgentService {
             Keep it to ONE focused question. Mark a sensible default option with "recommended": true.
 
             Be conservative: do NOT clarify when the request is already clear or a sensible default exists
-            (a plain static frontend, a small code edit, an explicit stack). Over-asking is worse than a
-            good default. If in doubt and a reasonable default exists, proceed with a plan, do not clarify.
+            (a small code edit, an explicit stack, a project that already has code). Over-asking is worse
+            than a good default. If in doubt and a reasonable default exists, proceed with a plan, do not
+            clarify. When more than one of the cases above applies at once, ask about the one that is
+            hardest to undo later — the stack a codebase is written in outlives where it is deployed.
 
             Agent types and their instruction-writing rules:
 
@@ -81,7 +91,10 @@ public class DecisionAgentService {
                do NOT add a separate DEPLOY step just because the user wants to "see" or "preview" the result.
                Parameters:
                - "instruction": a complete coding task description written for a code-editing AI
-                 (include what to change, where, and the expected outcome)
+                 (include what to change, where, and the expected outcome). When the project has no
+                 code yet, name the frontend framework to scaffold with — the user's own words, or
+                 their answer to the clarifying question above. Do not leave it to the code agent to
+                 pick: it will scaffold whatever it likes and the user gets a stack they never chose.
                - "targetFile": file or component mentioned (empty string if not mentioned)
 
             2. DEPLOY — User explicitly wants to deploy to a PRODUCTION environment:
@@ -102,7 +115,7 @@ public class DecisionAgentService {
                  Fill it from the user's own words ("S3 에 올려줘" -> "S3", "EC2 에 띄워줘" -> "EC2",
                  "깃허브 페이지로" -> "GITHUB_PAGES"), or from their answer to a clarifying question.
                  Leave it EMPTY to keep whatever the project is already set to. NEVER pick a target
-                 the frontend hosting context does not list as available.
+                 the project facts do not list as available.
 
             3. DOMAIN_BIND — User wants to connect or configure a custom domain.
                Parameters:
@@ -255,17 +268,14 @@ public class DecisionAgentService {
             ));
         }
         if (projectId != null) {
-            messages.add(new LlmMessage(
-                    "user",
-                    "[Project context: projectId=" + projectId
-                            + ". Treat the latest user request as a modification of this existing project. "
-                            + "Do not scaffold a new project.]"
-            ));
-            // 배포 위치는 프로젝트 사실(현재 설정·배포 이력·클라우드 연결)을 봐야 정할 수 있다. 모르면
-            // 아무 줄도 넣지 않는다 — 그러면 모델은 위 규칙에 따라 사용자에게 물어본다.
-            deployTargetContextResolver.resolve(projectId)
-                    .map(DeployTargetContextResolver.DeployTargetContext::asPromptLine)
-                    .ifPresent(line -> messages.add(new LlmMessage("user", line)));
+            // 스택도 배포 위치도 프로젝트 사실을 봐야 정할 수 있다. 사실을 모르면(프로젝트 조회 실패)
+            // 아무 줄도 넣지 않는다 — 그러면 모델은 위 규칙에 따라 사용자에게 물어본다. 아는 척하는
+            // 줄을 넣는 것보다 낫다: 예전에는 코드가 없는 프로젝트에도 "수정으로 다루고 스캐폴딩하지
+            // 말라"고 단언했는데, 정작 CODE 에이전트는 스캐폴딩했다.
+            projectDecisionContextResolver.resolve(projectId).ifPresent(context -> {
+                messages.add(new LlmMessage("user", context.asProjectLine(projectId)));
+                messages.add(new LlmMessage("user", context.asFactsLine()));
+            });
         }
         String raw = complete(provider, messages, modelOptions, projectId);
         try {
