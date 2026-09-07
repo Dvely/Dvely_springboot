@@ -993,7 +993,7 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 ## 4.22 P1: 에이전트용 개인 액세스 토큰 PAT (Issue #304)
 
-상태: 구현 완료(로컬), 미머지. 브랜치 `danto/agent-pat`, V56.
+상태: PR #306 리뷰 대기. 브랜치 `danto/agent-pat`, V56.
 
 무엇: 브라우저 JWT 가 1시간이라 헤드리스 클라이언트(MCP 서버·CLI·CI)가 쓸 장수명 자격이 없었다. PAT 로 채운다. MCP·CLI 단위(PRD 부록 A-2, `srs.md` §B)의 유일한 선행 요건이다.
 
@@ -1010,7 +1010,7 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 ## 4.23 P1: 에이전트 연동 — 읽기 전용 MCP 서버 (PRD 부록 A-2)
 
-상태: 구현 완료(로컬), 미머지. 브랜치 `danto/agent-pat`.
+상태: PR #306 리뷰 대기. 브랜치 `danto/agent-pat`. PAT 와 한 PR 로 묶었다 — MCP 는 PAT 없이는 인증 자체가 성립하지 않아 따로 머지할 실익이 없다.
 
 무엇: 사용자의 Claude Code·Codex 가 Qeploy 를 도구로 호출한다. §4.21(BYOK)과 호출 방향이 반대라 Qeploy 는 추론하지 않고 AI 자격증명을 보지도 중계하지도 않는다 — 컴플라이언스 이슈가 없고 이 경로의 AI 비용은 0 이다.
 

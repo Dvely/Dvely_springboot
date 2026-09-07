@@ -10,6 +10,7 @@
 
 ## 1. 현재 상태
 
+- 2026-09-08: **PR #306 생성 — PAT + MCP 서버(읽기 11 · 쓰기 6)** — 쓰기 도구를 붙이고 PAT 와 한 PR 로 묶었다. MCP 는 PAT 없이 인증이 성립하지 않아 나눠 머지할 실익이 없다. 쓰기 방어는 세 층이다: 기본 비활성(`QEPLOY_ENABLE_WRITES`), 서버 스코프 403(클라이언트 우회·플래그 무관), 기존 승인 게이트. 되돌리기 어려운 조작은 플래그와 무관하게 미노출이고 테스트가 부재를 못박는다. 실 stdio 로 기본 11개/활성 17개·READ 토큰 거부·WRITE 토큰 인가 통과(404)까지 확인했고 실제 배포는 트리거하지 않았다. 다음은 `@qeploy/cli`(5단계)와 FE 발급 화면.
 - 2026-09-08: **PR #245 머지 + PAT + 읽기 전용 MCP 서버 구현 완료(미머지)** — MCP 서버가 실제 stdio 프로토콜로 동작하는 것까지 확인했다(도구 11개 등록, 실 API 왕복, 없는 리소스는 프로토콜 예외가 아니라 에러 결과로 반환, 토큰 없으면 종료코드 1 + stdout 미오염). `agent-tools/` 워크스페이스에 `@qeploy/client`·`@qeploy/mcp` 를 두었고 JS 테스트 27개가 통과한다. 쓰기 도구 6개도 붙였으나 기본 비활성이고(`QEPLOY_ENABLE_WRITES`), READ 스코프 토큰은 서버가 403 으로 막는 것을 실측 확인했다. 지금은 이 저장소 안에 있고, 공개 저장소 분리·npm 배포는 오픈소스 공개를 결정할 때 한다. 다음은 쓰기 도구(4단계)다.
 - 2026-09-08: **PR #245 머지 완료 + PAT 단위 구현 완료(미머지)** — #245 가 develop `cb7c5a5` 로 머지되어 BYOK 코딩 에이전트가 반영됐다(Issue #242 close). 이어서 MC 단위의 선행 요건인 PAT 를 구현했다: `apitoken` 도메인(V56), `qp_` 접두사 필터 분기, HTTP 메서드 기반 스코프, 엔드포인트 3개. 로컬 서버를 실제로 띄워 HTTP 10건 전수 검증(발급·폐기·스코프 403·만료 401·평문 부재·상한 400). 테스트 1347개 통과. 브랜치 `danto/agent-pat`, Issue #304. 다음은 `/client` → MCP 서버(읽기 전용)다.
 - 2026-09-07: **MC 단위 설계 완료(미착수)** — 에이전트 연동(MCP 서버 + npm CLI). 구독 연결을 여러 형태로 검토한 끝에 방향을 뒤집었다: Qeploy 가 AI 를 부르는 게 아니라 **사용자의 AI 가 Qeploy 를 부른다**. 그러면 Qeploy 는 에이전트가 쓰는 도구가 되어 컴플라이언스 이슈가 소멸하고 이 경로의 AI 비용도 0 이다. 검토·기각한 안: ① 구독 자격증명 서버 라우팅(Anthropic 공식 금지 + 2026-01 부터 서버 차단, OpenAI 도 제3자 구동·재판매 금지) ② 확장으로 로컬 호출 후 결과를 서버로(실행 위치가 아니라 "무엇을 구동하나"가 기준이라 동일하게 금지) ③ 로컬 컴패니언(회색지대는 피하나 제품이 로컬 앱이 되어야 함 — draft 만 두고 폐기). 선행 과제는 PAT 하나뿐이다(현행 JWT 1시간). 설계 `docs/qeploy-mcp-cli-design.md`, PRD 부록 A-2, `srs.md` §B, ROADMAP MC 행.
@@ -200,8 +201,8 @@
 | AG | `danto/preview-gateway-authz` | **완료 (2026-08-15)** | - | preview 게이트웨이 인가 — G2(소유권 쿠키 발급 `POST /preview-sessions/{id}/access` + 게이트웨이 401) · G4(발급 시 accessToken 회전). 726/726, DDL 없음. Issue #77 / PR #104 머지, main `113abf0`. FE 연동 `Dvely_FE` PR #30 머지·배포 완료 |
 | U-sec | `danto/security` | **보류 — 사용자 승인 필요** | - | 🔴 실 OpenAI API 키 등 민감정보의 env 이관, 추적/로그에 남은 민감정보 정리 |
 | CA | `danto/coding-agent-byok` | **머지 준비 완료 (2026-09-05) · PR #245 CI 성공** | EPIC 05 (Agent) | 외부 AI 코딩 에이전트 개인계정 연동(BYOK). 사용자 본인 공식 API 키로 Claude Code / Codex CLI를 격리 컨테이너에서 헤드리스 실행. 변형 A(서버측) 1차 범위. 구독 임베딩·세션 가로채기·우회는 비목표. 설계 `docs/byok-coding-agent-design.md`, 요구사항 `srs.md`, PRD 부록 A-1. V45(develop 이 V43·V44 연속 선점). PR 5분할 + 실측 수정 3건, 커밋 10개, 테스트 1166개 통과, CI 성공. Issue #242. CODE 스텝 배선·키 실검증은 후속(`state.md` §4.21) |
-| PAT | `danto/agent-pat` | **구현 완료 (2026-09-08) · 미머지** | EPIC 05 (Agent) | 에이전트용 개인 액세스 토큰. MC 단위의 유일한 선행 요건. 해시 저장, `qp_` 접두사 필터 분기, 스코프는 HTTP 메서드로 강제. 엔드포인트 3개, V56. 실 서버 HTTP 검증 10건 통과. Issue #304, `state.md` §4.22, `api.md` §17 |
-| MC | `danto/agent-mcp-cli` | **MCP 서버 구현 완료 (읽기 11 + 쓰기 6, 2026-09-08) · 미머지** | EPIC 05 (Agent) | 에이전트 연동 — MCP 서버 + npm CLI 오픈소스 제공. 사용자의 Claude Code·Codex 가 Qeploy 를 도구로 호출한다(CA 와 방향이 반대라 컴플라이언스 이슈 없음, AI 비용 0). 선행: 개인 액세스 토큰(PAT) — 현행 JWT 는 1시간이라 헤드리스 불가. 설계 `docs/qeploy-mcp-cli-design.md`, 요구사항 `srs.md` §B, PRD 부록 A-2 |
+| PAT | `danto/agent-pat` | **구현 완료 · PR #306 리뷰 대기 (2026-09-08)** | EPIC 05 (Agent) | 에이전트용 개인 액세스 토큰. MC 단위의 유일한 선행 요건. 해시 저장, `qp_` 접두사 필터 분기, 스코프는 HTTP 메서드로 강제. 엔드포인트 3개, V56. 실 서버 HTTP 검증 10건 통과. Issue #304, `state.md` §4.22, `api.md` §17 |
+| MC | `danto/agent-pat` | **MCP 서버 구현 완료 (읽기 11 + 쓰기 6) · PR #306 리뷰 대기 (2026-09-08)** | EPIC 05 (Agent) | 에이전트 연동 — MCP 서버 + npm CLI 오픈소스 제공. 사용자의 Claude Code·Codex 가 Qeploy 를 도구로 호출한다(CA 와 방향이 반대라 컴플라이언스 이슈 없음, AI 비용 0). 선행: 개인 액세스 토큰(PAT) — 현행 JWT 는 1시간이라 헤드리스 불가. 설계 `docs/qeploy-mcp-cli-design.md`, 요구사항 `srs.md` §B, PRD 부록 A-2 |
 
 이후 백로그(단위 편성 전, `BACKLOG_STATUS.md` Backlog 참고):
 
