@@ -20,5 +20,9 @@ if (!token) {
   process.exit(1);
 }
 
-const server = createServer(new QeployClient({ baseUrl, token }));
+// Writes are opt-in. The failure mode of an over-eager agent here is not a wrong answer but a
+// real deployment, so the default is that it cannot start one.
+const enableWrites = process.env.QEPLOY_ENABLE_WRITES === 'true';
+
+const server = createServer(new QeployClient({ baseUrl, token }), { enableWrites });
 await server.connect(new StdioServerTransport());

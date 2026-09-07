@@ -103,6 +103,14 @@ export class QeployClient {
     return this.request('GET', path);
   }
 
+  post(path, body) {
+    return this.request('POST', path, body ?? {});
+  }
+
+  patch(path, body) {
+    return this.request('PATCH', path, body);
+  }
+
   // ── Projects ──────────────────────────────────────────────────────────────
   listProjects() {
     return this.get('/api/v1/projects');
@@ -129,6 +137,23 @@ export class QeployClient {
     return this.get(`/api/v1/deployments/${deploymentId}/failure-analysis`);
   }
 
+  /**
+   * Starts a deployment. Server-side approval gates still apply, so a successful call can mean
+   * "queued, pending approval" rather than "deploying" — callers must read the returned status
+   * rather than assume.
+   */
+  deploy(projectId, { deployTargetType = 'LATEST', versionName, frontendHostingType } = {}) {
+    return this.post(`/api/v1/projects/${projectId}/deployments`, {
+      deployTargetType,
+      ...(versionName ? { versionName } : {}),
+      ...(frontendHostingType ? { frontendHostingType } : {}),
+    });
+  }
+
+  retryDeployment(deploymentId) {
+    return this.post(`/api/v1/deployments/${deploymentId}/retry`);
+  }
+
   // ── Preview ───────────────────────────────────────────────────────────────
   getPreviewSession(projectId) {
     return this.get(`/api/v1/projects/${projectId}/preview-session`);
@@ -140,9 +165,43 @@ export class QeployClient {
     return this.get(`/api/v1/projects/${projectId}/environment-variables`);
   }
 
+  createEnvironmentVariable(projectId, { key, value, scope, secret = false }) {
+    return this.post(`/api/v1/projects/${projectId}/environment-variables`, {
+      key,
+      value,
+      scope,
+      secret,
+    });
+  }
+
+  updateEnvironmentVariable(projectId, variableId, { value, secret }) {
+    return this.patch(`/api/v1/projects/${projectId}/environment-variables/${variableId}`, {
+      ...(value === undefined ? {} : { value }),
+      ...(secret === undefined ? {} : { secret }),
+    });
+  }
+
   // ── Domains ───────────────────────────────────────────────────────────────
   listDomains(projectId) {
     return this.get(`/api/v1/projects/${projectId}/domains`);
+  }
+
+  /**
+   * Binding is asynchronous: the response carries a taskId, not a finished domain. Custom domains
+   * additionally need the user to add a DNS record before verification can pass.
+   */
+  bindDomain(projectId, { type, label, hostname, verificationMethod, hostingTarget }) {
+    return this.post(`/api/v1/projects/${projectId}/domains`, {
+      type,
+      ...(label ? { label } : {}),
+      ...(hostname ? { hostname } : {}),
+      ...(verificationMethod ? { verificationMethod } : {}),
+      ...(hostingTarget ? { hostingTarget } : {}),
+    });
+  }
+
+  getDomainVerificationGuide(domainId) {
+    return this.get(`/api/v1/domains/${domainId}/verification-guide`);
   }
 
   // ── Servers ───────────────────────────────────────────────────────────────

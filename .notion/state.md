@@ -1021,7 +1021,11 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 **실 stdio 검증 완료**: MCP 클라이언트로 실제 서버 프로세스를 띄워 initialize → tools/list(11개) → tools/call 왕복까지 확인. 없는 프로젝트는 에러 결과, 토큰 미설정이면 종료코드 1 이고 안내가 stdout(프로토콜 채널)을 오염시키지 않는다.
 
-남은 것: 쓰기 도구(deploy·set_env·bind_domain)와 확인 규약, `@qeploy/cli`, FE 의 PAT 발급 화면. 공개 저장소 분리와 npm 배포는 오픈소스 공개 결정 시점의 일이다.
+**쓰기 도구 6개 추가(2026-09-08)**: deploy·retry·create_env·update_env·bind_domain·verification_guide. 방어가 세 층이다 — ① `QEPLOY_ENABLE_WRITES=true` 없이는 목록에 없다(기본값이 "시작할 수 없음") ② READ 스코프 PAT 는 서버가 403 으로 막는다(클라이언트 우회·플래그 무관, 실측 확인) ③ 기존 승인 게이트가 그대로다. MCP 표준 `destructiveHint` 를 붙여 클라이언트가 실행 전 사용자에게 묻게 했다 — 우리 산문을 에이전트가 읽어주길 바라는 대신 프로토콜 수단을 쓴다. 되돌리기 어려운 조작은 플래그와 무관하게 미노출이고 테스트가 그 부재를 못박는다.
+
+실 stdio 검증(쓰기 포함): 기본 11개/활성 17개, READ 토큰의 배포 시도를 서버가 스코프 사유와 함께 거부, WRITE 토큰은 인가를 통과해 404 까지 도달(실제 배포는 트리거하지 않음). 검증 스크립트는 `agent-tools/e2e.mjs`.
+
+남은 것: `@qeploy/cli`, FE 의 PAT 발급 화면. 공개 저장소 분리와 npm 배포는 오픈소스 공개 결정 시점의 일이다.
 
 ---
 

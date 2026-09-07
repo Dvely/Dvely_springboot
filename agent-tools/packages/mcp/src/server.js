@@ -8,9 +8,11 @@ import { buildTools } from './tools.js';
  *
  * Separate from the stdio entrypoint so tests can drive the handlers directly — starting a real
  * transport just to check that a tool returns the right thing would test the SDK, not us.
+ *
+ * @param {{enableWrites?: boolean}} options write tools are omitted unless enabled
  */
-export function createServer(client) {
-  const tools = buildTools(client);
+export function createServer(client, options = {}) {
+  const tools = buildTools(client, options);
   const byName = new Map(tools.map((t) => [t.name, t]));
 
   const server = new Server(
@@ -19,11 +21,14 @@ export function createServer(client) {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: tools.map(({ name, title, description, inputSchema }) => ({
+    tools: tools.map(({ name, title, description, inputSchema, annotations }) => ({
       name,
       title,
       description,
       inputSchema,
+      // Carries destructiveHint so a client can prompt before a deploy runs — the protocol's own
+      // way of saying "ask the human", rather than hoping every agent reads our prose.
+      ...(annotations ? { annotations } : {}),
     })),
   }));
 
