@@ -27,8 +27,9 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class DecisionAgentService {
 
-    private final LlmRouter    llmRouter;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final LlmRouter                   llmRouter;
+    private final DeployTargetContextResolver deployTargetContextResolver;
+    private final ObjectMapper                objectMapper = new ObjectMapper();
 
     /** 교정 프롬프트에 되돌려 보여줄 직전 응답의 상한. 어디가 틀렸는지 보는 데는 앞부분이면 된다. */
     private static final int MAX_REPAIR_ECHO_CHARS = 2000;
@@ -54,6 +55,13 @@ public class DecisionAgentService {
               which the user wants, and only recommend a default if the request itself hints at one.
             - The request is so vague you cannot tell what app to build (e.g. "make me an app").
             - Essential scope is unclear in a way that changes the build (e.g. "does it need login / a database?").
+            - A frontend DEPLOY is requested, the user did not say WHERE, the project has never been
+              deployed, and the frontend hosting context below lists more than one available target.
+              GitHub Pages, S3 and an EC2 server are different places with different URLs and costs,
+              and the choice sticks to the project. Ask with SINGLE_SELECT, offering ONLY the targets
+              that context lists as available, with the target name as each option's "value".
+              Do NOT ask when the project was deployed before (keep its current target), and do NOT
+              ask when GITHUB_PAGES is the only available target.
 
             When you clarify, respond with a top-level "clarification" object and NO "steps".
             Pick the input type that fits the answer:
@@ -87,6 +95,14 @@ public class DecisionAgentService {
                - "repoName": a valid GitHub repository name derived from the project name or context
                  (lowercase letters, numbers, hyphens only; no spaces; e.g. "my-react-app", "todo-kanban";
                   empty string if no meaningful name can be inferred)
+               - "hostingType": where the frontend is served from — exactly one of
+                 "GITHUB_PAGES" (published to a gh-pages branch; needs no cloud account),
+                 "S3"           (static files in the user's own AWS S3 bucket, fronted by CloudFront),
+                 "EC2"          (static files served by nginx on the user's own EC2 instance).
+                 Fill it from the user's own words ("S3 에 올려줘" -> "S3", "EC2 에 띄워줘" -> "EC2",
+                 "깃허브 페이지로" -> "GITHUB_PAGES"), or from their answer to a clarifying question.
+                 Leave it EMPTY to keep whatever the project is already set to. NEVER pick a target
+                 the frontend hosting context does not list as available.
 
             3. DOMAIN_BIND — User wants to connect or configure a custom domain.
                Parameters:
@@ -245,6 +261,11 @@ public class DecisionAgentService {
                             + ". Treat the latest user request as a modification of this existing project. "
                             + "Do not scaffold a new project.]"
             ));
+            // 배포 위치는 프로젝트 사실(현재 설정·배포 이력·클라우드 연결)을 봐야 정할 수 있다. 모르면
+            // 아무 줄도 넣지 않는다 — 그러면 모델은 위 규칙에 따라 사용자에게 물어본다.
+            deployTargetContextResolver.resolve(projectId)
+                    .map(DeployTargetContextResolver.DeployTargetContext::asPromptLine)
+                    .ifPresent(line -> messages.add(new LlmMessage("user", line)));
         }
         String raw = complete(provider, messages, modelOptions, projectId);
         try {

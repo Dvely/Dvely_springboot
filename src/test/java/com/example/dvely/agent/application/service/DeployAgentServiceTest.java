@@ -33,6 +33,7 @@ import com.example.dvely.project.application.port.out.GithubRepositoryPort;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
@@ -114,7 +115,7 @@ class DeployAgentServiceTest {
                 11L
         );
 
-        assertThat(result.summary()).contains("승인된 변경 사항의 배포 요청", "배포 ID: 51");
+        assertThat(result.summary()).contains("승인된 변경 사항의 GitHub Pages 배포 요청", "배포 ID: 51");
         verify(dockerService).execWithExitCode("container-1", "cd /workspace/app && git checkout -B preview");
         verify(dockerService).execWithExitCode(
                 "container-1",
@@ -443,6 +444,86 @@ class DeployAgentServiceTest {
                 .isInstanceOf(ObjectOptimisticLockingFailureException.class);
 
         verify(deploymentFacade, times(2)).deploy(1L, 11L, command);
+    }
+
+    /**
+     * 결정 에이전트가 고른 배포 위치가 실제 배포 명령까지 가야 한다. 이 연결이 없어서 채팅으로는
+     * S3·EC2 프론트 호스팅에 도달할 수 없었다 — DEPLOY 는 언제나 프로젝트 기본값(GitHub Pages)으로
+     * 나갔고, 사용자가 "S3 에 올려줘" 라고 해도 아무 데도 반영되지 않았다.
+     */
+    @Test
+    void carriesTheChosenHostingTargetIntoTheDeployCommand() {
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
+        DeployAgentService service = new DeployAgentService(
+                dockerService,
+                previewSessionService,
+                mock(GithubRepositoryPort.class),
+                mock(UserRepository.class),
+                mock(AuthCommandService.class),
+                projectRepository,
+                deploymentFacade,
+                mock(InputWaitStore.class),
+                new PreviewBranchPushService(dockerService),
+                mock(AuditRecorder.class)
+        );
+        when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(boundProject()));
+        DeployCommand expected =
+                new DeployCommand(DeployTargetType.LATEST, null, "task123", FrontendHostingType.S3);
+        when(deploymentFacade.deploy(eq(1L), eq(11L), eq(expected))).thenReturn(new DeployResult(
+                51L, 11L, "LATEST", null, "PENDING", null, LocalDateTime.now(), java.util.List.of()));
+
+        CodeAgentService.CodeResult result = service.execute(
+                new AgentStep(AgentType.DEPLOY, Map.of("hostingType", "S3")),
+                1L,
+                "task123",
+                11L
+        );
+
+        verify(deploymentFacade).deploy(1L, 11L, expected);
+        assertThat(result.summary()).contains("S3(CloudFront) 배포 요청");
+    }
+
+    /**
+     * 사용자가 지목한 배포 위치를 못 읽었을 때 조용히 기본값으로 떨어뜨리면, 배포는 성공했다고
+     * 나오는데 사용자가 기대한 곳에는 아무것도 없다. 그 어긋남은 잘못된 배포보다 찾기 어렵다.
+     */
+    @Test
+    void failsRatherThanSilentlyFallingBackWhenTheHostingTargetIsUnreadable() {
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        DeploymentFacade deploymentFacade = mock(DeploymentFacade.class);
+        DeployAgentService service = new DeployAgentService(
+                dockerService,
+                previewSessionService,
+                mock(GithubRepositoryPort.class),
+                mock(UserRepository.class),
+                mock(AuthCommandService.class),
+                projectRepository,
+                deploymentFacade,
+                mock(InputWaitStore.class),
+                new PreviewBranchPushService(dockerService),
+                mock(AuditRecorder.class)
+        );
+        when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(boundProject()));
+
+        assertThatThrownBy(() -> service.execute(
+                new AgentStep(AgentType.DEPLOY, Map.of("hostingType", "S3_BUCKET")),
+                1L,
+                "task123",
+                11L
+        ))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("알 수 없는 배포 위치입니다: S3_BUCKET");
+
+        verify(deploymentFacade, never()).deploy(any(), any(), any());
     }
 
     private Project notBoundProject() {

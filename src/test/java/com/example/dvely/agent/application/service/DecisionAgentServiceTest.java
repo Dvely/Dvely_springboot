@@ -16,7 +16,9 @@ import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.llm.LlmRouter;
 import com.example.dvely.common.exception.LlmProviderException;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -47,12 +49,16 @@ class DecisionAgentServiceTest {
     @Mock
     private LlmPort llmPort;
 
+    @Mock
+    private DeployTargetContextResolver deployTargetContextResolver;
+
     private DecisionAgentService service;
 
     @BeforeEach
     void setUp() {
-        service = new DecisionAgentService(llmRouter);
+        service = new DecisionAgentService(llmRouter, deployTargetContextResolver);
         when(llmRouter.route(AiProvider.GLM)).thenReturn(llmPort);
+        when(deployTargetContextResolver.resolve(44L)).thenReturn(Optional.empty());
     }
 
     private AgentPlan decide() {
@@ -196,5 +202,54 @@ class DecisionAgentServiceTest {
 
         assertThat(plan.steps()).extracting(AgentStep::agentType).containsExactly(AgentType.CLARIFY);
         assertThat(plan.steps().getFirst().parameters().get("clarification")).contains("SINGLE_SELECT");
+    }
+
+    /**
+     * 배포 위치를 물어보려면 모델이 먼저 "고를 수 있는 곳이 어디인지" 를 알아야 한다. 클라우드 연결이
+     * 없으면 S3·EC2 는 고를 수 없고, 그런데도 선택지로 내밀면 사용자가 고른 뒤 배포에서 거부당한다.
+     */
+    @Test
+    void 프로젝트의_배포_위치_사실을_프롬프트에_실어_보낸다() {
+        when(deployTargetContextResolver.resolve(44L)).thenReturn(Optional.of(
+                new DeployTargetContextResolver.DeployTargetContext(
+                        FrontendHostingType.GITHUB_PAGES, false, false)));
+        answers(VALID_PLAN);
+
+        decide();
+
+        ArgumentCaptor<List<LlmMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(llmPort).complete(any(), captor.capture(), any());
+        assertThat(captor.getValue().getLast().content())
+                .contains("current=GITHUB_PAGES")
+                .contains("everDeployed=false")
+                .contains("availableTargets=GITHUB_PAGES")
+                .contains("no cloud connection selected");
+    }
+
+    @Test
+    void 배포_위치를_모르면_아무_줄도_붙이지_않는다() {
+        answers(VALID_PLAN);
+
+        decide();
+
+        ArgumentCaptor<List<LlmMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(llmPort).complete(any(), captor.capture(), any());
+        assertThat(captor.getValue()).noneMatch(m -> m.content().contains("Frontend hosting context"));
+    }
+
+    @Test
+    void 결정이_고른_배포_위치는_스텝_파라미터로_넘어간다() {
+        answers("""
+                {
+                  "steps": [ { "agentType": "DEPLOY",
+                               "parameters": { "instruction": "배포", "version": "",
+                                               "repoName": "todo", "hostingType": "S3" } } ],
+                  "reasoning": "사용자가 S3 를 지목했다"
+                }
+                """);
+
+        AgentPlan plan = decide();
+
+        assertThat(plan.steps().getFirst().parameters()).containsEntry("hostingType", "S3");
     }
 }
