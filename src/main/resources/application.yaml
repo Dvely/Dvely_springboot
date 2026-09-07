@@ -17,6 +17,21 @@ spring:
     baseline-version: 5
 
   jpa:
+    # SSE 진행 스트림이 커넥션을 5분씩 쥐고 있었다. OSIV 는 EntityManager(따라서 JDBC 커넥션)를
+    # 요청이 끝날 때까지 붙들어 두는데, 일반 REST 요청은 수십 ms 라 티가 안 나지만 SSE 요청의
+    # 수명은 스트림 수명(STREAM_TIMEOUT_MS 5분)이다. 스트림이 여러 개 열리면 그만큼 커넥션이
+    # 묶여 풀이 마른다.
+    #
+    # 2026-09-08 dev 실측: 01:52 부터 22분간 "Connection is not available (total=10, active=10,
+    # idle=0)" 이 이어지고 재기동으로만 풀렸다. 그 사이 auth/refresh·approvals 가 500 을 냈고
+    # 스케줄 워커도 전부 실패했다 — DB 커넥션이 필요한 모든 것이 함께 죽는다. #312 로 넣은 누수
+    # 탐지가 07:09 에 범인을 이름으로 찍었다:
+    #   Connection leak detection triggered ... at AgentEventStreamService.open(...:31)
+    #
+    # 끄는 것이 안전한 이유: 이 프로젝트는 JPA 연관관계를 하나도 쓰지 않고(@ManyToOne/@OneToMany
+    # 등 0건), 엔티티는 전부 toDomain() 으로 도메인 객체에 옮겨 담아 나간다. 트랜잭션 밖에서
+    # 지연 로딩될 대상 자체가 없다.
+    open-in-view: false
     database: mysql # 사용할 데이터베이스 유형 지정 (MySQL)
     database-platform: org.hibernate.dialect.MySQLDialect # Hibernate에서 사용할 MySQL 방언(dialect) 설정
     show-sql: true # 실행된 SQL 쿼리를 콘솔에 출력할지 여부 설정
