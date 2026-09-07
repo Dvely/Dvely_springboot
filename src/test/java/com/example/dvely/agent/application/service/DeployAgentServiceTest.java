@@ -56,6 +56,8 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+        // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
+        lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -148,6 +150,8 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+        // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
+        lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -203,6 +207,8 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+        // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
+        lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -249,6 +255,8 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+        // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
+        lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -295,6 +303,8 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+        // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
+        lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -342,6 +352,8 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+        // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
+        lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -384,6 +396,8 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+        // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
+        lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);
@@ -420,6 +434,8 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+        // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
+        lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         GithubRepositoryPort githubRepositoryPort = mock(GithubRepositoryPort.class);
         UserRepository userRepository = mock(UserRepository.class);

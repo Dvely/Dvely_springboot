@@ -32,6 +32,8 @@ class PreviewBranchPushServiceTest {
         // .git 이 없는 상태 → init 경로를 탄다.
         lenient().when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
         lenient().when(dockerService.exec(eq(CONTAINER_ID), contains("/.git ]"))).thenReturn("no");
+        // 작업물은 /workspace/app 에 있다(정상 상태). 없는 경우는 아래 전용 테스트가 다룬다.
+        lenient().when(dockerService.exec(eq(CONTAINER_ID), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         lenient().when(dockerService.execWithExitCode(eq(CONTAINER_ID), anyString()))
                 .thenReturn(new ExecResult(0, ""));
     }
@@ -120,5 +122,28 @@ class PreviewBranchPushServiceTest {
 
     private void push() {
         service.push(CONTAINER_ID, TOKEN, "octo", "octo/app", true, "task-1");
+    }
+
+    /**
+     * 작업물이 /workspace/app 이 아니면, 첫 cd 가 죽으며 "git init 실패"로 보고되던 것을 원인
+     * 그대로 말해야 한다. 2026-09-07 dev(project 45)에서 프레임워크 없는 vanilla 요청이 이 상태를
+     * 만들었다 — app 디렉터리를 만들어 주는 것이 스캐폴더뿐이라, 스캐폴더가 안 돌면 코드가
+     * /workspace 루트에 쌓인다. 프리뷰는 index.html 폴백이 있어 멀쩡히 떠서 여기 와서야 드러났다.
+     */
+    @Test
+    void 작업물이_appDir_밖에_있으면_원인을_말하고_멈춘다() {
+        when(dockerService.exec(eq(CONTAINER_ID), contains("[ -d /workspace/app ]"))).thenReturn("no");
+        when(dockerService.exec(eq(CONTAINER_ID), contains("ls -A /workspace")))
+                .thenReturn("index.html\napp.js\nstyles.css");
+
+        assertThatThrownBy(() -> service.push(CONTAINER_ID, TOKEN, "octo", "octo/repo", true, "task-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("/workspace/app 에 없어")
+                .hasMessageContaining("index.html");
+
+        // 짐작해서 /workspace 를 올리지 않는다 — 사용자의 저장소에 잘못된 트리가 올라가면
+        // 되돌리기가 훨씬 비싸다.
+        verify(dockerService, never()).execWithExitCode(eq(CONTAINER_ID), contains("git init"));
+        verify(dockerService, never()).execWithExitCode(eq(CONTAINER_ID), contains("git push"));
     }
 }

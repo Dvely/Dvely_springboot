@@ -75,11 +75,18 @@ public class CodeAgentService {
 
             ## Workflow — New Project
             1. Check /workspace first (execute_command: ls /workspace).
-            2. Scaffold only if no project exists yet:
+            2. The project MUST live in /workspace/app. Everything after you — the git push to the
+               preview branch, the change diff, the deploy — looks in /workspace/app and nowhere
+               else, so files written to /workspace itself are silently left behind.
+               Scaffold only if no project exists yet:
                - Vite + React (preferred): npm create vite@latest app -- --template react
                - CRA:                      npx create-react-app app
                - Next.js:                  npx create-next-app@latest app --no-git
                - Vue:                      npm create vue@latest app
+               - Plain HTML/CSS/JS, when the request asks for no framework and no build step:
+                 do NOT run a scaffolder. Run `mkdir -p /workspace/app` and write index.html and
+                 its assets there yourself. This is the one case with no scaffolder to create the
+                 directory for you, so you must create it.
             3. !! IMPLEMENT THE REQUESTED FEATURE — THIS IS MANDATORY !!
                - Read the scaffolded source files first (read_file src/App.jsx etc.).
                - Rewrite or create ALL necessary source files to implement the feature.
@@ -87,6 +94,8 @@ public class CodeAgentService {
             4. Install any additional dependencies if needed.
             5. Build ONLY after implementation is complete:
                cd /workspace/app && npm run build
+               Skip this step for a plain HTML/CSS/JS project — it has no build step and no
+               package.json, and the preview serves /workspace/app directly.
 
             ## Workflow — Modifying Existing Project
             1. ls /workspace to find the project directory.
