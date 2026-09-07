@@ -86,5 +86,6 @@ ls src/main/resources/db/migration | sort -V | tail -1
 
 - `FRONTEND_API_GUIDE.md` — FE용 엔드포인트 카탈로그·플로우
 - `byok-coding-agent-design.md` — BYOK 코딩 에이전트(실측 기록 포함)
+- `qeploy-mcp-cli-design.md` — 에이전트 연동(MCP 서버·CLI). BYOK 와 호출 방향이 반대다
 - `multi-stack-deploy-design.md` · `backend-domain-binding-design.md` — 배포·도메인 설계
 - `aws-byoc-permissions.md` — 사용자 AWS 계정에 필요한 IAM
