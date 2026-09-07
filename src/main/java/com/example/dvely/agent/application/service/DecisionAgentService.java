@@ -8,12 +8,17 @@ import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.llm.LlmRouter;
+import com.example.dvely.common.exception.LlmProviderException;
+import com.example.dvely.common.exception.LlmProviderException.Reason;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -24,6 +29,9 @@ public class DecisionAgentService {
 
     private final LlmRouter    llmRouter;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /** 교정 프롬프트에 되돌려 보여줄 직전 응답의 상한. 어디가 틀렸는지 보는 데는 앞부분이면 된다. */
+    private static final int MAX_REPAIR_ECHO_CHARS = 2000;
 
     private static final String SYSTEM_PROMPT = """
             You are a decision-making agent for Qeploy, an automated web project deployment platform.
@@ -238,67 +246,243 @@ public class DecisionAgentService {
                             + "Do not scaffold a new project.]"
             ));
         }
-        String raw = llmRouter.route(provider).complete(SYSTEM_PROMPT, messages, modelOptions);
-        log.info("의사결정 완료: provider={}, model={}, projectId={}, raw={}",
-                provider, modelOptions.model(), projectId, raw);
-        return parse(raw, provider, projectId, modelOptions);
-    }
-
-    @SuppressWarnings("unchecked")
-    private AgentPlan parse(String raw, AiProvider provider, Long projectId, AiModelOptions modelOptions) {
+        String raw = complete(provider, messages, modelOptions, projectId);
         try {
-            String json = extractJson(raw);
-            Map<String, Object> map = objectMapper.readValue(json, Map.class);
-
-            // 되묻기: 최상위 "clarification" 이 있으면 steps 대신 CLARIFY 스텝 하나로 만든다. 구조화 질문을
-            // 스텝 파라미터에 JSON 문자열로 실어(AgentStep.parameters 는 Map<String,String>) 실행기가 파싱한다.
-            Object clarificationRaw = map.get("clarification");
-            if (clarificationRaw instanceof Map) {
-                ClarificationRequest clarification =
-                        objectMapper.convertValue(clarificationRaw, ClarificationRequest.class);
-                String clarificationJson = objectMapper.writeValueAsString(clarification);
-                String reasoning = (String) map.getOrDefault("reasoning", "");
-                log.info("의사결정: CLARIFY(되묻기) inputType={} reasoning={}",
-                        clarification.inputType(), reasoning);
-                return new AgentPlan(
-                        List.of(new AgentStep(AgentType.CLARIFY, Map.of("clarification", clarificationJson))),
-                        reasoning, provider, projectId, modelOptions);
-            }
-
-            List<Map<String, Object>> stepsRaw =
-                    (List<Map<String, Object>>) map.getOrDefault("steps", List.of());
-
-            List<AgentStep> steps = stepsRaw.stream()
-                    .map(s -> {
-                        AgentType type = AgentType.valueOf(
-                                ((String) s.getOrDefault("agentType", "CHAT")).toUpperCase()
-                        );
-                        Map<String, String> params =
-                                (Map<String, String>) s.getOrDefault("parameters", Map.of());
-                        return new AgentStep(type, params);
-                    })
-                    .toList();
-
-            String reasoning = (String) map.getOrDefault("reasoning", "");
-            log.info("의사결정 결과: steps={}, reasoning={}", steps.stream().map(AgentStep::agentType).toList(), reasoning);
-            return new AgentPlan(steps, reasoning, provider, projectId, modelOptions);
-
-        } catch (Exception e) {
-            log.warn("AgentPlan 파싱 실패, CHAT 으로 폴백: raw={}", raw, e);
-            return new AgentPlan(
-                    List.of(new AgentStep(AgentType.CHAT, Map.of("instruction", raw))),
-                    "parsing failed",
-                    provider,
-                    projectId,
-                    modelOptions
-            );
+            return parse(raw, provider, projectId, modelOptions);
+        } catch (RuntimeException failure) {
+            return retryOnce(messages, raw, failure, provider, projectId, modelOptions);
         }
     }
 
+    private String complete(AiProvider provider,
+                            List<LlmMessage> messages,
+                            AiModelOptions modelOptions,
+                            Long projectId) {
+        String raw = llmRouter.route(provider).complete(SYSTEM_PROMPT, messages, modelOptions);
+        log.info("의사결정 완료: provider={}, model={}, projectId={}, raw={}",
+                provider, modelOptions.model(), projectId, raw);
+        return raw;
+    }
+
+    /**
+     * 형식만 어긋난 응답에 한 번 더 기회를 준다. 모델이 요청은 제대로 읽어놓고 따옴표 하나를 잘못
+     * 찍는 일이 실제로 있었다 — 2026-09-07 dev 에서 {@code "reasoning ""} 하나 때문에 제대로 세워진
+     * CODE 계획이 통째로 버려졌다. 그 한 글자 때문에 사용자의 요청을 버리는 것은 아깝고, 실패 사유를
+     * 그대로 돌려주면 모델은 무엇을 고쳐야 하는지 알고 다시 쓴다.
+     *
+     * <p>재시도까지 실패하면 <b>던진다.</b> 예전에는 여기서 {@code CHAT} 스텝으로 폴백하면서 모델이
+     * 쓴 계획 원문을 {@code instruction} 에 실었는데, 그러면 그 JSON 이 사용자의 질문으로 둔갑해
+     * 채팅 에이전트가 그것을 해설하는 답을 내놓았다(실측: "보내주신 내용은 코드 생성(CODE) 파이프라인
+     * 실행 계획처럼 보입니다"). CHAT 은 승인이 걸리지 않으므로 태스크는 성공으로 끝나고, 사용자가
+     * 요청한 작업은 경고 하나 없이 증발했다. 실패를 실패로 닫아야 호출부가 태스크를 FAILED 로
+     * 전이시키고(SSE 로 FE 가 즉시 인지) 사용자도 다시 시도할 수 있다.</p>
+     */
+    private AgentPlan retryOnce(List<LlmMessage> messages,
+                                String failedRaw,
+                                RuntimeException failure,
+                                AiProvider provider,
+                                Long projectId,
+                                AiModelOptions modelOptions) {
+        log.warn("의사결정 응답 파싱 실패 — 형식 교정을 요청해 1회 재시도합니다. provider={} projectId={} raw={}",
+                provider, projectId, failedRaw, failure);
+
+        List<LlmMessage> repairMessages = new ArrayList<>(messages);
+        repairMessages.add(new LlmMessage("user", repairPrompt(failedRaw, failure)));
+
+        String raw = complete(provider, repairMessages, modelOptions, projectId);
+        try {
+            AgentPlan plan = parse(raw, provider, projectId, modelOptions);
+            log.info("의사결정 응답 재시도 성공: provider={} projectId={}", provider, projectId);
+            return plan;
+        } catch (RuntimeException retryFailure) {
+            retryFailure.addSuppressed(failure);
+            log.warn("의사결정 응답 재시도도 파싱 실패 — 요청을 실패로 닫습니다. provider={} projectId={} raw={}",
+                    provider, projectId, raw, retryFailure);
+            throw new LlmProviderException(provider.name(), Reason.MALFORMED_RESPONSE, retryFailure);
+        }
+    }
+
+    /**
+     * 교정 요청. 스키마는 이미 시스템 프롬프트에 있으므로 되풀이하지 않고 <b>무엇이 어긋났는지</b>만
+     * 덧붙인다 — 모델에 필요한 새 정보는 실패 사유뿐이다. 직전 응답도 함께 보여주되 길면 자른다
+     * (계획 JSON 은 길 수 있고, 어디가 틀렸는지 보는 데는 앞부분이면 충분하다).
+     */
+    private String repairPrompt(String failedRaw, RuntimeException failure) {
+        String echo = failedRaw == null || failedRaw.length() <= MAX_REPAIR_ECHO_CHARS
+                ? String.valueOf(failedRaw)
+                : failedRaw.substring(0, MAX_REPAIR_ECHO_CHARS) + "…(truncated)";
+        return """
+                [Your previous answer could not be used: %s
+                Answer again with ONE JSON object only, in the schema given above — no prose before
+                or after it, no markdown fences, no trailing commentary. Every key must be quoted
+                exactly once and followed by a colon, and every "agentType" must be one of the types
+                listed above, spelled exactly.
+
+                Your previous answer was:
+                %s]""".formatted(failure.getMessage(), echo);
+    }
+
+    /**
+     * 응답을 계획으로 읽는다. 어긋나면 {@link RuntimeException} 을 던져 호출부의 교정 재시도로
+     * 넘긴다 — 여기서 삼키면 실패가 성공처럼 보인다.
+     */
+    private AgentPlan parse(String raw, AiProvider provider, Long projectId, AiModelOptions modelOptions) {
+        String json = extractJson(raw);
+        if (json == null) {
+            throw new IllegalArgumentException(
+                    "the answer contains no complete JSON object (no opening brace, or it is never closed)");
+        }
+
+        Map<String, Object> map;
+        try {
+            map = objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+        } catch (JsonProcessingException e) {
+            // getOriginalMessage: 위치 정보("at [Source: REDACTED…]")를 뺀 사유만 — 이 문구가 교정
+            // 프롬프트로 모델에 그대로 전달되므로 잡음이 적을수록 좋다.
+            throw new IllegalArgumentException(e.getOriginalMessage(), e);
+        }
+
+        // 되묻기: 최상위 "clarification" 이 있으면 steps 대신 CLARIFY 스텝 하나로 만든다. 구조화 질문을
+        // 스텝 파라미터에 JSON 문자열로 실어(AgentStep.parameters 는 Map<String,String>) 실행기가 파싱한다.
+        Object clarificationRaw = map.get("clarification");
+        if (clarificationRaw instanceof Map) {
+            ClarificationRequest clarification =
+                    objectMapper.convertValue(clarificationRaw, ClarificationRequest.class);
+            String clarificationJson;
+            try {
+                clarificationJson = objectMapper.writeValueAsString(clarification);
+            } catch (JsonProcessingException e) {
+                throw new IllegalStateException("CLARIFY 질문을 직렬화하지 못했습니다", e);
+            }
+            String reasoning = readReasoning(map);
+            log.info("의사결정: CLARIFY(되묻기) inputType={} reasoning={}",
+                    clarification.inputType(), reasoning);
+            return new AgentPlan(
+                    List.of(new AgentStep(AgentType.CLARIFY, Map.of("clarification", clarificationJson))),
+                    reasoning, provider, projectId, modelOptions);
+        }
+
+        List<AgentStep> steps = readSteps(map.get("steps"));
+        String reasoning = readReasoning(map);
+        log.info("의사결정 결과: steps={}, reasoning={}", steps.stream().map(AgentStep::agentType).toList(), reasoning);
+        return new AgentPlan(steps, reasoning, provider, projectId, modelOptions);
+    }
+
+    /**
+     * 스텝 목록. 형태가 어긋나면 던져 교정 재시도로 넘긴다.
+     *
+     * <p>특히 <b>비어 있는 목록과 알 수 없는 {@code agentType} 을 통과시키지 않는다.</b> 예전에는
+     * "steps" 키가 없으면 빈 목록으로 떨어져 아무것도 하지 않는 계획이 성공으로 실행됐고, 모르는
+     * 유형은 계획 전체를 파싱 실패로 만들어 CHAT 폴백으로 갔다. 둘 다 사용자에게는 "요청했는데
+     * 아무 일도 안 일어난다"로 똑같이 보인다. 모델에 무엇이 틀렸는지 알려주고 다시 쓰게 하는 편이
+     * 낫다.</p>
+     */
+    private List<AgentStep> readSteps(Object stepsRaw) {
+        if (stepsRaw == null) {
+            throw new IllegalArgumentException(
+                    "the object has neither a \"steps\" array nor a \"clarification\" object");
+        }
+        if (!(stepsRaw instanceof List<?> rawList)) {
+            throw new IllegalArgumentException("\"steps\" must be an array");
+        }
+        if (rawList.isEmpty()) {
+            throw new IllegalArgumentException("\"steps\" is empty — every request needs at least one step");
+        }
+
+        List<AgentStep> steps = new ArrayList<>();
+        for (Object element : rawList) {
+            if (!(element instanceof Map<?, ?> stepMap)) {
+                throw new IllegalArgumentException("every entry of \"steps\" must be an object");
+            }
+            steps.add(new AgentStep(
+                    readAgentType(stepMap.get("agentType")),
+                    readParameters(stepMap.get("parameters"))));
+        }
+        return steps;
+    }
+
+    private AgentType readAgentType(Object raw) {
+        String name = raw == null ? AgentType.CHAT.name() : String.valueOf(raw).trim().toUpperCase();
+        try {
+            return AgentType.valueOf(name);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("unknown \"agentType\": " + name, e);
+        }
+    }
+
+    /**
+     * 파라미터는 문자열 맵이다({@link AgentStep}). 모델이 값에 숫자나 불리언을 넣는 일이 있는데,
+     * 예전에는 {@code Map<String,String>} 무검사 캐스팅뿐이라 제네릭 소거로 여기는 통과하고 한참
+     * 뒤 스텝을 읽는 곳에서 ClassCastException 으로 터졌다. 스칼라는 여기서 문자열로 바꾸고,
+     * 문자열이 될 수 없는 값(객체·배열)은 던져 계획 단계에서 끝낸다.
+     */
+    private Map<String, String> readParameters(Object raw) {
+        if (raw == null) {
+            return Map.of();
+        }
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            throw new IllegalArgumentException("\"parameters\" must be an object");
+        }
+        Map<String, String> parameters = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+            Object value = entry.getValue();
+            if (value instanceof Map || value instanceof List) {
+                throw new IllegalArgumentException(
+                        "\"parameters." + entry.getKey() + "\" must be a string, not an object or array");
+            }
+            parameters.put(String.valueOf(entry.getKey()), value == null ? "" : String.valueOf(value));
+        }
+        return parameters;
+    }
+
+    private String readReasoning(Map<String, Object> map) {
+        Object reasoning = map.get("reasoning");
+        return reasoning == null ? "" : String.valueOf(reasoning);
+    }
+
+    /**
+     * raw 에서 첫 번째로 <b>완결된</b> JSON 객체만 잘라낸다.
+     *
+     * <p>마지막 {@code '}'} 까지 통째로 자르던 예전 방식은, JSON 뒤에 모델이 덧붙인 산문에 중괄호가
+     * 하나라도 있으면 그것까지 삼켜 파싱을 깨뜨렸다(dev 실측 9건이 전부 이 모양이었다 — "작업 계획을
+     * 만들었습니다" 류의 인사말이 JSON 과 함께 왔다). 그래서 문자열 리터럴과 이스케이프를 인식하며
+     * 중괄호 깊이를 세고, 0 으로 돌아오는 지점에서 끊는다.</p>
+     *
+     * <p>여는 중괄호가 없거나(모델이 산문만 냈다) 끝내 닫히지 않으면(출력이 잘렸다) {@code null} 을
+     * 돌려준다 — 호출부가 교정 재시도로 넘긴다.</p>
+     */
     private String extractJson(String raw) {
+        if (raw == null) {
+            return null;
+        }
         int start = raw.indexOf('{');
-        int end   = raw.lastIndexOf('}');
-        if (start == -1 || end == -1 || start > end) return raw;
-        return raw.substring(start, end + 1);
+        if (start == -1) {
+            return null;
+        }
+
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = start; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}' && --depth == 0) {
+                return raw.substring(start, i + 1);
+            }
+        }
+        return null;
     }
 }
