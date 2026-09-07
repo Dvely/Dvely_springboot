@@ -8,15 +8,23 @@ import com.example.dvely.cloudconnection.domain.value.AwsCredentialType;
 import com.example.dvely.cloudconnection.domain.value.CloudProvider;
 import com.example.dvely.cloudconnection.infrastructure.config.CloudConnectionGuideProperties;
 import com.example.dvely.cloudconnection.infrastructure.external.AwsPolicyDocumentLoader;
+import jakarta.annotation.PostConstruct;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 /**
  * 클라우드 연결 가이드를 조립한다. 추천 정책은 코드가 실제 호출하는 AWS 액션에서 도출한 리소스
  * 파일을 단일 소스로 서빙하고(하드코딩 금지 — BE 가 액션을 늘리면 정책도 같이 바뀌게), 필드·단계·주의는
  * 인증 방식별로 구성한다. 지금은 AWS 만 제공한다.
+ *
+ * <p>역할 위임(ROLE_ARN)은 컨트롤 플레인이 사용자 역할을 STS AssumeRole 할 <b>소스 신원</b>을 가져야
+ * 동작한다({@code AwsCredentialsResolver} 의 DefaultCredentialsProvider). 그 신원의 ARN 이
+ * {@code platform-principal-arn} 으로 설정돼 있지 않으면 위임이 실제로 성립하지 않으므로, 가이드는
+ * ROLE_ARN 을 제시하지 않고 <b>실동작하는 ACCESS_KEY 만</b> 안내한다. ARN 이 설정되면 자동으로 다시 열린다.</p>
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class CloudConnectionRequirementsService {
@@ -27,17 +35,33 @@ public class CloudConnectionRequirementsService {
     private final AwsPolicyDocumentLoader policyDocumentLoader;
     private final CloudConnectionGuideProperties guideProperties;
 
+    @PostConstruct
+    void warnIfRoleDelegationNotWired() {
+        if (!guideProperties.hasPlatformPrincipalArn()) {
+            log.warn("클라우드 연결 가이드: QEPLOY_CLOUD_CONNECTION_PLATFORM_PRINCIPAL_ARN 미설정 — 역할 위임"
+                    + "(ROLE_ARN)은 AssumeRole 소스 신원이 없어 동작하지 않으므로 가이드는 액세스 키만 안내합니다. "
+                    + "역할 위임을 켜려면 컨트롤 플레인에 sts:AssumeRole 신원을 부여하고 그 ARN 을 설정하세요.");
+        }
+    }
+
     public CloudConnectionRequirementsResult getRequirements(String provider, String credentialType) {
         CloudProvider cloudProvider = CloudProvider.from(provider);
         if (cloudProvider != CloudProvider.AWS) {
             throw new IllegalArgumentException("현재 AWS 연결 가이드만 제공합니다. provider=" + provider);
+        }
+        // 역할 위임은 컨트롤 플레인에 AssumeRole 소스 신원(platform-principal-arn)이 있어야 실제로 동작한다.
+        // 없으면 ROLE_ARN 을 아예 제시하지 않고 실동작하는 ACCESS_KEY 만 안내한다 — 사용자를 깨진 흐름으로
+        // 보내지 않기 위해서다. ARN 이 설정되면 이 분기는 통과되어 ROLE_ARN 이 다시 열린다.
+        boolean roleArnAvailable = guideProperties.hasPlatformPrincipalArn();
+        if (!roleArnAvailable) {
+            return accessKeyGuide(false);
         }
         // 가이드는 방식 미지정이면 권장(ROLE_ARN)을 보여준다. AwsCredentialType.from 은 하위호환상 빈 값을
         // ACCESS_KEY 로 떨구므로 여기서 명시적으로 나눈다.
         AwsCredentialType type = (credentialType == null || credentialType.isBlank())
                 ? AwsCredentialType.ROLE_ARN
                 : AwsCredentialType.from(credentialType);
-        return type == AwsCredentialType.ROLE_ARN ? roleArnGuide() : accessKeyGuide();
+        return type == AwsCredentialType.ROLE_ARN ? roleArnGuide() : accessKeyGuide(true);
     }
 
     private CloudConnectionRequirementsResult roleArnGuide() {
@@ -45,7 +69,7 @@ public class CloudConnectionRequirementsService {
                 CloudProvider.AWS.name(),
                 AwsCredentialType.ROLE_ARN.name(),
                 AwsCredentialType.ROLE_ARN.name(),
-                credentialOptions(),
+                credentialOptions(true),
                 List.of(
                         field("displayName", "연결 이름", "이 연결을 화면에서 구분할 이름입니다.",
                                 "자유롭게 입력", "AWS 서울 계정", true, false),
@@ -75,16 +99,20 @@ public class CloudConnectionRequirementsService {
                 ROLE_NAME,
                 policyDocumentLoader.loadDeployPolicy(),
                 policyDocumentLoader.loadTrustPolicy(guideProperties.platformPrincipalArnOrPlaceholder()),
-                notes(true)
+                notes(true, true)
         );
     }
 
-    private CloudConnectionRequirementsResult accessKeyGuide() {
+    private CloudConnectionRequirementsResult accessKeyGuide(boolean roleArnAvailable) {
+        // 역할 위임이 준비된 환경에서만 권장을 ROLE_ARN 으로 둔다. 준비 안 됐으면 실동작하는 ACCESS_KEY 가 권장.
+        String recommended = roleArnAvailable
+                ? AwsCredentialType.ROLE_ARN.name()
+                : AwsCredentialType.ACCESS_KEY.name();
         return new CloudConnectionRequirementsResult(
                 CloudProvider.AWS.name(),
                 AwsCredentialType.ACCESS_KEY.name(),
-                AwsCredentialType.ROLE_ARN.name(),
-                credentialOptions(),
+                recommended,
+                credentialOptions(roleArnAvailable),
                 List.of(
                         field("displayName", "연결 이름", "이 연결을 화면에서 구분할 이름입니다.",
                                 "자유롭게 입력", "AWS 서울 계정", true, false),
@@ -115,26 +143,36 @@ public class CloudConnectionRequirementsService {
                 ROLE_NAME,
                 policyDocumentLoader.loadDeployPolicy(),
                 null,
-                notes(false)
+                notes(false, roleArnAvailable)
         );
     }
 
-    private List<CredentialOption> credentialOptions() {
+    /**
+     * 방식 선택지. 역할 위임이 준비된 환경에서만 ROLE_ARN 을 (권장으로) 제시한다. 준비 안 됐으면 실동작하는
+     * ACCESS_KEY 만 내보내 사용자가 안 되는 역할 위임을 고르지 못하게 한다(FE 는 선택지가 하나면 탭을 감춘다).
+     */
+    private List<CredentialOption> credentialOptions(boolean roleArnAvailable) {
+        CredentialOption accessKey = new CredentialOption(AwsCredentialType.ACCESS_KEY.name(), "액세스 키",
+                !roleArnAvailable,
+                "설정이 더 간단하지만 장기 키를 암호화해 저장합니다. 임시 자격(STS)을 쓸 수도 있습니다.");
+        if (!roleArnAvailable) {
+            return List.of(accessKey);
+        }
         return List.of(
                 new CredentialOption(AwsCredentialType.ROLE_ARN.name(), "역할 위임 (Role ARN)", true,
                         "장기 키를 Qeploy 에 저장하지 않습니다. 사용자가 만든 역할을 필요할 때만 위임받아 씁니다. 권장."),
-                new CredentialOption(AwsCredentialType.ACCESS_KEY.name(), "액세스 키", false,
-                        "설정이 더 간단하지만 장기 키를 암호화해 저장합니다. 임시 자격(STS)을 쓸 수도 있습니다.")
+                accessKey
         );
     }
 
-    private List<String> notes(boolean roleArn) {
-        String platformNote = roleArn
-                ? (guideProperties.hasPlatformPrincipalArn()
-                    ? "신뢰 정책의 Principal 은 이 역할을 위임받는 Qeploy 컨트롤 플레인의 identity 입니다 — 그대로 두세요."
-                    : "신뢰 정책의 Principal 이 아직 설정되지 않아 placeholder 로 표시됩니다. 운영 환경에서 실제 Qeploy "
-                            + "플랫폼 principal ARN 을 채워야 역할 위임이 동작합니다.")
-                : null;
+    private List<String> notes(boolean roleArnGuide, boolean roleArnAvailable) {
+        String platformNote = roleArnGuide
+                // roleArnGuide 는 위임이 준비된 환경에서만 도달하므로 신뢰 정책 Principal 은 실제 값이다.
+                ? "신뢰 정책의 Principal 은 이 역할을 위임받는 Qeploy 컨트롤 플레인의 identity 입니다 — 그대로 두세요."
+                // ACCESS_KEY 가이드인데 역할 위임이 아직 준비 안 됐으면 그 사실을 알린다(왜 탭이 하나뿐인지).
+                : (roleArnAvailable ? null
+                    : "역할 위임(ROLE_ARN)은 이 환경에서 아직 준비되지 않아(컨트롤 플레인의 AssumeRole 소스 신원 "
+                            + "미구성) 액세스 키로 안내합니다. 준비되면 역할 위임이 자동으로 열립니다.");
         return java.util.stream.Stream.of(
                 "연결 검증은 자격 유효성(STS GetCallerIdentity)만 확인합니다. 위 권한 정책이 빠지면 연결은 "
                         + "성공해도 실제 배포에서 권한 부족으로 실패합니다 — 그래서 정책을 먼저 붙여야 합니다.",
