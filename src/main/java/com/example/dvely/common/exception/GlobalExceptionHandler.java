@@ -172,7 +172,7 @@ public class GlobalExceptionHandler {
         ErrorCode errorCode = switch (e.reason()) {
             case MISSING_API_KEY, AUTH_FAILED, QUOTA_EXCEEDED -> ErrorCode.AI_PROVIDER_UNAVAILABLE;
             case RATE_LIMITED -> ErrorCode.AI_PROVIDER_RATE_LIMITED;
-            case UPSTREAM_ERROR -> ErrorCode.AI_PROVIDER_ERROR;
+            case UPSTREAM_ERROR, MALFORMED_RESPONSE -> ErrorCode.AI_PROVIDER_ERROR;
         };
         // The provider's own response body is already logged by LlmProviderErrors; this line is
         // about which request was affected, so it stays short and carries no response content.
