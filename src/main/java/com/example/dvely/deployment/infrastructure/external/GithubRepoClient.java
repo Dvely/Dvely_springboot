@@ -304,6 +304,15 @@ public class GithubRepoClient implements GithubRepoPort {
                 fetchFileContent(userToken, parts[0], parts[1], "package.json")
         ).orElse("");
 
+        // package.json 이 아예 없으면 설치할 의존성도 실행할 빌드도 없다 — 리포지토리를 그대로
+        // 올리는 정적 사이트다. 이 분기가 없으면 아래 default 로 떨어져 Vite 프로젝트로 간주되고,
+        // 워크플로가 setup-node(cache: npm) 에서 "Dependencies lock file is not found" 로 죽는다
+        // (2026-09-08 dev 실측, dldnsgkr/static-todo-v2 — 프레임워크 없이 만든 todo 앱).
+        if (packageJson.isEmpty() && rootFiles.contains("index.html")) {
+            log.info("정적 사이트 감지(package.json 없음 · index.html 있음): repo={}", repoFullName);
+            return "static";
+        }
+
         // CRA: react-scripts 가 가장 명확한 지표
         if (packageJson.contains("\"react-scripts\"")) return "cra";
 

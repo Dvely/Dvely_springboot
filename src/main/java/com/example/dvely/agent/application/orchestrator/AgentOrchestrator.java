@@ -580,7 +580,17 @@ public class AgentOrchestrator {
      * marker is added on top of that, well within the summary column's 500-char limit).
      */
     private String summarize(AgentStep step) {
-        String instruction = step.parameters().getOrDefault("instruction", "").trim();
+        // userSummary 가 우선이다. instruction 은 하위 에이전트에게 주는 지시문이라 사람이 읽으라고
+        // 쓴 글이 아니다 — 언어도 모델 마음대로여서, 승인 카드에 영어 지시문이 그대로 나갔다
+        // (2026-09-07 dev 실측: "Deploy the existing single-page todo web application (projectId=44)
+        // to production. … Do not modify the code — build and deploy the current project as-is").
+        // 승인 카드는 사용자가 예/아니오를 누르는 자리라, 거기 있는 문장은 사용자를 위한 것이어야 한다.
+        String instruction = step.parameters().getOrDefault("userSummary", "").trim();
+        if (instruction.isEmpty()) {
+            // 모델이 userSummary 를 빠뜨리면 지시문으로 되돌아간다. 어색해도 구체적인 편이,
+            // "CODE 작업" 같은 뭉뚱그린 문구보다 승인 판단에 낫다.
+            instruction = step.parameters().getOrDefault("instruction", "").trim();
+        }
         if (instruction.isEmpty()) {
             instruction = step.agentType().name() + " 작업";
         }

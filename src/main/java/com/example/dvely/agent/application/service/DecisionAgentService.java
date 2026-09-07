@@ -43,6 +43,16 @@ public class DecisionAgentService {
             did not exist. Do NOT copy fragments verbatim; instead synthesize a clear, actionable
             directive from the full context of the user's message.
 
+            EVERY step must also carry a "userSummary": ONE short sentence, in the SAME LANGUAGE the
+            user wrote in, saying what this step will do. This is not a second copy of the instruction
+            — the instruction is written for an agent, this is written for the person who has to press
+            Approve, and it is the only text about this step they see on that card. So:
+            - plain product language: what they will get, not how it is built
+            - no file paths, no projectId, no internal identifiers, no agent-directed phrasing
+              ("Scaffold …", "Do not modify …")
+            - e.g. "할 일 추가·완료·삭제가 되는 한 페이지 앱을 만듭니다",
+                   "만든 앱을 GitHub Pages 에 배포합니다"
+
             ## Clarify FIRST when — and ONLY when — the request is genuinely ambiguous
 
             Before building, if the request leaves a decision that (a) you would otherwise have to GUESS
@@ -214,6 +224,7 @@ public class DecisionAgentService {
                   "agentType": "CODE",
                   "parameters": {
                     "instruction": "...",
+                    "userSummary": "할 일 추가·완료·삭제가 되는 한 페이지 앱을 만듭니다",
                     "targetFile": "..."
                   }
                 },
@@ -221,6 +232,7 @@ public class DecisionAgentService {
                   "agentType": "DEPLOY",
                   "parameters": {
                     "instruction": "...",
+                    "userSummary": "만든 앱을 GitHub Pages 에 배포합니다",
                     "version": "",
                     "repoName": "my-react-app"
                   }
