@@ -147,7 +147,8 @@ public class AgentController {
                 failure == null ? 0 : failure.maxAttempts(),
                 retryable,
                 pendingApprovalId,
-                taskStore.getClarification(taskId)
+                taskStore.getClarification(taskId),
+                taskStore.getAnsweredClarification(taskId)
         ));
     }
 
@@ -185,6 +186,9 @@ public class AgentController {
                         event.type(),
                         event.status(),
                         event.message(),
+                        event.stepIndex(),
+                        event.stepTotal(),
+                        event.agentType(),
                         event.createdAt()
                 ))
                 .toList());

@@ -89,6 +89,10 @@ public class AgentPlanExecutor {
                 }
                 AgentStep step = withSuggestedFix(plan.steps().get(i), taskId, userId);
                 log.info("--- Step [{}/{}] agentType={} ---", i + 1, plan.steps().size(), step.agentType());
+                taskStore.appendStepEvent(
+                        taskId, "STEP_STARTED", com.example.dvely.agent.application.dto.TaskStatus.RUNNING,
+                        stepProgressMessage(step.agentType(), i + 1, plan.steps().size()),
+                        i + 1, plan.steps().size(), step.agentType().name());
                 if (step.agentType() == AgentType.CLARIFY) {
                     // 답이 없으면 던져서 WAITING_INPUT, 있으면 재-decide 후 재큐한다 — 어느 쪽이든 이 실행은 종료.
                     handleClarify(step, plan, taskId, initialTask);
@@ -125,6 +129,10 @@ public class AgentPlanExecutor {
                         }
                     }
                 }
+                taskStore.appendStepEvent(
+                        taskId, "STEP_COMPLETED", com.example.dvely.agent.application.dto.TaskStatus.RUNNING,
+                        stepDoneMessage(step.agentType(), i + 1, plan.steps().size()),
+                        i + 1, plan.steps().size(), step.agentType().name());
                 taskStore.markStepCompleted(taskId, i + 1);
             }
             if (taskStore.isCancelled(taskId)) {
@@ -235,6 +243,42 @@ public class AgentPlanExecutor {
      * 새 플랜을 만들고, 플랜을 교체·재큐한다 — 워커가 새 플랜을 처음부터 실행한다. 답을 CODE 지시문에만 끼워
      * 넣지 않고 재-decide 하는 이유: 스택 선택은 RUNTIME_SETUP·CODE·BACKEND_DEPLOY 를 함께 바꿔야 일관되다.
      */
+    /**
+     * 진행 중 문구. 로그가 아니라 <b>사용자가 읽는 줄</b>이라, 내부 용어(컨테이너·워크스페이스·
+     * 브랜치) 대신 무엇이 되고 있는지를 말한다. 여러 단계짜리 계획이면 몇 번째인지도 붙인다 —
+     * "언제 끝나나" 를 가늠할 수 있는 유일한 단서다.
+     */
+    private String stepProgressMessage(AgentType type, int index, int total) {
+        return withProgress(switch (type) {
+            case CODE           -> "코드를 만들고 있습니다";
+            case DEPLOY         -> "배포하고 있습니다";
+            case DOMAIN_BIND    -> "도메인을 연결하고 있습니다";
+            case INFRA_OPERATE  -> "서버 작업을 진행하고 있습니다";
+            case RUNTIME_SETUP  -> "실행 환경을 준비하고 있습니다";
+            case BACKEND_DEPLOY -> "백엔드를 배포하고 있습니다";
+            case CHAT           -> "답변을 준비하고 있습니다";
+            case CLARIFY        -> "확인이 필요한 내용을 정리하고 있습니다";
+        }, index, total);
+    }
+
+    private String stepDoneMessage(AgentType type, int index, int total) {
+        return withProgress(switch (type) {
+            case CODE           -> "코드 작업을 마쳤습니다";
+            case DEPLOY         -> "배포 요청을 접수했습니다";
+            case DOMAIN_BIND    -> "도메인 연결을 마쳤습니다";
+            case INFRA_OPERATE  -> "서버 작업을 마쳤습니다";
+            case RUNTIME_SETUP  -> "실행 환경을 준비했습니다";
+            case BACKEND_DEPLOY -> "백엔드 배포 요청을 접수했습니다";
+            case CHAT           -> "답변을 마쳤습니다";
+            case CLARIFY        -> "확인 내용을 정리했습니다";
+        }, index, total);
+    }
+
+    /** 한 단계짜리 계획에 "(1/1)" 을 붙이면 군더더기다. */
+    private String withProgress(String text, int index, int total) {
+        return total <= 1 ? text : text + " (" + index + "/" + total + ")";
+    }
+
     private void handleClarify(AgentStep step, AgentPlan plan, String taskId, AgentTask task) {
         ClarificationRequest request = parseClarification(step);
         Optional<String> answer = inputWaitStore.consume(taskId);
