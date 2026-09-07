@@ -84,7 +84,48 @@ cd /var/www/dvely/backend && pm2 startOrRestart ecosystem.config.js --update-env
 
 `Permission denied` 는 "Docker 가 없다" 가 아니라 "이 절차가 아직 적용되지 않았다" 는 뜻이다.
 
-## 5. GitHub Secrets
+## 5. 로그 회전 (pm2-logrotate)
+
+**빠뜨리면 로그 한 파일이 디스크를 채운다.** pm2는 기본적으로 회전을 하지 않아 `~/.pm2/logs/dvely-backend-out.log`가 무한히 커진다. 실제로 dev에서 8/14부터 3주 반 만에 **6.6GB**까지 자라 디스크가 89%에 도달했다(2026-09-07 정리). 앱이 SQL을 전부 찍기 때문에 증가가 빠르다.
+
+증상이 늦게 드러나는 것이 문제다. 디스크가 찰 때까지는 아무 이상이 없고, 차는 순간 앱·MySQL·Docker(프리뷰 컨테이너)가 한꺼번에 실패한다. 그 전에도 로그를 뒤지는 비용이 계속 오른다 — 6GB짜리 파일은 `grep` 한 번에 몇 분이 걸려 `tail -c` 로 잘라 봐야 한다.
+
+```bash
+pm2 install pm2-logrotate
+pm2 set pm2-logrotate:max_size 100M          # 이 크기를 넘으면 회전
+pm2 set pm2-logrotate:retain 14              # 14개 보관 (압축 후 합계 수백 MB)
+pm2 set pm2-logrotate:compress true
+pm2 set pm2-logrotate:rotateInterval '0 0 * * *'   # 크기와 별개로 매일 0시에도 회전
+pm2 set pm2-logrotate:workerInterval 60      # 크기 확인 주기(초)
+pm2 save
+```
+
+확인:
+
+```bash
+pm2 conf pm2-logrotate | grep -E 'max_size|retain|compress'
+ls -la ~/.pm2/logs/          # 회전본은 dvely-backend-out__<날짜>.log.gz
+```
+
+**이미 거대해진 로그가 있다면 먼저 줄이고 설치할 것.** 회전은 복사를 거치므로, 남은 디스크보다 큰 파일을 회전시키려 하면 오히려 디스크를 채운다. 최근 분량만 남기고 잘라낸다 — pm2(Node)는 로그를 `O_APPEND`로 열어 두므로 `truncate` 후에도 오프셋 0부터 이어 쓴다(파일에 구멍이 생기지 않는다).
+
+```bash
+LOG=~/.pm2/logs/dvely-backend-out.log
+tail -c 300000000 "$LOG" > "$LOG.1" && truncate -s 0 "$LOG" && gzip "$LOG.1"
+```
+
+## 5.1 Docker 찌꺼기
+
+CODE 에이전트와 프리뷰가 이미지·빌드 캐시·볼륨을 남긴다. dev 기준 `/var`가 11GB였고 그중 대부분이 이것이었다.
+
+```bash
+docker system df                 # 무엇이 얼마나 회수 가능한지 먼저 본다
+docker builder prune -f          # 빌드 캐시만 — 안전하다(다음 빌드가 느려질 뿐)
+```
+
+`docker system prune -a --volumes`는 쓰지 말 것. **살아 있는 프리뷰 세션의 컨테이너·볼륨까지 지운다.** 볼륨을 지우려면 `preview_sessions`에서 만료를 확인한 뒤 개별로 지운다.
+
+## 6. GitHub Secrets
 
 | 이름 | 필수 | 설명 |
 |---|---|---|
