@@ -23,6 +23,7 @@ import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryNamePolicy;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
+import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewSessionService;
@@ -137,11 +138,13 @@ public class DeployAgentService {
         }
 
         // AgentPlanExecutor는 필요한 승인이 모두 끝난 뒤에만 이 서비스를 호출한다.
-        DeployResult result = deployWithSingleRetry(userId, project.getId(), taskId);
+        FrontendHostingType hostingType = resolveHostingType(step);
+        DeployResult result = deployWithSingleRetry(userId, project.getId(), taskId, hostingType);
 
+        FrontendHostingType deployedTo = hostingType != null ? hostingType : project.getFrontendHostingType();
         String summary = sourceChanged
-                ? buildApprovedChangeSummary(project.getSourceRepository(), taskId, result.deploymentId())
-                : buildSummary(project.getSourceRepository(), result.deploymentId());
+                ? buildApprovedChangeSummary(project.getSourceRepository(), taskId, result.deploymentId(), deployedTo)
+                : buildSummary(project.getSourceRepository(), result.deploymentId(), deployedTo);
         log.info("[DeployAgent] 배포 요청 저장 | deploymentId={}", result.deploymentId());
         return new CodeResult(null, summary);
     }
@@ -160,8 +163,11 @@ public class DeployAgentService {
      * at all). A second failure propagates to the existing Agent-task failure path, same as
      * {@link #bindAndSaveWithSingleRetry}.
      */
-    private DeployResult deployWithSingleRetry(Long userId, Long projectId, String taskId) {
-        DeployCommand command = new DeployCommand(DeployTargetType.LATEST, null, taskId);
+    private DeployResult deployWithSingleRetry(Long userId,
+                                               Long projectId,
+                                               String taskId,
+                                               FrontendHostingType hostingType) {
+        DeployCommand command = new DeployCommand(DeployTargetType.LATEST, null, taskId, hostingType);
         try {
             return deploymentFacade.deploy(userId, projectId, command);
         } catch (ObjectOptimisticLockingFailureException exception) {
@@ -318,22 +324,55 @@ public class DeployAgentService {
 
     // ── 유틸 ───────────────────────────────────────────────────────────────────
 
-    private String buildSummary(String repoFullName, Long deploymentId) {
+    private String buildSummary(String repoFullName, Long deploymentId, FrontendHostingType hostingType) {
         return String.format("""
-                GitHub Pages 배포 요청을 접수했습니다.
+                %s 배포 요청을 접수했습니다.
                 - 저장소: https://github.com/%s
                 - 배포 ID: %d
                 - worker가 버전 확정과 workflow 실행을 비동기로 진행합니다.
-                """, repoFullName, deploymentId);
+                """, describe(hostingType), repoFullName, deploymentId);
     }
 
-    private String buildApprovedChangeSummary(String repoFullName, String taskId, Long deploymentId) {
+    private String buildApprovedChangeSummary(String repoFullName,
+                                              String taskId,
+                                              Long deploymentId,
+                                              FrontendHostingType hostingType) {
         return String.format("""
-                승인된 변경 사항의 배포 요청을 접수했습니다.
+                승인된 변경 사항의 %s 배포 요청을 접수했습니다.
                 - 저장소: https://github.com/%s
                 - 요청 ID: %s
                 - 배포 ID: %d
                 - preview 브랜치 반영과 배포 workflow는 worker가 비동기로 진행합니다.
-                """, repoFullName, taskId, deploymentId);
+                """, describe(hostingType), repoFullName, taskId, deploymentId);
+    }
+
+    /**
+     * 배포 위치. 결정 에이전트가 정하지 못했으면 {@code null} 을 돌려 프로젝트의 현재 설정을 그대로
+     * 쓰게 한다({@link DeployCommand#frontendHostingType()} 의 계약).
+     *
+     * <p>모르는 값은 조용히 기본값으로 떨어뜨리지 않고 던진다. 사용자가 "S3 에 올려줘" 라고 했는데
+     * 오타 하나로 GitHub Pages 에 배포되면, 배포는 성공했다고 나오는데 사용자가 기대한 곳에는 아무것도
+     * 없다 — 그 조용한 어긋남이 잘못된 배포보다 찾기 어렵다.</p>
+     */
+    private FrontendHostingType resolveHostingType(AgentStep step) {
+        String raw = step.parameters().getOrDefault("hostingType", "").trim();
+        if (raw.isEmpty()) {
+            return null;
+        }
+        try {
+            return FrontendHostingType.valueOf(raw.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    "알 수 없는 배포 위치입니다: " + raw + " (가능한 값: GITHUB_PAGES, S3, EC2)", e);
+        }
+    }
+
+    /** 사용자에게 보이는 배포 위치 이름. */
+    private String describe(FrontendHostingType hostingType) {
+        return switch (hostingType) {
+            case GITHUB_PAGES -> "GitHub Pages";
+            case S3 -> "S3(CloudFront)";
+            case EC2 -> "EC2(nginx)";
+        };
     }
 }

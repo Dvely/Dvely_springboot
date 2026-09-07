@@ -276,7 +276,8 @@ public class AgentPlanExecutor {
     }
 
     private CodeResult handleDeploy(AgentStep step, Long userId, String taskId, Long projectId) {
-        log.info("[DEPLOY 에이전트] GitHub Pages 배포 시작 | userId={} projectId={}", userId, projectId);
+        log.info("[DEPLOY 에이전트] 배포 시작 | userId={} projectId={} hostingType={}",
+                userId, projectId, step.parameters().getOrDefault("hostingType", "(프로젝트 설정 유지)"));
         log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
         log.info("  repoName    : {}", step.parameters().getOrDefault("repoName", ""));
         return deployAgentService.execute(step, userId, taskId, projectId);
