@@ -2,7 +2,8 @@
 
 이 문서는 프론트엔드 개발자가 Swagger UI와 함께 참고하는 통합 작업 문서입니다. 컨트롤러·DTO·설계서(`.agent-team/04-architecture/`)의 실제 계약만을 근거로 작성했으며, 추측/날조된 필드나 동작은 없습니다. 필드 하나하나의 상세 스키마(타입, `nullable`, `example`)는 Swagger UI(`/swagger-ui/index.html`)가 항상 최신 소스이므로, 이 문서는 **"무엇을 언제 왜 호출하는가"**에 집중하고 세부 스키마는 Swagger로 위임합니다.
 
-- **컨트롤러 수**: 16개 · **공개 엔드포인트 수**: 94개 (Swagger 그룹 11개 + 프로젝트 그룹에 포함된 Approval/Change 하위 리소스)
+- **컨트롤러 수**: 21개 · **엔드포인트 매핑 수**: 105개 (2026-09-05 실측)
+- 아래 §4 카탈로그는 아직 전수가 아니다. `AuditLog` · `DatabaseProvisioning` · `DomainTls` · `PreviewRuntimeConfig` · `ServerProvisioning` 컨트롤러는 절이 없으므로, 그 영역은 Swagger UI 를 정본으로 본다.
 - **작성 기준 커밋**: main `eb0ec2d` (U0~U7 · I45 · Cost(#58) · CloudOps(#59) · 결과 승인 2단계(#56) · pendingApprovalId/retryable 재정의(#57) · retry TOCTOU 제거(#64) · 결과 게이트 이력 판정 보강(#62) 머지 완료)
 
 ---
@@ -238,7 +239,7 @@ Accept: text/event-stream
 
 ---
 
-## 4. 도메인별 엔드포인트 카탈로그 (전수 94개)
+## 4. 도메인별 엔드포인트 카탈로그 (§1 의 미수록 컨트롤러 참고)
 
 각 표의 "요청"·"응답" 열은 핵심 필드만 나열합니다. 전체 필드/타입/예시 값은 Swagger UI에서 확인하세요.
 
@@ -512,6 +513,31 @@ setIframeSrc(previewUrl);   // ← 반드시 이 응답의 previewUrl 을 사용
 | 메서드 | 경로 | 용도 |
 |---|---|---|
 | POST | `/api/v1/webhook/github` | GitHub App webhook 수신 전용(**FE에서 호출하지 않음**). `X-Hub-Signature-256` HMAC 서명 검증 후 push/pull_request/installation 이벤트 처리 |
+
+### 4.12 AiCredential — `com.example.dvely.aiaccount.presentation` (3)
+
+사용자 본인 AI API 키(BYOK) 관리. 등록한 키로 `CLAUDE_CODE` · `CODEX` 코딩 에이전트가 실행되고, 사용량은 사용자 계정으로 직접 청구된다.
+
+| 메서드 | 경로 | 용도 |
+|---|---|---|
+| GET | `/api/v1/ai-credentials` | 본인이 등록한 키 목록. 소유자는 토큰에서만 오므로 남의 키를 조회할 경로가 없다 |
+| PUT | `/api/v1/ai-credentials/{provider}` | 등록/교체. 벤더당 키 하나라 등록과 교체가 같은 동작이다 |
+| DELETE | `/api/v1/ai-credentials/{provider}` | 삭제. 미등록이면 404 |
+
+**`{provider}` 는 벤더만 받는다** — `ANTHROPIC` · `OPENAI` · `GLM`. `CLAUDE_CODE` 는 Anthropic 키를, `CODEX` 는 OpenAI 키를 쓰므로 실행 모드로는 등록할 수 없고 400 이 온다. 사용자는 벤더당 키를 한 번만 넣으면 된다.
+
+**평문 키는 어떤 응답에도 없다.** `maskedApiKey` 는 앞 6자만 남긴다(`sk-ant****`) — 어느 키를 넣었는지 알아보되 꼬리(실제 엔트로피)는 노출하지 않는다.
+
+```
+PUT /api/v1/ai-credentials/ANTHROPIC
+{ "apiKey": "sk-ant-api03-...", "label": "개인 계정" }
+  → 200 { "aiProviderCredentialId": 1, "provider": "ANTHROPIC",
+          "maskedApiKey": "sk-ant****", "label": "개인 계정", ... }
+```
+
+키를 등록하지 않은 채 코딩 에이전트를 요청하면 `400 AI_CREDENTIAL_NOT_REGISTERED` 가 온다. 서버가 운영자 키로 대신 채워주지 않는다(제공사 약관상 사용자를 대신한 결제·중개가 금지된다). FE 는 이 코드를 받으면 키 등록 화면으로 보내면 된다.
+
+키에 공백·제어문자가 있으면 400 이다. 컨테이너 환경변수로 그대로 주입되는 값이라, 개행이 섞여 붙여넣어진 키를 조용히 받지 않는다.
 
 ---
 

@@ -113,6 +113,15 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ErrorCode.GITHUB_APP_REPOSITORY_ACCESS_DENIED, e.getMessage()));
     }
 
+    // 400 - BYOK 코딩 에이전트인데 해당 벤더의 본인 API 키가 미등록
+    @ExceptionHandler(AiCredentialNotRegisteredException.class)
+    public ResponseEntity<ApiResponse<Void>> handleAiCredentialNotRegistered(
+            AiCredentialNotRegisteredException e) {
+        log.warn("AI credential not registered: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.error(ErrorCode.AI_CREDENTIAL_NOT_REGISTERED, e.getMessage()));
+    }
+
     // 404 - 리소스 없음
     @ExceptionHandler(NotFoundException.class)
     public ResponseEntity<ApiResponse<Void>> handleNotFound(NotFoundException e) {

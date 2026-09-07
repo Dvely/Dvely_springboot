@@ -1,0 +1,62 @@
+package com.example.dvely.agent.infrastructure.codingagent;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.time.Duration;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+/**
+ * Pins that the {@code qeploy.coding-agent} yml block actually binds. Context loading alone would
+ * not catch a mistyped key: an unbound property silently keeps the field default, so a deployment
+ * could set a 30-minute timeout and quietly get 10.
+ */
+@SpringBootTest
+class CodingAgentPropertiesBindingTest {
+
+    @Autowired
+    private CodingAgentProperties properties;
+
+    @Test
+    void bindsTheImageFromConfiguration() {
+        assertThat(properties.getImage()).isEqualTo("qeploy/coding-agent:local");
+    }
+
+    @Test
+    void parsesTheDurationShorthandRatherThanTreatingItAsMilliseconds() {
+        // "10m" in yml must become ten minutes; a raw-number reading would give 10 ms and every
+        // run would look like an instant timeout.
+        assertThat(properties.getTimeout()).isEqualTo(Duration.ofMinutes(10));
+        assertThat(properties.getProvisionRetryDelay()).isEqualTo(Duration.ofSeconds(2));
+    }
+
+    @Test
+    void bindsTheWorkspaceMountPathAndProvisionAttempts() {
+        assertThat(properties.getWorkspaceMountPath()).isEqualTo("/workspace");
+        assertThat(properties.getMaxProvisionAttempts()).isEqualTo(3);
+    }
+
+    @Test
+    void bindsEachCliInvocationAsASplitArgumentList() {
+        // The yml value is a comma-separated string; it must arrive as separate argv elements,
+        // because a single "claude -p" element would be looked up as one executable of that name.
+        assertThat(properties.getClaude().getArgvPrefix()).containsExactly("claude", "-p");
+        assertThat(properties.getCodex().getArgvPrefix())
+                .containsExactly("codex", "exec", "--dangerously-bypass-approvals-and-sandbox");
+    }
+
+    @Test
+    void bindsCodexLoginCommandBecauseItsKeyDoesNotComeFromTheEnvironment() {
+        assertThat(properties.getCodex().getLoginArgv())
+                .containsExactly("codex", "login", "--with-api-key");
+        // Claude Code takes its key from ANTHROPIC_API_KEY, so it has no login step.
+        assertThat(properties.getClaude().getLoginArgv()).isEmpty();
+    }
+
+    @Test
+    void defaultsCodexToTheCheapestModelTierAndLeavesClaudeOnItsOwnDefault() {
+        assertThat(properties.getCodex().getModel()).isEqualTo("gpt-5.6-luna");
+        assertThat(properties.getClaude().getModel()).isEmpty();
+    }
+}
