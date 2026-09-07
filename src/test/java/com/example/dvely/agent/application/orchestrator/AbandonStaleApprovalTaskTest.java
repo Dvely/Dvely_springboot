@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.service.AgentMessageService;
+import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
@@ -41,7 +42,8 @@ class AbandonStaleApprovalTaskTest {
             mock(ConversationRepository.class),
             mock(ProjectApprovalPolicyRepository.class),
             approvalRepository,
-            messageService
+            messageService,
+            mock(InputWaitStore.class)
     );
 
     @Test
