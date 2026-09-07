@@ -25,6 +25,8 @@ class CloudConnectionRequirementsServiceTest {
             "sts:GetCallerIdentity"
     );
 
+    private static final String PLATFORM_ARN = "arn:aws:iam::999888777666:role/qeploy-control-plane";
+
     private final AwsPolicyDocumentLoader policyDocumentLoader = new AwsPolicyDocumentLoader();
 
     private CloudConnectionRequirementsService service(String platformPrincipalArn) {
@@ -34,53 +36,74 @@ class CloudConnectionRequirementsServiceTest {
         );
     }
 
+    // ── 역할 위임이 준비된 환경(platform ARN 설정됨) ──────────────────────────
+
     @Test
     void roleArnGuideCarriesTrustPolicyAndTheFullRecommendedPolicy() {
-        CloudConnectionRequirementsResult result =
-                service("arn:aws:iam::999888777666:role/qeploy-control-plane").getRequirements("AWS", "ROLE_ARN");
+        CloudConnectionRequirementsResult result = service(PLATFORM_ARN).getRequirements("AWS", "ROLE_ARN");
 
         assertThat(result.recommendedCredentialType()).isEqualTo("ROLE_ARN");
+        assertThat(result.credentialOptions()).hasSize(2);   // 역할 위임 + 액세스 키
         assertThat(result.trustPolicy()).isNotNull();
         assertThat(result.fields()).anySatisfy(f -> assertThat(f.key()).isEqualTo("roleArn"));
         // 신뢰 정책 Principal 이 설정한 플랫폼 ARN 으로 치환됐는지
-        assertThat(flatten(result.trustPolicy())).contains("arn:aws:iam::999888777666:role/qeploy-control-plane");
-        // 추천 정책이 코드가 쓰는 모든 핵심 액션을 담는지
+        assertThat(flatten(result.trustPolicy())).contains(PLATFORM_ARN);
         assertThat(collectActions(result.recommendedPolicy())).containsAll(MUST_HAVE_ACTIONS);
     }
 
     @Test
-    void accessKeyGuideHasNoTrustPolicyButStillRecommendsRoleArn() {
-        CloudConnectionRequirementsResult result = service("").getRequirements("AWS", "ACCESS_KEY");
+    void accessKeyGuideKeepsRecommendingRoleArnWhenDelegationAvailable() {
+        CloudConnectionRequirementsResult result = service(PLATFORM_ARN).getRequirements("AWS", "ACCESS_KEY");
 
         assertThat(result.credentialType()).isEqualTo("ACCESS_KEY");
-        assertThat(result.trustPolicy()).isNull();                 // 키 방식엔 신뢰 정책이 없다
-        assertThat(result.recommendedCredentialType()).isEqualTo("ROLE_ARN");   // 그래도 권장은 역할 위임
+        assertThat(result.trustPolicy()).isNull();                     // 키 방식엔 신뢰 정책이 없다
+        assertThat(result.recommendedCredentialType()).isEqualTo("ROLE_ARN");   // 위임 가능하니 권장은 역할
+        assertThat(result.credentialOptions()).hasSize(2);
         assertThat(result.fields()).anySatisfy(f -> {
             if (f.key().equals("secretAccessKey")) {
-                assertThat(f.secret()).isTrue();                   // 시크릿 필드 표시
+                assertThat(f.secret()).isTrue();
             }
         });
         assertThat(collectActions(result.recommendedPolicy())).containsAll(MUST_HAVE_ACTIONS);
     }
 
     @Test
-    void unsetPlatformPrincipalShowsPlaceholderAndAWarningNote() {
-        CloudConnectionRequirementsResult result = service("").getRequirements("AWS", "ROLE_ARN");
-
-        assertThat(flatten(result.trustPolicy())).contains("미설정");
-        assertThat(result.notes()).anySatisfy(n -> assertThat(n).contains("placeholder"));
-    }
-
-    @Test
-    void defaultsToRoleArnWhenCredentialTypeBlank() {
-        CloudConnectionRequirementsResult result = service("arn:aws:iam::1:role/x").getRequirements("AWS", "");
+    void defaultsToRoleArnWhenBlankAndDelegationAvailable() {
+        CloudConnectionRequirementsResult result = service(PLATFORM_ARN).getRequirements("AWS", "");
 
         assertThat(result.credentialType()).isEqualTo("ROLE_ARN");
     }
 
+    // ── 역할 위임이 준비 안 된 환경(platform ARN 미설정) ─────────────────────
+
+    @Test
+    void hidesRoleArnAndFallsBackToAccessKeyWhenPlatformIdentityMissing() {
+        // ROLE_ARN 을 명시적으로 요청해도, 컨트롤 플레인 신원이 없어 위임이 실동작하지 않으므로
+        // 액세스 키 가이드로 떨어뜨린다 — 사용자를 안 되는 흐름으로 보내지 않는다.
+        CloudConnectionRequirementsResult result = service("").getRequirements("AWS", "ROLE_ARN");
+
+        assertThat(result.credentialType()).isEqualTo("ACCESS_KEY");
+        assertThat(result.recommendedCredentialType()).isEqualTo("ACCESS_KEY");
+        assertThat(result.credentialOptions()).hasSize(1);             // 액세스 키만 — FE 는 탭을 감춘다
+        assertThat(result.credentialOptions().get(0).type()).isEqualTo("ACCESS_KEY");
+        assertThat(result.trustPolicy()).isNull();
+        // 왜 역할 위임 탭이 없는지 알리는 주의가 있어야 한다
+        assertThat(result.notes()).anySatisfy(n -> assertThat(n).contains("역할 위임"));
+        // 정책 자체는 그대로 전체본을 준다
+        assertThat(collectActions(result.recommendedPolicy())).containsAll(MUST_HAVE_ACTIONS);
+    }
+
+    @Test
+    void blankCredentialTypeAlsoFallsBackToAccessKeyWhenPlatformIdentityMissing() {
+        CloudConnectionRequirementsResult result = service("   ").getRequirements("AWS", "");
+
+        assertThat(result.credentialType()).isEqualTo("ACCESS_KEY");
+        assertThat(result.credentialOptions()).hasSize(1);
+    }
+
     @Test
     void gcpIsNotYetSupported() {
-        assertThatThrownBy(() -> service("").getRequirements("GCP", "ROLE_ARN"))
+        assertThatThrownBy(() -> service(PLATFORM_ARN).getRequirements("GCP", "ROLE_ARN"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("AWS");
     }
