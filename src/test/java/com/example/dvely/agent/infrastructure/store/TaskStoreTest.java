@@ -1,6 +1,7 @@
 package com.example.dvely.agent.infrastructure.store;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -15,6 +16,8 @@ import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
+import com.example.dvely.agent.application.dto.AnsweredClarification;
+import com.example.dvely.agent.application.dto.ClarificationRequest;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.domain.value.AgentType;
@@ -467,5 +470,99 @@ class TaskStoreTest {
                 null,
                 Instant.now()
         );
+    }
+
+    // ── 되묻기 답변 스냅샷 · 스텝 진행 이벤트 ────────────────────────────────────────────────
+
+    /**
+     * 답을 받으면 폼은 사라져야 하고(이중 제출 방지) 무엇을 골랐는지는 남아야 한다. 예전에는
+     * clarification_json 을 지우는 것으로 끝나서, 대화에 질문만 남고 답이 사라졌다.
+     */
+    @Test
+    void answeredClarificationKeepsTheQuestionAndTheChosenAnswer() {
+        taskStore.save(task(TaskStatus.RUNNING));
+        taskStore.markWaitingInput("task-1", "어떤 스택으로 만들까요?", new ClarificationRequest(
+                "어떤 스택으로 만들까요?",
+                ClarificationRequest.InputType.SINGLE_SELECT,
+                List.of(new ClarificationRequest.Option("vanilla", "순수 HTML/CSS/JS (빌드 없음)", true)),
+                false));
+
+        assertThat(taskStore.supplyInput("task-1", 1L, "순수 HTML/CSS/JS (빌드 없음)")).isTrue();
+
+        // 폼은 사라진다 — 기존 FE 가 다시 띄우지 않도록 이 동작은 그대로다.
+        assertThat(taskStore.getClarification("task-1")).isNull();
+
+        AnsweredClarification answered = taskStore.getAnsweredClarification("task-1");
+        assertThat(answered).isNotNull();
+        assertThat(answered.question()).isEqualTo("어떤 스택으로 만들까요?");
+        assertThat(answered.inputType()).isEqualTo(ClarificationRequest.InputType.SINGLE_SELECT);
+        assertThat(answered.options()).extracting(ClarificationRequest.Option::value).containsExactly("vanilla");
+        assertThat(answered.answer()).isEqualTo("순수 HTML/CSS/JS (빌드 없음)");
+    }
+
+    /** 구조화 질문이 아니었던 되묻기(배포 저장소 이름 등)도 답은 남는다. */
+    @Test
+    void answeredClarificationKeepsThePlainTextAnswerToo() {
+        taskStore.save(task(TaskStatus.RUNNING));
+        taskStore.markWaitingInput("task-1", "저장소 이름을 알려주세요", null);
+
+        assertThat(taskStore.supplyInput("task-1", 1L, "my-app")).isTrue();
+
+        AnsweredClarification answered = taskStore.getAnsweredClarification("task-1");
+        assertThat(answered).isNotNull();
+        assertThat(answered.answer()).isEqualTo("my-app");
+        assertThat(answered.question()).isNull();
+    }
+
+    @Test
+    void answeredClarificationIsNullWhenTheTaskNeverAsked() {
+        taskStore.save(task(TaskStatus.RUNNING));
+
+        assertThat(taskStore.getAnsweredClarification("task-1")).isNull();
+    }
+
+    /** 따옴표가 든 답도 스냅샷 JSON 을 깨뜨리지 않아야 한다. */
+    @Test
+    void answeredClarificationEscapesQuotesInTheAnswer() {
+        taskStore.save(task(TaskStatus.RUNNING));
+        taskStore.markWaitingInput("task-1", "이름은?", null);
+
+        taskStore.supplyInput("task-1", 1L, "he said \"hi\"");
+
+        assertThat(taskStore.getAnsweredClarification("task-1").answer()).isEqualTo("he said \"hi\"");
+    }
+
+    /**
+     * 스텝 진행 이벤트는 태스크 상태를 바꾸지 않는다 — 진행 표시용이지 상태 전이가 아니다.
+     * 몇 분 걸리는 스텝이 도는 동안 화면에 아무 변화가 없던 것을 메우는 것이 목적이다.
+     */
+    @Test
+    void stepEventsAreRecordedWithoutChangingTaskStatus() {
+        taskStore.save(task(TaskStatus.RUNNING));
+
+        taskStore.appendStepEvent("task-1", "STEP_STARTED", TaskStatus.RUNNING,
+                "코드를 만들고 있습니다 (1/2)", 1, 2, "CODE");
+
+        assertThat(taskStore.getOwned("task-1", 1L).status()).isEqualTo(TaskStatus.RUNNING);
+
+        ArgumentCaptor<AgentRunEventEntity> captor = ArgumentCaptor.forClass(AgentRunEventEntity.class);
+        verify(eventRepository, atLeastOnce()).save(captor.capture());
+        AgentRunEventEntity saved = captor.getAllValues().getLast();
+        assertThat(saved.getType()).isEqualTo("STEP_STARTED");
+        assertThat(saved.getStepIndex()).isEqualTo(1);
+        assertThat(saved.getStepTotal()).isEqualTo(2);
+        assertThat(saved.getAgentType()).isEqualTo("CODE");
+    }
+
+    /** 진행 표시가 안 보이는 것과 작업이 죽는 것은 무게가 다르다 — 이벤트 적재 실패는 삼킨다. */
+    @Test
+    void aFailedStepEventDoesNotBreakTheRun() {
+        taskStore.save(task(TaskStatus.RUNNING));
+        when(eventRepository.save(any(AgentRunEventEntity.class)))
+                .thenThrow(new RuntimeException("DB down"));
+
+        assertThatCode(() -> taskStore.appendStepEvent(
+                "task-1", "STEP_STARTED", TaskStatus.RUNNING, "코드를 만들고 있습니다", 1, 1, "CODE"))
+                .doesNotThrowAnyException();
     }
 }
