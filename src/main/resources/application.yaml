@@ -106,6 +106,18 @@ qeploy:
     binding-approval-hold: ${QEPLOY_PREVIEW_BINDING_APPROVAL_HOLD:6h}
     cleanup-interval-ms: ${QEPLOY_PREVIEW_CLEANUP_INTERVAL_MS:60000}
   agent:
+    # 에이전트 태스크(CODE·DEPLOY 등)를 실제로 돌리는 스레드풀.
+    #
+    # 실질 동시 실행은 core-size 다 — ThreadPoolExecutor 는 큐가 가득 차야 코어를 넘겨
+    # 스레드를 늘린다. 예전 설정(core2/max5/queue10)에서 max5 는 도달할 수 없는 값이었다.
+    #
+    # 이 태스크들은 벽시계 시간 대부분을 LLM 응답 대기로 쓰므로 코어 수보다 조금 넉넉히 잡는다.
+    # CPU 를 실제로 쓰는 구간은 컨테이너 안 빌드뿐이다. 자원이 다른 환경에서는 이 값을 낮춘다 —
+    # CODE 태스크 하나당 Docker 컨테이너가 하나 뜨므로 메모리가 먼저 한계에 닿는다.
+    executor:
+      core-size: ${QEPLOY_AGENT_EXECUTOR_CORE_SIZE:4}
+      max-size: ${QEPLOY_AGENT_EXECUTOR_MAX_SIZE:8}
+      queue-capacity: ${QEPLOY_AGENT_EXECUTOR_QUEUE_CAPACITY:8}
     worker:
       poll-interval-ms: ${QEPLOY_AGENT_WORKER_POLL_INTERVAL_MS:1000}
       heartbeat-interval-ms: ${QEPLOY_AGENT_WORKER_HEARTBEAT_INTERVAL_MS:30000}
