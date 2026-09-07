@@ -50,15 +50,15 @@ class DecisionAgentServiceTest {
     private LlmPort llmPort;
 
     @Mock
-    private DeployTargetContextResolver deployTargetContextResolver;
+    private ProjectDecisionContextResolver projectDecisionContextResolver;
 
     private DecisionAgentService service;
 
     @BeforeEach
     void setUp() {
-        service = new DecisionAgentService(llmRouter, deployTargetContextResolver);
+        service = new DecisionAgentService(llmRouter, projectDecisionContextResolver);
         when(llmRouter.route(AiProvider.GLM)).thenReturn(llmPort);
-        when(deployTargetContextResolver.resolve(44L)).thenReturn(Optional.empty());
+        when(projectDecisionContextResolver.resolve(44L)).thenReturn(Optional.empty());
     }
 
     private AgentPlan decide() {
@@ -210,9 +210,9 @@ class DecisionAgentServiceTest {
      */
     @Test
     void 프로젝트의_배포_위치_사실을_프롬프트에_실어_보낸다() {
-        when(deployTargetContextResolver.resolve(44L)).thenReturn(Optional.of(
-                new DeployTargetContextResolver.DeployTargetContext(
-                        FrontendHostingType.GITHUB_PAGES, false, false)));
+        when(projectDecisionContextResolver.resolve(44L)).thenReturn(Optional.of(
+                new ProjectDecisionContextResolver.ProjectDecisionContext(
+                        false, FrontendHostingType.GITHUB_PAGES, false, false)));
         answers(VALID_PLAN);
 
         decide();
@@ -220,9 +220,9 @@ class DecisionAgentServiceTest {
         ArgumentCaptor<List<LlmMessage>> captor = ArgumentCaptor.forClass(List.class);
         verify(llmPort).complete(any(), captor.capture(), any());
         assertThat(captor.getValue().getLast().content())
-                .contains("current=GITHUB_PAGES")
+                .contains("frontendHosting=GITHUB_PAGES")
                 .contains("everDeployed=false")
-                .contains("availableTargets=GITHUB_PAGES")
+                .contains("availableHostingTargets=GITHUB_PAGES")
                 .contains("no cloud connection selected");
     }
 
@@ -234,7 +234,7 @@ class DecisionAgentServiceTest {
 
         ArgumentCaptor<List<LlmMessage>> captor = ArgumentCaptor.forClass(List.class);
         verify(llmPort).complete(any(), captor.capture(), any());
-        assertThat(captor.getValue()).noneMatch(m -> m.content().contains("Frontend hosting context"));
+        assertThat(captor.getValue()).noneMatch(m -> m.content().contains("Project facts"));
     }
 
     @Test
@@ -251,5 +251,41 @@ class DecisionAgentServiceTest {
         AgentPlan plan = decide();
 
         assertThat(plan.steps().getFirst().parameters()).containsEntry("hostingType", "S3");
+    }
+
+    /**
+     * 코드가 없는 프로젝트에는 "수정으로 다뤄라" 가 아니라 "여기에 처음부터 만든다" 를 말해야 한다.
+     * 그래야 모델이 스택을 물어볼 이유를 갖는다.
+     */
+    @Test
+    void 코드가_없는_프로젝트에는_처음부터_만든다고_알린다() {
+        when(projectDecisionContextResolver.resolve(44L)).thenReturn(Optional.of(
+                new ProjectDecisionContextResolver.ProjectDecisionContext(
+                        false, FrontendHostingType.GITHUB_PAGES, false, false)));
+        answers(VALID_PLAN);
+
+        decide();
+
+        ArgumentCaptor<List<LlmMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(llmPort).complete(any(), captor.capture(), any());
+        String joined = captor.getValue().stream().map(LlmMessage::content).collect(java.util.stream.Collectors.joining("\n"));
+        assertThat(joined).contains("has no code yet").contains("hasCode=false");
+        assertThat(joined).doesNotContain("do not scaffold a new project");
+    }
+
+    @Test
+    void 코드가_있는_프로젝트에는_수정으로_다루라고_알린다() {
+        when(projectDecisionContextResolver.resolve(44L)).thenReturn(Optional.of(
+                new ProjectDecisionContextResolver.ProjectDecisionContext(
+                        true, FrontendHostingType.S3, true, true)));
+        answers(VALID_PLAN);
+
+        decide();
+
+        ArgumentCaptor<List<LlmMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(llmPort).complete(any(), captor.capture(), any());
+        String joined = captor.getValue().stream().map(LlmMessage::content).collect(java.util.stream.Collectors.joining("\n"));
+        assertThat(joined).contains("already has code").contains("do not scaffold");
+        assertThat(joined).contains("hasCode=true").contains("availableHostingTargets=GITHUB_PAGES/S3/EC2");
     }
 }
