@@ -2,7 +2,7 @@
   "name": "qeploy-agent-tools",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/client", "packages/mcp"],
+  "workspaces": ["packages/client", "packages/mcp", "packages/cli"],
   "scripts": {
     "test": "node --test packages/*/test/*.test.js"
   }
