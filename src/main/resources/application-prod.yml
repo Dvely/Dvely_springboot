@@ -7,6 +7,19 @@ spring:
     url: ${DB_URL}
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
+    hikari:
+      # 커넥션을 오래 쥔 곳을 이름으로 남긴다. 임계를 넘으면 그 커넥션을 <b>빌려간 지점의 스택</b>이
+      # WARN 으로 찍힌다(반납을 막지는 않는다 — 진단 전용이라 동작을 바꾸지 않는다).
+      #
+      # 이게 없어서 2026-09-08 dev 의 풀 고갈을 원인까지 못 좁혔다. 01:52 부터 22 분간
+      # "Connection is not available ... (total=10, active=10, idle=0)" 가 끊이지 않고 이어졌고,
+      # 앱을 재기동해서야 풀렸다. 순간 폭주면 저절로 풀리므로, 반납되지 않은 커넥션이 있었다는
+      # 뜻이다. 그 사이 auth/refresh 와 approvals 가 500 을 냈고 스케줄 워커도 전부 실패했다 —
+      # DB 커넥션이 필요한 모든 것이 함께 죽는다.
+      leak-detection-threshold: ${DB_LEAK_DETECTION_THRESHOLD_MS:60000}
+      # 기본값 10 은 에이전트 동시 실행을 4 로 올린 뒤로는 빠듯하다. MySQL 기본 max_connections
+      # 는 151 이라 이 정도는 여유가 있다.
+      maximum-pool-size: ${DB_MAX_POOL_SIZE:20}
 
   jpa:
     hibernate:
