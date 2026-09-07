@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.orchestrator;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -58,7 +59,7 @@ class AgentPlanExecutorTest {
 
         verify(taskStore).markStepCompleted("task-1", 1);
         verify(taskStore).markDone("task-1", "preview", "수정 완료");
-        verify(messageService).appendAssistant(21L, "수정 완료");
+        verify(messageService).appendAssistant(21L, "수정 완료", ChatMessageKind.AGENT_RESULT);
     }
 
     // ── ADR-Y4 (#55): AgentExecutionRegistry unregister-in-finally wiring ──────────────────────
@@ -319,7 +320,7 @@ class AgentPlanExecutorTest {
 
         verify(taskStore).markStepCompleted("task-1", 1);
         verify(taskStore).markDone("task-1", null, "휴지통 보관 기간은 7일입니다.");
-        verify(messageService).appendAssistant(21L, "휴지통 보관 기간은 7일입니다.");
+        verify(messageService).appendAssistant(21L, "휴지통 보관 기간은 7일입니다.", ChatMessageKind.AGENT_RESULT);
     }
 
     @Test
@@ -339,7 +340,8 @@ class AgentPlanExecutorTest {
         );
 
         verify(taskStore).markFailed("task-1", "외부 API 실패");
-        verify(messageService).appendAssistant(21L, "작업 중 오류가 발생했습니다: 외부 API 실패");
+        verify(messageService).appendAssistant(21L, "작업 중 오류가 발생했습니다: 외부 API 실패",
+                ChatMessageKind.TASK_FAILED);
     }
 
     @Test
@@ -379,7 +381,8 @@ class AgentPlanExecutorTest {
 
         // 단순 텍스트 입력(DOMAIN_BIND)이면 clarification 은 null 로 3-인자 오버로드가 호출된다.
         verify(taskStore).markWaitingInput("task-1", "도메인을 입력해주세요.", null);
-        verify(messageService).appendAssistant(21L, "도메인을 입력해주세요.");
+        verify(messageService).appendAssistant(21L, "도메인을 입력해주세요.",
+                ChatMessageKind.INPUT_REQUIRED);
     }
 
     // ── A① 스펙 되묻기(CLARIFY) ─────────────────────────────────────────────────
@@ -519,7 +522,8 @@ class AgentPlanExecutorTest {
         );
 
         verify(taskStore).markDone("task-1", null, "서버/서비스 상태\n- 배포: 배포 이력 없음");
-        verify(messageService).appendAssistant(21L, "서버/서비스 상태\n- 배포: 배포 이력 없음");
+        verify(messageService).appendAssistant(21L, "서버/서비스 상태\n- 배포: 배포 이력 없음",
+                ChatMessageKind.AGENT_RESULT);
     }
 
     @Test
@@ -561,7 +565,8 @@ class AgentPlanExecutorTest {
         verify(taskStore).markFailed("task-1", failure.getMessage());
         // Posted verbatim — the message already tells the user to switch providers or check
         // billing, and a "작업 중 오류가 발생했습니다: " prefix would bury that.
-        verify(messageService).appendAssistant(21L, failure.getMessage());
+        verify(messageService).appendAssistant(21L, failure.getMessage(),
+                ChatMessageKind.TASK_FAILED);
         verify(recoveryService, never()).handle(any(), any());
         verify(taskStore, never()).markDone(any(), any(), any());
     }

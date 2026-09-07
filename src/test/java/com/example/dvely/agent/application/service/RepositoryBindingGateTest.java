@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.service;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -119,7 +120,8 @@ class RepositoryBindingGateTest {
         gate.requestIfRequired(plan, 0, "task-1", 1L, 11L);
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(agentMessageService).appendAssistant(eq(21L), captor.capture());
+        verify(agentMessageService).appendAssistant(eq(21L), captor.capture(),
+                eq(ChatMessageKind.APPROVAL_REQUESTED));
         // The name shown here is the one an empty approve body falls back to, so the user must
         // see exactly what they will get if they just press approve.
         assertThat(captor.getValue())
@@ -231,7 +233,8 @@ class RepositoryBindingGateTest {
         assertThat(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).isTrue();
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(agentMessageService).appendAssistant(eq(21L), captor.capture());
+        verify(agentMessageService).appendAssistant(eq(21L), captor.capture(),
+                eq(ChatMessageKind.APPROVAL_REQUESTED));
         assertThat(captor.getValue()).doesNotContain("- preview: ");
     }
 

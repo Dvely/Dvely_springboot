@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.orchestrator;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -109,7 +110,8 @@ class AgentOrchestratorTest {
                 "작업 계획을 만들었습니다. 승인 후 실행합니다.\n"
                         + "- [101] CHANGE\n"
                         + "- [102] DEPLOYMENT"
-        );
+        ,
+                ChatMessageKind.APPROVAL_REQUESTED);
     }
 
     @Test
@@ -857,7 +859,8 @@ class AgentOrchestratorTest {
         orchestrator.recoverStuckApprovedTask("task-1");
 
         verify(taskStore).recoverStuckApproval("task-1");
-        verify(messageService).appendAssistant(21L, "지연된 승인 처리를 복구해 작업을 시작합니다.");
+        verify(messageService).appendAssistant(21L, "지연된 승인 처리를 복구해 작업을 시작합니다.",
+                ChatMessageKind.TASK_PROGRESS);
     }
 
     @Test
@@ -950,7 +953,8 @@ class AgentOrchestratorTest {
 
         assertThat(closed).isTrue();
         verify(taskStore).markFailed("task-1", "요청 처리가 시작되지 않아 종료했습니다.");
-        verify(messageService).appendAssistant(21L, "요청 처리가 시작되지 않아 이 작업을 종료했습니다. 다시 시도해주세요.");
+        verify(messageService).appendAssistant(21L, "요청 처리가 시작되지 않아 이 작업을 종료했습니다. 다시 시도해주세요.",
+                ChatMessageKind.TASK_CANCELLED);
     }
 
     @Test
@@ -1094,7 +1098,8 @@ class AgentOrchestratorTest {
 
         assertThat(accepted).isTrue();
         verify(messageService).appendAssistant(
-                21L, "답변을 반영해 작업을 이어갑니다: Vanilla (HTML/CSS/JS, 빌드 없음)");
+                21L, "답변을 반영해 작업을 이어갑니다: Vanilla (HTML/CSS/JS, 빌드 없음)",
+                ChatMessageKind.CLARIFICATION_ANSWER);
     }
 
     /** 태스크가 답을 못 받으면(이미 끝났거나 남의 것) 대화에도 남기지 않는다. */
@@ -1114,6 +1119,6 @@ class AgentOrchestratorTest {
         when(inputWaitStore.supply("task-1", 1L, "react")).thenReturn(false);
 
         assertThat(orchestrator.supplyInput("task-1", 1L, 21L, "react")).isFalse();
-        verify(messageService, never()).appendAssistant(any(), any());
+        verify(messageService, never()).appendAssistant(any(), any(), any());
     }
 }

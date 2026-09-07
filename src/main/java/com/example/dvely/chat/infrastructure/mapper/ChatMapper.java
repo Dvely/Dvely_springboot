@@ -32,7 +32,8 @@ public class ChatMapper {
                 result.content(),
                 result.tokenCount(),
                 result.createdAt(),
-                result.taskId()
+                result.taskId(),
+                result.kind()
         );
     }
 }

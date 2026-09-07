@@ -98,7 +98,8 @@ public class ChatQueryService {
                 message.getContent(),
                 message.getTokenCount(),
                 message.getCreatedAt(),
-                null
+                null,
+                message.getKind()
         );
     }
 

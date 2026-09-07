@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.service;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -69,7 +70,8 @@ class BuildFailureRecoveryServiceTest {
         verify(messageService).appendAssistant(
                 21L,
                 "빌드 실패\n\n수정안: dependency 수정\n\n로그 일부:\nlog"
-                        + "\n\n승인 [91] 후 자동으로 수정 및 재build합니다."
+                        + "\n\n승인 [91] 후 자동으로 수정 및 재build합니다.",
+                ChatMessageKind.APPROVAL_REQUESTED
         );
     }
 
@@ -109,7 +111,8 @@ class BuildFailureRecoveryServiceTest {
         verify(messageService).appendAssistant(
                 21L,
                 "빌드 실패\n\n수정안: dependency 수정\n\n로그 일부:\nlog"
-                        + "\n\n프로젝트 정책에 따라 자동 재시도를 시작합니다."
+                        + "\n\n프로젝트 정책에 따라 자동 재시도를 시작합니다.",
+                ChatMessageKind.TASK_FAILED
         );
     }
 
@@ -142,7 +145,7 @@ class BuildFailureRecoveryServiceTest {
         service.handle("task-1", failure());
 
         verify(agentOrchestrator).retry("task-1", 1L);
-        verify(messageService, never()).appendAssistant(any(), any());
+        verify(messageService, never()).appendAssistant(any(), any(), any());
     }
 
     private CodeAgentExecutionException failure() {

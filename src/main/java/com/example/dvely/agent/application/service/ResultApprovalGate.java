@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.service;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.dto.AgentTask;
@@ -151,7 +152,8 @@ public class ResultApprovalGate {
         agentMessageService.appendAssistant(
                 task == null ? null : task.conversationId(),
                 buildGateMessage(task == null ? null : task.previewUrl(), approval)
-        );
+        ,
+                ChatMessageKind.APPROVAL_REQUESTED);
         return true;
     }
 
