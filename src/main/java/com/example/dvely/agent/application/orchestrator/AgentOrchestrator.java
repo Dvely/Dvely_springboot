@@ -8,6 +8,7 @@ import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.InfraOperation;
+import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
@@ -44,6 +45,7 @@ public class AgentOrchestrator {
     private final ProjectApprovalPolicyRepository policyRepository;
     private final ApprovalRepository approvalRepository;
     private final AgentMessageService agentMessageService;
+    private final InputWaitStore     inputWaitStore;
 
     /**
      * 계획이 이미 있는 동기 제출 경로(AgentFacade·DomainBindingSubmissionService). PENDING 태스크를
@@ -623,6 +625,32 @@ public class AgentOrchestrator {
                     .append(approval.getType());
         }
         return message.toString();
+    }
+
+    /**
+     * WAITING_INPUT 태스크에 사용자의 답을 넣고, <b>그 답을 대화에도 남긴다.</b>
+     *
+     * <p>남기지 않으면 대화에 질문만 있고 답이 없다. 되묻기 폼은 답한 순간 사라지도록 설계돼
+     * 있으므로(이중 제출 방지), 답이 대화에 없으면 사용자가 무엇을 골랐는지 확인할 방법이 아예
+     * 사라진다 — 새로고침하면 "할 일 앱을 어떤 프론트엔드 스택으로 만들까요?"만 남고 자기가 고른
+     * Vanilla 는 어디에도 없다(2026-09-07 dev 실측, project 45). CLARIFY 뿐 아니라 배포 저장소
+     * 이름·도메인 입력도 같은 엔드포인트를 쓰므로 셋 다 같은 증상이었다.</p>
+     *
+     * <p>역할을 USER 가 아니라 ASSISTANT 로 남기는 이유: {@code getUserIntentHistory} 가 USER 발화만
+     * 골라 계획 수립에 넘기면서 <b>마지막 USER 발화를 "지금 처리할 요청"으로 표시</b>한다. 답을 USER
+     * 로 남기면 "Vanilla (HTML/CSS/JS, 빌드 없음)" 이 요청 자리를 차지하고 정작 진짜 요청은
+     * "이전 요청" 으로 밀려난다. 답은 요청이 아니라 요청에 딸린 값이므로, 대화에는 기록으로 남기고
+     * 계획 입력에서는 빠지는 편이 맞다 — 재-decide 는 어차피 질문·답을 따로 실어 보낸다
+     * ({@code AgentPlanExecutor#handleClarify}).</p>
+     *
+     * @return 태스크가 답을 받아들였으면 true. false 면 호출부가 404 로 응답한다
+     */
+    public boolean supplyInput(String taskId, Long userId, Long conversationId, String value) {
+        if (!inputWaitStore.supply(taskId, userId, value)) {
+            return false;
+        }
+        agentMessageService.appendAssistant(conversationId, "답변을 반영해 작업을 이어갑니다: " + value.trim());
+        return true;
     }
 
     public Long resolveProjectId(Long userId, Long requestedProjectId, Long conversationId) {
