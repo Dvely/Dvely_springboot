@@ -1168,3 +1168,36 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 ### 16.5 저장 스키마
 
 `ai_provider_credentials`(V44): `user_id`, `provider`, `encrypted_api_key`, `label`, timestamps. `UNIQUE(user_id, provider)` + 사용자 삭제 시 CASCADE.
+
+---
+
+## 17. ApiToken API (PAT, Issue #304)
+
+에이전트·CLI 용 개인 액세스 토큰. 브라우저 JWT 는 `JWT_EXPIRATION_MS` 기본 1시간이라 헤드리스 클라이언트가 쓸 수 없어 이 토큰을 둔다. MCP 서버·CLI(PRD 부록 A-2)의 선행 요건이다.
+
+### 17.1 엔드포인트 (3개)
+
+| 메서드 | 경로 | 용도 |
+|---|---|---|
+| GET | `/api/v1/api-tokens` | 본인 토큰 목록(평문 없음) |
+| POST | `/api/v1/api-tokens` | 발급. 평문은 이 응답에서만 1회 |
+| DELETE | `/api/v1/api-tokens/{apiTokenId}` | 폐기. 미발급 ID 면 404 |
+
+### 17.2 저장 방식 — 해시, 암호화가 아니다
+
+`ai_provider_credentials`(§16)는 키를 벤더 CLI 에 전달해야 해서 복호화 가능한 AES 저장이지만, PAT 는 우리가 비교만 하면 되므로 원문을 보관하지 않는다. DB 를 잃어도 동작하는 토큰이 함께 새지 않고, 재노출 경로가 애초에 없다.
+
+해시는 SHA-256 이다. bcrypt 류의 work factor 는 엔트로피가 낮은 비밀번호를 느리게 만들려는 장치인데 이 토큰은 256비트 난수라 work factor 가 추측 가능성을 바꾸지 않는다. 바꾸는 것은 모든 인증 요청의 비용뿐이다.
+
+### 17.3 인증·스코프
+
+- `Authorization: Bearer qp_...` — 필터가 `qp_` 접두사로 PAT 경로를 고른다. JWT 파싱을 먼저 시도하는 방식은 에이전트 요청마다 예외를 던진다.
+- 스코프 `READ`/`WRITE` 2종. **HTTP 메서드로 강제**한다 — `READ` 토큰은 GET 만 가능하고 변경 메서드는 **403**. 엔드포인트별 애노테이션이면 새 엔드포인트가 누군가 애노테이션을 기억한 날에야 보호되지만, 메서드 기준은 작성한 날부터 덮인다.
+- 403 이지 401 이 아니다. 인증 자체는 성공했으므로 재인증하러 보낼 일이 아니다.
+- 미상·만료·폐기는 전부 **401** 로 동일하다. 어느 쪽인지 알려주지 않는다.
+- 만료 기본 90일, 최대 365일. 상한이 있어야 아무도 기억하지 못하는 토큰이 스스로 멈춘다.
+- `last_used_at` 은 1시간 스로틀로 갱신한다(매 요청 UPDATE 를 인증 경로에 얹지 않는다).
+
+### 17.4 저장 스키마
+
+`api_tokens`(V56): `user_id`, `token_hash`(UNIQUE), `token_prefix`, `scope`, `label`, `expires_at`, `last_used_at`. 사용자 삭제 시 CASCADE.

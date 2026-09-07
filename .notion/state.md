@@ -991,6 +991,23 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 ---
 
+## 4.22 P1: 에이전트용 개인 액세스 토큰 PAT (Issue #304)
+
+상태: 구현 완료(로컬), 미머지. 브랜치 `danto/agent-pat`, V56.
+
+무엇: 브라우저 JWT 가 1시간이라 헤드리스 클라이언트(MCP 서버·CLI·CI)가 쓸 장수명 자격이 없었다. PAT 로 채운다. MCP·CLI 단위(PRD 부록 A-2, `srs.md` §B)의 유일한 선행 요건이다.
+
+- `apitoken` 도메인(V56). **해시만 저장**하고 평문은 발급 응답에서 1회만 노출한다 — §4.21 의 BYOK 키와 달리 벤더에 전달할 일이 없어 비교만 하면 된다.
+- 기존 `JwtAuthenticationFilter` 가 `qp_` 접두사로 분기. 기존 JWT 경로는 테스트로 불변을 고정했다.
+- 스코프는 HTTP 메서드로 강제(READ 는 GET 만, 변경 메서드는 403).
+- 엔드포인트 3개(`/api/v1/api-tokens`). `api.md` §17.
+
+**실 서버 검증 완료**: 로컬 기동 후 실제 HTTP 로 10가지 경우 전수 확인 — 발급·목록·폐기, 발급 토큰의 실제 동작, READ 토큰의 쓰기 403, 만료·폐기·미상 토큰의 401 동일화, 목록 응답에 평문 부재, 만료 상한 400. 검증용 사용자·토큰은 정리했다.
+
+> 이 과정에서 잡은 것은 코드 결함이 아니라 **내 검증 스크립트의 오류**였다(응답 봉투를 벗겨진 형태로 파싱). 코드는 처음부터 맞았다.
+
+---
+
 # 5. 권장 구현 순서
 
 `.notion/ROADMAP.md`가 단위(Unit) 단위 실행 순서의 SSOT다. 아래는 지금까지 진행해 온 Phase 이력이며, U1~U7·Issue #45·Cost & Budget·Cloud Ops Agent·Issue #56·Issue #55·Issue #57·Issue #74(Audit Log)·Issue #76(Preview 외부 노출 차단, BI-081/G1)·Issue #77(게이트웨이 인가, G2·G4)이 모두 완료된 이후 신규 작업은 ROADMAP의 "이후 백로그"(`BI-163~165` Project Settings 나머지)와 U-sec 단위를 따른다.
