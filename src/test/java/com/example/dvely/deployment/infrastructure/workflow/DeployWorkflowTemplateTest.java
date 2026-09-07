@@ -168,4 +168,37 @@ class DeployWorkflowTemplateTest {
                 DeployWorkflowTemplate.runTitle("deployment-123")
         )).isEqualTo("deployment-123");
     }
+
+    /**
+     * 프레임워크 없이 만든 정적 사이트는 Node 도 의존성도 빌드도 없다. 그런데 워크플로는 늘
+     * setup-node(cache 켬) + install + build 를 넣었고, cache 는 lock 파일을 요구해 그 자리에서
+     * 죽었다 — 2026-09-08 dev 실측(dldnsgkr/static-todo-v2):
+     * {@code Dependencies lock file is not found ... Supported file patterns: package-lock.json,
+     * npm-shrinkwrap.json, yarn.lock}. 승인까지 다 끝난 배포가 마지막에 실패한다.
+     */
+    @Test
+    void staticSiteSkipsNodeSetupInstallAndBuild() {
+        String workflow = DeployWorkflowTemplate.generate("static", null, PackageManager.NPM, "20");
+
+        assertThat(workflow)
+                .doesNotContain("actions/setup-node")
+                .doesNotContain("Install dependencies")
+                .doesNotContain("- name: Build");
+        // 올릴 파일이 이미 리포지토리에 있으므로 루트를 그대로 발행한다.
+        assertThat(workflow).contains("publish_dir: .");
+        // 체크아웃과 발행은 그대로 남아야 한다.
+        assertThat(workflow).contains("actions/checkout@v4").contains("peaceiris/actions-gh-pages@v4");
+    }
+
+    /** 정적이 아닌 프로젝트는 예전 그대로 빌드한다(회귀 방지). */
+    @Test
+    void nonStaticProjectsStillSetUpNodeAndBuild() {
+        String workflow = DeployWorkflowTemplate.generate("vue", null, PackageManager.NPM, "20");
+
+        assertThat(workflow)
+                .contains("actions/setup-node")
+                .contains("Install dependencies")
+                .contains("- name: Build")
+                .contains("publish_dir: ./dist");
+    }
 }

@@ -84,7 +84,12 @@ public class DeployWorkflowTemplate {
         w.append("          ref: ${{ inputs.checkout_ref || github.ref_name }}\n\n");
 
         // ── 2. 런타임 설정 ────────────────────────────────────────────────────
-        w.append(runtimeSetupSteps(pm, nodeVersion));
+        // 정적 사이트(package.json 없음)는 Node 도 의존성도 빌드도 필요 없다. setup-node 는
+        // cache 를 켜면 lock 파일을 요구해 그 자리에서 죽고, npm ci 는 package.json 을 찾다 죽는다.
+        boolean staticSite = "static".equals(type);
+        if (!staticSite) {
+            w.append(runtimeSetupSteps(pm, nodeVersion));
+        }
 
         // ── 3. base path 해석 ─────────────────────────────────────────────────
         // path  : trailing slash 포함 (Vite --base, PUBLIC_URL)
@@ -109,25 +114,26 @@ public class DeployWorkflowTemplate {
         w.append("            echo \"base=/${REPO}\" >> $GITHUB_OUTPUT\n");
         w.append("          fi\n\n");
 
-        // ── 4. 프레임워크별 빌드 전 설정 ─────────────────────────────────────
-        String configStep = resolveConfigStep(type, pm);
-        if (!configStep.isEmpty()) {
-            w.append(configStep);
+        // ── 4~6. 프레임워크 설정 · 설치 · 빌드 ───────────────────────────────
+        // 정적 사이트는 셋 다 건너뛴다 — 올릴 파일이 이미 리포지토리에 있다.
+        if (!staticSite) {
+            String configStep = resolveConfigStep(type, pm);
+            if (!configStep.isEmpty()) {
+                w.append(configStep);
+            }
+
+            w.append("      - name: Install dependencies\n");
+            w.append("        run: ").append(pm.installCommand()).append("\n\n");
+
+            w.append("      - name: Build\n");
+            w.append("        run: ").append(resolveBuildCommand(type, pm)).append("\n");
+            w.append("        env:\n");
+            w.append("          BASE_PATH: ${{ steps.base.outputs.path }}\n");
+            w.append("          PUBLIC_URL: ${{ steps.base.outputs.path }}\n");
+            // Next.js 의 basePath 는 trailing slash 가 없어야 한다. 위 두 값은 slash 를 포함하므로
+            // 그대로 쓰면 안 되고, 감싼 config 가 이 값을 읽는다.
+            w.append("          QEPLOY_BASE_PATH: ${{ steps.base.outputs.base }}\n\n");
         }
-
-        // ── 5. 의존성 설치 ────────────────────────────────────────────────────
-        w.append("      - name: Install dependencies\n");
-        w.append("        run: ").append(pm.installCommand()).append("\n\n");
-
-        // ── 6. 빌드 ──────────────────────────────────────────────────────────
-        w.append("      - name: Build\n");
-        w.append("        run: ").append(resolveBuildCommand(type, pm)).append("\n");
-        w.append("        env:\n");
-        w.append("          BASE_PATH: ${{ steps.base.outputs.path }}\n");
-        w.append("          PUBLIC_URL: ${{ steps.base.outputs.path }}\n");
-        // Next.js 의 basePath 는 trailing slash 가 없어야 한다. 위 두 값은 slash 를 포함하므로
-        // 그대로 쓰면 안 되고, 감싼 config 가 이 값을 읽는다.
-        w.append("          QEPLOY_BASE_PATH: ${{ steps.base.outputs.base }}\n\n");
 
         // ── 7. SPA 라우팅 404 대응 (빌드 결과물 있을 때만) ───────────────────
         w.append("      - name: Copy index.html to 404.html\n");
@@ -434,6 +440,8 @@ public class DeployWorkflowTemplate {
 
     private static String resolvePublishDir(String type) {
         return switch (type) {
+            // 빌드가 없으므로 리포지토리 루트가 곧 발행 대상이다.
+            case "static"                  -> ".";
             case "cra", "create-react-app" -> "./build";
             case "nextjs", "next"          -> "./out";
             case "gatsby"                  -> "./public";
