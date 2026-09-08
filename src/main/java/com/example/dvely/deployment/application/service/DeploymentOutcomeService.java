@@ -113,7 +113,8 @@ public class DeploymentOutcomeService {
                         : "배포가 실패했습니다.\n"
                                 + "- 사유: " + history.getErrorMessage() + "\n"
                                 + "다시 배포를 요청하면 같은 저장소로 재시도합니다.",
-                live ? ChatMessageKind.AGENT_RESULT : ChatMessageKind.TASK_FAILED);
+                live ? ChatMessageKind.AGENT_RESULT : ChatMessageKind.TASK_FAILED,
+                task.taskId());
     }
 
     private boolean isLatestProjectDeployment(DeploymentHistory history) {

@@ -153,7 +153,7 @@ public class ResultApprovalGate {
                 task == null ? null : task.conversationId(),
                 buildGateMessage(task == null ? null : task.previewUrl(), approval)
         ,
-                ChatMessageKind.APPROVAL_REQUESTED);
+                ChatMessageKind.APPROVAL_REQUESTED, taskId);
         return true;
     }
 

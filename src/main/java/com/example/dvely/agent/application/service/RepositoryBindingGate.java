@@ -107,7 +107,7 @@ public class RepositoryBindingGate {
                 task == null ? null : task.conversationId(),
                 buildGateMessage(task == null ? null : task.previewUrl(), approval, candidate)
         ,
-                ChatMessageKind.APPROVAL_REQUESTED);
+                ChatMessageKind.APPROVAL_REQUESTED, taskId);
         return true;
     }
 

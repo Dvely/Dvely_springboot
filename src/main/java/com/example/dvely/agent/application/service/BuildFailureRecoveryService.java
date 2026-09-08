@@ -49,7 +49,8 @@ public class BuildFailureRecoveryService {
             agentMessageService.appendAssistant(
                     task.conversationId(),
                     buildFailureMessage(exception, null, false),
-                    ChatMessageKind.TASK_FAILED
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
             );
             return;
         }
@@ -81,7 +82,8 @@ public class BuildFailureRecoveryService {
             agentMessageService.appendAssistant(
                     task.conversationId(),
                     buildFailureMessage(exception, null, true),
-                    ChatMessageKind.TASK_FAILED
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
             );
             return;
         }
@@ -98,7 +100,8 @@ public class BuildFailureRecoveryService {
         agentMessageService.appendAssistant(
                 task.conversationId(),
                 buildFailureMessage(exception, approval.getId(), true),
-                ChatMessageKind.APPROVAL_REQUESTED
+                ChatMessageKind.APPROVAL_REQUESTED,
+                taskId
         );
     }
 

@@ -102,7 +102,7 @@ public class AgentOrchestrator {
     public void markDecisionFailed(String taskId, Long conversationId, String error) {
         taskStore.markFailed(taskId, error);
         agentMessageService.appendAssistant(conversationId, "요청을 분석하지 못했습니다: " + error,
-                ChatMessageKind.TASK_FAILED);
+                ChatMessageKind.TASK_FAILED, taskId);
     }
 
     private AgentSubmission finalizeSubmission(String taskId,
@@ -116,14 +116,14 @@ public class AgentOrchestrator {
         List<Approval> approvals = createRequiredApprovals(normalizedPlan, taskId, userId, conversationId);
         if (approvals.isEmpty()) {
             agentMessageService.appendAssistant(conversationId, "승인 정책에 따라 작업을 시작합니다.",
-                    ChatMessageKind.TASK_PROGRESS);
+                    ChatMessageKind.TASK_PROGRESS, taskId);
             taskStore.enqueue(taskId);
             return new AgentSubmission(taskId, TaskStatus.QUEUED, List.of());
         }
 
         taskStore.markWaitingApproval(taskId, buildApprovalSummary(approvals));
         agentMessageService.appendAssistant(conversationId, buildApprovalChatMessage(approvals),
-                ChatMessageKind.APPROVAL_REQUESTED);
+                ChatMessageKind.APPROVAL_REQUESTED, taskId);
         return new AgentSubmission(
                 taskId,
                 TaskStatus.WAITING_APPROVAL,
@@ -250,7 +250,8 @@ public class AgentOrchestrator {
         agentMessageService.appendAssistant(
                 task == null ? null : task.conversationId(),
                 "작업을 취소했습니다.",
-                ChatMessageKind.TASK_CANCELLED
+                ChatMessageKind.TASK_CANCELLED,
+                taskId
         );
         return true;
     }
@@ -327,7 +328,7 @@ public class AgentOrchestrator {
         log.warn("[AgentOrchestrator] 고착된 승인 완료 태스크를 스윕으로 복구했습니다 — ADR-Y1 이후 이 로그의 발생은 "
                 + "회귀 신호입니다. taskId={}", taskId);
         agentMessageService.appendAssistant(task.conversationId(), "지연된 승인 처리를 복구해 작업을 시작합니다.",
-                ChatMessageKind.TASK_PROGRESS);
+                ChatMessageKind.TASK_PROGRESS, taskId);
     }
 
     /**
@@ -360,7 +361,8 @@ public class AgentOrchestrator {
         agentMessageService.appendAssistant(
                 task.conversationId(),
                 "오랫동안 결정되지 않아 이 작업을 종료했습니다. 필요하면 다시 요청해주세요.",
-                ChatMessageKind.TASK_CANCELLED
+                ChatMessageKind.TASK_CANCELLED,
+                taskId
         );
         return true;
     }
@@ -389,7 +391,8 @@ public class AgentOrchestrator {
         agentMessageService.appendAssistant(
                 task.conversationId(),
                 "요청 처리가 시작되지 않아 이 작업을 종료했습니다. 다시 시도해주세요.",
-                ChatMessageKind.TASK_CANCELLED
+                ChatMessageKind.TASK_CANCELLED,
+                taskId
         );
         return true;
     }
@@ -668,7 +671,7 @@ public class AgentOrchestrator {
             return false;
         }
         agentMessageService.appendAssistant(conversationId, "답변을 반영해 작업을 이어갑니다: " + value.trim(),
-                ChatMessageKind.CLARIFICATION_ANSWER);
+                ChatMessageKind.CLARIFICATION_ANSWER, taskId);
         return true;
     }
 

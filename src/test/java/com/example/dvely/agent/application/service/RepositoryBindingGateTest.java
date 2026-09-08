@@ -121,7 +121,7 @@ class RepositoryBindingGateTest {
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
         verify(agentMessageService).appendAssistant(eq(21L), captor.capture(),
-                eq(ChatMessageKind.APPROVAL_REQUESTED));
+                eq(ChatMessageKind.APPROVAL_REQUESTED), eq("task-1"));
         // The name shown here is the one an empty approve body falls back to, so the user must
         // see exactly what they will get if they just press approve.
         assertThat(captor.getValue())
@@ -234,7 +234,7 @@ class RepositoryBindingGateTest {
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
         verify(agentMessageService).appendAssistant(eq(21L), captor.capture(),
-                eq(ChatMessageKind.APPROVAL_REQUESTED));
+                eq(ChatMessageKind.APPROVAL_REQUESTED), eq("task-1"));
         assertThat(captor.getValue()).doesNotContain("- preview: ");
     }
 

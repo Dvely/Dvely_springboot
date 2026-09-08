@@ -110,18 +110,24 @@ public class ChatCommandService {
                 .orElseThrow(() -> new ConversationNotFoundException(conversationId, userId));
         AiProvider provider = requestedProvider != null ? requestedProvider : aiProperties.getDefaultProvider();
 
+        // Decision(LLM 호출)은 오래 걸린다. 요청 스레드에서 기다리면 FE 가 타임아웃(Network Error)
+        // 나므로, PENDING 태스크를 열어 taskId 만 먼저 응답하고 Decision→제출은 백그라운드로 넘긴다.
+        // FE 는 이 taskId 로 SSE 를 열어 계획·진행·실패를 실시간으로 받는다(항상 non-null).
+        //
+        // 메시지 저장보다 먼저 하는 이유: 사용자 발화에도 taskId 를 실어 저장해야 목록 조회에서
+        // "이 요청이 어느 작업을 낳았나" 를 알 수 있다. 예전에는 저장이 먼저라 taskId 를 못 넣었고,
+        // 그 값은 이 POST 응답에만 실려 나가 GET 목록에서는 전부 null 이었다.
+        // 같은 트랜잭션이므로 뒤가 실패하면 PENDING 태스크도 함께 롤백된다.
+        Long projectId = conversation.getProjectId();
+        String taskId = agentOrchestrator.createPending(userId, conversationId);
+
         ChatMessage message = chatMessageRepository.save(
-                new ChatMessage(conversation.getId(), ChatRole.USER, content, 0)
+                new ChatMessage(conversation.getId(), ChatRole.USER, content, 0, null, taskId)
         );
         if (conversation.assignTitleFromFirstMessage(content)) {
             conversationRepository.save(conversation);
         }
 
-        // Decision(LLM 호출)은 오래 걸린다. 요청 스레드에서 기다리면 FE 가 타임아웃(Network Error)
-        // 나므로, PENDING 태스크를 열어 taskId 만 먼저 응답하고 Decision→제출은 백그라운드로 넘긴다.
-        // FE 는 이 taskId 로 SSE 를 열어 계획·진행·실패를 실시간으로 받는다(항상 non-null).
-        Long projectId = conversation.getProjectId();
-        String taskId = agentOrchestrator.createPending(userId, conversationId);
         dispatchDecisionAfterCommit(taskId, userId, conversationId, projectId, provider);
         return toMessageResult(message, taskId);
     }

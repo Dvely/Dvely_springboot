@@ -77,7 +77,7 @@ class AbandonStaleApprovalTaskTest {
         assertThat(orchestrator.abandonStaleApprovalTask("task-1")).isFalse();
 
         verify(taskStore, never()).cancel(anyString(), any());
-        verify(messageService, never()).appendAssistant(any(), anyString(), any());
+        verify(messageService, never()).appendAssistant(any(), anyString(), any(), any());
     }
 
     @Test
@@ -96,7 +96,7 @@ class AbandonStaleApprovalTaskTest {
         when(taskStore.cancel("task-1", 7L)).thenReturn(false);
 
         assertThat(orchestrator.abandonStaleApprovalTask("task-1")).isFalse();
-        verify(messageService, never()).appendAssistant(any(), anyString(), any());
+        verify(messageService, never()).appendAssistant(any(), anyString(), any(), any());
     }
 
     /**
@@ -113,7 +113,7 @@ class AbandonStaleApprovalTaskTest {
 
         assertThat(orchestrator.cancel("task-1", 7L)).isTrue();
 
-        verify(messageService).appendAssistant(21L, "작업을 취소했습니다.", ChatMessageKind.TASK_CANCELLED);
+        verify(messageService).appendAssistant(21L, "작업을 취소했습니다.", ChatMessageKind.TASK_CANCELLED, "task-1");
     }
 
     @Test
@@ -125,7 +125,7 @@ class AbandonStaleApprovalTaskTest {
 
         orchestrator.reject("task-1", 7L);
 
-        verify(messageService, never()).appendAssistant(any(), anyString(), any());
+        verify(messageService, never()).appendAssistant(any(), anyString(), any(), any());
     }
 
     @Test
@@ -135,7 +135,7 @@ class AbandonStaleApprovalTaskTest {
 
         assertThat(orchestrator.cancel("task-1", 7L)).isFalse();
 
-        verify(messageService, never()).appendAssistant(any(), anyString(), any());
+        verify(messageService, never()).appendAssistant(any(), anyString(), any(), any());
     }
 
     private void givenTask(TaskStatus status) {
