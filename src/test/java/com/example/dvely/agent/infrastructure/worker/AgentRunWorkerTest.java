@@ -70,7 +70,7 @@ class AgentRunWorkerTest {
         worker.dispatchQueuedRuns();
 
         verify(messageService).appendAssistant(21L, "실행이 중단되어 작업을 종료했습니다. 다시 요청해주세요.",
-                ChatMessageKind.TASK_CANCELLED);
+                ChatMessageKind.TASK_CANCELLED, "task-1");
     }
 
     @Test

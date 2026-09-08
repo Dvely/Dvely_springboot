@@ -145,7 +145,8 @@ public class AgentPlanExecutor {
             agentMessageService.appendAssistant(
                     task == null ? null : task.conversationId(),
                     summary == null || summary.isBlank() ? "작업을 완료했습니다." : summary,
-                    ChatMessageKind.AGENT_RESULT
+                    ChatMessageKind.AGENT_RESULT,
+                    taskId
             );
             log.info("=== AgentPlan 실행 완료: taskId={} | previewUrl={} ===", taskId, previewUrl);
 
@@ -155,7 +156,8 @@ public class AgentPlanExecutor {
             agentMessageService.appendAssistant(
                     task == null ? null : task.conversationId(),
                     exception.getMessage(),
-                    ChatMessageKind.INPUT_REQUIRED
+                    ChatMessageKind.INPUT_REQUIRED,
+                    taskId
             );
             log.info("=== AgentPlan 사용자 입력 대기: taskId={} ===", taskId);
         } catch (CodeAgentExecutionException exception) {
@@ -177,7 +179,8 @@ public class AgentPlanExecutor {
             agentMessageService.appendAssistant(
                     task == null ? null : task.conversationId(),
                     exception.getMessage(),
-                    ChatMessageKind.TASK_FAILED
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
             );
             log.error("=== AgentPlan AI 제공자 실패: taskId={} provider={} reason={} ===",
                     taskId, exception.providerName(), exception.reason());
@@ -191,7 +194,8 @@ public class AgentPlanExecutor {
             agentMessageService.appendAssistant(
                     task == null ? null : task.conversationId(),
                     "작업 중 오류가 발생했습니다: " + safeMessage(e),
-                    ChatMessageKind.TASK_FAILED
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
             );
             log.error("=== AgentPlan 실행 실패: taskId={} ===", taskId, e);
         }

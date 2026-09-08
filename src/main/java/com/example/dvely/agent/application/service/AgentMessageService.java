@@ -30,12 +30,24 @@ public class AgentMessageService {
         appendAssistant(conversationId, content, null);
     }
 
-    /**
-     * 종류를 붙여 남긴다. 화면이 본문 문자열로 의미를 추론하지 않게 하는 것이 목적이다 —
-     * 그 추론은 이미 한 번 사고를 냈다(존재하지 않는 승인 버튼). {@link ChatMessageKind} 참고.
-     */
+    /** 태스크와 이어지지 않는 줄. */
     @Transactional
     public void appendAssistant(Long conversationId, String content, ChatMessageKind kind) {
+        appendAssistant(conversationId, content, kind, null);
+    }
+
+    /**
+     * 종류를 붙이고 태스크에 이어 남긴다.
+     *
+     * <p>종류는 화면이 본문 문자열로 의미를 추론하지 않게 한다 — 그 추론은 이미 한 번 사고를
+     * 냈다(존재하지 않는 승인 버튼). {@link ChatMessageKind} 참고.</p>
+     *
+     * <p>taskId 는 "이 줄이 어느 작업의 것인가" 를 남긴다. 없으면 결과 줄에서 그 작업의 diff 로
+     * 넘어가거나 실패 줄에서 그 작업만 재시도하는 것이 불가능하다 — 화면은 "가장 마지막 것"
+     * 같은 휴리스틱으로 짐작할 수밖에 없다.</p>
+     */
+    @Transactional
+    public void appendAssistant(Long conversationId, String content, ChatMessageKind kind, String taskId) {
         if (conversationId == null || content == null || content.isBlank()) {
             return;
         }
@@ -44,7 +56,8 @@ public class AgentMessageService {
                 ChatRole.ASSISTANT,
                 content.trim(),
                 0,
-                kind
+                kind,
+                taskId
         ));
     }
 

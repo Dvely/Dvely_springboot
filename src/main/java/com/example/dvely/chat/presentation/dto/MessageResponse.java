@@ -24,9 +24,12 @@ public record MessageResponse(
         @Schema(description = "메시지 생성 시각")
         LocalDateTime createdAt,
 
-        @Schema(description = "메시지 저장과 함께 큐잉된 Agent 작업의 taskId. 승인 정책에 따라 작업이 정상 접수된 경우에만 " +
-                "값이 채워지며, Decision Agent 판단 실패 등으로 작업이 생성되지 않았거나 과거 메시지를 조회하는 경우(GET " +
-                "messages)에는 null입니다. 값이 있으면 GET /api/v1/agent/tasks/{taskId}로 진행 상황을 폴링할 수 있습니다.",
+        @Schema(description = """
+                이 줄을 만든(또는 이 발화가 낳은) Agent 작업의 taskId. 과거 메시지 조회(GET messages)에서도
+                채워진다 — 예전에는 POST 응답에만 실려 나가 목록에서는 전부 null 이었다. 이 값으로 결과 줄에서
+                그 작업의 변경 내역(GET /api/v1/changes)으로 넘어가거나, 실패 줄에서 그 작업만 재시도할 수 있다.
+                태스크와 무관한 줄과 이 필드 도입(V59) 이전에 쌓인 줄은 null 이다.
+                """,
                 example = "a1b2c3d4e5f6", nullable = true)
         String taskId,
 

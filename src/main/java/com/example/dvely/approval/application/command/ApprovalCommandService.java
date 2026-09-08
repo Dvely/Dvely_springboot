@@ -110,7 +110,8 @@ public class ApprovalCommandService {
             agentMessageService.appendAssistant(
                     saved.getConversationId(),
                     buildResultApprovedMessage(reflectResult),
-                    ChatMessageKind.TASK_PROGRESS
+                    ChatMessageKind.TASK_PROGRESS,
+                    saved.getTaskId()
             );
             return queryService.toResult(saved);
         }
@@ -127,7 +128,8 @@ public class ApprovalCommandService {
             agentMessageService.appendAssistant(
                     saved.getConversationId(),
                     buildRepositoryBoundMessage(bindResult),
-                    ChatMessageKind.TASK_PROGRESS
+                    ChatMessageKind.TASK_PROGRESS,
+                    saved.getTaskId()
             );
             return queryService.toResult(saved);
         }
@@ -144,7 +146,7 @@ public class ApprovalCommandService {
                 .allMatch(item -> item.getStatus() == ApprovalStatus.APPROVED);
         if (allApproved) {
             agentMessageService.appendAssistant(saved.getConversationId(), "모든 승인이 완료되어 작업을 시작합니다.",
-                    ChatMessageKind.TASK_PROGRESS);
+                    ChatMessageKind.TASK_PROGRESS, saved.getTaskId());
             agentOrchestrator.executeApproved(saved.getTaskId());
         }
         return queryService.toResult(saved);
@@ -170,7 +172,8 @@ public class ApprovalCommandService {
                 saved.getConversationId(),
                 "프리뷰가 만료되어 작업물이 사라졌기 때문에 저장소를 연결하지 못했습니다.\n"
                         + "같은 내용을 다시 요청하면 새로 만들어 연결할 수 있습니다.",
-                ChatMessageKind.TASK_FAILED
+                ChatMessageKind.TASK_FAILED,
+                saved.getTaskId()
         );
         return queryService.toResult(saved);
     }
@@ -202,7 +205,8 @@ public class ApprovalCommandService {
                     saved.getConversationId(),
                     "결과가 거절되어 main에 반영하지 않았습니다. 변경은 preview 브랜치에만 남아 있습니다.\n"
                             + "이어서 수정을 요청하면 현재 preview 상태 위에서 작업합니다.",
-                    ChatMessageKind.TASK_CANCELLED
+                    ChatMessageKind.TASK_CANCELLED,
+                    saved.getTaskId()
             );
             return queryService.toResult(saved);
         }
@@ -221,7 +225,8 @@ public class ApprovalCommandService {
                     saved.getConversationId(),
                     "저장소를 연결하지 않았습니다. 작업물은 프리뷰에만 남아 있으며 프리뷰가 만료되면 사라집니다.\n"
                             + "나중에 연결하려면 프로젝트 설정에서 저장소를 연결하거나 배포를 요청해주세요.",
-                    ChatMessageKind.TASK_CANCELLED
+                    ChatMessageKind.TASK_CANCELLED,
+                    saved.getTaskId()
             );
             return queryService.toResult(saved);
         }
@@ -230,7 +235,8 @@ public class ApprovalCommandService {
         agentMessageService.appendAssistant(
                 saved.getConversationId(),
                 "작업이 거절되어 실행하지 않았습니다: " + saved.getSummary(),
-                ChatMessageKind.TASK_CANCELLED
+                ChatMessageKind.TASK_CANCELLED,
+                saved.getTaskId()
         );
         return queryService.toResult(saved);
     }

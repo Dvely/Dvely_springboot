@@ -42,16 +42,22 @@ public class ChatMessageEntity {
     @Column(name = "kind", length = 40)
     private String kind;
 
+    /** 이 줄을 만든 에이전트 태스크. 태스크와 무관한 줄과 이 칼럼 이전 행은 null 이다. */
+    @Column(name = "task_id", length = 64)
+    private String taskId;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
-    private ChatMessageEntity(Long conversationId, String role, String content, long tokenCount, String kind) {
+    private ChatMessageEntity(Long conversationId, String role, String content, long tokenCount,
+                              String kind, String taskId) {
         this.conversationId = conversationId;
         this.role = role;
         this.content = content;
         this.tokenCount = tokenCount;
         this.kind = kind;
+        this.taskId = taskId;
     }
 
     public static ChatMessageEntity from(ChatMessage message) {
@@ -60,7 +66,8 @@ public class ChatMessageEntity {
                 message.getRole().toStorage(),
                 message.getContent(),
                 message.getTokenCount(),
-                message.getKind() == null ? null : message.getKind().name()
+                message.getKind() == null ? null : message.getKind().name(),
+                message.getTaskId()
         );
     }
 
@@ -87,6 +94,7 @@ public class ChatMessageEntity {
                 content,
                 tokenCount,
                 parseKind(kind),
+                taskId,
                 createdAt
         );
     }

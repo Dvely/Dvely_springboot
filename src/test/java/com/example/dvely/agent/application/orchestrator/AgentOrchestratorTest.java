@@ -4,6 +4,8 @@ import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
@@ -105,13 +107,14 @@ class AgentOrchestratorTest {
         // 채팅에는 지시문을 담지 않는다. 바로 아래 붙는 승인 카드가 같은 summary 를 그리므로
         // 여기까지 실으면 같은 내용이 두 번 보인다. 태스크 summary(위 markWaitingApproval)는
         // 카드와 나란히 놓이지 않으므로 지시문을 그대로 유지한다.
+        // taskId 는 submit() 이 새로 발급하므로(newTaskId) 값을 고정할 수 없다 — 실렸다는 것만 본다.
         verify(messageService).appendAssistant(
-                null,
-                "작업 계획을 만들었습니다. 승인 후 실행합니다.\n"
+                isNull(),
+                eq("작업 계획을 만들었습니다. 승인 후 실행합니다.\n"
                         + "- [101] CHANGE\n"
-                        + "- [102] DEPLOYMENT"
-        ,
-                ChatMessageKind.APPROVAL_REQUESTED);
+                        + "- [102] DEPLOYMENT"),
+                eq(ChatMessageKind.APPROVAL_REQUESTED),
+                anyString());
     }
 
     @Test
@@ -860,7 +863,7 @@ class AgentOrchestratorTest {
 
         verify(taskStore).recoverStuckApproval("task-1");
         verify(messageService).appendAssistant(21L, "지연된 승인 처리를 복구해 작업을 시작합니다.",
-                ChatMessageKind.TASK_PROGRESS);
+                ChatMessageKind.TASK_PROGRESS, "task-1");
     }
 
     @Test
@@ -954,7 +957,7 @@ class AgentOrchestratorTest {
         assertThat(closed).isTrue();
         verify(taskStore).markFailed("task-1", "요청 처리가 시작되지 않아 종료했습니다.");
         verify(messageService).appendAssistant(21L, "요청 처리가 시작되지 않아 이 작업을 종료했습니다. 다시 시도해주세요.",
-                ChatMessageKind.TASK_CANCELLED);
+                ChatMessageKind.TASK_CANCELLED, "task-1");
     }
 
     @Test
@@ -1099,7 +1102,7 @@ class AgentOrchestratorTest {
         assertThat(accepted).isTrue();
         verify(messageService).appendAssistant(
                 21L, "답변을 반영해 작업을 이어갑니다: Vanilla (HTML/CSS/JS, 빌드 없음)",
-                ChatMessageKind.CLARIFICATION_ANSWER);
+                ChatMessageKind.CLARIFICATION_ANSWER, "task-1");
     }
 
     /** 태스크가 답을 못 받으면(이미 끝났거나 남의 것) 대화에도 남기지 않는다. */
@@ -1119,6 +1122,6 @@ class AgentOrchestratorTest {
         when(inputWaitStore.supply("task-1", 1L, "react")).thenReturn(false);
 
         assertThat(orchestrator.supplyInput("task-1", 1L, 21L, "react")).isFalse();
-        verify(messageService, never()).appendAssistant(any(), any(), any());
+        verify(messageService, never()).appendAssistant(any(), any(), any(), any());
     }
 }

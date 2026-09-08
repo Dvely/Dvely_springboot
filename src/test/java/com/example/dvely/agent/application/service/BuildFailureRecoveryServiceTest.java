@@ -72,7 +72,7 @@ class BuildFailureRecoveryServiceTest {
                 "빌드 실패\n\n수정안: dependency 수정\n\n로그 일부:\nlog"
                         + "\n\n승인 [91] 후 자동으로 수정 및 재build합니다.",
                 ChatMessageKind.APPROVAL_REQUESTED
-        );
+        , "task-1");
     }
 
     // HIGH-1 (retry-toctou-review.md): the auto-recovery branch must call
@@ -113,7 +113,7 @@ class BuildFailureRecoveryServiceTest {
                 "빌드 실패\n\n수정안: dependency 수정\n\n로그 일부:\nlog"
                         + "\n\n프로젝트 정책에 따라 자동 재시도를 시작합니다.",
                 ChatMessageKind.TASK_FAILED
-        );
+        , "task-1");
     }
 
     // HIGH-1 follow-up: when AgentOrchestrator#retry reports it lost the task-row lock race to a
@@ -145,7 +145,7 @@ class BuildFailureRecoveryServiceTest {
         service.handle("task-1", failure());
 
         verify(agentOrchestrator).retry("task-1", 1L);
-        verify(messageService, never()).appendAssistant(any(), any(), any());
+        verify(messageService, never()).appendAssistant(any(), any(), any(), any());
     }
 
     private CodeAgentExecutionException failure() {

@@ -393,7 +393,7 @@ class WebhookEventHandlerTest {
                         + "- 주소: https://octo.github.io/repo/\n"
                         + "- 버전: v7"
         ,
-                ChatMessageKind.AGENT_RESULT);
+                ChatMessageKind.AGENT_RESULT, "task-51");
     }
 
     @Test
@@ -412,7 +412,7 @@ class WebhookEventHandlerTest {
                         + "- 사유: GitHub Actions workflow conclusion: failure\n"
                         + "다시 배포를 요청하면 같은 저장소로 재시도합니다."
         ,
-                ChatMessageKind.TASK_FAILED);
+                ChatMessageKind.TASK_FAILED, "task-51");
     }
 
     @Test
