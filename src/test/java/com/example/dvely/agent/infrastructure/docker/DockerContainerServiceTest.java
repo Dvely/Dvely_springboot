@@ -113,6 +113,8 @@ class DockerContainerServiceTest {
         when(stopCommand.withTimeout(5)).thenReturn(stopCommand);
         when(dockerClient.removeContainerCmd("container-1")).thenReturn(removeCommand);
         when(removeCommand.withForce(true)).thenReturn(removeCommand);
+        // 익명 볼륨까지 함께 지운다 — 안 그러면 컨테이너만 사라지고 볼륨이 고아로 남는다.
+        when(removeCommand.withRemoveVolumes(true)).thenReturn(removeCommand);
         when(removeCommand.exec()).thenThrow(new IllegalStateException("docker unavailable"));
 
         assertThatThrownBy(() -> service.removeContainer("container-1"))

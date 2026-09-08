@@ -478,7 +478,7 @@ public class CodingAgentContainerRunner {
 
     private void removeQuietly(String containerId) {
         try {
-            dockerClient.removeContainerCmd(containerId).withForce(true).exec();
+            dockerClient.removeContainerCmd(containerId).withForce(true).withRemoveVolumes(true).exec();
         } catch (RuntimeException e) {
             // Cleanup failure must not mask the run's own outcome; a leaked container is visible
             // by its qeploy.codingAgent label.
