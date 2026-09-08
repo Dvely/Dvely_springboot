@@ -1,5 +1,6 @@
 package com.example.dvely.preview.application.service;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
@@ -32,7 +33,8 @@ public class PreviewWorkspaceService {
     // 컨테이너 exec 는 입력이 없어 영원히 기다리게 되고 에이전트 스레드가 잡힌다. 즉시 실패시킨다.
     private static final String GIT_NO_PROMPT = "GIT_TERMINAL_PROMPT=0 ";
 
-    private static final String APP_DIR = "/workspace/app";
+    /** 컨테이너 안 앱 경로. 값은 {@link ContainerPaths#APP_DIR} 하나에서 온다. */
+    private static final String APP_DIR = ContainerPaths.APP_DIR;
     private static final String BUILD_LOG_PATH = "/tmp/qeploy-build.log";
 
     private final DockerContainerService dockerService;
