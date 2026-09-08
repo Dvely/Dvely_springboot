@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.service;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.exception.AgentInputRequiredException;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
@@ -183,7 +184,7 @@ public class DeployAgentService {
         if (!fromStep.isEmpty()) return RepositoryNamePolicy.sanitize(fromStep);
 
         String remote = dockerService.exec(containerId,
-                "git -C /workspace/app remote get-url origin 2>/dev/null || echo __none__").trim();
+                "git -C " + ContainerPaths.APP_DIR + " remote get-url origin 2>/dev/null || echo __none__").trim();
         if (!remote.equals("__none__") && !remote.isEmpty()) {
             String name = remote.substring(remote.lastIndexOf('/') + 1).replace(".git", "");
             log.info("[DeployAgent] 기존 remote에서 저장소명 추출: {}", name);

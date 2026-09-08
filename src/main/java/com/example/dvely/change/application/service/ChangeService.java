@@ -1,5 +1,6 @@
 package com.example.dvely.change.application.service;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
@@ -33,9 +34,8 @@ public class ChangeService {
                 .orElseThrow(() -> new IllegalStateException("Change에 연결할 PreviewSession이 없습니다."));
         String diff = dockerService.exec(
                 preview.containerId(),
-                "cd /workspace/app && "
-                        + "(git add -N . >/dev/null 2>&1 || true) && "
-                        + "git diff --no-ext-diff -- ."
+                ContainerPaths.inApp("(git add -N . >/dev/null 2>&1 || true) && "
+                        + "git diff --no-ext-diff -- .")
         );
         ChangeEntity change = changeRepository.findByTaskId(taskId)
                 .orElseGet(() -> new ChangeEntity(

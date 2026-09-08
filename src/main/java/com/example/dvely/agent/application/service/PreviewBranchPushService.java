@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.service;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -46,32 +47,31 @@ public class PreviewBranchPushService {
 
         String remoteUrl = "https://github.com/" + repoFullName + ".git";
         boolean hasGit = "yes".equals(
-                dockerService.exec(containerId, "[ -d /workspace/app/.git ] && echo yes || echo no").trim());
+                dockerService.exec(containerId, "[ -d " + ContainerPaths.APP_DIR + "/.git ] && echo yes || echo no").trim());
 
         if (!hasGit) {
             if (isNew) writeGitignore(containerId);
-            execOrThrow(containerId, "cd /workspace/app && git init -b preview", "git init");
-            execOrThrow(containerId, "cd /workspace/app && git remote add origin " + remoteUrl, "git remote add");
+            execOrThrow(containerId, ContainerPaths.inApp("git init -b preview"), "git init");
+            execOrThrow(containerId, ContainerPaths.inApp("git remote add origin " + remoteUrl), "git remote add");
             // 원격에 이미 preview 가 있으면 그 커밋을 부모로 삼는다. 저장소를 연결할 때
             // preparePreviewBranch 가 기본 브랜치 HEAD 에서 preview 를 갈라두기 때문에, 갓 init 한
             // 로컬 히스토리를 그대로 올리면 두 히스토리에 공통 조상이 없어 push 가 거부된다.
             // --soft 라서 작업 트리와 인덱스는 건드리지 않고 HEAD 만 원격 끝으로 옮긴다.
             dockerService.exec(containerId,
-                    "cd /workspace/app && "
-                            + "(git fetch origin preview 2>/dev/null "
-                            + "&& git reset --soft FETCH_HEAD) || true");
+                    ContainerPaths.inApp("(git fetch origin preview 2>/dev/null "
+                            + "&& git reset --soft FETCH_HEAD) || true"));
         } else {
-            execOrThrow(containerId, "cd /workspace/app && git remote set-url origin " + remoteUrl, "git remote set-url");
-            execOrThrow(containerId, "cd /workspace/app && git checkout -B preview", "git checkout -B preview");
+            execOrThrow(containerId, ContainerPaths.inApp("git remote set-url origin " + remoteUrl), "git remote set-url");
+            execOrThrow(containerId, ContainerPaths.inApp("git checkout -B preview"), "git checkout -B preview");
         }
 
-        execOrThrow(containerId, "cd /workspace/app && git add -A", "git add");
+        execOrThrow(containerId, ContainerPaths.inApp("git add -A"), "git add");
         // 변경이 없으면 git diff --cached --quiet 가 0 으로 끝나 커밋을 건너뛴다. 변경이 있으면
         // 1 을 주고 커밋이 돌며, 그 커밋이 실패하면 전체가 0 이 아니다 — 그대로 실패로 본다.
         execOrThrow(containerId,
-                "cd /workspace/app && git diff --cached --quiet || git commit -m 'feat: apply Qeploy Agent task "
-                        + taskId + "'", "git commit");
-        execOrThrow(containerId, "cd /workspace/app && git push -u origin preview", "git push");
+                ContainerPaths.inApp("git diff --cached --quiet || git commit -m 'feat: apply Qeploy Agent task "
+                        + taskId + "'"), "git commit");
+        execOrThrow(containerId, ContainerPaths.inApp("git push -u origin preview"), "git push");
     }
 
     /**
@@ -119,12 +119,12 @@ public class PreviewBranchPushService {
      */
     private void requireAppDir(String containerId) {
         String exists = dockerService.exec(
-                containerId, "[ -d /workspace/app ] && echo yes || echo no").trim();
+                containerId, "[ -d " + ContainerPaths.APP_DIR + " ] && echo yes || echo no").trim();
         if (!"yes".equals(exists)) {
             String found = dockerService.exec(
                     containerId, "ls -A /workspace 2>/dev/null | head -20").trim();
             throw new IllegalStateException(
-                    "작업물이 /workspace/app 에 없어 저장소에 올리지 못했습니다. "
+                    "작업물이 " + ContainerPaths.APP_DIR + " 에 없어 저장소에 올리지 못했습니다. "
                             + "코드 에이전트가 다른 경로에 파일을 만든 것으로 보입니다. "
                             + "/workspace 내용: " + (found.isEmpty() ? "(비어 있음)" : found));
         }
@@ -134,6 +134,6 @@ public class PreviewBranchPushService {
         String content = "node_modules/\ndist/\nbuild/\nout/\n.env\n.env.local\n";
         String b64     = Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
         dockerService.exec(containerId,
-                "node -e \"require('fs').writeFileSync('/workspace/app/.gitignore', Buffer.from('" + b64 + "', 'base64').toString('utf8'))\"");
+                "node -e \"require('fs').writeFileSync('" + ContainerPaths.APP_DIR + "/.gitignore', Buffer.from('" + b64 + "', 'base64').toString('utf8'))\"");
     }
 }
