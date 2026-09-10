@@ -128,4 +128,32 @@ class AiModelOptionsResolverTest {
         properties.getAnthropic().setThinkingModels(List.of(DEFAULT_MODEL));
         return properties;
     }
+
+    /**
+     * 코딩 에이전트는 모델·thinking 이 벤더 CLI 소관이라 우리가 해석할 설정이 없다.
+     *
+     * <p>예전에는 여기서 예외를 던져 CODE 스텝이 시작조차 못 했다. 배선된 뒤로는 기본값으로
+     * 통과해야 한다 — 다만 <b>지정하면 거절한다.</b> 조용히 무시하면 사용자는 고르지 않은 모델을
+     * 골랐다고 믿게 되고, 그 선택은 어디에도 전달되지 않는다.</p>
+     */
+    @Test
+    void codingAgentResolvesToDefaultsInsteadOfFailing() {
+        AiModelOptions options = resolver(new AiProperties()).resolve(AiProvider.CODEX, null, null);
+
+        assertThat(options).isEqualTo(AiModelOptions.defaults());
+    }
+
+    @Test
+    void codingAgentRejectsARequestedModel() {
+        assertThatThrownBy(() -> resolver(new AiProperties()).resolve(AiProvider.CLAUDE_CODE, "claude-opus-4", null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("CLI 가 정합니다");
+    }
+
+    @Test
+    void codingAgentRejectsRequestedThinking() {
+        assertThatThrownBy(() -> resolver(new AiProperties()).resolve(AiProvider.CODEX, null, ThinkingLevel.HIGH))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("CLI 가 정합니다");
+    }
 }

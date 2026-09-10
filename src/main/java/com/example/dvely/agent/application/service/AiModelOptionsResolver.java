@@ -22,6 +22,9 @@ public class AiModelOptionsResolver {
     private final AiProperties aiProperties;
 
     public AiModelOptions resolve(AiProvider provider, String requestedModel, ThinkingLevel requestedThinking) {
+        if (provider.isCodingAgent()) {
+            return resolveForCodingAgent(provider, requestedModel, requestedThinking);
+        }
         AiProperties.Provider config = configOf(provider);
         String model = requestedModel == null || requestedModel.isBlank()
                 ? config.getModel()
@@ -45,16 +48,35 @@ public class AiModelOptionsResolver {
         return new AiModelOptions(model, thinking);
     }
 
+    /**
+     * A coding agent's model and reasoning depth belong to the vendor's CLI, not to us.
+     *
+     * <p>A request that names one is rejected rather than ignored: accepting it silently would tell
+     * the user they chose a model when nothing carried that choice anywhere.</p>
+     */
+    private AiModelOptions resolveForCodingAgent(AiProvider provider,
+                                                 String requestedModel,
+                                                 ThinkingLevel requestedThinking) {
+        if (requestedModel != null && !requestedModel.isBlank()) {
+            throw new IllegalArgumentException(
+                    "코딩 에이전트는 모델을 지정할 수 없습니다: " + provider + " (CLI 가 정합니다)");
+        }
+        if (requestedThinking != null && requestedThinking.isEnabled()) {
+            throw new IllegalArgumentException(
+                    "코딩 에이전트는 thinking 을 지정할 수 없습니다: " + provider + " (CLI 가 정합니다)");
+        }
+        return AiModelOptions.defaults();
+    }
+
     private AiProperties.Provider configOf(AiProvider provider) {
         return switch (provider) {
             case ANTHROPIC -> aiProperties.getAnthropic();
             case OPENAI -> aiProperties.getOpenai();
             case GLM -> aiProperties.getGlm();
-            // A coding agent's model and reasoning depth are the CLI's own settings, not ours —
-            // there is no qeploy.ai.* block to resolve against, and pretending there is would let
-            // a request set a model that never reaches the vendor.
+            // Unreachable: resolve() branches before this. Kept so that adding a caller which
+            // forgets that branch fails here rather than resolving against the wrong config.
             case CLAUDE_CODE, CODEX -> throw new IllegalArgumentException(
-                    "코딩 에이전트 제공자는 모델·thinking 옵션을 받지 않습니다: " + provider);
+                    "코딩 에이전트 제공자는 qeploy.ai.* 설정을 갖지 않습니다: " + provider);
         };
     }
 

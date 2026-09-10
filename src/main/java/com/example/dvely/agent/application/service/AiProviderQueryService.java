@@ -2,8 +2,12 @@ package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
+import com.example.dvely.aiaccount.application.query.AiProviderCredentialQueryService;
+import com.example.dvely.aiaccount.application.result.AiProviderCredentialResult;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -17,17 +21,45 @@ import org.springframework.stereotype.Service;
 public class AiProviderQueryService {
 
     private final AiProperties aiProperties;
+    private final AiProviderCredentialQueryService credentialQueryService;
 
     /** 한 제공자의 노출 가능한 정보. {@link AiModelOptionsResolver} 가 검증에 쓰는 것과 같은 값들이다. */
     public record ProviderView(
             AiProvider provider, String defaultModel, List<String> models, List<String> thinkingModels) {}
 
-    public List<ProviderView> availableProviders() {
+    public List<ProviderView> availableProviders(Long userId) {
         List<ProviderView> views = new ArrayList<>();
         addIfConfigured(views, AiProvider.ANTHROPIC, aiProperties.getAnthropic());
         addIfConfigured(views, AiProvider.OPENAI, aiProperties.getOpenai());
         addIfConfigured(views, AiProvider.GLM, aiProperties.getGlm());
+        addCodingAgents(views, userId);
         return views;
+    }
+
+    /**
+     * Coding agents are gated on the <b>caller's own key</b>, not on a deployment one.
+     *
+     * <p>That is the whole point of BYOK: the run is billed to the user, so there is no server key
+     * that could make one available. Listing an agent the user has no key for would offer a choice
+     * that fails the moment it is taken.</p>
+     *
+     * <p>Model and thinking lists come back empty because the vendor's CLI decides both. An empty
+     * list is the honest answer — a placeholder would invite a UI to render a chooser that changes
+     * nothing.</p>
+     */
+    private void addCodingAgents(List<ProviderView> out, Long userId) {
+        if (userId == null) {
+            return;
+        }
+        Set<String> registered = credentialQueryService.list(userId).stream()
+                .map(AiProviderCredentialResult::provider)
+                .collect(Collectors.toSet());
+
+        for (AiProvider agent : List.of(AiProvider.CLAUDE_CODE, AiProvider.CODEX)) {
+            if (registered.contains(agent.credentialVendor().name())) {
+                out.add(new ProviderView(agent, null, List.of(), List.of()));
+            }
+        }
     }
 
     private void addIfConfigured(List<ProviderView> out, AiProvider provider, AiProperties.Provider config) {
