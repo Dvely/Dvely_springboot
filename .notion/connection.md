@@ -98,7 +98,7 @@ AuditRecorder(횡단) ──→ Project/Deploy Agent/ResultApprovalGate/ResultAp
 | DomainBinding | 관리형/커스텀 도메인, DNS 검증, Approval 연동 | Pages만 지원, HTTPS www/apex 정책 미구현 |
 | CloudConnection | AWS/GCP credential 저장, 실제 STS/IAM 검증, 프로젝트 선택 연결 | 실제 cloud 배포/비용 실집행/운영 미연결(비용 추정·운영 질의 자체는 구현됨) |
 | AuditLog | GitHub/배포/도메인/인프라 작업 16종 기록(비차단 REQUIRES_NEW), 프로젝트별 조회 API, 180일 retention 배치 | 계정 수준 감사(installation·로그인 이력)·`/me/audit-logs`는 범위 밖 |
-| Template | 템플릿 저장소가 Pages 로 발행한 `catalog.json` 취득·캐시(stale-while-error), 카탈로그 API, 프로젝트 생성 시 `templateType` 실재 검증 | **씨딩이 남음** — 고른 템플릿이 실제로 프로젝트에 심기지 않는다(Issue #318 PR-4) |
+| Template | 템플릿 저장소가 Pages 로 발행한 `catalog.json` 취득·캐시(stale-while-error), 카탈로그 API, 프로젝트 생성 시 `templateType` 실재 검증, 첫 CODE 스텝 씨딩 | FE 갤러리·썸네일 자동화가 남음 |
 
 ---
 
@@ -455,6 +455,28 @@ RESOURCE_SCALING/AUTOSCALING_CHANGE/RESOURCE_CLEANUP → InfraOperation.supporte
 ```
 
 `INFRA_OPERATION` `ApprovalType`은 U7(§14.2)의 standalone 승인과 여기 Cloud Ops Agent의 Agent 기반 승인, 두 출처를 모두 가진다. `ApprovalType`은 같지만 `approval.taskId`(있음/없음)로 두 흐름이 구분되며, 승인/거절 시 실행 경로는 서로 다르다(전자는 `InfrastructureChangeApprovalHandler` standalone 콜백, 후자는 일반 Agent plan 재개).
+
+---
+
+### 8.x 템플릿 씨딩 (Issue #318)
+
+```text
+CodeAgentService.execute
+→ previewSessionService.acquire(taskId)            컨테이너 확보
+→ previewWorkspaceService.prepareProject(...)      저장소가 있으면 clone/pull
+→ TemplateSeedingService.seedIfNeeded(...)         비어 있을 때만 씨앗을 푼다
+    · startMode != template     → 건너뜀
+    · /workspace/app 이 비지 않음 → 건너뜀 (두 번째 요청 · clone 해온 저장소)
+    · wget -qO- <sourceUrl> | tar -xz -C /workspace/app
+    · 실패하면 예외 — 조용히 백지 생성으로 넘어가지 않는다
+→ 씨딩됐으면 지시문 앞에 템플릿 맥락을 붙인다
+    "이미 깔려 있다 · 스캐폴더를 돌리지 마라 · contentHints 가 '내용' 이다"
+→ LLM 루프
+```
+
+**순서가 중요하다.** clone 이 씨딩보다 먼저다 — 반대면 clone 이 씨앗을 덮거나, 비어 있지 않은 디렉터리에 clone 하려다 실패한다. 씨딩이 "비었을 때만" 이므로 저장소가 있는 프로젝트에서는 자연히 건너뛴다.
+
+`sourceUrl` 은 셸 명령에 들어간다. 카탈로그는 우리 저장소가 발행하지만 그 값을 그대로 셸에 넘기는 구조를 두지 않는다 — 형식(`https://…​.tar.gz`, 안전 문자만)을 먼저 검증한다.
 
 ---
 

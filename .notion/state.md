@@ -997,7 +997,7 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 `.notion/ROADMAP.md`가 단위(Unit) 단위 실행 순서의 SSOT다. 아래는 지금까지 진행해 온 Phase 이력이며, U1~U7·Issue #45·Cost & Budget·Cloud Ops Agent·Issue #56·Issue #55·Issue #57·Issue #74(Audit Log)·Issue #76(Preview 외부 노출 차단, BI-081/G1)·Issue #77(게이트웨이 인가, G2·G4)이 모두 완료된 이후 신규 작업은 ROADMAP의 "이후 백로그"(`BI-163~165` Project Settings 나머지)와 U-sec 단위를 따른다.
 
 
-## 4.22 퍼블리싱 템플릿 카탈로그 (Issue #318, PR-1·2·3)
+## 4.22 퍼블리싱 템플릿 — 카탈로그 + 씨딩 (Issue #318, PR-1~4)
 
 **되는 것**
 
@@ -1007,12 +1007,16 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 - 카탈로그는 10분 주기로 갱신하고, 갱신 실패 시 직전 목록으로 계속 응답한다(stale-while-error). 한 번도 읽지 못한 경우에만 `503 TEMPLATE_CATALOG_UNAVAILABLE`
 - 프로젝트 생성 시 `templateType` 을 **정규화 후 카탈로그와 대조**한다. 없는 ID 는 400
 - 참조 템플릿 3종: `landing-minimal` · `portfolio-grid` · `shop-single` (전부 vanilla·자기완결·외부 자산 없음)
+- **씨딩**: 첫 CODE 스텝에서 씨앗 tarball 을 `/workspace/app` 에 푼다. 작업 디렉터리가 비었을 때만 — 두 번째 요청이나 저장소를 clone 해온 프로젝트는 건너뛴다(덮으면 사용자 작업물이 사라진다)
+- 씨딩되면 CODE 지시문 앞에 템플릿 맥락이 붙는다: "이미 깔려 있다 · 스캐폴더를 돌리지 마라 · 이 부분이 내용이다(contentHints)". 시스템 프롬프트가 "프로젝트 없으면 스캐폴드" 로 시작하므로 그 판단을 추측에 맡기지 않는다
+- 씨딩 실패는 조용히 넘어가지 않는다 — 실패하면 태스크를 실패로 닫는다. 그냥 진행하면 고른 것과 다른 결과물이 "성공" 으로 나온다
+- 카탈로그의 `sourceUrl` 은 셸에 들어가기 전 형식 검증을 거친다(https + `.tar.gz`, 안전 문자만)
 
 **아직 안 되는 것**
 
-- **씨딩이 없다.** 고른 템플릿이 실제로 프로젝트에 심기지 않는다 — 첫 CODE 스텝에서 tarball 을 `/workspace/app` 에 푸는 경로가 PR-4 로 남아 있다. 지금은 카탈로그에 있는 ID 만 통과할 뿐, 통과한 뒤의 동작은 여전히 백지 생성이다
 - FE 템플릿 갤러리 UI (별도 담당)
 - 썸네일 자동 생성
+- 실 사용자 e2e — 템플릿 선택 → 생성 → 프리뷰까지는 아직 실측 전이다
 
 **배경**
 
