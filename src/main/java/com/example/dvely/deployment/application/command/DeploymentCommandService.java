@@ -23,6 +23,7 @@ import com.example.dvely.deployment.application.result.DeployResult;
 import com.example.dvely.deployment.application.service.DeploymentOutcomeService;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
+import com.example.dvely.deployment.infrastructure.worker.DeploymentExecutionRegistry;
 import com.example.dvely.deployment.domain.value.DeployTargetType;
 import com.example.dvely.deployment.domain.value.PackageManager;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
@@ -64,6 +65,9 @@ public class DeploymentCommandService {
     private final GithubActionsPort githubActionsPort;
     private final GithubRepoPort githubRepoPort;
     private final DeploymentHistoryRepository deploymentHistoryRepository;
+    // #340 5-8: executeQueued 가 끝났음을 하트비트에 알리는 유일한 지점. 등록은 DeploymentRunWorker
+    // 가 제출 직전에 한다(그쪽 javadoc 참고) — 여기서 등록하면 executor 큐 대기 창이 비어버린다.
+    private final DeploymentExecutionRegistry deploymentExecutionRegistry;
     // Track Z (#56) D1/§5.4: needed so a direct deploy can no longer silently merge preview into
     // main once the result-approval gate owns that project (see prepareRelease's mergeAllowed).
     private final ProjectApprovalPolicyRepository projectApprovalPolicyRepository;
@@ -233,6 +237,10 @@ public class DeploymentCommandService {
             execute(historyId);
         } catch (Exception exception) {
             handleExecutionFailure(historyId, exception);
+        } finally {
+            // #340 5-8: 이 배포는 더 이상 이 인스턴스가 돌리고 있지 않다 — 하트비트 대상에서
+            // 빼야 한다. 여기서 빼지 않으면 이미 끝난 이력의 리스를 30초마다 되살리게 된다.
+            deploymentExecutionRegistry.unregister(historyId);
         }
     }
 

@@ -198,32 +198,20 @@ class ChatCommandServiceTest {
         verify(conversationRepository, never()).deleteById(any());
     }
 
+    /**
+     * #340 5-9: 만료된 휴지통 대화를 벌크 DELETE 한 문장으로 지운다. 예전에는 엔티티를 전부
+     * 로드한 뒤 {@code deleteById} 를 N 번 불렀다 — 지우려고 읽고, 지우려고 또 왕복했다.
+     * 삭제 조건이 곧 SELECT 조건이었으므로 읽을 이유가 없다.
+     */
     @Test
-    void purgeExpiredConversationsDeletesRepositoryMatches() {
-        Conversation first = new Conversation(
-                11L,
-                2L,
-                7L,
-                true,
-                LocalDateTime.now().minusDays(8),
-                LocalDateTime.now().minusDays(10),
-                LocalDateTime.now().minusDays(8)
-        );
-        Conversation second = new Conversation(
-                12L,
-                2L,
-                7L,
-                true,
-                LocalDateTime.now().minusDays(9),
-                LocalDateTime.now().minusDays(10),
-                LocalDateTime.now().minusDays(9)
-        );
-        when(conversationRepository.findAllByDeletedTrueAndDeletedAtLessThanEqual(any()))
-                .thenReturn(List.of(first, second));
+    void purgeExpiredConversationsDeletesInOneBulkStatement() {
+        when(conversationRepository.deleteExpiredTrash(any())).thenReturn(2);
 
         assertThat(chatCommandService.purgeExpiredConversations()).isEqualTo(2);
-        verify(conversationRepository).deleteById(11L);
-        verify(conversationRepository).deleteById(12L);
+
+        verify(conversationRepository).deleteExpiredTrash(any());
+        verify(conversationRepository, never()).findAllByDeletedTrueAndDeletedAtLessThanEqual(any());
+        verify(conversationRepository, never()).deleteById(any());
     }
 
     private Project project(Long projectId, Long ownerUserId, String sourceRepository, boolean deleted) {

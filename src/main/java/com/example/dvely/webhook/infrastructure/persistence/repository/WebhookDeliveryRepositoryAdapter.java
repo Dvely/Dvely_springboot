@@ -6,6 +6,7 @@ import com.example.dvely.webhook.domain.model.WebhookDelivery;
 import com.example.dvely.webhook.domain.repository.WebhookDeliveryRepository;
 import com.example.dvely.webhook.domain.value.WebhookDeliveryStatus;
 import com.example.dvely.webhook.infrastructure.persistence.entity.WebhookDeliveryEntity;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -92,6 +93,18 @@ public class WebhookDeliveryRepositoryAdapter implements WebhookDeliveryReposito
                         WebhookDeliveryStatus.PROCESSING.name()
                 ) == 1)
                 .toList();
+    }
+
+    @Override
+    @Transactional
+    public boolean releaseClaim(String deliveryId, String workerId, long backoffMillis) {
+        return springDataRepository.releaseClaim(
+                deliveryId,
+                workerId,
+                LocalDateTime.now().plus(Duration.ofMillis(backoffMillis)),
+                WebhookDeliveryStatus.PROCESSING.name(),
+                WebhookDeliveryStatus.PENDING.name()
+        ) == 1;
     }
 
     @Override

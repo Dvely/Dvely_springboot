@@ -12,9 +12,12 @@ import static org.mockito.Mockito.when;
 import com.example.dvely.deployment.application.command.DeploymentCommandService;
 import com.example.dvely.common.worker.WorkerPollGate;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
+import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import static org.assertj.core.api.Assertions.assertThat;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.TaskRejectedException;
 
@@ -32,7 +35,8 @@ class DeploymentRunWorkerTest {
     void dispatchPendingDeployments_recoversClaimsAndDelegatesJobs() {
         DeploymentHistoryRepository repository = mock(DeploymentHistoryRepository.class);
         DeploymentCommandService commandService = mock(DeploymentCommandService.class);
-        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, openGate(), BACKOFF_MS);
+        DeploymentExecutionRegistry registry = new DeploymentExecutionRegistry();
+        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, openGate(), registry, BACKOFF_MS);
         when(repository.recoverAndClaimPending(anyString(), eq(2))).thenReturn(List.of(51L, 52L));
 
         worker.dispatchPendingDeployments();
@@ -54,7 +58,8 @@ class DeploymentRunWorkerTest {
     void executorRejectionDoesNotStrandTheRestOfTheClaimedBatch() {
         DeploymentHistoryRepository repository = mock(DeploymentHistoryRepository.class);
         DeploymentCommandService commandService = mock(DeploymentCommandService.class);
-        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, openGate(), BACKOFF_MS);
+        DeploymentExecutionRegistry registry = new DeploymentExecutionRegistry();
+        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, openGate(), registry, BACKOFF_MS);
         when(repository.recoverAndClaimPending(anyString(), eq(2))).thenReturn(List.of(51L, 52L));
         doThrow(new TaskRejectedException("deploymentExecutor 포화"))
                 .when(commandService).executeQueued(51L);
@@ -71,12 +76,70 @@ class DeploymentRunWorkerTest {
     void anyPreSubmissionFailureReleasesTheClaimToo() {
         DeploymentHistoryRepository repository = mock(DeploymentHistoryRepository.class);
         DeploymentCommandService commandService = mock(DeploymentCommandService.class);
-        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, openGate(), BACKOFF_MS);
+        DeploymentExecutionRegistry registry = new DeploymentExecutionRegistry();
+        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, openGate(), registry, BACKOFF_MS);
         when(repository.recoverAndClaimPending(anyString(), eq(2))).thenReturn(List.of(51L));
         doThrow(new IllegalStateException("제출 전 예외")).when(commandService).executeQueued(51L);
 
         worker.dispatchPendingDeployments();
 
         verify(repository).releaseClaim(eq(51L), anyString(), eq(BACKOFF_MS));
+    }
+
+    // ── #340 5-8: 하트비트를 실제 실행 중인 이력으로 좁힌다 ──────────────────────────────────
+
+    @Test
+    void heartbeatSkipsTheRenewalQueryWhenNothingIsExecuting() {
+        DeploymentHistoryRepository repository = mock(DeploymentHistoryRepository.class);
+        DeploymentCommandService commandService = mock(DeploymentCommandService.class);
+        DeploymentExecutionRegistry registry = new DeploymentExecutionRegistry();
+        DeploymentRunWorker worker =
+                new DeploymentRunWorker(repository, commandService, openGate(), registry, BACKOFF_MS);
+
+        worker.renewLeases();
+
+        // 실행 중인 배포가 없는데 0행짜리 UPDATE 를 30초마다 내보낼 이유가 없다.
+        verify(repository, never()).renewLeases(anyString(), org.mockito.ArgumentMatchers.anyCollection());
+    }
+
+    @Test
+    void heartbeatRenewsExactlyTheRegisteredHistoryIds() {
+        DeploymentHistoryRepository repository = mock(DeploymentHistoryRepository.class);
+        DeploymentCommandService commandService = mock(DeploymentCommandService.class);
+        DeploymentExecutionRegistry registry = new DeploymentExecutionRegistry();
+        registry.register(51L);
+        registry.register(52L);
+        DeploymentRunWorker worker =
+                new DeploymentRunWorker(repository, commandService, openGate(), registry, BACKOFF_MS);
+
+        worker.renewLeases();
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Collection<Long>> captor =
+                org.mockito.ArgumentCaptor.forClass(Collection.class);
+        verify(repository).renewLeases(anyString(), captor.capture());
+        assertThat(captor.getValue()).containsExactlyInAnyOrder(51L, 52L);
+    }
+
+    /**
+     * 실행기가 거부한 이력은 하트비트 대상에서 빠져야 한다. 안 빠지면 실행 주체가 없는 행의
+     * 리스를 30초마다 되살리게 되고, recoverExpiredLeases 가 그것을 영영 회수하지 못한다.
+     */
+    @Test
+    void aRejectedDispatchLeavesNothingBehindForTheHeartbeatToRenew() {
+        DeploymentHistoryRepository repository = mock(DeploymentHistoryRepository.class);
+        DeploymentCommandService commandService = mock(DeploymentCommandService.class);
+        DeploymentExecutionRegistry registry = new DeploymentExecutionRegistry();
+        DeploymentRunWorker worker =
+                new DeploymentRunWorker(repository, commandService, openGate(), registry, BACKOFF_MS);
+        when(repository.recoverAndClaimPending(anyString(), eq(2))).thenReturn(List.of(51L));
+        doThrow(new TaskRejectedException("deploymentExecutor 포화"))
+                .when(commandService).executeQueued(51L);
+
+        worker.dispatchPendingDeployments();
+
+        assertThat(registry.snapshot()).isEmpty();
+        worker.renewLeases();
+        verify(repository, never()).renewLeases(anyString(), org.mockito.ArgumentMatchers.anyCollection());
     }
 }

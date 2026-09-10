@@ -237,7 +237,12 @@ qeploy:
       # ADR-Y2 (#55): StuckApprovalSweeper's poll interval — defense-in-depth recovery for the D1
       # write-skew stuck state (structurally prevented by ADR-Y1's lock hierarchy; this is the
       # safety net for anything that slips through anyway).
-      sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_SWEEP_INTERVAL_MS:60000}
+      #
+      # #340 5-7: 60초 → 5분. 이 스윕은 자기 자신의 자바독이 "정상이면 항상 0건" 이라고 적은
+      # 회귀망이다. 회귀가 실제로 생겼을 때 5분 안에 잡히면 충분하고(사용자는 이미 승인 버튼을
+      # 누른 뒤 기다리는 중이 아니다 — 그 경로는 ADR-Y1 이 구조적으로 막았다), 그 사이 매분
+      # 도는 것은 정상 상태에서 순수한 낭비다.
+      sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_SWEEP_INTERVAL_MS:300000}
       # AbandonedApprovalSweeper: 아무도 결정하지 않은 승인 대기 태스크를 닫기까지 기다리는 시간.
       # 넉넉해야 한다 — 승인 카드를 띄워둔 채 하루 자리를 비우는 것은 정상이고, 그걸 취소하면
       # 스윕이 오히려 기능을 망가뜨린다. 0 이하로 두면 스윕이 꺼진다.
@@ -296,6 +301,9 @@ qeploy:
   webhook:
     worker:
       poll-interval-ms: ${QEPLOY_WEBHOOK_WORKER_POLL_INTERVAL_MS:1000}
+      # #340 5-3: webhookExecutor 가 포화라 claim 한 배달을 넘기지 못했을 때, PENDING 으로
+      # 되돌리며 next_attempt_at 에 얹는 backoff.
+      dispatch-reject-backoff-ms: ${QEPLOY_WEBHOOK_WORKER_DISPATCH_REJECT_BACKOFF_MS:5000}
     # WebhookDeliveryRetentionScheduler (#338): 이 테이블에는 삭제 로직이 없어서 payload
     # LONGBLOB 이 이벤트마다 영구히 쌓이고 있었다. 멱등·재시도를 위한 기록이라 최종 상태에
     # 도달하고 며칠 지나면 아무도 읽지 않는다. 터미널 상태만 지운다 — 처리 대기·재시도 대기·

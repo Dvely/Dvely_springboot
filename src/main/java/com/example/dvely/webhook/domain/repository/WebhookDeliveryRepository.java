@@ -39,4 +39,11 @@ public interface WebhookDeliveryRepository {
      * 호출자는 0 이 돌아올 때까지 반복한다.</p>
      */
     int deleteTerminalBatch(LocalDateTime cutoff, int batchSize);
+
+    /**
+     * claim 해 놓고 executor 에 넘기지 못한 배달을 PENDING 으로 되돌린다(#340 5-3).
+     *
+     * @return 이 호출이 실제로 되돌렸으면 true.
+     */
+    boolean releaseClaim(String deliveryId, String workerId, long backoffMillis);
 }

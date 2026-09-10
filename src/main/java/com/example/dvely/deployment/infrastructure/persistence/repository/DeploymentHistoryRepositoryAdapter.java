@@ -6,6 +6,7 @@ import com.example.dvely.common.worker.WorkQueue;
 import com.example.dvely.common.worker.WorkQueuedEvent;
 import com.example.dvely.deployment.infrastructure.persistence.entity.DeploymentHistoryEntity;
 import com.example.dvely.project.domain.value.DeployStatus;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.time.Duration;
@@ -152,11 +153,15 @@ public class DeploymentHistoryRepositoryAdapter implements DeploymentHistoryRepo
 
     @Override
     @Transactional
-    public void renewLeases(String workerId) {
+    public void renewLeases(String workerId, Collection<Long> historyIds) {
+        if (historyIds.isEmpty()) {
+            return;
+        }
         springDataRepository.renewLeases(
                 workerId,
                 LocalDateTime.now().plusMinutes(2),
-                DeployStatus.IN_PROGRESS.name()
+                DeployStatus.IN_PROGRESS.name(),
+                historyIds
         );
     }
 }

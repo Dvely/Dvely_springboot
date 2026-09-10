@@ -3,6 +3,7 @@ package com.example.dvely.deployment.domain.repository;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.project.domain.value.DeployStatus;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -54,5 +55,11 @@ public interface DeploymentHistoryRepository {
      */
     boolean releaseClaim(Long historyId, String workerId, long backoffMillis);
 
-    void renewLeases(String workerId);
+    /**
+     * 이 인스턴스가 실제로 실행 중인 이력들의 리스만 연장한다(#340 5-8).
+     *
+     * <p>{@code historyIds} 는 호출자의 실행 레지스트리 스냅샷이다. 비어 있으면 호출자가 아예
+     * 부르지 않는다 — 실행 중인 배포가 없는데 0행짜리 UPDATE 를 30초마다 내보낼 이유가 없다.</p>
+     */
+    void renewLeases(String workerId, Collection<Long> historyIds);
 }

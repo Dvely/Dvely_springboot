@@ -117,7 +117,15 @@ class WebhookMergedPollClaimIntegrationTest {
         assertThat(fetchRow(deliveryId).get("lease_owner")).isEqualTo("worker-a");
     }
 
-    /** 회수가 합친 뒤에도 실제로 돌아가는지 — 합치면서 조용히 빠뜨리면 좀비 리스가 영원히 남는다. */
+    /**
+     * 회수가 합친 뒤에도 실제로 돌아가는지 — 합치면서 조용히 빠뜨리면 좀비 리스가 영원히 남는다.
+     *
+     * <p>합쳤기 때문에 <b>두 결과가 모두 정상</b>이다: 회수만 되어 RETRY_WAIT 로 남거나, 회수된
+     * 행을 같은 호출의 claim 이 곧바로 다시 집거나. {@code recoverExpiredLease} 가 next_attempt_at
+     * 을 "지금"으로 적는데 그 컬럼이 초 단위 DATETIME 이라, 반올림이 위로 튀느냐에 따라 같은
+     * 트랜잭션의 claim 이 집기도 하고 못 집기도 한다. 그래서 상태 대신 <b>회수가 남긴 흔적</b>으로
+     * 판정한다 — 회수만이 이 error_message 를 적고, 이어지는 claim 은 그것을 지우지 않는다.</p>
+     */
     @Test
     void mergedPollStillRecoversAnExpiredLease() {
         String deliveryId = uniqueId("merged-recover");
@@ -127,9 +135,14 @@ class WebhookMergedPollClaimIntegrationTest {
         webhookDeliveryRepository.recoverAndClaimPending("worker-alive", POLL_LIMIT);
 
         Map<String, Object> row = fetchRow(deliveryId);
-        assertThat(row.get("status")).isEqualTo(WebhookDeliveryStatus.RETRY_WAIT.name());
-        assertThat(row.get("lease_owner")).isNull();
-        assertThat(row.get("lease_until")).isNull();
+        assertThat((String) row.get("error_message"))
+                .as("회수가 돌지 않았다면 이 문구는 적히지 않는다")
+                .isEqualTo("worker lease가 만료되어 webhook 처리를 다시 시도합니다.");
+        assertThat(row.get("lease_owner"))
+                .as("죽은 워커의 리스를 남겨두면 그 배달은 영영 처리되지 않는다")
+                .isIn(null, "worker-alive");
+        assertThat(row.get("status")).isIn(
+                WebhookDeliveryStatus.RETRY_WAIT.name(), WebhookDeliveryStatus.PROCESSING.name());
     }
 
     // ── 2. 깨우기의 트랜잭션 경계 ────────────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ import com.example.dvely.common.worker.WorkerPollGate;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import java.lang.management.ManagementFactory;
 import java.util.List;
+import java.util.Set;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -30,17 +31,20 @@ public class DeploymentRunWorker {
     private final DeploymentHistoryRepository deploymentHistoryRepository;
     private final DeploymentCommandService deploymentCommandService;
     private final WorkerPollGate pollGate;
+    private final DeploymentExecutionRegistry executionRegistry;
     private final long dispatchRejectBackoffMs;
     private final String workerId = ManagementFactory.getRuntimeMXBean().getName() + "-deployment";
 
     public DeploymentRunWorker(DeploymentHistoryRepository deploymentHistoryRepository,
                                DeploymentCommandService deploymentCommandService,
                                WorkerPollGate pollGate,
+                               DeploymentExecutionRegistry executionRegistry,
                                @Value("${qeploy.deployment.worker.dispatch-reject-backoff-ms:5000}")
                                long dispatchRejectBackoffMs) {
         this.deploymentHistoryRepository = deploymentHistoryRepository;
         this.deploymentCommandService = deploymentCommandService;
         this.pollGate = pollGate;
+        this.executionRegistry = executionRegistry;
         this.dispatchRejectBackoffMs = dispatchRejectBackoffMs;
     }
 
@@ -69,6 +73,10 @@ public class DeploymentRunWorker {
     }
 
     private void dispatchOne(Long historyId) {
+        // #340 5-8: 제출 "직전"에 등록한다. 제출은 됐지만 아직 executor 큐에서 대기 중인 배포도
+        // 하트비트 보호를 받아야 한다 — 그 창을 비워두면 리스가 만료돼 회수가 같은 일을 다시
+        // 집는데 원래 제출분은 나중에 그대로 실행된다.
+        executionRegistry.register(historyId);
         try {
             log.info("배포 Job 실행 위임: historyId={} workerId={}", historyId, workerId);
             deploymentCommandService.executeQueued(historyId);
@@ -82,6 +90,7 @@ public class DeploymentRunWorker {
     }
 
     private void handleDispatchFailure(Long historyId, RuntimeException exception) {
+        executionRegistry.unregister(historyId);
         boolean released = deploymentHistoryRepository.releaseClaim(
                 historyId, workerId, dispatchRejectBackoffMs);
         log.warn("배포 Job 위임 실패 — 재대기열로 반환합니다. historyId={} workerId={} released={} 원인={}",
@@ -90,6 +99,12 @@ public class DeploymentRunWorker {
 
     @Scheduled(fixedDelayString = "${qeploy.deployment.worker.heartbeat-interval-ms:30000}")
     public void renewLeases() {
-        deploymentHistoryRepository.renewLeases(workerId);
+        Set<Long> registered = executionRegistry.snapshot();
+        if (registered.isEmpty()) {
+            // #340 5-8: 이 JVM 이 지금 실제로 돌리고 있는 배포가 없다 — 쿼리를 아예 내지 않는다.
+            // (AgentRunWorker 는 이미 이렇게 하고 있었고, 이쪽만 조건 없이 UPDATE 를 내보냈다.)
+            return;
+        }
+        deploymentHistoryRepository.renewLeases(workerId, registered);
     }
 }

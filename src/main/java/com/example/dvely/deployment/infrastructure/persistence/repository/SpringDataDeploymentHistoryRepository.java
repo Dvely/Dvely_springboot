@@ -2,6 +2,7 @@ package com.example.dvely.deployment.infrastructure.persistence.repository;
 
 import com.example.dvely.deployment.infrastructure.persistence.entity.DeploymentHistoryEntity;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Pageable;
@@ -85,16 +86,21 @@ public interface SpringDataDeploymentHistoryRepository extends JpaRepository<Dep
     List<DeploymentHistoryEntity> findByStatusAndLeaseUntilIsNullAndUpdatedAtBefore(
             String status, LocalDateTime updatedBefore, Pageable pageable);
 
+    // #340 5-8: 갱신 범위를 호출자의 DeploymentExecutionRegistry 스냅샷(historyIds)으로 좁힌다.
+    // 이 워커가 claim 했지만 실행기가 거부한 이력의 리스를 여기서 계속 살려두면
+    // recoverExpiredLeases 가 그것을 영영 회수하지 못한다(AgentRunWorker 의 ADR-Y4 와 같은 이유).
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
             update DeploymentHistoryEntity history
                set history.leaseUntil = :leaseUntil
              where history.status = :runningStatus
                and history.leaseOwner = :workerId
+               and history.id in :historyIds
             """)
     int renewLeases(
             @Param("workerId") String workerId,
             @Param("leaseUntil") LocalDateTime leaseUntil,
-            @Param("runningStatus") String runningStatus
+            @Param("runningStatus") String runningStatus,
+            @Param("historyIds") Collection<Long> historyIds
     );
 }

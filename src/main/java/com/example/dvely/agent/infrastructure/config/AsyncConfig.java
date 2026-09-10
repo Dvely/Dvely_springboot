@@ -148,6 +148,51 @@ public class AsyncConfig {
         return executor;
     }
 
+    // #340 5-3: 웹훅 배달 처리를 스케줄러 스레드에서 떼어낸다. 핸들러가 GitHub API 를 호출하므로
+    // 한 배달이 느리면 그 동안 이 워커의 다음 폴링이 통째로 밀리고, 스케줄러 풀을 공유하는 다른
+    // 잡까지 굶는다. 한 폴링이 최대 CLAIM_BATCH_SIZE(10) 건을 넘기므로 큐를 그보다 넉넉히 둔다.
+    @Bean("webhookExecutor")
+    public ThreadPoolTaskExecutor webhookExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(50);
+        executor.setThreadNamePrefix("webhook-");
+        executor.setAllowCoreThreadTimeOut(true);
+        executor.initialize();
+        return executor;
+    }
+
+    // #340 5-5: 도메인 검증 프로브(Cloudflare + GitHub + HTTPS)를 스케줄러 스레드에서 떼어낸다.
+    // 배치 20건을 직렬로 도는 동안 한 건이 타임아웃까지 버티면 그 시간이 그대로 스케줄러 점유가
+    // 된다. 동시 실행을 낮게 두는 이유는 이 호출들이 외부 API 레이트 리밋을 쓰기 때문이다.
+    @Bean("domainVerificationExecutor")
+    public ThreadPoolTaskExecutor domainVerificationExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(50);
+        executor.setThreadNamePrefix("domain-verify-");
+        executor.setAllowCoreThreadTimeOut(true);
+        executor.initialize();
+        return executor;
+    }
+
+    // #340 5-10: 도커 prune 처럼 오래 걸리는 정비 작업 전용. prune 3회가 도커 데몬을 잠시 붙잡는
+    // 동안 스케줄러 스레드를 점유하지 않게 한다. 6시간에 한 번 도는 일이라 놀 때는 스레드를
+    // 회수한다(allowCoreThreadTimeOut).
+    @Bean("maintenanceExecutor")
+    public ThreadPoolTaskExecutor maintenanceExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(2);
+        executor.setQueueCapacity(10);
+        executor.setThreadNamePrefix("maintenance-");
+        executor.setAllowCoreThreadTimeOut(true);
+        executor.initialize();
+        return executor;
+    }
+
     @Bean("cloudConnectionExecutor")
     public Executor cloudConnectionExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
