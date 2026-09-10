@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -36,8 +37,10 @@ import com.example.dvely.preview.application.service.PreviewRuntimeConfigService
 import com.example.dvely.preview.application.service.PreviewRuntimeLauncher;
 import com.example.dvely.preview.application.service.PreviewServeException;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.template.domain.model.Template;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -67,6 +70,8 @@ class CodeAgentServiceTest {
     @Mock private AuthCommandService authCommandService;
     @Mock private ProjectRepository projectRepository;
     @Mock private BuildFailureAnalyzer buildFailureAnalyzer;
+    // 스텁하지 않으면 Optional.empty() 가 나온다 — 템플릿 없는 프로젝트와 같은 경로다.
+    @Mock private TemplateSeedingService templateSeedingService;
 
     private CodeAgentService service;
 
@@ -96,6 +101,7 @@ class CodeAgentServiceTest {
                 previewRuntimeLauncher,
                 previewWorkspaceService,
                 buildFailureAnalyzer,
+                templateSeedingService,
                 aiProperties
         );
         when(previewSessionService.acquire(TASK_ID)).thenReturn(previewSession());
@@ -138,6 +144,36 @@ class CodeAgentServiceTest {
                             .contains("execute_command")
                             .contains("round " + MAX_ITERATIONS);
                 });
+    }
+
+    @Test
+    void seededTemplateTellsTheModelNotToScaffold() {
+        // 씨딩된 프로젝트에서 스캐폴더가 한 번이라도 돌면 사용자가 고른 템플릿이 통째로 덮인다.
+        // 시스템 프롬프트가 "프로젝트가 없으면 스캐폴드" 로 시작하므로, 이미 파일이 있다는 사실과
+        // 어디가 '내용' 인지를 지시문에 직접 실어 보낸다.
+        when(templateSeedingService.seedIfNeeded(eq(CONTAINER_ID), any()))
+                .thenReturn(Optional.of(new Template(
+                        "landing-minimal", "미니멀 랜딩", "설명", List.of("landing"), "vanilla",
+                        "index.html",
+                        List.of(new Template.ContentHint("hero.title", "index.html", "히어로 대제목")),
+                        "https://demo", "https://src.tar.gz")));
+        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of("command", "ls"))));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("index.html");
+
+        assertThatThrownBy(() -> execute(AiProvider.ANTHROPIC))
+                .isInstanceOf(CodeAgentExecutionException.class);
+
+        ArgumentCaptor<List<Map<String, Object>>> messages = ArgumentCaptor.captor();
+        verify(claudeToolClient, atLeastOnce())
+                .completeWithTools(anyString(), messages.capture(), anyList(), any());
+
+        String firstUserMessage = String.valueOf(messages.getValue().getFirst().get("content"));
+        assertThat(firstUserMessage)
+                .contains("미니멀 랜딩")
+                .contains("DO NOT scaffold")
+                .contains("hero.title")
+                .contains("투두 앱을 만들어줘");
     }
 
     @Test
