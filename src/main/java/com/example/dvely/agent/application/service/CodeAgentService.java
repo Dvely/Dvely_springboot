@@ -112,6 +112,12 @@ public class CodeAgentService {
             - CRITICAL: scaffold → implement feature → build. Never build before implementing.
             - If a command fails, read the error and fix it before continuing.
             - Each execute_command runs independently; chain with: cd /path && command
+            - Do NOT pin a router basename, or a build-time `base`, to a deploy path. The usual
+              GitHub Pages recipe — `<BrowserRouter basename={import.meta.env.BASE_URL}>` — is
+              inlined when the app is built, but the preview serves it under a different path that
+              changes every time it is opened. The router then matches nothing and shows a
+              blank page with no console error, which is nearly impossible to diagnose.
+              Leave both unset; deployment sets its own base at build time.
             - When the build succeeds, respond with TEXT ONLY (no tool calls). This closing text is
               shown DIRECTLY TO THE END USER — the non-technical owner of the app, not a developer —
               so write a short, friendly product summary, NOT a build log. Rules for it:
