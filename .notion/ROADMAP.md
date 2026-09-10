@@ -10,6 +10,7 @@
 
 ## 1. 현재 상태
 
+- 2026-09-11: **#116·#117·#325 처리, #327 not planned — Danto 이슈 전부 정리** — **#116**: `vue-cli`·`sveltekit`·`gatsby`·`astro` 를 Next.js 의 감싸기 방식으로 바꾸고 분기가 없던 `nuxt` 를 추가했다. 이 다섯은 Qeploy 가 스캐폴딩하지 않아 **연결된 저장소로만** 들어오는데, 그 저장소에는 스캐폴더가 써 둔 config 가 반드시 있어 경고 분기가 사실상 유일한 경로였다. 확장자만으로 모듈 종류를 정하면 SvelteKit 에서 깨진다(`.js` 인데 ESM)는 것을 잡아 `package.json` 의 `type` 까지 본다. 생성된 셸을 가짜 저장소에서 실제로 돌려 검증했다(`scripts/verify-deploy-base-override.sh`). **#117**: CODE 프롬프트에 basename 고정 금지를 넣어 발현 자체를 막았다 — 완전 해법인 프리뷰 오리진 분리는 백로그에 남는다. **#325**: `CodingAgentWorkspaceBridge` 로 두 워크스페이스 모델을 잇고, 제공자 목록을 사용자 키 기준으로 갈랐다. `DockerClient` 가 스프링 빈이 아니라는 것을 컨텍스트 로드 82개 실패로 배웠다. **#327**: 붙여넣기로 충분해 not planned — 다만 `GITHUB_OAUTH_REDIRECT_URI` 가 아무도 안 읽는 죽은 설정임이 드러났다.
 - 2026-09-10: **`qeploy login` — 발급 창구를 CLI 안에 만들어 FE 의존을 끊었다** — MCP·CLI 를 다 만들어 놓고 열쇠만 없는 상태였다(PAT 발급 창구가 웹 UI 뿐). 브라우저 JWT 를 한 번 받아 PAT 로 바꾸고 `~/.config/qeploy/config.json`(0600)에 저장한다. **CLI 와 MCP 가 같은 파일을 읽어** 로그인 한 번으로 둘 다 풀린다 — 에이전트는 `npx @qeploy/mcp` 로 실행되어 환경변수를 받을 자리가 없다. 실측으로 `redirect_uri` 를 GitHub 에 한 번도 보내지 않는 것을 확인했고(그래서 루프백 불가), FE 가 `state` 를 검증해 기존 콜백에 얹는 방법도 취약함을 확인해 브라우저 왕복은 **#327** 로 분리했다. `GITHUB_OAUTH_REDIRECT_URI` 가 선언만 되고 아무도 안 읽는 죽은 설정이라는 것도 이때 드러났다. 실 서버 검증(실제 JWT → 발급 → 환경변수 없이 CLI·MCP 동작 → logout), JS 테스트 77개.
 - 2026-09-10: **PR #306 머지 (develop `d8237b7`) + Danto 이슈 8건 분류 완료** — PAT·MCP·CLI 가 develop 에 들어갔다(V60). `base` 가 `develop` 이라 `Closes` 키워드가 자동 발동하지 않아 #304 는 수동으로 닫았다 — 이 저장소에서는 앞으로도 그렇다.
 
