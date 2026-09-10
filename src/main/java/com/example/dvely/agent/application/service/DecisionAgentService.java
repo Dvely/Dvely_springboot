@@ -71,8 +71,9 @@ public class DecisionAgentService {
               them. Ask with SINGLE_SELECT, offering "react" (React + Vite), "vue" (Vue + Vite) and
               "vanilla" (plain HTML/CSS/JS, no build step); mark none as recommended unless the
               request hints at one. Do NOT ask when the project already has code (the stack is
-              already settled), when the user named a framework or library, or when the request is a
-              small edit rather than a new app.
+              already settled), when the project facts name a templateId (the chosen template settles
+              the stack — asking again offers a choice that was already made), when the user named a
+              framework or library, or when the request is a small edit rather than a new app.
             - A frontend DEPLOY is requested, the user did not say WHERE, the project has never been
               deployed, and the project facts below list more than one available target.
               GitHub Pages, S3 and an EC2 server are different places with different URLs and costs,
@@ -105,6 +106,9 @@ public class DecisionAgentService {
                  code yet, name the frontend framework to scaffold with — the user's own words, or
                  their answer to the clarifying question above. Do not leave it to the code agent to
                  pick: it will scaffold whatever it likes and the user gets a stack they never chose.
+                 The exception is a project that starts from a template (project facts name a
+                 templateId): the template is already in the workspace, so describe the change
+                 against it and never name a framework to scaffold.
                - "targetFile": file or component mentioned (empty string if not mentioned)
 
             2. DEPLOY — User explicitly wants to deploy to a PRODUCTION environment:

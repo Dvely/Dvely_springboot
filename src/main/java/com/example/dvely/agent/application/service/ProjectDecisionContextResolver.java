@@ -32,6 +32,8 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class ProjectDecisionContextResolver {
 
+    private static final String TEMPLATE_START_MODE = "template";
+
     private final ProjectRepository projectRepository;
     private final ProjectCloudConnectionSettingRepository cloudConnectionSettingRepository;
 
@@ -48,12 +50,19 @@ public class ProjectDecisionContextResolver {
     }
 
     private ProjectDecisionContext toContext(Project project) {
+        boolean hasCode = project.getRepositoryBindingStatus() == RepositoryBindingStatus.BOUND
+                || project.getDeployStatus() != DeployStatus.DRAFT;
         return new ProjectDecisionContext(
-                project.getRepositoryBindingStatus() == RepositoryBindingStatus.BOUND
-                        || project.getDeployStatus() != DeployStatus.DRAFT,
+                hasCode,
                 project.getFrontendHostingType(),
                 project.getDeployStatus() != DeployStatus.DRAFT,
-                cloudConnectionSettingRepository.findByProjectId(project.getId()).isPresent()
+                cloudConnectionSettingRepository.findByProjectId(project.getId()).isPresent(),
+                // 저장소에 코드가 잡히기 전이라도 템플릿을 골랐다면 첫 CODE 스텝이 그것을 깔아둔다.
+                // 그 사실을 모르면 결정 에이전트가 "코드가 없으니 새로 만들겠다" 며 스택을 묻는다 —
+                // 스택은 템플릿이 이미 정했는데도(2026-09-10 dev, project 51 에서 실제로 물었다).
+                TEMPLATE_START_MODE.equals(project.getStartMode()) && !hasCode
+                        ? project.getTemplateType()
+                        : null
         );
     }
 
@@ -63,13 +72,19 @@ public class ProjectDecisionContextResolver {
      * @param frontendHosting 프로젝트에 저장된 프론트 호스팅. 재배포는 사용자가 바꾸라고 하지 않는 한 이걸 따른다
      * @param everDeployed   한 번이라도 배포를 요청한 적이 있는지({@link DeployStatus#DRAFT} 를 벗어났는지)
      * @param cloudConnected 프로젝트에 클라우드 연결이 선택돼 있는지 — S3·EC2 의 전제 조건
+     * @param pendingTemplateId 첫 CODE 스텝이 깔아둘 템플릿 ID. 이게 있으면 스택은 이미 정해졌다
      */
     public record ProjectDecisionContext(
             boolean hasCode,
             FrontendHostingType frontendHosting,
             boolean everDeployed,
-            boolean cloudConnected
+            boolean cloudConnected,
+            String pendingTemplateId
     ) {
+
+        public boolean hasPendingTemplate() {
+            return pendingTemplateId != null && !pendingTemplateId.isBlank();
+        }
 
         /** 지금 이 프로젝트가 실제로 배포될 수 있는 곳. 클라우드가 없으면 GitHub Pages 하나뿐이다. */
         public List<FrontendHostingType> availableHostingTargets() {
@@ -83,6 +98,13 @@ public class ProjectDecisionContextResolver {
          * 말하면 안 된다 — 첫 CODE 스텝이 실제로 스캐폴딩하기 때문이다.
          */
         public String asProjectLine(Long projectId) {
+            if (hasPendingTemplate()) {
+                return "[Project context: projectId=" + projectId
+                        + ". This project starts from the \"" + pendingTemplateId + "\" template, which is "
+                        + "already laid down in the workspace by the CODE step. Treat the user request as a "
+                        + "modification of that template — do not scaffold, and do not pick a frontend "
+                        + "framework: the template already settles the stack.]";
+            }
             return hasCode
                     ? "[Project context: projectId=" + projectId
                             + ". This project already has code. Treat the latest user request as a "
@@ -95,6 +117,7 @@ public class ProjectDecisionContextResolver {
         /** 사실만 적은 한 줄. 판단은 시스템 프롬프트의 규칙에 맡긴다. */
         public String asFactsLine() {
             return "[Project facts: hasCode=" + hasCode
+                    + (hasPendingTemplate() ? ", templateId=" + pendingTemplateId : "")
                     + ", frontendHosting=" + frontendHosting
                     + ", everDeployed=" + everDeployed
                     + ", availableHostingTargets=" + availableHostingTargets().stream()

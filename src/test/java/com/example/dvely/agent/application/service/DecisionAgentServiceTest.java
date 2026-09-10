@@ -212,7 +212,7 @@ class DecisionAgentServiceTest {
     void 프로젝트의_배포_위치_사실을_프롬프트에_실어_보낸다() {
         when(projectDecisionContextResolver.resolve(44L)).thenReturn(Optional.of(
                 new ProjectDecisionContextResolver.ProjectDecisionContext(
-                        false, FrontendHostingType.GITHUB_PAGES, false, false)));
+                        false, FrontendHostingType.GITHUB_PAGES, false, false, null)));
         answers(VALID_PLAN);
 
         decide();
@@ -261,7 +261,7 @@ class DecisionAgentServiceTest {
     void 코드가_없는_프로젝트에는_처음부터_만든다고_알린다() {
         when(projectDecisionContextResolver.resolve(44L)).thenReturn(Optional.of(
                 new ProjectDecisionContextResolver.ProjectDecisionContext(
-                        false, FrontendHostingType.GITHUB_PAGES, false, false)));
+                        false, FrontendHostingType.GITHUB_PAGES, false, false, null)));
         answers(VALID_PLAN);
 
         decide();
@@ -277,7 +277,7 @@ class DecisionAgentServiceTest {
     void 코드가_있는_프로젝트에는_수정으로_다루라고_알린다() {
         when(projectDecisionContextResolver.resolve(44L)).thenReturn(Optional.of(
                 new ProjectDecisionContextResolver.ProjectDecisionContext(
-                        true, FrontendHostingType.S3, true, true)));
+                        true, FrontendHostingType.S3, true, true, null)));
         answers(VALID_PLAN);
 
         decide();

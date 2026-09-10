@@ -68,6 +68,10 @@ class TemplateSeedingServiceTest {
 
         assertThat(seeded).isPresent();
         verify(dockerService).execWithExitCode(eq(CONTAINER), contains(SOURCE_URL));
+        // --no-same-owner 가 빠지면 dev 에서 났던 실패가 그대로 재현된다: 씨앗은 CI 러너(uid 1001)가
+        // 묶어서 tar 가 대상 디렉터리를 1001 로 chown 하고, CAP_DAC_OVERRIDE 없는 root 가 그 안에
+        // 쓰려다 첫 파일에서 Permission denied 로 죽는다.
+        verify(dockerService).execWithExitCode(eq(CONTAINER), contains("--no-same-owner"));
     }
 
     @Test
@@ -102,7 +106,9 @@ class TemplateSeedingServiceTest {
 
         assertThatThrownBy(() -> service().seedIfNeeded(CONTAINER, PROJECT_ID))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("landing-minimal");
+                .hasMessageContaining("landing-minimal")
+                // 출력이 빠지면 무엇이 막혔는지 알 수 없어 컨테이너에 들어가 재현해야 한다.
+                .hasMessageContaining("wget: bad address");
     }
 
     @Test
