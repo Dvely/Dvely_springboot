@@ -20,6 +20,14 @@ spring:
       # 기본값 10 은 에이전트 동시 실행을 4 로 올린 뒤로는 빠듯하다. MySQL 기본 max_connections
       # 는 151 이라 이 정도는 여유가 있다.
       maximum-pool-size: ${DB_MAX_POOL_SIZE:20}
+      # 기본값 30s. 풀이 마르면 요청 스레드가 그 30s 를 통째로 기다리다 실패한다 — 2026-09-08
+      # 고갈 때 auth/refresh·approvals 가 함께 느려진 경로가 이것이다. 정상일 때 획득은 1ms
+      # 미만이라 10s 는 여전히 아주 넉넉하고, 마른 상황에서는 스레드를 빨리 돌려준다.
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:10000}
+      # 지정하지 않으면 maximum-pool-size 와 같은 값이 된다(= 고정 크기 풀). 그 암묵적 기본에
+      # 기대지 않고 명시한다. 줄이지 않는 이유는 1초 폴링 워커 4종이 상시 커넥션을 집기 때문 —
+      # 유휴로 반납해봐야 곧바로 다시 만들고, 그 생성 지연이 버스트 때 그대로 지연이 된다.
+      minimum-idle: ${DB_MIN_IDLE:${DB_MAX_POOL_SIZE:20}}
 
   jpa:
     hibernate:
