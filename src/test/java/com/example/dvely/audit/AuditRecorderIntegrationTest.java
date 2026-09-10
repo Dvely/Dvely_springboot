@@ -10,6 +10,7 @@ import com.example.dvely.audit.domain.repository.AuditLogRepository;
 import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.audit.domain.value.AuditActorType;
 import com.example.dvely.audit.domain.value.AuditOutcome;
+import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -54,9 +55,7 @@ class AuditRecorderIntegrationTest {
             return null;
         });
 
-        List<AuditLog> found = auditLogRepository.findByProjectIdOrderByIdDesc(projectId, 10);
-        assertThat(found).hasSize(1);
-        assertThat(found.get(0).getResourceId()).isEqualTo("rollback-marker");
+        assertThat(awaitSingleRow(projectId).getResourceId()).isEqualTo("rollback-marker");
     }
 
     @Test
@@ -70,9 +69,7 @@ class AuditRecorderIntegrationTest {
 
         assertThatCode(() -> auditRecorder.record(event)).doesNotThrowAnyException();
 
-        List<AuditLog> found = auditLogRepository.findByProjectIdOrderByIdDesc(projectId, 10);
-        assertThat(found).hasSize(1);
-        assertThat(found.get(0).getResourceId()).isEqualTo("no-tx-marker");
+        assertThat(awaitSingleRow(projectId).getResourceId()).isEqualTo("no-tx-marker");
     }
 
     @Test
@@ -87,6 +84,31 @@ class AuditRecorderIntegrationTest {
         );
 
         assertThatCode(() -> auditRecorder.record(brokenEvent)).doesNotThrowAnyException();
+    }
+
+    /**
+     * 감사 행이 나타날 때까지 기다린다. 감사 스레드가 자기 트랜잭션으로 커밋하므로, 호출이 돌아온
+     * 시점에는 아직 안 보일 수 있다.
+     */
+    private AuditLog awaitSingleRow(long projectId) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        List<AuditLog> found = List.of();
+        while (System.nanoTime() < deadline) {
+            found = auditLogRepository.findByProjectIdOrderByIdDesc(projectId, 10);
+            if (!found.isEmpty()) {
+                break;
+            }
+            try {
+                Thread.sleep(25);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+        }
+        assertThat(found)
+                .withFailMessage("감사 행이 남지 않았습니다 (projectId=%d)", projectId)
+                .hasSize(1);
+        return found.get(0);
     }
 
     private AuditEvent event(long projectId, String resourceId) {
