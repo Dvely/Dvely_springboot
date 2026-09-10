@@ -23,17 +23,16 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
-import lombok.RequiredArgsConstructor;
 import org.bouncycastle.openssl.PEMKeyPair;
 import org.bouncycastle.openssl.PEMParser;
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 
 @Component
-@RequiredArgsConstructor
 public class GithubProjectClient implements GithubRepositoryPort {
 
     private static final String GITHUB_API_BASE_URL = "https://api.github.com";
@@ -47,7 +46,21 @@ public class GithubProjectClient implements GithubRepositoryPort {
     // bad_refresh_token 이 난다(getGithubUserAccessToken 참고).
     private final AuthCommandService authCommandService;
     private final GithubProperties githubProperties;
-    private final RestClient restClient = RestClient.create();
+    private final RestClient restClient;
+
+    // 생성자를 직접 쓰는 이유: RestClient 빈이 여럿이라 타입만으로는 고를 수 없는데,
+    // Lombok 은 필드의 @Qualifier 를 생성자 파라미터로 옮겨주지 않는다.
+    public GithubProjectClient(UserRepository userRepository,
+                               GithubAppPort githubAppPort,
+                               AuthCommandService authCommandService,
+                               GithubProperties githubProperties,
+                               @Qualifier("githubRestClient") RestClient restClient) {
+        this.userRepository = userRepository;
+        this.githubAppPort = githubAppPort;
+        this.authCommandService = authCommandService;
+        this.githubProperties = githubProperties;
+        this.restClient = restClient;
+    }
 
     @Override
     public List<GithubRepository> listRepositories(Long ownerUserId) {

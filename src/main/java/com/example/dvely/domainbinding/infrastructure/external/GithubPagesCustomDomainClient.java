@@ -8,6 +8,7 @@ import java.time.format.DateTimeParseException;
 import java.util.HashMap;
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -17,6 +18,12 @@ import org.springframework.web.client.RestClientResponseException;
 public class GithubPagesCustomDomainClient implements HostingCustomDomainPort {
 
     private static final String API_BASE = "https://api.github.com";
+
+    private final RestClient githubRestClient;
+
+    public GithubPagesCustomDomainClient(@Qualifier("githubRestClient") RestClient githubRestClient) {
+        this.githubRestClient = githubRestClient;
+    }
 
     @Override
     public void setCustomDomain(String userToken, String repositoryFullName, String hostname) {
@@ -117,8 +124,16 @@ public class GithubPagesCustomDomainClient implements HostingCustomDomainPort {
         return parts;
     }
 
+    /**
+     * 사용자 토큰마다 파생시킨다.
+     *
+     * <p>{@code mutate()} 는 원본의 요청 팩토리를 <b>그대로 물려준다</b>(참조 복사). 그래서
+     * 커넥션 풀·셀렉터 스레드와 상한은 공용 빈 하나를 계속 공유하고, 인스턴스에 고정되는 것은
+     * 이 호출의 토큰뿐이다 — 토큰을 공용 빈의 기본 헤더로 박으면 다른 사용자의 요청에 남의
+     * 토큰이 실린다.</p>
+     */
     private RestClient restClient(String userToken) {
-        return RestClient.builder()
+        return githubRestClient.mutate()
                 .defaultHeader("Authorization", "Bearer " + userToken)
                 .defaultHeader("Accept", "application/vnd.github+json")
                 .defaultHeader("X-GitHub-Api-Version", "2022-11-28")

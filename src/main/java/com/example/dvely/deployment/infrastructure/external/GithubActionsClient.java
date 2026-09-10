@@ -5,6 +5,7 @@ import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTempla
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -22,6 +23,15 @@ import java.util.stream.Collectors;
 public class GithubActionsClient implements GithubActionsPort {
 
     private static final String API_BASE = "https://api.github.com";
+
+    private final RestClient githubRestClient;
+    private final RestClient githubLogRestClient;
+
+    public GithubActionsClient(@Qualifier("githubRestClient") RestClient githubRestClient,
+                               @Qualifier("githubLogRestClient") RestClient githubLogRestClient) {
+        this.githubRestClient = githubRestClient;
+        this.githubLogRestClient = githubLogRestClient;
+    }
 
     @Override
     public boolean workflowExists(String userToken, String repoFullName, String workflowFileName) {
@@ -337,7 +347,8 @@ public class GithubActionsClient implements GithubActionsPort {
 
     private String fetchJobLogText(String userToken, String owner, String repo, Long jobId) {
         try {
-            return restClient(userToken)
+            // 이 응답만 본문이 로그 전문이다. JSON 호출과 같은 상한을 씌우면 정상 다운로드가 잘린다.
+            return withToken(githubLogRestClient, userToken)
                     .get()
                     .uri(API_BASE + "/repos/{owner}/{repo}/actions/jobs/{jobId}/logs",
                             owner, repo, jobId)
@@ -365,7 +376,19 @@ public class GithubActionsClient implements GithubActionsPort {
     }
 
     private RestClient restClient(String userToken) {
-        return RestClient.builder()
+        return withToken(githubRestClient, userToken);
+    }
+
+    /**
+     * 사용자 토큰마다 파생시킨다.
+     *
+     * <p>{@code mutate()} 는 원본의 요청 팩토리를 <b>그대로 물려준다</b>(참조 복사). 그래서
+     * 커넥션 풀·셀렉터 스레드와 상한은 공용 빈 하나를 계속 공유하고, 인스턴스에 고정되는 것은
+     * 이 호출의 토큰뿐이다 — 토큰을 공용 빈의 기본 헤더로 박으면 다른 사용자의 요청에 남의
+     * 토큰이 실린다.</p>
+     */
+    private static RestClient withToken(RestClient shared, String userToken) {
+        return shared.mutate()
                 .defaultHeader("Authorization", "Bearer " + userToken)
                 .defaultHeader("Accept", "application/vnd.github+json")
                 .defaultHeader("X-GitHub-Api-Version", "2022-11-28")

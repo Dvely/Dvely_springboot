@@ -4,11 +4,11 @@ import com.example.dvely.auth.application.port.out.GithubAppPort;
 import com.example.dvely.auth.infrastructure.config.GithubProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.jsonwebtoken.Jwts;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.bouncycastle.openssl.PEMKeyPair;
 import org.bouncycastle.openssl.PEMParser;
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -27,7 +27,6 @@ import java.util.Optional;
 
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class GithubAppClient implements GithubAppPort {
 
     private static final String GITHUB_API_BASE_URL = "https://api.github.com";
@@ -35,11 +34,20 @@ public class GithubAppClient implements GithubAppPort {
     private static final String GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
 
     private final GithubProperties properties;
+    private final RestClient githubRestClient;
+
+    // 생성자를 직접 쓰는 이유: RestClient 빈이 여럿이라 타입만으로는 고를 수 없는데,
+    // Lombok 은 필드의 @Qualifier 를 생성자 파라미터로 옮겨주지 않는다.
+    public GithubAppClient(GithubProperties properties,
+                           @Qualifier("githubRestClient") RestClient githubRestClient) {
+        this.properties = properties;
+        this.githubRestClient = githubRestClient;
+    }
 
     @Override
     public Optional<Long> findInstallationId(String oauthToken) {
         try {
-            UserInstallationsResponse response = RestClient.create()
+            UserInstallationsResponse response = githubRestClient
                     .get()
                     .uri(GITHUB_API_BASE_URL + "/user/installations")
                     .header("Authorization", "token " + oauthToken)
@@ -117,7 +125,7 @@ public class GithubAppClient implements GithubAppPort {
     }
 
     private UserTokenResponse exchangeToken(Map<String, String> body) {
-        UserTokenResponse response = RestClient.create()
+        UserTokenResponse response = githubRestClient
                 .post()
                 .uri(GITHUB_TOKEN_URL)
                 .header("Accept", "application/json")
@@ -150,7 +158,7 @@ public class GithubAppClient implements GithubAppPort {
     @Override
     public String getInstallationToken(Long installationId) {
         record TokenResponse(@com.fasterxml.jackson.annotation.JsonProperty("token") String token) {}
-        TokenResponse response = RestClient.create()
+        TokenResponse response = githubRestClient
                 .post()
                 .uri(GITHUB_API_BASE_URL + "/app/installations/" + installationId + "/access_tokens")
                 .header("Authorization", "Bearer " + generateAppJwt())
@@ -199,7 +207,7 @@ public class GithubAppClient implements GithubAppPort {
 
     private String getAppSlug() {
         try {
-            AppInfoResponse response = RestClient.create()
+            AppInfoResponse response = githubRestClient
                     .get()
                     .uri(GITHUB_API_BASE_URL + "/app")
                     .header("Authorization", "Bearer " + generateAppJwt())
