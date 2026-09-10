@@ -52,9 +52,6 @@ public class ChangeService {
     /** 저장할 diff 의 상한. 넘으면 잘라서 표시한다 — 컬럼이 MEDIUMTEXT(16MB) 라 넘기면 저장이 통째로 실패한다. */
     private static final int MAX_DIFF_CHARS = 1_000_000;
 
-    /** 작업 트리 밖에 두는 일회용 git 디렉터리. 워크스페이스에 .git 을 만들지 않기 위한 것이다. */
-    private static final String SCRATCH_GIT_DIR = "/tmp/qeploy-diff.git";
-
     /**
      * 컨테이너의 작업물에서 변경 내역을 뜬다.
      *
@@ -67,7 +64,7 @@ public class ChangeService {
      * {@code exec} 은 종료 코드를 보지 않으므로 그 도움말 텍스트가 그대로 diff 로 저장됐다. 이후
      * 아무도 덮어쓰지 않아 영구히 남는다 — 즉 <b>모든 신규 프로젝트의 첫 변경 내역이 쓰레기였다.</b></p>
      *
-     * <p>그래서 저장소가 없으면 작업 트리 <b>밖</b>({@link #SCRATCH_GIT_DIR})에 일회용 저장소를 만들어
+     * <p>그래서 저장소가 없으면 작업 트리 <b>밖</b>({@link ContainerPaths#DIFF_GIT_DIR})에 일회용 저장소를 만들어
      * 거기서 뜬다. 워크스페이스에 {@code .git} 을 만들지 않는 것이 핵심이다 — 만들면
      * {@code PreviewBranchPushService} 가 "이미 저장소가 있다" 로 분기해 remote 도 없는 상태에서
      * {@code git remote set-url} 을 돌리다 push 가 통째로 실패한다.</p>
@@ -80,12 +77,14 @@ public class ChangeService {
                 containerId,
                 "[ -d " + ContainerPaths.APP_DIR + "/.git ] && echo yes || echo no").trim());
 
-        String gitPrefix = hasRepository
-                ? "git "
-                : "git --git-dir=" + SCRATCH_GIT_DIR + " --work-tree=. ";
+        String gitPrefix = hasRepository ? "git " : ContainerPaths.diffGit();
+        // 있으면 그대로 쓴다. 예전에는 매번 rm -rf 로 지우고 새로 만들었는데, 그러면 씨딩이 남긴
+        // 템플릿 기준 커밋까지 함께 날아가 템플릿 전체가 "새 파일" 로 잡힌다 — 사용자가 보고 싶은
+        // 것은 자기가 요청한 변경분인데 그게 템플릿 1만 자에 묻힌다.
+        // 컨테이너는 태스크마다 새로 뜨므로 이전 태스크의 기준선이 섞일 일은 없다.
         String prepare = hasRepository
                 ? ""
-                : "rm -rf " + SCRATCH_GIT_DIR + " && " + gitPrefix + "init -q && ";
+                : "([ -d " + ContainerPaths.DIFF_GIT_DIR + " ] || " + gitPrefix + "init -q) && ";
 
         // git 은 이미지(node:20-alpine)에 없다. PreviewBranchPushService 가 깔긴 하지만 그건 결과
         // 승인 이후라 여기보다 한참 뒤다 — 그래서 이 자리에서는 언제나 exit=127 이었고, 저장소가

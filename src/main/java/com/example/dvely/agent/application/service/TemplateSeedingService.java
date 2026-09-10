@@ -98,8 +98,43 @@ public class TemplateSeedingService {
             throw new IllegalStateException("템플릿을 풀었지만 파일이 없습니다: " + templateId);
         }
 
+        recordBaseline(containerId, templateId);
+
         log.info("[TemplateSeed] 씨딩 완료 | projectId={} templateId={} url={}", projectId, templateId, sourceUrl);
         return Optional.of(template);
+    }
+
+    /**
+     * 갓 푼 템플릿을 기준 커밋으로 남긴다.
+     *
+     * <p>이게 없으면 변경 내역이 템플릿 전체를 "새 파일" 로 잡는다. 사용자가 보고 싶은 것은 자기가
+     * 요청한 변경분인데, 실측에서 3줄 수정이 1만 자 diff 에 묻혔다(2026-09-10 dev, project 53).
+     * 기준선을 깔아두면 {@code ChangeService} 가 그 대비 차이만 뜬다.</p>
+     *
+     * <p><b>실패해도 씨딩을 실패시키지 않는다.</b> 기준선이 없으면 diff 가 예전처럼 전체를 보여줄
+     * 뿐이고, 그건 불편하지 그른 것이 아니다. 여기서 태스크를 죽이면 부가 기능 때문에 본 작업을
+     * 잃는다 — 씨딩 자체의 실패(사용자가 고른 것과 다른 결과물)와는 성격이 다르다.</p>
+     *
+     * <p>커밋에는 신원이 필요하다. 컨테이너에 git 전역 설정이 없으므로 {@code -c} 로 이 커밋에만
+     * 준다 — {@code git config} 로 남기면 뒤에 오는 push 의 커밋 작성자까지 바꾼다.</p>
+     */
+    private void recordBaseline(String containerId, String templateId) {
+        String git = ContainerPaths.diffGit();
+        String identity = "-c user.email=noreply@qeploy.dev -c user.name=Qeploy ";
+
+        DockerContainerService.ExecResult result = dockerService.execWithExitCode(
+                containerId,
+                ContainerPaths.inApp("(apk add --no-cache git >/dev/null 2>&1 || true) && "
+                        + "rm -rf " + ContainerPaths.DIFF_GIT_DIR + " && "
+                        + git + "init -q && "
+                        + git + "add -A && "
+                        + git + identity + "commit -q -m 'template: " + templateId + "'"));
+
+        if (!result.succeeded()) {
+            log.warn("[TemplateSeed] 기준 커밋을 남기지 못했습니다 — 변경 내역이 템플릿 전체를 새 파일로 "
+                    + "보여줍니다. templateId={} exit={}{}", templateId, result.exitCode(),
+                    firstLineOf(result.output()));
+        }
     }
 
     /** 예외 메시지에 들어가므로 한 줄로 자른다. 전체 출력은 로그가 아니라 여기서만 쓴다. */
