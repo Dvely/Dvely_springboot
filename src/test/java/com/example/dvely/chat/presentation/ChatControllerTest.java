@@ -100,7 +100,8 @@ class ChatControllerTest {
                                 0,
                                 LocalDateTime.now(),
                                 null
-                );
+                ,
+                        null);
                 MessageResponse response = new MessageResponse(
                                 100L,
                                 20L,
@@ -109,7 +110,8 @@ class ChatControllerTest {
                                 0,
                                 LocalDateTime.now(),
                                 null
-                );
+                ,
+                        null);
 
                 when(chatFacade.getMessages(1L, 20L)).thenReturn(List.of(result));
                 when(chatMapper.toMessageResponse(result)).thenReturn(response);
@@ -132,7 +134,8 @@ class ChatControllerTest {
                                 0,
                                 LocalDateTime.now(),
                                 "task-abc123"
-                );
+                ,
+                        null);
                 MessageResponse response = new MessageResponse(
                                 101L,
                                 30L,
@@ -141,7 +144,8 @@ class ChatControllerTest {
                                 0,
                                 LocalDateTime.now(),
                                 "task-abc123"
-                );
+                ,
+                        null);
 
                 when(chatFacade.sendMessage(1L, 30L, "hi", null)).thenReturn(result);
                 when(chatMapper.toMessageResponse(result)).thenReturn(response);

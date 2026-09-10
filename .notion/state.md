@@ -36,7 +36,8 @@
 ## 2.2 프로젝트와 GitHub 저장소
 
 - GitHub 저장소 없이 DRAFT 프로젝트 생성
-- 프로젝트 생성 직후 startMode/templateType/draftMode 기반 CODE Agent task 제출 (202 Accepted)
+- 프로젝트 생성은 프로젝트 행만 만든다 — 초기 CODE task 제출 경로는 제거됨(제출돼도 실행된 적이 없었다). 첫 코드는 사용자의 첫 요청 때 CODE Agent 가 만든다
+- `startMode=template` 이면 `templateType` 을 템플릿 카탈로그와 대조한다(§4.22). 없는 ID 는 400
 - 프로젝트와 저장소를 분리해 관리
 - 새 GitHub 저장소 생성 후 연결
 - 기존 GitHub 저장소 접근 확인 후 연결
@@ -993,14 +994,14 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 ## 4.22 P1: 에이전트용 개인 액세스 토큰 PAT (Issue #304)
 
-상태: PR #306 리뷰 대기. 브랜치 `danto/agent-pat`, V56.
+상태: PR #306 리뷰 대기. 브랜치 `danto/agent-pat`, V60.
 
 무엇: 브라우저 JWT 가 1시간이라 헤드리스 클라이언트(MCP 서버·CLI·CI)가 쓸 장수명 자격이 없었다. PAT 로 채운다. MCP·CLI 단위(PRD 부록 A-2, `srs.md` §B)의 유일한 선행 요건이다.
 
-- `apitoken` 도메인(V56). **해시만 저장**하고 평문은 발급 응답에서 1회만 노출한다 — §4.21 의 BYOK 키와 달리 벤더에 전달할 일이 없어 비교만 하면 된다.
+- `apitoken` 도메인(V60). **해시만 저장**하고 평문은 발급 응답에서 1회만 노출한다 — §4.21 의 BYOK 키와 달리 벤더에 전달할 일이 없어 비교만 하면 된다.
 - 기존 `JwtAuthenticationFilter` 가 `qp_` 접두사로 분기. 기존 JWT 경로는 테스트로 불변을 고정했다.
 - 스코프는 HTTP 메서드로 강제(READ 는 GET 만, 변경 메서드는 403).
-- 엔드포인트 3개(`/api/v1/api-tokens`). `api.md` §17.
+- 엔드포인트 3개(`/api/v1/api-tokens`). `api.md` §18.
 
 **실 서버 검증 완료**: 로컬 기동 후 실제 HTTP 로 10가지 경우 전수 확인 — 발급·목록·폐기, 발급 토큰의 실제 동작, READ 토큰의 쓰기 403, 만료·폐기·미상 토큰의 401 동일화, 목록 응답에 평문 부재, 만료 상한 400. 검증용 사용자·토큰은 정리했다.
 
@@ -1046,6 +1047,32 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 # 5. 권장 구현 순서
 
 `.notion/ROADMAP.md`가 단위(Unit) 단위 실행 순서의 SSOT다. 아래는 지금까지 진행해 온 Phase 이력이며, U1~U7·Issue #45·Cost & Budget·Cloud Ops Agent·Issue #56·Issue #55·Issue #57·Issue #74(Audit Log)·Issue #76(Preview 외부 노출 차단, BI-081/G1)·Issue #77(게이트웨이 인가, G2·G4)이 모두 완료된 이후 신규 작업은 ROADMAP의 "이후 백로그"(`BI-163~165` Project Settings 나머지)와 U-sec 단위를 따른다.
+
+
+## 4.22 퍼블리싱 템플릿 — 카탈로그 + 씨딩 (Issue #318, PR-1~4)
+
+**되는 것**
+
+- 템플릿 저장소 `Dvely/qeploy-templates` 가 GitHub Pages 로 셋을 발행한다 — `catalog.json`(카탈로그 정본) · `t/<id>/`(데모) · `src/<id>.tar.gz`(씨앗). main 머지가 곧 발행이다
+- 데모는 iframe 임베드 가능(2026-09-10 실측: 정상 문서에 `X-Frame-Options`·`CSP frame-ancestors` 없음)
+- `GET /api/v1/templates`, `GET /api/v1/templates/{id}` — 인증 불필요. 서버는 카탈로그를 읽어 나를 뿐 **소스를 들지 않는다**
+- 카탈로그는 10분 주기로 갱신하고, 갱신 실패 시 직전 목록으로 계속 응답한다(stale-while-error). 한 번도 읽지 못한 경우에만 `503 TEMPLATE_CATALOG_UNAVAILABLE`
+- 프로젝트 생성 시 `templateType` 을 **정규화 후 카탈로그와 대조**한다. 없는 ID 는 400
+- 참조 템플릿 3종: `landing-minimal` · `portfolio-grid` · `shop-single` (전부 vanilla·자기완결·외부 자산 없음)
+- **씨딩**: 첫 CODE 스텝에서 씨앗 tarball 을 `/workspace/app` 에 푼다. 작업 디렉터리가 비었을 때만 — 두 번째 요청이나 저장소를 clone 해온 프로젝트는 건너뛴다(덮으면 사용자 작업물이 사라진다)
+- 씨딩되면 CODE 지시문 앞에 템플릿 맥락이 붙는다: "이미 깔려 있다 · 스캐폴더를 돌리지 마라 · 이 부분이 내용이다(contentHints)". 시스템 프롬프트가 "프로젝트 없으면 스캐폴드" 로 시작하므로 그 판단을 추측에 맡기지 않는다
+- 씨딩 실패는 조용히 넘어가지 않는다 — 실패하면 태스크를 실패로 닫는다. 그냥 진행하면 고른 것과 다른 결과물이 "성공" 으로 나온다
+- 카탈로그의 `sourceUrl` 은 셸에 들어가기 전 형식 검증을 거친다(https + `.tar.gz`, 안전 문자만)
+
+**아직 안 되는 것**
+
+- FE 템플릿 갤러리 UI (별도 담당)
+- 썸네일 자동 생성
+- 실 사용자 e2e — 템플릿 선택 → 생성 → 프리뷰까지는 아직 실측 전이다
+
+**배경**
+
+이전에는 `startMode`/`templateType` 이 검증·저장되기만 하고 읽는 코드가 없었다. 사용자가 템플릿을 골라도 조용히 무시되고 백지 생성됐다. 설계는 `docs/template-architecture-design.md`.
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
 

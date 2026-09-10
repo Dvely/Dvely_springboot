@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.service;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -42,34 +43,35 @@ public class PreviewBranchPushService {
         dockerService.exec(containerId, "git config --global user.email 'agent@qeploy.com'");
         dockerService.exec(containerId, "git config --global user.name 'Qeploy Agent'");
 
+        requireAppDir(containerId);
+
         String remoteUrl = "https://github.com/" + repoFullName + ".git";
         boolean hasGit = "yes".equals(
-                dockerService.exec(containerId, "[ -d /workspace/app/.git ] && echo yes || echo no").trim());
+                dockerService.exec(containerId, "[ -d " + ContainerPaths.APP_DIR + "/.git ] && echo yes || echo no").trim());
 
         if (!hasGit) {
             if (isNew) writeGitignore(containerId);
-            execOrThrow(containerId, "cd /workspace/app && git init -b preview", "git init");
-            execOrThrow(containerId, "cd /workspace/app && git remote add origin " + remoteUrl, "git remote add");
+            execOrThrow(containerId, ContainerPaths.inApp("git init -b preview"), "git init");
+            execOrThrow(containerId, ContainerPaths.inApp("git remote add origin " + remoteUrl), "git remote add");
             // 원격에 이미 preview 가 있으면 그 커밋을 부모로 삼는다. 저장소를 연결할 때
             // preparePreviewBranch 가 기본 브랜치 HEAD 에서 preview 를 갈라두기 때문에, 갓 init 한
             // 로컬 히스토리를 그대로 올리면 두 히스토리에 공통 조상이 없어 push 가 거부된다.
             // --soft 라서 작업 트리와 인덱스는 건드리지 않고 HEAD 만 원격 끝으로 옮긴다.
             dockerService.exec(containerId,
-                    "cd /workspace/app && "
-                            + "(git fetch origin preview 2>/dev/null "
-                            + "&& git reset --soft FETCH_HEAD) || true");
+                    ContainerPaths.inApp("(git fetch origin preview 2>/dev/null "
+                            + "&& git reset --soft FETCH_HEAD) || true"));
         } else {
-            execOrThrow(containerId, "cd /workspace/app && git remote set-url origin " + remoteUrl, "git remote set-url");
-            execOrThrow(containerId, "cd /workspace/app && git checkout -B preview", "git checkout -B preview");
+            execOrThrow(containerId, ContainerPaths.inApp("git remote set-url origin " + remoteUrl), "git remote set-url");
+            execOrThrow(containerId, ContainerPaths.inApp("git checkout -B preview"), "git checkout -B preview");
         }
 
-        execOrThrow(containerId, "cd /workspace/app && git add -A", "git add");
+        execOrThrow(containerId, ContainerPaths.inApp("git add -A"), "git add");
         // 변경이 없으면 git diff --cached --quiet 가 0 으로 끝나 커밋을 건너뛴다. 변경이 있으면
         // 1 을 주고 커밋이 돌며, 그 커밋이 실패하면 전체가 0 이 아니다 — 그대로 실패로 본다.
         execOrThrow(containerId,
-                "cd /workspace/app && git diff --cached --quiet || git commit -m 'feat: apply Qeploy Agent task "
-                        + taskId + "'", "git commit");
-        execOrThrow(containerId, "cd /workspace/app && git push -u origin preview", "git push");
+                ContainerPaths.inApp("git diff --cached --quiet || git commit -m 'feat: apply Qeploy Agent task "
+                        + taskId + "'"), "git commit");
+        execOrThrow(containerId, ContainerPaths.inApp("git push -u origin preview"), "git push");
     }
 
     /**
@@ -102,10 +104,36 @@ public class PreviewBranchPushService {
                 "node -e \"require('fs').writeFileSync('/tmp/.git-credentials', Buffer.from('" + b64 + "', 'base64').toString('utf8'))\"");
     }
 
+    /**
+     * /workspace/app 이 없으면 여기서 끝낸다. 없으면 첫 {@code cd} 가
+     * {@code sh: cd: can't cd to /workspace/app} 로 죽는데, 그 문구는 "git init 이 실패했다"로
+     * 보고돼 원인이 코드 에이전트가 파일을 엉뚱한 곳에 썼다는 사실을 가린다.
+     *
+     * <p>실제로 그렇게 한 번 막혔다(2026-09-07 dev, project 45): 프레임워크 없는 vanilla 요청이라
+     * 스캐폴더가 돌지 않았고 — {@code app} 디렉터리를 만들어 주는 것이 스캐폴더뿐이었다 —
+     * 코드 에이전트가 {@code /workspace} 루트에 index.html 을 썼다. 프리뷰는 index.html 을 찾아
+     * 다니는 폴백이 있어 멀쩡히 떴고, 그래서 push 단계에 와서야 드러났다.</p>
+     *
+     * <p>여기서 {@code /workspace} 로 폴백하지 않는 이유: 무엇을 올릴지 짐작해서 올리는 것보다
+     * 멈추는 편이 낫다. 사용자의 저장소에 잘못된 트리가 올라가면 되돌리기가 훨씬 비싸다.</p>
+     */
+    private void requireAppDir(String containerId) {
+        String exists = dockerService.exec(
+                containerId, "[ -d " + ContainerPaths.APP_DIR + " ] && echo yes || echo no").trim();
+        if (!"yes".equals(exists)) {
+            String found = dockerService.exec(
+                    containerId, "ls -A /workspace 2>/dev/null | head -20").trim();
+            throw new IllegalStateException(
+                    "작업물이 " + ContainerPaths.APP_DIR + " 에 없어 저장소에 올리지 못했습니다. "
+                            + "코드 에이전트가 다른 경로에 파일을 만든 것으로 보입니다. "
+                            + "/workspace 내용: " + (found.isEmpty() ? "(비어 있음)" : found));
+        }
+    }
+
     private void writeGitignore(String containerId) {
         String content = "node_modules/\ndist/\nbuild/\nout/\n.env\n.env.local\n";
         String b64     = Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
         dockerService.exec(containerId,
-                "node -e \"require('fs').writeFileSync('/workspace/app/.gitignore', Buffer.from('" + b64 + "', 'base64').toString('utf8'))\"");
+                "node -e \"require('fs').writeFileSync('" + ContainerPaths.APP_DIR + "/.gitignore', Buffer.from('" + b64 + "', 'base64').toString('utf8'))\"");
     }
 }

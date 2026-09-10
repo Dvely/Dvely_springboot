@@ -88,9 +88,8 @@ public class ChatQueryService {
     }
 
     private MessageResult toMessageResult(ChatMessage message) {
-        // Historical reads have no 1:1 message-to-task correlation (ChatMessage does not persist
-        // a taskId column), so taskId is always null here — only the just-created message
-        // returned by ChatCommandService.sendMessage() carries the freshly submitted taskId.
+        // V59 부터 chat_messages.task_id 가 있어 과거 조회에서도 태스크를 잇는다. 그 칼럼 이전에
+        // 쌓인 줄과 태스크와 무관한 줄은 여전히 null 이다.
         return new MessageResult(
                 message.getId(),
                 message.getConversationId(),
@@ -98,7 +97,8 @@ public class ChatQueryService {
                 message.getContent(),
                 message.getTokenCount(),
                 message.getCreatedAt(),
-                null
+                message.getTaskId(),
+                message.getKind()
         );
     }
 

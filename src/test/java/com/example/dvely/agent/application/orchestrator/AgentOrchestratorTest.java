@@ -1,8 +1,11 @@
 package com.example.dvely.agent.application.orchestrator;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
@@ -37,6 +40,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
@@ -56,7 +60,8 @@ class AgentOrchestratorTest {
                 conversationRepository,
                 policyRepository,
                 approvalRepository,
-                messageService
+                messageService,
+                mock(InputWaitStore.class)
         );
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(mock(Project.class)));
@@ -102,12 +107,14 @@ class AgentOrchestratorTest {
         // 채팅에는 지시문을 담지 않는다. 바로 아래 붙는 승인 카드가 같은 summary 를 그리므로
         // 여기까지 실으면 같은 내용이 두 번 보인다. 태스크 summary(위 markWaitingApproval)는
         // 카드와 나란히 놓이지 않으므로 지시문을 그대로 유지한다.
+        // taskId 는 submit() 이 새로 발급하므로(newTaskId) 값을 고정할 수 없다 — 실렸다는 것만 본다.
         verify(messageService).appendAssistant(
-                null,
-                "작업 계획을 만들었습니다. 승인 후 실행합니다.\n"
+                isNull(),
+                eq("작업 계획을 만들었습니다. 승인 후 실행합니다.\n"
                         + "- [101] CHANGE\n"
-                        + "- [102] DEPLOYMENT"
-        );
+                        + "- [102] DEPLOYMENT"),
+                eq(ChatMessageKind.APPROVAL_REQUESTED),
+                anyString());
     }
 
     @Test
@@ -122,7 +129,8 @@ class AgentOrchestratorTest {
                 conversationRepository,
                 policyRepository,
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         Conversation conversation = new Conversation(
                 21L,
@@ -173,7 +181,8 @@ class AgentOrchestratorTest {
                 conversationRepository,
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         Conversation conversation = new Conversation(
                 21L,
@@ -205,7 +214,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         Approval resultApproval = new Approval(
                 91L, 1L, 11L, 21L, "task-1", ApprovalType.RESULT,
@@ -231,7 +241,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(taskStore.resumeAfterResultApproval("task-1")).thenReturn(true);
 
@@ -251,7 +262,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(taskStore.resumeAfterResultApproval("task-1")).thenReturn(false);
 
@@ -271,7 +283,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(taskStore.resumeAfterResultDecline("task-1", "연결하지 않음")).thenReturn(true);
 
@@ -290,7 +303,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(taskStore.resumeAfterResultDecline("task-1", "연결하지 않음")).thenReturn(false);
 
@@ -311,7 +325,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
 
         orchestrator.verifyResumableAfterResult("task-1");
@@ -331,7 +346,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         org.mockito.Mockito.doThrow(new IllegalStateException(
                         "결과 승인 대기 상태가 아닌 Agent task입니다. taskId=task-1"))
@@ -352,7 +368,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         Approval approval = new Approval(
                 91L,
@@ -389,7 +406,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 policyRepository,
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(mock(Project.class)));
@@ -434,7 +452,8 @@ class AgentOrchestratorTest {
         ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
         AgentOrchestrator orchestrator = new AgentOrchestrator(
                 taskStore, projectRepository, mock(ConversationRepository.class),
-                policyRepository, approvalRepository, mock(AgentMessageService.class));
+                policyRepository, approvalRepository, mock(AgentMessageService.class),
+                mock(InputWaitStore.class));
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(mock(Project.class)));
         when(policyRepository.findByProjectId(11L)).thenReturn(Optional.empty());   // fail-safe: 전부 required
@@ -469,7 +488,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 policyRepository,
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(mock(Project.class)));
@@ -501,7 +521,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 policyRepository,
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(mock(Project.class)));
@@ -531,7 +552,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 policyRepository,
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(mock(Project.class)));
@@ -561,7 +583,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         Approval siblingPending = new Approval(
                 92L, 1L, 11L, 21L, "task-1", ApprovalType.DEPLOYMENT,
@@ -587,7 +610,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(taskStore.cancel("task-1", 1L)).thenReturn(false);
 
@@ -610,7 +634,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         Approval sibling = new Approval(
                 93L, 1L, 11L, 21L, "task-1", ApprovalType.DOMAIN_BINDING,
@@ -640,7 +665,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of());
         when(taskStore.retry("task-1", 1L)).thenReturn(true);
@@ -669,7 +695,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         Approval recoveryApproval = new Approval(
                 55L, 1L, 11L, 21L, "task-1", ApprovalType.CHANGE,
@@ -691,7 +718,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         Approval decided = new Approval(
                 61L, 1L, 11L, 21L, "task-1", ApprovalType.CHANGE,
@@ -714,7 +742,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         Approval decided = new Approval(
                 60L, 1L, 11L, 21L, "task-1", ApprovalType.CHANGE,
@@ -745,7 +774,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(taskStore.get("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_APPROVAL));
         when(taskStore.getPlan("task-1")).thenReturn(new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L));
@@ -764,7 +794,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(taskStore.get("task-1")).thenReturn(taskWithStatus(TaskStatus.FAILED));
         when(taskStore.getPlan("task-1")).thenReturn(new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L));
@@ -790,7 +821,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(taskStore.get("task-1")).thenReturn(taskWithStatus(TaskStatus.RUNNING));
         when(taskStore.getPlan("task-1")).thenReturn(new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L));
@@ -816,7 +848,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 approvalRepository,
-                messageService
+                messageService,
+                mock(InputWaitStore.class)
         );
         when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_APPROVAL));
         Approval change = new Approval(1L, 1L, 11L, 21L, "task-1", ApprovalType.CHANGE,
@@ -829,7 +862,8 @@ class AgentOrchestratorTest {
         orchestrator.recoverStuckApprovedTask("task-1");
 
         verify(taskStore).recoverStuckApproval("task-1");
-        verify(messageService).appendAssistant(21L, "지연된 승인 처리를 복구해 작업을 시작합니다.");
+        verify(messageService).appendAssistant(21L, "지연된 승인 처리를 복구해 작업을 시작합니다.",
+                ChatMessageKind.TASK_PROGRESS, "task-1");
     }
 
     @Test
@@ -844,7 +878,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.QUEUED));
 
@@ -863,7 +898,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_APPROVAL));
         Approval change = new Approval(1L, 1L, 11L, 21L, "task-1", ApprovalType.CHANGE,
@@ -888,7 +924,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_APPROVAL));
         when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of());
@@ -910,7 +947,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                messageService
+                messageService,
+                mock(InputWaitStore.class)
         );
         when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.PENDING));
 
@@ -918,7 +956,8 @@ class AgentOrchestratorTest {
 
         assertThat(closed).isTrue();
         verify(taskStore).markFailed("task-1", "요청 처리가 시작되지 않아 종료했습니다.");
-        verify(messageService).appendAssistant(21L, "요청 처리가 시작되지 않아 이 작업을 종료했습니다. 다시 시도해주세요.");
+        verify(messageService).appendAssistant(21L, "요청 처리가 시작되지 않아 이 작업을 종료했습니다. 다시 시도해주세요.",
+                ChatMessageKind.TASK_CANCELLED, "task-1");
     }
 
     @Test
@@ -933,7 +972,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 mock(ProjectApprovalPolicyRepository.class),
                 mock(ApprovalRepository.class),
-                messageService
+                messageService,
+                mock(InputWaitStore.class)
         );
         when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.QUEUED));
 
@@ -958,7 +998,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 policyRepository,
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(mock(Project.class)));
@@ -1005,7 +1046,8 @@ class AgentOrchestratorTest {
                 mock(ConversationRepository.class),
                 policyRepository,
                 approvalRepository,
-                mock(AgentMessageService.class)
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class)
         );
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(mock(Project.class)));
@@ -1032,5 +1074,54 @@ class AgentOrchestratorTest {
 
     private AgentTask taskWithStatus(TaskStatus status) {
         return new AgentTask("task-1", 1L, 11L, 21L, status, null, null, null, null, java.time.Instant.now());
+    }
+
+    /**
+     * 되묻기 답이 대화에 남아야 한다. 폼은 답한 순간 사라지도록 설계돼 있어(이중 제출 방지),
+     * 답이 대화에 없으면 사용자가 무엇을 골랐는지 확인할 방법이 아예 사라진다 — 새로고침하면
+     * "어떤 프론트엔드 스택으로 만들까요?"만 남고 자기가 고른 Vanilla 는 어디에도 없다
+     * (2026-09-07 dev 실측, project 45). 배포 저장소 이름·도메인 입력도 같은 경로다.
+     */
+    @Test
+    void supplyInputEchoesTheAnswerIntoTheConversation() {
+        InputWaitStore inputWaitStore = mock(InputWaitStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                mock(TaskStore.class),
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                messageService,
+                inputWaitStore
+        );
+        when(inputWaitStore.supply("task-1", 1L, "Vanilla (HTML/CSS/JS, 빌드 없음)")).thenReturn(true);
+
+        boolean accepted = orchestrator.supplyInput("task-1", 1L, 21L, "Vanilla (HTML/CSS/JS, 빌드 없음)");
+
+        assertThat(accepted).isTrue();
+        verify(messageService).appendAssistant(
+                21L, "답변을 반영해 작업을 이어갑니다: Vanilla (HTML/CSS/JS, 빌드 없음)",
+                ChatMessageKind.CLARIFICATION_ANSWER, "task-1");
+    }
+
+    /** 태스크가 답을 못 받으면(이미 끝났거나 남의 것) 대화에도 남기지 않는다. */
+    @Test
+    void supplyInputWritesNothingWhenTheTaskRejectsTheAnswer() {
+        InputWaitStore inputWaitStore = mock(InputWaitStore.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                mock(TaskStore.class),
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                messageService,
+                inputWaitStore
+        );
+        when(inputWaitStore.supply("task-1", 1L, "react")).thenReturn(false);
+
+        assertThat(orchestrator.supplyInput("task-1", 1L, 21L, "react")).isFalse();
+        verify(messageService, never()).appendAssistant(any(), any(), any(), any());
     }
 }

@@ -68,6 +68,7 @@
 - Preview (PreviewGateway, PreviewSession)
 - Environment
 - AuditLog
+- Template
 
 ---
 
@@ -227,7 +228,13 @@ Base path: `/api/v1/projects`
 }
 ```
 
-`startMode`(`blank`/`template`)와 `draftMode`(`fast`/`quality`)는 검증·정규화되어 저장된다. 저장 직후 생성된 프로젝트 ID에 연결된 CODE Agent task를 제출하고 `202 Accepted`로 task 상태와 승인 정보를 함께 반환한다. `template`이면 지정 유형을 초기 생성 지시에 반영하고, `quality`/`fast`에 따라 생성 품질과 AI provider를 선택한다. ZIP 업로드 처리는 아직 없다(§14.1 참고).
+`startMode`(`blank`/`template`)와 `draftMode`(`fast`/`quality`)는 검증·정규화되어 저장된다. 프로젝트 생성은 **프로젝트 행만 만든다** — 초기 CODE task 를 함께 제출하던 경로는 제거됐다(제출돼도 실행된 적이 없었다). 첫 코드는 사용자가 첫 요청을 보낼 때 CODE Agent 가 만든다.
+
+`startMode=template` 이면 `templateType` 은 **템플릿 카탈로그(§17)에 실재하는 ID 여야 한다.** 정규화(소문자화·공백→하이픈) 후 대조하므로 `"E Commerce"` 는 `e-commerce` 로 조회된다. 없는 ID 는 `400`, 카탈로그를 한 번도 읽지 못한 상태면 `503 TEMPLATE_CATALOG_UNAVAILABLE`.
+
+> 이전에는 슬러그 형식(`[a-z0-9][a-z0-9_-]{0,49}`)만 검증하고 값을 읽는 코드가 없었다. 존재하지 않는 템플릿도 `200` 으로 통과했고, 고른 템플릿은 조용히 무시된 채 백지 생성됐다.
+
+ZIP 업로드 처리는 아직 없다(§14.1 참고).
 
 ### 6.2 저장소 연결/해제
 
@@ -1171,11 +1178,59 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 
 ---
 
-## 17. ApiToken API (PAT, Issue #304)
+## 17. Template API
+
+퍼블리싱 템플릿 카탈로그. **정본은 이 서버가 아니다** — 템플릿 저장소(`Dvely/qeploy-templates`)가 GitHub Pages 로 발행하는 `catalog.json` 을 서버가 읽어 나른다. 서버는 템플릿 소스를 들지 않는다.
+
+설계 배경은 `docs/template-architecture-design.md`.
+
+**인증 불필요.** 내용 자체가 이미 공개 Pages 에 있는 정적 목록이고 사용자 데이터가 없어, 로그인 전 화면에서도 갤러리를 띄울 수 있게 열려 있다.
+
+### 17.1 목록 조회
+
+`GET /api/v1/templates`
+
+```json
+[
+  {
+    "templateId": "landing-minimal",
+    "name": "미니멀 랜딩",
+    "description": "제품·서비스 하나를 소개하는 한 장짜리 랜딩 페이지",
+    "tags": ["landing", "one-page", "product"],
+    "stack": "vanilla",
+    "demoUrl": "https://dvely.github.io/qeploy-templates/t/landing-minimal/",
+    "contentHints": [
+      { "key": "hero.title", "where": "index.html", "desc": "히어로 대제목 — 한 문장으로 무엇인지" }
+    ]
+  }
+]
+```
+
+`demoUrl` 은 **iframe 으로 띄울 수 있다.** GitHub Pages 는 정상 문서에 `X-Frame-Options` 도 `CSP frame-ancestors` 도 보내지 않는다(2026-09-10 실측). 고르기 전에 조작해보게 하는 것이 이 필드의 목적이다.
+
+`contentHints` 는 "어디가 바꿔도 되는 내용인지" 에 대한 템플릿 자신의 선언이다. 없으면 코딩 에이전트가 무엇이 내용이고 무엇이 구조인지 추측한다.
+
+씨앗 tarball 주소(`sourceUrl`)는 **응답에 담지 않는다.** 서버가 컨테이너에 풀 때만 쓰는 내부 경로다.
+
+### 17.2 단건 조회
+
+`GET /api/v1/templates/{templateId}`
+
+목록과 같은 형태의 단건. 없는 ID 는 `404`.
+
+### 17.3 카탈로그를 읽지 못할 때
+
+갱신에 실패해도 **직전에 읽어둔 목록으로 계속 응답한다**(stale-while-error). 카탈로그는 정적 문서라 잠깐 낡은 목록을 보여주는 편이 기능을 멈추는 것보다 낫다. 낡은 것을 쓰는 동안은 WARN 로그가 남는다.
+
+`503 TEMPLATE_CATALOG_UNAVAILABLE` 은 **한 번도 읽지 못한 경우에만** 나간다.
+
+---
+
+## 18. ApiToken API (PAT, Issue #304)
 
 에이전트·CLI 용 개인 액세스 토큰. 브라우저 JWT 는 `JWT_EXPIRATION_MS` 기본 1시간이라 헤드리스 클라이언트가 쓸 수 없어 이 토큰을 둔다. MCP 서버·CLI(PRD 부록 A-2)의 선행 요건이다.
 
-### 17.1 엔드포인트 (3개)
+### 18.1 엔드포인트 (3개)
 
 | 메서드 | 경로 | 용도 |
 |---|---|---|
@@ -1183,13 +1238,13 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 | POST | `/api/v1/api-tokens` | 발급. 평문은 이 응답에서만 1회 |
 | DELETE | `/api/v1/api-tokens/{apiTokenId}` | 폐기. 미발급 ID 면 404 |
 
-### 17.2 저장 방식 — 해시, 암호화가 아니다
+### 18.2 저장 방식 — 해시, 암호화가 아니다
 
 `ai_provider_credentials`(§16)는 키를 벤더 CLI 에 전달해야 해서 복호화 가능한 AES 저장이지만, PAT 는 우리가 비교만 하면 되므로 원문을 보관하지 않는다. DB 를 잃어도 동작하는 토큰이 함께 새지 않고, 재노출 경로가 애초에 없다.
 
 해시는 SHA-256 이다. bcrypt 류의 work factor 는 엔트로피가 낮은 비밀번호를 느리게 만들려는 장치인데 이 토큰은 256비트 난수라 work factor 가 추측 가능성을 바꾸지 않는다. 바꾸는 것은 모든 인증 요청의 비용뿐이다.
 
-### 17.3 인증·스코프
+### 18.3 인증·스코프
 
 - `Authorization: Bearer qp_...` — 필터가 `qp_` 접두사로 PAT 경로를 고른다. JWT 파싱을 먼저 시도하는 방식은 에이전트 요청마다 예외를 던진다.
 - 스코프 `READ`/`WRITE` 2종. **HTTP 메서드로 강제**한다 — `READ` 토큰은 GET 만 가능하고 변경 메서드는 **403**. 엔드포인트별 애노테이션이면 새 엔드포인트가 누군가 애노테이션을 기억한 날에야 보호되지만, 메서드 기준은 작성한 날부터 덮인다.
@@ -1198,6 +1253,7 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 - 만료 기본 90일, 최대 365일. 상한이 있어야 아무도 기억하지 못하는 토큰이 스스로 멈춘다.
 - `last_used_at` 은 1시간 스로틀로 갱신한다(매 요청 UPDATE 를 인증 경로에 얹지 않는다).
 
-### 17.4 저장 스키마
+### 18.4 저장 스키마
 
-`api_tokens`(V56): `user_id`, `token_hash`(UNIQUE), `token_prefix`, `scope`, `label`, `expires_at`, `last_used_at`. 사용자 삭제 시 CASCADE.
+`api_tokens`(V60): `user_id`, `token_hash`(UNIQUE), `token_prefix`, `scope`, `label`, `expires_at`, `last_used_at`. 사용자 삭제 시 CASCADE.
+

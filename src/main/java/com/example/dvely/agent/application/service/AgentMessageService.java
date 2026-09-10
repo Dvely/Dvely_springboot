@@ -3,6 +3,7 @@ package com.example.dvely.agent.application.service;
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.chat.domain.model.ChatMessage;
 import com.example.dvely.chat.domain.repository.ChatMessageRepository;
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.chat.domain.value.ChatRole;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -23,8 +24,30 @@ public class AgentMessageService {
 
     private final ChatMessageRepository chatMessageRepository;
 
+    /** 종류를 붙이지 않는 줄(순수 대화 답변 등). */
     @Transactional
     public void appendAssistant(Long conversationId, String content) {
+        appendAssistant(conversationId, content, null);
+    }
+
+    /** 태스크와 이어지지 않는 줄. */
+    @Transactional
+    public void appendAssistant(Long conversationId, String content, ChatMessageKind kind) {
+        appendAssistant(conversationId, content, kind, null);
+    }
+
+    /**
+     * 종류를 붙이고 태스크에 이어 남긴다.
+     *
+     * <p>종류는 화면이 본문 문자열로 의미를 추론하지 않게 한다 — 그 추론은 이미 한 번 사고를
+     * 냈다(존재하지 않는 승인 버튼). {@link ChatMessageKind} 참고.</p>
+     *
+     * <p>taskId 는 "이 줄이 어느 작업의 것인가" 를 남긴다. 없으면 결과 줄에서 그 작업의 diff 로
+     * 넘어가거나 실패 줄에서 그 작업만 재시도하는 것이 불가능하다 — 화면은 "가장 마지막 것"
+     * 같은 휴리스틱으로 짐작할 수밖에 없다.</p>
+     */
+    @Transactional
+    public void appendAssistant(Long conversationId, String content, ChatMessageKind kind, String taskId) {
         if (conversationId == null || content == null || content.isBlank()) {
             return;
         }
@@ -32,7 +55,9 @@ public class AgentMessageService {
                 conversationId,
                 ChatRole.ASSISTANT,
                 content.trim(),
-                0
+                0,
+                kind,
+                taskId
         ));
     }
 

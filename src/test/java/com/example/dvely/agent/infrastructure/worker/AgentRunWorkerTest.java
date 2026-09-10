@@ -1,5 +1,6 @@
 package com.example.dvely.agent.infrastructure.worker;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -68,7 +69,8 @@ class AgentRunWorkerTest {
 
         worker.dispatchQueuedRuns();
 
-        verify(messageService).appendAssistant(21L, "실행이 중단되어 작업을 종료했습니다. 다시 요청해주세요.");
+        verify(messageService).appendAssistant(21L, "실행이 중단되어 작업을 종료했습니다. 다시 요청해주세요.",
+                ChatMessageKind.TASK_CANCELLED, "task-1");
     }
 
     @Test

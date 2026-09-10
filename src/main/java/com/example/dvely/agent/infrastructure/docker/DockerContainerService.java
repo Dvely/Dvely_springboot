@@ -1,5 +1,7 @@
 package com.example.dvely.agent.infrastructure.docker;
 
+import java.time.Duration;
+import com.github.dockerjava.api.model.PruneType;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.CreateContainerResponse;
@@ -707,7 +709,7 @@ public class DockerContainerService {
     /** DB 컨테이너를 강제 제거한다. 이미 없으면 조용히 넘어간다. */
     public void removeDatabaseContainer(String containerId) {
         try {
-            dockerClient.removeContainerCmd(containerId).withForce(true).exec();
+            dockerClient.removeContainerCmd(containerId).withForce(true).withRemoveVolumes(true).exec();
             log.info("DB 컨테이너 제거: id={}", containerId);
         } catch (NotFoundException e) {
             log.debug("DB 컨테이너가 이미 없음: id={}", containerId);
@@ -828,12 +830,48 @@ public class DockerContainerService {
             log.info("Docker 컨테이너가 이미 중지되어 있습니다. remove 진행: id={}", containerId);
         }
         try {
-            dockerClient.removeContainerCmd(containerId).withForce(true).exec();
+            dockerClient.removeContainerCmd(containerId).withForce(true).withRemoveVolumes(true).exec();
         } catch (NotFoundException e) {
             log.info("Docker 컨테이너가 이미 없습니다. remove 생략: id={}", containerId);
             return;
         }
         log.info("Docker 컨테이너 제거: id={}", containerId);
+    }
+
+    /**
+     * 컨테이너가 남기고 간 <b>도커 찌꺼기</b>를 회수한다. 고아 볼륨 · dangling 이미지 · 오래된
+     * 빌드 캐시 세 가지이며, <b>실행 중이거나 정지 상태로 남아 있는 컨테이너가 쓰는 것은 건드리지
+     * 않는다</b>(도커의 prune 이 그 판정을 한다).
+     *
+     * <p>왜 필요한가: 컨테이너는 지워도 그것들은 남는다. 2026-09-08 dev 에서 컨테이너가 0 개인데
+     * 고아 볼륨 10 개(2.2GB)와 빌드 캐시 6.5GB 가 쌓여 디스크의 절반 이상을 찌꺼기가 차지했다.
+     * 디스크가 차면 앱·MySQL·프리뷰 컨테이너가 한꺼번에 죽는다.</p>
+     *
+     * <p>빌드 캐시는 {@code until} 이전 것만 지운다 — 방금 만든 캐시까지 날리면 다음 빌드가
+     * 통째로 느려진다. 볼륨 누수 자체는 removeContainer 의 withRemoveVolumes 로 원천에서 막았고,
+     * 이건 그 이전에 쌓인 것과 비정상 종료로 새는 것을 받아내는 안전망이다.</p>
+     *
+     * @return 회수한 바이트 수(도커가 알려준 값의 합). 도커에 닿지 못하면 -1
+     */
+    public long pruneGarbage(Duration buildCacheKeep) {
+        try {
+            long freed = 0;
+            freed += nullToZero(dockerClient.pruneCmd(PruneType.VOLUMES).exec().getSpaceReclaimed());
+            freed += nullToZero(dockerClient.pruneCmd(PruneType.IMAGES).exec().getSpaceReclaimed());
+            freed += nullToZero(dockerClient.pruneCmd(PruneType.BUILD)
+                    .withUntilFilter(buildCacheKeep.toHours() + "h")
+                    .exec()
+                    .getSpaceReclaimed());
+            return freed;
+        } catch (RuntimeException e) {
+            // 도커가 없어도 앱은 뜬다(이 클래스의 전제). 정리는 부가 기능이라 실패를 삼킨다.
+            log.warn("도커 찌꺼기 정리 실패(작업은 계속): {}", e.getMessage());
+            return -1;
+        }
+    }
+
+    private static long nullToZero(Long value) {
+        return value == null ? 0L : value;
     }
 
     private void pullImageIfNeeded() {

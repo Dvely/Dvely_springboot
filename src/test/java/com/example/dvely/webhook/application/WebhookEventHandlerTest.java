@@ -1,5 +1,6 @@
 package com.example.dvely.webhook.application;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
@@ -391,7 +392,8 @@ class WebhookEventHandlerTest {
                 "배포가 완료되었습니다.\n"
                         + "- 주소: https://octo.github.io/repo/\n"
                         + "- 버전: v7"
-        );
+        ,
+                ChatMessageKind.AGENT_RESULT, "task-51");
     }
 
     @Test
@@ -409,7 +411,8 @@ class WebhookEventHandlerTest {
                 "배포가 실패했습니다.\n"
                         + "- 사유: GitHub Actions workflow conclusion: failure\n"
                         + "다시 배포를 요청하면 같은 저장소로 재시도합니다."
-        );
+        ,
+                ChatMessageKind.TASK_FAILED, "task-51");
     }
 
     @Test

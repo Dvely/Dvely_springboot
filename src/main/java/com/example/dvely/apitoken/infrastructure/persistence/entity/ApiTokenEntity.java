@@ -15,7 +15,7 @@ import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
 
 /**
- * JPA row for {@code api_tokens} (V56).
+ * JPA row for {@code api_tokens} (V60).
  *
  * <p>No {@code @Convert} here, unlike {@code AiProviderCredentialEntity}: this column holds a hash,
  * not a recoverable secret. Also deliberately no Lombok {@code @ToString} — the hash is not the

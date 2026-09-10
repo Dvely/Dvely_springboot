@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.service;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -86,7 +87,8 @@ class ResultApprovalGateTest {
         order.verify(taskStore).markStepCompleted("task-1", 1);
         order.verify(taskStore).markWaitingResultApproval(eq("task-1"), anyString());
         order.verify(approvalRepository).save(any(Approval.class));
-        verify(agentMessageService).appendAssistant(eq(21L), anyString());
+        verify(agentMessageService).appendAssistant(eq(21L), anyString(),
+                eq(ChatMessageKind.APPROVAL_REQUESTED), eq("task-1"));
         // H5 (design §4): the gate's own preview push is a real GitHub write too.
         org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
         verify(auditRecorder).record(auditCaptor.capture());

@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.service;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.AgentTaskFailure;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
@@ -47,7 +48,9 @@ public class BuildFailureRecoveryService {
         if (failure == null || !failure.retryable()) {
             agentMessageService.appendAssistant(
                     task.conversationId(),
-                    buildFailureMessage(exception, null, false)
+                    buildFailureMessage(exception, null, false),
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
             );
             return;
         }
@@ -78,7 +81,9 @@ public class BuildFailureRecoveryService {
             }
             agentMessageService.appendAssistant(
                     task.conversationId(),
-                    buildFailureMessage(exception, null, true)
+                    buildFailureMessage(exception, null, true),
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
             );
             return;
         }
@@ -94,7 +99,9 @@ public class BuildFailureRecoveryService {
                 )));
         agentMessageService.appendAssistant(
                 task.conversationId(),
-                buildFailureMessage(exception, approval.getId(), true)
+                buildFailureMessage(exception, approval.getId(), true),
+                ChatMessageKind.APPROVAL_REQUESTED,
+                taskId
         );
     }
 

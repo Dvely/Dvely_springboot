@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.orchestrator;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.dto.AgentSubmission;
@@ -8,6 +9,7 @@ import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.InfraOperation;
+import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
@@ -44,6 +46,7 @@ public class AgentOrchestrator {
     private final ProjectApprovalPolicyRepository policyRepository;
     private final ApprovalRepository approvalRepository;
     private final AgentMessageService agentMessageService;
+    private final InputWaitStore     inputWaitStore;
 
     /**
      * 계획이 이미 있는 동기 제출 경로(AgentFacade·DomainBindingSubmissionService). PENDING 태스크를
@@ -98,7 +101,8 @@ public class AgentOrchestrator {
     @Transactional
     public void markDecisionFailed(String taskId, Long conversationId, String error) {
         taskStore.markFailed(taskId, error);
-        agentMessageService.appendAssistant(conversationId, "요청을 분석하지 못했습니다: " + error);
+        agentMessageService.appendAssistant(conversationId, "요청을 분석하지 못했습니다: " + error,
+                ChatMessageKind.TASK_FAILED, taskId);
     }
 
     private AgentSubmission finalizeSubmission(String taskId,
@@ -111,13 +115,15 @@ public class AgentOrchestrator {
 
         List<Approval> approvals = createRequiredApprovals(normalizedPlan, taskId, userId, conversationId);
         if (approvals.isEmpty()) {
-            agentMessageService.appendAssistant(conversationId, "승인 정책에 따라 작업을 시작합니다.");
+            agentMessageService.appendAssistant(conversationId, "승인 정책에 따라 작업을 시작합니다.",
+                    ChatMessageKind.TASK_PROGRESS, taskId);
             taskStore.enqueue(taskId);
             return new AgentSubmission(taskId, TaskStatus.QUEUED, List.of());
         }
 
         taskStore.markWaitingApproval(taskId, buildApprovalSummary(approvals));
-        agentMessageService.appendAssistant(conversationId, buildApprovalChatMessage(approvals));
+        agentMessageService.appendAssistant(conversationId, buildApprovalChatMessage(approvals),
+                ChatMessageKind.APPROVAL_REQUESTED, taskId);
         return new AgentSubmission(
                 taskId,
                 TaskStatus.WAITING_APPROVAL,
@@ -243,7 +249,9 @@ public class AgentOrchestrator {
         }
         agentMessageService.appendAssistant(
                 task == null ? null : task.conversationId(),
-                "작업을 취소했습니다."
+                "작업을 취소했습니다.",
+                ChatMessageKind.TASK_CANCELLED,
+                taskId
         );
         return true;
     }
@@ -319,7 +327,8 @@ public class AgentOrchestrator {
         taskStore.recoverStuckApproval(taskId);
         log.warn("[AgentOrchestrator] 고착된 승인 완료 태스크를 스윕으로 복구했습니다 — ADR-Y1 이후 이 로그의 발생은 "
                 + "회귀 신호입니다. taskId={}", taskId);
-        agentMessageService.appendAssistant(task.conversationId(), "지연된 승인 처리를 복구해 작업을 시작합니다.");
+        agentMessageService.appendAssistant(task.conversationId(), "지연된 승인 처리를 복구해 작업을 시작합니다.",
+                ChatMessageKind.TASK_PROGRESS, taskId);
     }
 
     /**
@@ -351,7 +360,9 @@ public class AgentOrchestrator {
                 taskId, task.status());
         agentMessageService.appendAssistant(
                 task.conversationId(),
-                "오랫동안 결정되지 않아 이 작업을 종료했습니다. 필요하면 다시 요청해주세요."
+                "오랫동안 결정되지 않아 이 작업을 종료했습니다. 필요하면 다시 요청해주세요.",
+                ChatMessageKind.TASK_CANCELLED,
+                taskId
         );
         return true;
     }
@@ -379,7 +390,9 @@ public class AgentOrchestrator {
         log.info("[AgentOrchestrator] 시작되지 않은 채 방치된 PENDING 태스크를 정리했습니다. taskId={}", taskId);
         agentMessageService.appendAssistant(
                 task.conversationId(),
-                "요청 처리가 시작되지 않아 이 작업을 종료했습니다. 다시 시도해주세요."
+                "요청 처리가 시작되지 않아 이 작업을 종료했습니다. 다시 시도해주세요.",
+                ChatMessageKind.TASK_CANCELLED,
+                taskId
         );
         return true;
     }
@@ -578,7 +591,17 @@ public class AgentOrchestrator {
      * marker is added on top of that, well within the summary column's 500-char limit).
      */
     private String summarize(AgentStep step) {
-        String instruction = step.parameters().getOrDefault("instruction", "").trim();
+        // userSummary 가 우선이다. instruction 은 하위 에이전트에게 주는 지시문이라 사람이 읽으라고
+        // 쓴 글이 아니다 — 언어도 모델 마음대로여서, 승인 카드에 영어 지시문이 그대로 나갔다
+        // (2026-09-07 dev 실측: "Deploy the existing single-page todo web application (projectId=44)
+        // to production. … Do not modify the code — build and deploy the current project as-is").
+        // 승인 카드는 사용자가 예/아니오를 누르는 자리라, 거기 있는 문장은 사용자를 위한 것이어야 한다.
+        String instruction = step.parameters().getOrDefault("userSummary", "").trim();
+        if (instruction.isEmpty()) {
+            // 모델이 userSummary 를 빠뜨리면 지시문으로 되돌아간다. 어색해도 구체적인 편이,
+            // "CODE 작업" 같은 뭉뚱그린 문구보다 승인 판단에 낫다.
+            instruction = step.parameters().getOrDefault("instruction", "").trim();
+        }
         if (instruction.isEmpty()) {
             instruction = step.agentType().name() + " 작업";
         }
@@ -623,6 +646,33 @@ public class AgentOrchestrator {
                     .append(approval.getType());
         }
         return message.toString();
+    }
+
+    /**
+     * WAITING_INPUT 태스크에 사용자의 답을 넣고, <b>그 답을 대화에도 남긴다.</b>
+     *
+     * <p>남기지 않으면 대화에 질문만 있고 답이 없다. 되묻기 폼은 답한 순간 사라지도록 설계돼
+     * 있으므로(이중 제출 방지), 답이 대화에 없으면 사용자가 무엇을 골랐는지 확인할 방법이 아예
+     * 사라진다 — 새로고침하면 "할 일 앱을 어떤 프론트엔드 스택으로 만들까요?"만 남고 자기가 고른
+     * Vanilla 는 어디에도 없다(2026-09-07 dev 실측, project 45). CLARIFY 뿐 아니라 배포 저장소
+     * 이름·도메인 입력도 같은 엔드포인트를 쓰므로 셋 다 같은 증상이었다.</p>
+     *
+     * <p>역할을 USER 가 아니라 ASSISTANT 로 남기는 이유: {@code getUserIntentHistory} 가 USER 발화만
+     * 골라 계획 수립에 넘기면서 <b>마지막 USER 발화를 "지금 처리할 요청"으로 표시</b>한다. 답을 USER
+     * 로 남기면 "Vanilla (HTML/CSS/JS, 빌드 없음)" 이 요청 자리를 차지하고 정작 진짜 요청은
+     * "이전 요청" 으로 밀려난다. 답은 요청이 아니라 요청에 딸린 값이므로, 대화에는 기록으로 남기고
+     * 계획 입력에서는 빠지는 편이 맞다 — 재-decide 는 어차피 질문·답을 따로 실어 보낸다
+     * ({@code AgentPlanExecutor#handleClarify}).</p>
+     *
+     * @return 태스크가 답을 받아들였으면 true. false 면 호출부가 404 로 응답한다
+     */
+    public boolean supplyInput(String taskId, Long userId, Long conversationId, String value) {
+        if (!inputWaitStore.supply(taskId, userId, value)) {
+            return false;
+        }
+        agentMessageService.appendAssistant(conversationId, "답변을 반영해 작업을 이어갑니다: " + value.trim(),
+                ChatMessageKind.CLARIFICATION_ANSWER, taskId);
+        return true;
     }
 
     public Long resolveProjectId(Long userId, Long requestedProjectId, Long conversationId) {

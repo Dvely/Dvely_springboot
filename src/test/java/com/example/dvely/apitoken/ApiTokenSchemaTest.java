@@ -9,7 +9,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Schema guards for {@code api_tokens} (V56). The unique index on {@code token_hash} is what makes
+ * Schema guards for {@code api_tokens} (V60). The unique index on {@code token_hash} is what makes
  * authentication a single indexed lookup rather than a scan, and the cascade is what keeps a
  * deleted account from leaving working credentials behind.
  */

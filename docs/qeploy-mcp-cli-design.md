@@ -140,7 +140,7 @@ npx @qeploy/cli deploy --project 12
 
 | 단계 | 내용 | 규모 | 상태 |
 |---|---|---|---|
-| 1 | `apitoken` 도메인 + PAT 발급/폐기 API + 필터 분기 | 중 | **완료**(Issue #304, V56) |
+| 1 | `apitoken` 도메인 + PAT 발급/폐기 API + 필터 분기 | 중 | **완료**(Issue #304, V60) |
 | 2 | `@qeploy/client` — REST 클라이언트·타입 | 소 | **완료** |
 | 3 | `@qeploy/mcp` — 읽기 도구만 먼저 | 중 | **완료**(도구 11개, 실 stdio 검증) |
 | 4 | 쓰기 도구(`deploy`·`set_env`·`bind_domain`) + 확인 규약 | 소 | **완료**(도구 6개, 기본 비활성, destructiveHint) |

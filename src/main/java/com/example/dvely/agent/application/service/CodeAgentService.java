@@ -20,6 +20,8 @@ import com.example.dvely.preview.application.service.PreviewRuntimeLauncher;
 import com.example.dvely.preview.application.service.PreviewServeException;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.preview.application.service.PreviewWorkspaceService;
+import com.example.dvely.template.domain.model.Template;
+import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import java.util.Base64;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -27,6 +29,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Map;
 
 @Slf4j
@@ -67,6 +70,7 @@ public class CodeAgentService {
     private final PreviewRuntimeLauncher   previewRuntimeLauncher;
     private final PreviewWorkspaceService previewWorkspaceService;
     private final BuildFailureAnalyzer    buildFailureAnalyzer;
+    private final TemplateSeedingService  templateSeedingService;
     private final AiProperties            aiProperties;
 
     private static final String SYSTEM_PROMPT = """
@@ -75,11 +79,18 @@ public class CodeAgentService {
 
             ## Workflow — New Project
             1. Check /workspace first (execute_command: ls /workspace).
-            2. Scaffold only if no project exists yet:
+            2. The project MUST live in /workspace/app. Everything after you — the git push to the
+               preview branch, the change diff, the deploy — looks in /workspace/app and nowhere
+               else, so files written to /workspace itself are silently left behind.
+               Scaffold only if no project exists yet:
                - Vite + React (preferred): npm create vite@latest app -- --template react
                - CRA:                      npx create-react-app app
                - Next.js:                  npx create-next-app@latest app --no-git
                - Vue:                      npm create vue@latest app
+               - Plain HTML/CSS/JS, when the request asks for no framework and no build step:
+                 do NOT run a scaffolder. Run `mkdir -p /workspace/app` and write index.html and
+                 its assets there yourself. This is the one case with no scaffolder to create the
+                 directory for you, so you must create it.
             3. !! IMPLEMENT THE REQUESTED FEATURE — THIS IS MANDATORY !!
                - Read the scaffolded source files first (read_file src/App.jsx etc.).
                - Rewrite or create ALL necessary source files to implement the feature.
@@ -87,6 +98,8 @@ public class CodeAgentService {
             4. Install any additional dependencies if needed.
             5. Build ONLY after implementation is complete:
                cd /workspace/app && npm run build
+               Skip this step for a plain HTML/CSS/JS project — it has no build step and no
+               package.json, and the preview serves /workspace/app directly.
 
             ## Workflow — Modifying Existing Project
             1. ls /workspace to find the project directory.
@@ -175,6 +188,14 @@ public class CodeAgentService {
             previewWorkspaceService.prepareProject(containerId, userId, projectId);
         }
 
+        // 저장소를 먼저 받은 뒤에 씨딩을 시도한다. 순서가 반대면 clone 이 씨앗을 덮거나
+        // 비어 있지 않은 디렉터리에 clone 하려다 실패한다. 씨딩은 작업 디렉터리가 비었을
+        // 때만 일어나므로, 저장소가 있는 프로젝트에서는 자연히 건너뛴다.
+        Optional<Template> seededTemplate = templateSeedingService.seedIfNeeded(containerId, projectId);
+        if (seededTemplate.isPresent()) {
+            instruction = withTemplateContext(instruction, seededTemplate.get());
+        }
+
         try {
             // GLM shares OpenAI's loop rather than getting its own: OpenRouter returns
             // OpenAI-shaped tool_calls, so the transcript built here is identical down to the
@@ -261,6 +282,49 @@ public class CodeAgentService {
                     e
             );
         }
+    }
+
+    /**
+     * 씨딩된 템플릿을 지시문 앞에 붙인다.
+     *
+     * 시스템 프롬프트는 "프로젝트가 없으면 스캐폴드" 로 시작한다. 파일이 이미 있으니 모델이
+     * 알아서 수정 경로를 타는 것이 정상이지만, 그 판단을 추측에 맡기지 않는다 — 한 번이라도
+     * 스캐폴더가 돌면 사용자가 고른 템플릿이 통째로 덮인다.
+     *
+     * contentHints 를 함께 넘기는 것이 요점이다. 사용자가 원하는 것은 "내용만 바꾸기" 인데,
+     * 어디가 내용이고 어디가 구조인지 모델이 스스로 판단하면 레이아웃까지 건드린다.
+     */
+    private String withTemplateContext(String instruction, Template template) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("## Starting point — a template is ALREADY in place\n")
+                .append("The user picked the \"").append(template.name())
+                .append("\" template and it is already extracted into ").append(ContainerPaths.APP_DIR)
+                .append(".\n")
+                .append("DO NOT scaffold. DO NOT run any project generator (create-vite, create-react-app,\n")
+                .append("create-next-app, ...). Running one would overwrite what the user chose.\n")
+                .append("Start by reading what is there: execute_command `ls -A ")
+                .append(ContainerPaths.APP_DIR).append("`, then read the files before editing.\n");
+
+        if (template.stack() != null) {
+            prompt.append("Stack: ").append(template.stack())
+                    .append(" (entry: ").append(template.entry() == null ? "index.html" : template.entry())
+                    .append(").\n");
+        }
+
+        if (template.contentHints() != null && !template.contentHints().isEmpty()) {
+            prompt.append("\nThe template declares which parts are \"content\" — meant to be replaced:\n");
+            for (Template.ContentHint hint : template.contentHints()) {
+                prompt.append("- ").append(hint.key())
+                        .append(" (").append(hint.where()).append("): ").append(hint.desc()).append("\n");
+            }
+        }
+
+        prompt.append("\nKeep the template's structure and visual design unless the user asks to change it.\n")
+                .append("Preserve the language of the existing copy unless the user asks otherwise.\n")
+                .append("\n## What the user asked for\n")
+                .append(instruction);
+
+        return prompt.toString();
     }
 
     public record CodeResult(String previewUrl, String summary) {}

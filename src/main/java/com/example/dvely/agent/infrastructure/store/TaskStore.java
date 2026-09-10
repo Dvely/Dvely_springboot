@@ -2,6 +2,7 @@ package com.example.dvely.agent.infrastructure.store;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.dto.AnsweredClarification;
 import com.example.dvely.agent.application.dto.ClarificationRequest;
 import com.example.dvely.agent.application.dto.AgentTaskEvent;
 import com.example.dvely.agent.application.dto.AgentTaskFailure;
@@ -19,12 +20,14 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Component
+@Slf4j
 @RequiredArgsConstructor
 public class TaskStore {
 
@@ -119,6 +122,27 @@ public class TaskStore {
         try {
             return objectMapper.readValue(json, ClarificationRequest.class);
         } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 이미 답한 되묻기. 답이 없었거나(되묻기를 거치지 않은 태스크) 스냅샷을 못 읽으면 null 이다 —
+     * 읽기 실패로 태스크 조회 전체를 깨뜨리지 않는다. 이 값은 화면을 꾸미는 부가 정보라,
+     * 없으면 예전처럼 보이는 것으로 충분하다.
+     */
+    public AnsweredClarification getAnsweredClarification(String taskId) {
+        String json = runRepository.findById(taskId)
+                .map(AgentRunEntity::getAnsweredClarificationJson)
+                .filter(s -> s != null && !s.isBlank())
+                .orElse(null);
+        if (json == null) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, AnsweredClarification.class);
+        } catch (Exception e) {
+            log.warn("answered clarification 파싱 실패: taskId={}", taskId, e);
             return null;
         }
     }
@@ -651,6 +675,34 @@ public class TaskStore {
 
     private void appendEvent(String taskId, String type, TaskStatus status, String message) {
         eventRepository.save(new AgentRunEventEntity(taskId, type, status, message));
+    }
+
+    /**
+     * 스텝의 시작·완료를 이벤트로 남긴다. 태스크 상태는 건드리지 않는다 — 이건 진행 표시용이지
+     * 상태 전이가 아니다.
+     *
+     * <p>여태 이벤트는 태스크 생명주기(CREATED/QUEUED/STARTED/COMPLETED)뿐이라, 코드 생성처럼
+     * 몇 분 걸리는 스텝이 도는 동안 화면에 아무 변화가 없었다. 사용자는 진행 중인지 멈춘 건지
+     * 오류인지 구분할 수 없다.</p>
+     *
+     * <p>이벤트 적재는 실패해도 작업을 멈추지 않는다. 진행 표시가 안 보이는 것과 작업이 죽는 것은
+     * 무게가 다르다.</p>
+     */
+    @Transactional
+    public void appendStepEvent(String taskId,
+                                String type,
+                                TaskStatus status,
+                                String message,
+                                int stepIndex,
+                                int stepTotal,
+                                String agentType) {
+        try {
+            eventRepository.save(new AgentRunEventEntity(
+                    taskId, type, status, message, stepIndex, stepTotal, agentType));
+        } catch (RuntimeException e) {
+            log.warn("스텝 진행 이벤트 적재 실패(작업은 계속): taskId={} type={} step={}/{}",
+                    taskId, type, stepIndex, stepTotal, e);
+        }
     }
 
     private String writePlan(AgentPlan plan) {

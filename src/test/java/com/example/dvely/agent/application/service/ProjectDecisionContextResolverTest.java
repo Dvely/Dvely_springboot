@@ -17,6 +17,7 @@ import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import java.time.LocalDateTime;
 import java.util.Optional;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 class ProjectDecisionContextResolverTest {
@@ -111,5 +112,39 @@ class ProjectDecisionContextResolverTest {
                 RepositoryVisibility.PUBLIC, binding,
                 RepositoryHealthStatus.HEALTHY, false, now, now
         )));
+    }
+
+
+    @Test
+    @DisplayName("템플릿으로 시작한 프로젝트는 스택이 정해졌다고 알린다 — 코드가 아직 없어도")
+    void templateProjectSettlesTheStack() {
+        Project project = new Project(1L, "site", "template", "landing-minimal", "fast",
+                RepositoryVisibility.PRIVATE);
+        when(projectRepository.findById(51L)).thenReturn(Optional.of(project));
+
+        var context = resolver.resolve(51L).orElseThrow();
+
+        assertThat(context.hasCode()).isFalse();
+        assertThat(context.hasPendingTemplate()).isTrue();
+        // 프롬프트가 "코드가 없으니 스캐폴딩한다" 로 가면 결정 에이전트가 스택을 되묻는다.
+        // dev project 51 에서 실제로 그랬다.
+        assertThat(context.asProjectLine(51L))
+                .contains("landing-minimal")
+                .contains("do not scaffold")
+                .doesNotContain("scaffold it from scratch");
+        assertThat(context.asFactsLine()).contains("templateId=landing-minimal");
+    }
+
+    @Test
+    @DisplayName("blank 로 시작한 프로젝트는 예전 그대로 스캐폴딩 안내를 유지한다")
+    void blankProjectKeepsScaffoldWording() {
+        Project project = new Project(1L, "site", "blank", null, "fast", RepositoryVisibility.PRIVATE);
+        when(projectRepository.findById(52L)).thenReturn(Optional.of(project));
+
+        var context = resolver.resolve(52L).orElseThrow();
+
+        assertThat(context.hasPendingTemplate()).isFalse();
+        assertThat(context.asProjectLine(52L)).contains("scaffold it from scratch");
+        assertThat(context.asFactsLine()).doesNotContain("templateId");
     }
 }

@@ -1,6 +1,7 @@
 package com.example.dvely.chat.infrastructure.persistence.entity;
 
 import com.example.dvely.chat.domain.model.ChatMessage;
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.chat.domain.value.ChatRole;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -37,15 +38,26 @@ public class ChatMessageEntity {
     @Column(name = "token_count", nullable = false)
     private long tokenCount;
 
+    /** 줄의 종류. 이 칼럼 이전 행과 종류가 없는 줄은 null 이다. */
+    @Column(name = "kind", length = 40)
+    private String kind;
+
+    /** 이 줄을 만든 에이전트 태스크. 태스크와 무관한 줄과 이 칼럼 이전 행은 null 이다. */
+    @Column(name = "task_id", length = 64)
+    private String taskId;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
-    private ChatMessageEntity(Long conversationId, String role, String content, long tokenCount) {
+    private ChatMessageEntity(Long conversationId, String role, String content, long tokenCount,
+                              String kind, String taskId) {
         this.conversationId = conversationId;
         this.role = role;
         this.content = content;
         this.tokenCount = tokenCount;
+        this.kind = kind;
+        this.taskId = taskId;
     }
 
     public static ChatMessageEntity from(ChatMessage message) {
@@ -53,8 +65,25 @@ public class ChatMessageEntity {
                 message.getConversationId(),
                 message.getRole().toStorage(),
                 message.getContent(),
-                message.getTokenCount()
+                message.getTokenCount(),
+                message.getKind() == null ? null : message.getKind().name(),
+                message.getTaskId()
         );
+    }
+
+    /**
+     * 모르는 종류가 저장돼 있어도(구버전이 쓴 값, 롤백 중인 배포) 조회를 깨뜨리지 않는다 —
+     * 종류는 화면을 꾸미는 부가 정보라 없으면 예전처럼 보이는 것으로 충분하다.
+     */
+    private static ChatMessageKind parseKind(String stored) {
+        if (stored == null || stored.isBlank()) {
+            return null;
+        }
+        try {
+            return ChatMessageKind.valueOf(stored);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     public ChatMessage toDomain() {
@@ -64,6 +93,8 @@ public class ChatMessageEntity {
                 ChatRole.fromStorage(role),
                 content,
                 tokenCount,
+                parseKind(kind),
+                taskId,
                 createdAt
         );
     }

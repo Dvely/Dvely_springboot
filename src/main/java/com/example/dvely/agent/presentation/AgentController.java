@@ -8,7 +8,6 @@ import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.result.AgentSubmitResult;
 import com.example.dvely.agent.application.service.AgentEventStreamService;
 import com.example.dvely.agent.application.service.AiProviderQueryService;
-import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.agent.presentation.dto.AiProvidersResponse;
 import com.example.dvely.agent.presentation.dto.DecisionRequest;
@@ -50,7 +49,6 @@ public class AgentController {
     private final AgentFacade           agentFacade;
     private final AgentOrchestrator     agentOrchestrator;
     private final TaskStore             taskStore;
-    private final InputWaitStore        inputWaitStore;
     private final PreviewSessionService previewSessionService;
     private final AgentEventStreamService agentEventStreamService;
     private final AiProviderQueryService  aiProviderQueryService;
@@ -149,7 +147,8 @@ public class AgentController {
                 failure == null ? 0 : failure.maxAttempts(),
                 retryable,
                 pendingApprovalId,
-                taskStore.getClarification(taskId)
+                taskStore.getClarification(taskId),
+                taskStore.getAnsweredClarification(taskId)
         ));
     }
 
@@ -187,6 +186,9 @@ public class AgentController {
                         event.type(),
                         event.status(),
                         event.message(),
+                        event.stepIndex(),
+                        event.stepTotal(),
+                        event.agentType(),
                         event.createdAt()
                 ))
                 .toList());
@@ -230,7 +232,9 @@ public class AgentController {
         if (task.status() != com.example.dvely.agent.application.dto.TaskStatus.WAITING_INPUT) {
             throw new IllegalStateException("사용자 입력을 기다리는 Agent task가 아닙니다. taskId=" + taskId);
         }
-        boolean accepted = inputWaitStore.supply(taskId, userId, request.value());
+        // 값 저장과 대화 기록을 함께 한다(AgentOrchestrator#supplyInput) — 답이 대화에 남지 않으면
+        // 폼이 사라진 뒤 사용자가 무엇을 골랐는지 확인할 방법이 없다.
+        boolean accepted = agentOrchestrator.supplyInput(taskId, userId, task.conversationId(), request.value());
         if (!accepted) {
             throw taskNotFound(taskId);
         }

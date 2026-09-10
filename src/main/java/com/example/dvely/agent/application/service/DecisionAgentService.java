@@ -43,6 +43,16 @@ public class DecisionAgentService {
             did not exist. Do NOT copy fragments verbatim; instead synthesize a clear, actionable
             directive from the full context of the user's message.
 
+            EVERY step must also carry a "userSummary": ONE short sentence, in the SAME LANGUAGE the
+            user wrote in, saying what this step will do. This is not a second copy of the instruction
+            — the instruction is written for an agent, this is written for the person who has to press
+            Approve, and it is the only text about this step they see on that card. So:
+            - plain product language: what they will get, not how it is built
+            - no file paths, no projectId, no internal identifiers, no agent-directed phrasing
+              ("Scaffold …", "Do not modify …")
+            - e.g. "할 일 추가·완료·삭제가 되는 한 페이지 앱을 만듭니다",
+                   "만든 앱을 GitHub Pages 에 배포합니다"
+
             ## Clarify FIRST when — and ONLY when — the request is genuinely ambiguous
 
             Before building, if the request leaves a decision that (a) you would otherwise have to GUESS
@@ -61,8 +71,9 @@ public class DecisionAgentService {
               them. Ask with SINGLE_SELECT, offering "react" (React + Vite), "vue" (Vue + Vite) and
               "vanilla" (plain HTML/CSS/JS, no build step); mark none as recommended unless the
               request hints at one. Do NOT ask when the project already has code (the stack is
-              already settled), when the user named a framework or library, or when the request is a
-              small edit rather than a new app.
+              already settled), when the project facts name a templateId (the chosen template settles
+              the stack — asking again offers a choice that was already made), when the user named a
+              framework or library, or when the request is a small edit rather than a new app.
             - A frontend DEPLOY is requested, the user did not say WHERE, the project has never been
               deployed, and the project facts below list more than one available target.
               GitHub Pages, S3 and an EC2 server are different places with different URLs and costs,
@@ -95,6 +106,9 @@ public class DecisionAgentService {
                  code yet, name the frontend framework to scaffold with — the user's own words, or
                  their answer to the clarifying question above. Do not leave it to the code agent to
                  pick: it will scaffold whatever it likes and the user gets a stack they never chose.
+                 The exception is a project that starts from a template (project facts name a
+                 templateId): the template is already in the workspace, so describe the change
+                 against it and never name a framework to scaffold.
                - "targetFile": file or component mentioned (empty string if not mentioned)
 
             2. DEPLOY — User explicitly wants to deploy to a PRODUCTION environment:
@@ -214,6 +228,7 @@ public class DecisionAgentService {
                   "agentType": "CODE",
                   "parameters": {
                     "instruction": "...",
+                    "userSummary": "할 일 추가·완료·삭제가 되는 한 페이지 앱을 만듭니다",
                     "targetFile": "..."
                   }
                 },
@@ -221,6 +236,7 @@ public class DecisionAgentService {
                   "agentType": "DEPLOY",
                   "parameters": {
                     "instruction": "...",
+                    "userSummary": "만든 앱을 GitHub Pages 에 배포합니다",
                     "version": "",
                     "repoName": "my-react-app"
                   }

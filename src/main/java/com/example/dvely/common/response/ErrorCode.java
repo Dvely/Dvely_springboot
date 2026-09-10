@@ -38,7 +38,12 @@ public enum ErrorCode {
     // BYOK 코딩 에이전트. 사용자가 해당 벤더의 본인 API 키를 아직 등록하지 않은 상태로, 서버가
     // 대신 채워줄 수 없다(운영자 키를 사용자 대신 쓰는 것은 제공사 약관 위반). 그래서 5xx 가 아니라
     // 400 이고, 클라이언트가 할 일은 키 등록 화면으로 보내는 것이다.
-    AI_CREDENTIAL_NOT_REGISTERED(400, "AI_CREDENTIAL_NOT_REGISTERED", "해당 제공자의 API 키가 등록되지 않았습니다");
+    AI_CREDENTIAL_NOT_REGISTERED(400, "AI_CREDENTIAL_NOT_REGISTERED", "해당 제공자의 API 키가 등록되지 않았습니다"),
+
+    // 템플릿 카탈로그. 정본이 외부(템플릿 저장소의 Pages)에 있어 우리가 못 읽는 상황이 있다.
+    // 갱신에 실패해도 직전 목록으로 계속 서비스하므로, 이 코드가 나가는 것은 한 번도 읽지
+    // 못한 경우뿐이다. 요청은 정상이고 원인이 서버 쪽이라 4xx 가 아니다.
+    TEMPLATE_CATALOG_UNAVAILABLE(503, "TEMPLATE_CATALOG_UNAVAILABLE", "템플릿 카탈로그를 불러올 수 없습니다");
 
     private final int status;
     private final String code;

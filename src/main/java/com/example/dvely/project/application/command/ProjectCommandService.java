@@ -20,6 +20,7 @@ import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.service.ProjectDomainService;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
+import com.example.dvely.template.application.service.TemplateCatalogGuard;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -36,6 +37,7 @@ public class ProjectCommandService {
     private final ChatCommandService chatCommandService;
     private final AuditRecorder auditRecorder;
     private final RepositoryProvisioningService repositoryProvisioningService;
+    private final TemplateCatalogGuard templateCatalogGuard;
 
     @Transactional
     public ProjectDetailResult createProject(Long ownerUserId, CreateProjectCommand command) {
@@ -47,6 +49,9 @@ public class ProjectCommandService {
                 command.draftMode(),
                 RepositoryVisibility.PRIVATE
         );
+        // 형식 검증은 도메인이 끝냈다. 실재 여부는 카탈로그에 물어야 하고 그건 네트워크라 여기서 한다.
+        // 정규화된 값으로 물어야 한다 — 대소문자·공백이 정리되기 전 값은 카탈로그 ID 와 다르다.
+        templateCatalogGuard.ensureExists(project.getTemplateType());
         Project savedProject = projectRepository.save(project);
         return toDetailResult(savedProject);
     }
