@@ -252,6 +252,10 @@ qeploy:
     worker:
       poll-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_POLL_INTERVAL_MS:1000}
       heartbeat-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_HEARTBEAT_INTERVAL_MS:30000}
+      # #340 5-2: deploymentExecutor 가 포화라 claim 한 이력을 넘기지 못했을 때, PENDING 으로
+      # 되돌리며 next_run_at 에 얹는 backoff. 포화 상태에서 claim<->release 가 매 폴링 반복되는
+      # 것을 막는다(AgentRunWorker 의 같은 이름 설정과 같은 역할).
+      dispatch-reject-backoff-ms: ${QEPLOY_DEPLOYMENT_WORKER_DISPATCH_REJECT_BACKOFF_MS:5000}
     recovery:
       # 결과 웹훅을 놓쳐 IN_PROGRESS 에 멈춘 배포를 GitHub 에 직접 물어 회수한다.
       poll-interval-ms: ${QEPLOY_DEPLOYMENT_RECOVERY_POLL_INTERVAL_MS:60000}

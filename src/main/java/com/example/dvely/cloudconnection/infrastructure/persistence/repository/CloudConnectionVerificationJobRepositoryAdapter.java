@@ -70,6 +70,19 @@ public class CloudConnectionVerificationJobRepositoryAdapter
 
     @Override
     @Transactional
+    public boolean releaseClaim(String jobId, String workerId) {
+        return springDataRepository.releaseClaim(
+                jobId,
+                workerId,
+                LocalDateTime.now(),
+                CloudConnectionVerificationJobStatus.RUNNING.name(),
+                CloudConnectionVerificationJobStatus.PENDING.name(),
+                "실행기가 포화 상태라 클라우드 권한 확인을 재대기열로 돌렸습니다."
+        ) == 1;
+    }
+
+    @Override
+    @Transactional
     public void recoverExpiredLeases() {
         springDataRepository.findByStatusAndLeaseUntilBefore(
                         CloudConnectionVerificationJobStatus.RUNNING.name(),

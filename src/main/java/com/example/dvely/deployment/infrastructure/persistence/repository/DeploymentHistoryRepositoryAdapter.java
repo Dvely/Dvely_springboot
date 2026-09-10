@@ -118,6 +118,18 @@ public class DeploymentHistoryRepositoryAdapter implements DeploymentHistoryRepo
 
     @Override
     @Transactional
+    public boolean releaseClaim(Long historyId, String workerId, long backoffMillis) {
+        return springDataRepository.releaseClaim(
+                historyId,
+                workerId,
+                LocalDateTime.now().plus(Duration.ofMillis(backoffMillis)),
+                DeployStatus.IN_PROGRESS.name(),
+                DeployStatus.PENDING.name()
+        ) == 1;
+    }
+
+    @Override
+    @Transactional
     public void renewLeases(String workerId) {
         springDataRepository.renewLeases(
                 workerId,

@@ -35,5 +35,16 @@ public interface DeploymentHistoryRepository {
 
     void recoverExpiredLeases();
 
+    /**
+     * claim 해 놓고 실행기에 넘기지 못한 이력을 PENDING 으로 되돌린다(#340 5-2).
+     *
+     * 이 호출이 없으면 배치의 두 번째 이력이 IN_PROGRESS 인 채 리스 만료(2분)까지 방치된다 —
+     * 사용자 화면에는 "배포 중"으로 보이지만 그것을 실제로 돌리는 스레드는 어디에도 없다.
+     *
+     * @return 이 호출이 실제로 되돌렸으면 true. false 는 그 사이 다른 주체(리스 만료 회수 등)가
+     *         이미 이 행을 IN_PROGRESS 밖으로 옮겼다는 뜻이고, 그것도 정상이다.
+     */
+    boolean releaseClaim(Long historyId, String workerId, long backoffMillis);
+
     void renewLeases(String workerId);
 }
