@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -12,6 +13,7 @@ import com.example.dvely.apitoken.application.service.ApiTokenAuthenticator;
 import com.example.dvely.apitoken.domain.model.ApiToken;
 import com.example.dvely.apitoken.domain.value.ApiTokenScope;
 import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
+import com.example.dvely.auth.application.port.out.TokenClaims;
 import com.example.dvely.auth.application.port.out.TokenPort;
 import jakarta.servlet.FilterChain;
 import java.time.LocalDateTime;
@@ -48,6 +50,10 @@ class JwtAuthenticationFilterTest {
         SecurityContextHolder.clearContext();
     }
 
+    private static TokenClaims claims() {
+        return new TokenClaims(42L, "jti-1", LocalDateTime.now().plusHours(1));
+    }
+
     private static ApiToken token(ApiTokenScope scope) {
         return new ApiToken(1L, 7L, "hash", "qp_abcd1234", scope, null,
                 LocalDateTime.now().plusDays(1), null, LocalDateTime.now());
@@ -76,13 +82,12 @@ class JwtAuthenticationFilterTest {
 
         assertThat(authenticatedUserId()).isEqualTo(7L);
         // Parsing a PAT as a JWT would throw on every agent request; the prefix decides instead.
-        verify(tokenPort, never()).getUserId(anyString());
+        verify(tokenPort, never()).parseClaims(anyString());
     }
 
     @Test
     void aJwtStillTakesTheOriginalPathUntouched() throws Exception {
-        when(tokenPort.getUserId(JWT)).thenReturn(42L);
-        when(tokenPort.getJti(JWT)).thenReturn("jti-1");
+        when(tokenPort.parseClaims(JWT)).thenReturn(claims());
         when(blacklist.isRevoked("jti-1")).thenReturn(false);
 
         run("GET", JWT);
@@ -92,9 +97,21 @@ class JwtAuthenticationFilterTest {
     }
 
     @Test
+    void aJwtIsParsedExactlyOncePerRequest() throws Exception {
+        // 10-1 회귀 방지: userId 와 jti 를 따로 받던 시절엔 요청마다 서명 검증이 두 번 돌았다.
+        when(tokenPort.parseClaims(JWT)).thenReturn(claims());
+        when(blacklist.isRevoked("jti-1")).thenReturn(false);
+
+        run("GET", JWT);
+
+        verify(tokenPort, times(1)).parseClaims(JWT);
+        verify(tokenPort, never()).getUserId(anyString());
+        verify(tokenPort, never()).getJti(anyString());
+    }
+
+    @Test
     void aRevokedJwtLeavesTheRequestAnonymous() throws Exception {
-        when(tokenPort.getUserId(JWT)).thenReturn(42L);
-        when(tokenPort.getJti(JWT)).thenReturn("jti-1");
+        when(tokenPort.parseClaims(JWT)).thenReturn(claims());
         when(blacklist.isRevoked("jti-1")).thenReturn(true);
 
         run("GET", JWT);

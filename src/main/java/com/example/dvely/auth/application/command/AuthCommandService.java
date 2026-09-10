@@ -6,6 +6,7 @@ import com.example.dvely.auth.application.port.out.GithubAppPort;
 import com.example.dvely.auth.application.port.out.GithubOAuthPort;
 import com.example.dvely.auth.application.port.out.GithubUserPort;
 import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
+import com.example.dvely.auth.application.port.out.TokenClaims;
 import com.example.dvely.auth.application.port.out.TokenPort;
 import com.example.dvely.auth.domain.model.RefreshToken;
 import com.example.dvely.auth.domain.model.User;
@@ -102,8 +103,9 @@ public class AuthCommandService {
      */
     @Transactional
     public void logout(Long userId, String accessToken) {
-        String jti = tokenPort.getJti(accessToken);
-        tokenBlacklistPort.revoke(jti, tokenPort.getExpiresAt(accessToken));
+        // jti 와 만료시각을 따로 받으면 같은 토큰을 두 번 파싱한다 — 한 번에 받는다.
+        TokenClaims claims = tokenPort.parseClaims(accessToken);
+        tokenBlacklistPort.revoke(claims.jti(), claims.expiresAt());
         refreshTokenRepository.revokeAllByUserId(userId);
     }
 
