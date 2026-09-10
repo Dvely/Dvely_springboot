@@ -18,6 +18,53 @@
 SET NAMES utf8mb4;
 
 -- ---------------------------------------------------------------------------
+-- 0. 안전 게이트 — 데이터가 있으면 지우지 않고 **멈춘다**.
+--
+-- 위의 "머지 전에 두 환경에서 확인할 것" 은 사람이 잊을 수 있고, 잊은 결과가 되돌릴 수 없는
+-- 삭제다. 그래서 그 확인을 사람의 절차가 아니라 마이그레이션 자신의 선행 조건으로 만든다.
+--
+-- pipelines·deployments 에 한 행이라도 있으면 여기서 실패한다. 이 블록이 모든 DROP 보다 앞에
+-- 있으므로 그때 아래 문장은 **하나도 실행되지 않는다.** Flyway 가 멈추고 배포가 실패한다 —
+-- 아무도 안 쓴다고 믿었던 행을 조용히 잃는 것보다 시끄럽게 실패하는 편이 낫다.
+--
+-- 실패했다면: 그 행이 무엇인지 먼저 본다. 버려도 되는 것이면 해당 환경에서 비우고 다시 배포하고,
+-- 살릴 값이면 이 마이그레이션을 되돌린 뒤 옮길 곳을 정한다.
+--
+-- users 3 컬럼은 이 게이트에 넣지 않는다 — 값이 있어도 지우는 것이 맞기 때문이다(2번 참조).
+--
+-- 테이블이 이미 없는 환경(예: 신규 스키마)에서도 돌아야 하므로, COUNT 문장 자체를 존재 여부로
+-- 감싼다. 없으면 0 으로 두고 통과한다.
+-- ---------------------------------------------------------------------------
+SET @s = (SELECT IF(COUNT(*) > 0,
+        'SELECT COUNT(*) INTO @cnt_pipelines FROM pipelines',
+        'SET @cnt_pipelines = 0')
+    FROM information_schema.tables
+    WHERE table_schema = DATABASE() AND table_name = 'pipelines');
+PREPARE stmt FROM @s; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @s = (SELECT IF(COUNT(*) > 0,
+        'SELECT COUNT(*) INTO @cnt_deployments FROM deployments',
+        'SET @cnt_deployments = 0')
+    FROM information_schema.tables
+    WHERE table_schema = DATABASE() AND table_name = 'deployments');
+PREPARE stmt FROM @s; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- 조건을 만족하면 존재하지 않는 테이블을 참조해 실패시킨다.
+--
+-- SIGNAL 을 쓰고 싶지만 준비문 안에서는 지원되지 않는다(실측: ERROR 1295 "This command is not
+-- supported in the prepared statement protocol yet"). 그것도 실패는 시키지만 오류 메시지가
+-- 원인을 전혀 설명하지 못해, 다음 사람이 이 파일을 열어보기 전까지는 무슨 일인지 알 수 없다.
+--
+-- 그래서 테이블 이름 자체에 사유와 행 수를 담는다. Flyway 실패 로그에 그대로 찍힌다:
+--   Table 'dvely.V62_ABORT_pipelines_1_deployments_0_rows_exist' doesn't exist
+-- 식별자 상한이 64자라 ASCII 로 짧게 유지한다.
+SET @s = (SELECT IF(@cnt_pipelines + @cnt_deployments > 0,
+        CONCAT('SELECT 1 FROM `V62_ABORT_pipelines_', @cnt_pipelines,
+               '_deployments_', @cnt_deployments, '_rows_exist`'),
+        'SELECT 1'));
+PREPARE stmt FROM @s; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ---------------------------------------------------------------------------
 -- 1. pipelines · deployments — V1 에서 만들어진 뒤 한 번도 매핑되지 않은 테이블.
 --
 -- 근거: 저장소의 @Table 매핑 30 개 어디에도 두 이름이 없고, 두 테이블을 읽거나 쓰는 코드도 없다.
