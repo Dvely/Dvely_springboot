@@ -9,6 +9,12 @@ public class DeployWorkflowTemplate {
     private static final String WORKFLOW_NAME = "Qeploy Deploy to GitHub Pages";
     private static final String LEGACY_WORKFLOW_NAME = "Dvely Deploy to GitHub Pages";
 
+    /**
+     * 발행 디렉터리는 러너에서 확정된다. 빌드가 어디에 냈는지는 설정과 프레임워크
+     * 판본에 달려 있어, 워크플로를 만드는 시점에는 확실히 알 수 없다.
+     */
+    private static final String OUT_REF = "${{ steps.publish.outputs.dir }}";
+
     public static String fileName() {
         return WORKFLOW_FILE;
     }
@@ -52,6 +58,9 @@ public class DeployWorkflowTemplate {
                                   PackageManager pm, String nodeVersion) {
         String type   = templateType == null ? "" : templateType.toLowerCase();
         String outDir = publishDir != null ? publishDir : resolvePublishDir(type);
+        // 명시적으로 지정된 발행 경로는 사용자의 선택이므로 건드리지 않는다.
+        boolean nuxt  = publishDir == null
+                && ("nuxt".equals(type) || "nuxtjs".equals(type) || "nuxt3".equals(type));
 
         StringBuilder w = new StringBuilder();
 
@@ -135,21 +144,53 @@ public class DeployWorkflowTemplate {
             w.append("          QEPLOY_BASE_PATH: ${{ steps.base.outputs.base }}\n\n");
         }
 
+        // ── 6.5 발행 디렉터리 확정 + 산출물 검증 ─────────────────────────────
+        // 디렉터리를 러너에서 정하는 이유는 Nuxt 다. `nuxi generate` 는 산출물을
+        // `.output/public` 에 내고 `dist` 는 호환용으로 만들어 주는 심볼릭 링크다(Nuxt 4.5
+        // 실측). 링크는 판본·설정에 따라 없을 수도 있고, 발행 액션이 링크를 따라간다는 보장도
+        // 없다. 실물을 가리키면 그 두 불확실성이 함께 사라진다.
+        w.append("      - name: Resolve publish dir\n");
+        w.append("        id: publish\n");
+        w.append("        run: |\n");
+        w.append("          DIR=\"").append(outDir).append("\"\n");
+        if (nuxt) {
+            w.append("          if [ -d \".output/public\" ]; then DIR=\".output/public\"; fi\n");
+        }
+        w.append("          echo \"dir=$DIR\" >> $GITHUB_OUTPUT\n");
+        w.append("          echo \"발행 대상: $DIR\"\n\n");
+
+        // 산출물 검증은 아래 custom domain 스텝의 `mkdir -p` 보다 <b>앞</b>이어야 한다.
+        // 그 mkdir 은 CNAME 을 쓰려고 디렉터리를 보장하는데, 부수효과로 "산출물이 없다" 를
+        // "산출물이 비었다" 로 바꾼다. 그러면 실패한 스텝 하나 없이 빈 사이트가 배포되고,
+        // 사용자는 어디를 볼지 알 수 없다 — 조용한 실패가 시끄러운 실패보다 나쁘다.
+        w.append("      - name: Verify build output\n");
+        w.append("        run: |\n");
+        w.append("          DIR=\"").append(OUT_REF).append("\"\n");
+        w.append("          if [ ! -d \"$DIR\" ]; then\n");
+        w.append("            echo \"::error::빌드 산출물 디렉터리가 없습니다: $DIR\"\n");
+        w.append("            echo \"빌드가 산출물을 다른 경로에 냈거나, 아무것도 만들지 않았습니다.\"\n");
+        w.append("            exit 1\n");
+        w.append("          fi\n");
+        w.append("          if [ -z \"$(ls -A \"$DIR\" 2>/dev/null)\" ]; then\n");
+        w.append("            echo \"::error::빌드 산출물 디렉터리가 비어 있습니다: $DIR\"\n");
+        w.append("            exit 1\n");
+        w.append("          fi\n\n");
+
         // ── 7. SPA 라우팅 404 대응 (빌드 결과물 있을 때만) ───────────────────
         w.append("      - name: Copy index.html to 404.html\n");
         w.append("        run: |\n");
-        w.append("          [ -f ").append(outDir).append("/index.html ]");
-        w.append(" && cp ").append(outDir).append("/index.html ").append(outDir).append("/404.html || true\n\n");
+        w.append("          [ -f ").append(OUT_REF).append("/index.html ]");
+        w.append(" && cp ").append(OUT_REF).append("/index.html ").append(OUT_REF).append("/404.html || true\n\n");
 
         // ── 8. 기존 custom domain 보존 ───────────────────────────────────────
-        w.append(preserveCustomDomainStep(outDir));
+        w.append(preserveCustomDomainStep(OUT_REF));
 
         // ── 9. gh-pages 배포 ──────────────────────────────────────────────────
         w.append("      - name: Deploy to gh-pages\n");
         w.append("        uses: peaceiris/actions-gh-pages@v4\n");
         w.append("        with:\n");
         w.append("          github_token: ${{ secrets.GITHUB_TOKEN }}\n");
-        w.append("          publish_dir: ").append(outDir).append("\n");
+        w.append("          publish_dir: ").append(OUT_REF).append("\n");
 
         return w.toString();
     }

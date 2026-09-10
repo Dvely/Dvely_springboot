@@ -171,12 +171,89 @@ class DeployWorkflowTemplateTest {
         assertThat(workflow).doesNotContain("adapter: adapter({ fallback: '404.html' }),\\n\" + \"              echo \"  kit");
     }
 
+    /**
+     * 산출물이 없을 때 조용히 빈 사이트를 배포하던 것을 막는다 (#330).
+     *
+     * <p>예전 순서는 이랬다: 빌드가 아무것도 안 만들어도 404 복사는 {@code || true} 로 넘어가고,
+     * custom domain 스텝의 {@code mkdir -p} 가 <b>빈 디렉터리를 만들어</b>, 발행 액션이 그걸
+     * 올렸다. 실패한 스텝이 하나도 없는 채로 사이트 전체가 404 가 된다 — 사용자는 어디를 볼지
+     * 알 수 없다.</p>
+     */
+    @Test
+    void generate_refusesToPublishWhenTheBuildProducedNothing() {
+        String workflow = DeployWorkflowTemplate.generate("astro", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("Verify build output");
+        assertThat(workflow).contains("빌드 산출물 디렉터리가 없습니다");
+        assertThat(workflow).contains("빌드 산출물 디렉터리가 비어 있습니다");
+    }
+
+    /**
+     * 검증은 {@code mkdir -p} 보다 앞에 있어야 한다. 뒤에 두면 그 mkdir 이 "산출물이 없다" 를
+     * "산출물이 비었다" 로 바꿔 놓은 뒤라, 검증이 볼 수 있는 것은 이미 만들어진 빈 디렉터리다.
+     */
+    @Test
+    void generate_verifiesOutputBeforeAnythingCreatesTheDirectory() {
+        String workflow = DeployWorkflowTemplate.generate("astro", null, PackageManager.NPM, "20");
+
+        assertThat(workflow.indexOf("Verify build output"))
+                .isLessThan(workflow.indexOf("Preserve custom domain"));
+    }
+
+    /**
+     * Nuxt 는 산출물을 {@code .output/public} 에 낸다 — {@code dist} 는 호환용 심볼릭 링크다
+     * (Nuxt 4.5.2 실측). 링크는 판본·설정에 따라 없을 수 있고, 발행 액션이 링크를 따라간다는
+     * 보장도 없다. 실물을 가리키면 두 불확실성이 함께 사라진다.
+     */
+    @Test
+    void generate_nuxtPublishesWhereItsOutputActuallyIs() {
+        String workflow = DeployWorkflowTemplate.generate("nuxt", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("if [ -d \".output/public\" ]; then DIR=\".output/public\"; fi");
+        // Nuxt 2 처럼 그 경로가 없는 판본에서는 예전 값으로 떨어진다.
+        assertThat(workflow).contains("DIR=\"./dist\"");
+    }
+
+    @Test
+    void generate_otherFrameworksKeepTheirOwnOutputDirectory() {
+        // 이 분기는 Nuxt 만의 사정이다 — 다른 프레임워크에 붙이면 없는 경로를 찾는 비용만 는다.
+        for (String type : new String[]{"astro", "gatsby", "sveltekit", "nextjs", "cra"}) {
+            String workflow = DeployWorkflowTemplate.generate(type, null, PackageManager.NPM, "20");
+            assertThat(workflow).as(type).doesNotContain(".output/public");
+        }
+    }
+
+    /**
+     * 발행 경로를 명시적으로 받은 경우는 사용자의 선택이므로 추측으로 덮지 않는다.
+     */
+    @Test
+    void generate_anExplicitPublishDirIsNotSecondGuessed() {
+        String workflow = DeployWorkflowTemplate.generate("nuxt", "./public", PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("DIR=\"./public\"");
+        assertThat(workflow).doesNotContain(".output/public");
+    }
+
+    /**
+     * 하류 스텝들은 확정된 값을 봐야 한다. 하나라도 옛 상수를 그대로 쓰면 그 스텝만 다른
+     * 디렉터리를 보게 되고, Nuxt 에서는 그게 곧 빈 곳을 보는 것이다.
+     */
+    @Test
+    void generate_everyDownstreamStepUsesTheResolvedDirectory() {
+        String workflow = DeployWorkflowTemplate.generate("nuxt", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("publish_dir: ${{ steps.publish.outputs.dir }}");
+        assertThat(workflow).contains("[ -f ${{ steps.publish.outputs.dir }}/index.html ]");
+        assertThat(workflow).contains("mkdir -p ${{ steps.publish.outputs.dir }}");
+    }
+
     @Test
     void generate_contentTemplateNamesAreNotFrameworkVocabulary() {
         for (String contentTemplate : new String[]{"landing", "portfolio", "e-commerce"}) {
             assertThat(DeployWorkflowTemplate.generate(contentTemplate, null, PackageManager.NPM, "20"))
                     .as("contentTemplate=%s", contentTemplate)
-                    .contains("publish_dir: ./dist");
+                    // 발행 경로는 러너에서 확정되므로, 어떤 값으로 확정되는지를 본다.
+                    .contains("DIR=\"./dist\"");
         }
     }
 
@@ -184,7 +261,7 @@ class DeployWorkflowTemplateTest {
     void generate_fallsBackToDistWhenFrameworkIsUnknown() {
         // 감지 실패 시 null 이 그대로 넘어온다. Vite 산출물이 dist 라 기본값이 이것이다.
         assertThat(DeployWorkflowTemplate.generate(null, null, PackageManager.NPM, "20"))
-                .contains("publish_dir: ./dist");
+                .contains("DIR=\"./dist\"");
     }
 
     @Test
@@ -193,10 +270,10 @@ class DeployWorkflowTemplateTest {
 
         assertThat(workflow).contains("      - name: Preserve custom domain");
         assertThat(workflow).contains("CNAME=\"${{ steps.base.outputs.cname }}\"");
-        assertThat(workflow).contains("printf '%s\\n' \"$CNAME\" > ./dist/CNAME");
+        assertThat(workflow).contains("printf '%s\\n' \"$CNAME\" > ${{ steps.publish.outputs.dir }}/CNAME");
         assertThat(workflow).contains("git fetch origin gh-pages --depth=1");
         assertThat(workflow).contains("git show FETCH_HEAD:CNAME > /tmp/qeploy-cname");
-        assertThat(workflow).contains("cp /tmp/qeploy-cname ./dist/CNAME");
+        assertThat(workflow).contains("cp /tmp/qeploy-cname ${{ steps.publish.outputs.dir }}/CNAME");
         assertThat(workflow).containsSubsequence(
                 "      - name: Preserve custom domain",
                 "      - name: Deploy to gh-pages"
@@ -279,7 +356,8 @@ class DeployWorkflowTemplateTest {
                 .doesNotContain("Install dependencies")
                 .doesNotContain("- name: Build");
         // 올릴 파일이 이미 리포지토리에 있으므로 루트를 그대로 발행한다.
-        assertThat(workflow).contains("publish_dir: .");
+        // 정적 사이트는 저장소 루트가 곧 발행 대상이다.
+        assertThat(workflow).contains("DIR=\".\"");
         // 체크아웃과 발행은 그대로 남아야 한다.
         assertThat(workflow).contains("actions/checkout@v4").contains("peaceiris/actions-gh-pages@v4");
     }
@@ -293,6 +371,6 @@ class DeployWorkflowTemplateTest {
                 .contains("actions/setup-node")
                 .contains("Install dependencies")
                 .contains("- name: Build")
-                .contains("publish_dir: ./dist");
+                .contains("DIR=\"./dist\"");
     }
 }
