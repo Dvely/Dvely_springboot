@@ -10,7 +10,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestClient;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -67,9 +66,12 @@ public class ClaudeToolClient implements LlmToolPort {
         body.put("messages", messages);
         LlmRequestOptions.applyAnthropic(body, modelOptions, MAX_TOKENS);
 
-        String raw = LlmProviderErrors.translate(ClaudeClient.PROVIDER_NAME, aiProperties.getRetry(), () -> restClient()
+        String raw = LlmProviderErrors.translate(ClaudeClient.PROVIDER_NAME, aiProperties.getRetry(), () -> LlmHttp.client()
                 .post()
                 .uri(API_URL)
+                // 키는 호출마다 싣는다 — 공용 클라이언트의 기본 헤더로 박으면 인스턴스에 고정된다.
+                .header("x-api-key", aiProperties.getAnthropic().getApiKey())
+                .header("anthropic-version", API_VERSION)
                 .body(body)
                 .retrieve()
                 .body(String.class));
@@ -102,14 +104,5 @@ public class ClaudeToolClient implements LlmToolPort {
             log.error("Claude Tool 응답 파싱 실패: {}", raw, e);
             throw new RuntimeException("Claude Tool API 응답 파싱 실패", e);
         }
-    }
-
-    private RestClient restClient() {
-        return RestClient.builder()
-                .requestFactory(LlmHttp.timeoutFactory())
-                .defaultHeader("x-api-key",        aiProperties.getAnthropic().getApiKey())
-                .defaultHeader("anthropic-version", API_VERSION)
-                .defaultHeader("content-type",      "application/json")
-                .build();
     }
 }

@@ -9,7 +9,6 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestClient;
 
 import java.util.HashMap;
 import java.util.List;
@@ -41,9 +40,12 @@ public class ClaudeClient implements LlmPort {
         body.put("messages", apiMessages);
         LlmRequestOptions.applyAnthropic(body, modelOptions, MAX_TOKENS);
 
-        ClaudeResponse response = LlmProviderErrors.translate(PROVIDER_NAME, aiProperties.getRetry(), () -> restClient()
+        ClaudeResponse response = LlmProviderErrors.translate(PROVIDER_NAME, aiProperties.getRetry(), () -> LlmHttp.client()
                 .post()
                 .uri(API_URL)
+                // 키는 호출마다 싣는다 — 공용 클라이언트의 기본 헤더로 박으면 인스턴스에 고정된다.
+                .header("x-api-key", aiProperties.getAnthropic().getApiKey())
+                .header("anthropic-version", API_VERSION)
                 .body(body)
                 .retrieve()
                 .body(ClaudeResponse.class));
@@ -54,15 +56,6 @@ public class ClaudeClient implements LlmPort {
 
         log.debug("Claude 응답 수신: model={}", body.get("model"));
         return response.content().get(0).text();
-    }
-
-    private RestClient restClient() {
-        return RestClient.builder()
-                .requestFactory(LlmHttp.timeoutFactory())
-                .defaultHeader("x-api-key",         aiProperties.getAnthropic().getApiKey())
-                .defaultHeader("anthropic-version",  API_VERSION)
-                .defaultHeader("content-type",       "application/json")
-                .build();
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
