@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -69,6 +70,9 @@ public class SecurityConfig {
                                 "/api/v1/previews/**",
                                 "/api/v1/tls/allow"
                         ).permitAll()
+                        // 템플릿 카탈로그. 내용 자체가 이미 공개 Pages 에 있는 정적 목록이고 사용자
+                        // 데이터가 없다. 로그인 전 화면에서도 갤러리를 띄울 수 있게 열어둔다.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/templates", "/api/v1/templates/*").permitAll()
                         // Swagger UI
                         .requestMatchers(
                                 "/swagger-ui/**",

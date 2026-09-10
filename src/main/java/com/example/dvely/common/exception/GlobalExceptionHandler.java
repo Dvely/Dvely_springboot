@@ -11,6 +11,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.MissingRequestHeaderException;
+import com.example.dvely.template.application.exception.TemplateCatalogUnavailableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
@@ -123,6 +124,13 @@ public class GlobalExceptionHandler {
     }
 
     // 404 - 리소스 없음
+    @ExceptionHandler(TemplateCatalogUnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTemplateCatalogUnavailable(TemplateCatalogUnavailableException e) {
+        log.error("템플릿 카탈로그 조회 실패", e);
+        return ResponseEntity.status(ErrorCode.TEMPLATE_CATALOG_UNAVAILABLE.getStatus())
+                .body(ApiResponse.error(ErrorCode.TEMPLATE_CATALOG_UNAVAILABLE, e.getMessage()));
+    }
+
     @ExceptionHandler(NotFoundException.class)
     public ResponseEntity<ApiResponse<Void>> handleNotFound(NotFoundException e) {
         log.warn("Not found: {}", e.getMessage());

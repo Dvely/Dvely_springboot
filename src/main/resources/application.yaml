@@ -120,6 +120,15 @@ qeploy:
     # 안에만 있어서, 기본 TTL 안에 답하지 못하면 승인해도 올릴 것이 남지 않는다.
     binding-approval-hold: ${QEPLOY_PREVIEW_BINDING_APPROVAL_HOLD:6h}
     cleanup-interval-ms: ${QEPLOY_PREVIEW_CLEANUP_INTERVAL_MS:60000}
+  # 퍼블리싱 템플릿 카탈로그. 정본은 이 서버가 아니라 템플릿 저장소(qeploy-templates)가 Pages 로
+  # 발행하는 catalog.json 이다 — 템플릿 변경 주기와 서버 배포 주기를 묶지 않기 위해서다.
+  # 갱신에 실패하면 직전에 읽어둔 목록을 계속 쓴다. 한 번도 읽지 못한 경우에만 503 이다.
+  template:
+    catalog:
+      url: ${QEPLOY_TEMPLATE_CATALOG_URL:https://dvely.github.io/qeploy-templates/catalog.json}
+      refresh-interval: ${QEPLOY_TEMPLATE_CATALOG_REFRESH_INTERVAL:10m}
+      request-timeout: ${QEPLOY_TEMPLATE_CATALOG_REQUEST_TIMEOUT:5s}
+
   # 컨테이너가 남기고 간 도커 찌꺼기(고아 볼륨 · dangling 이미지 · 오래된 빌드 캐시) 정리.
   # 컨테이너는 지워도 그것들은 남는다 — dev 에서 컨테이너 0 개인데 볼륨 2.2GB + 빌드 캐시 6.5GB 가
   # 쌓여 디스크의 절반 이상을 찌꺼기가 차지한 적이 있다. 디스크가 차면 앱·MySQL·프리뷰가 함께 죽는다.

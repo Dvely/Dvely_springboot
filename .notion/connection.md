@@ -98,6 +98,7 @@ AuditRecorder(횡단) ──→ Project/Deploy Agent/ResultApprovalGate/ResultAp
 | DomainBinding | 관리형/커스텀 도메인, DNS 검증, Approval 연동 | Pages만 지원, HTTPS www/apex 정책 미구현 |
 | CloudConnection | AWS/GCP credential 저장, 실제 STS/IAM 검증, 프로젝트 선택 연결 | 실제 cloud 배포/비용 실집행/운영 미연결(비용 추정·운영 질의 자체는 구현됨) |
 | AuditLog | GitHub/배포/도메인/인프라 작업 16종 기록(비차단 REQUIRES_NEW), 프로젝트별 조회 API, 180일 retention 배치 | 계정 수준 감사(installation·로그인 이력)·`/me/audit-logs`는 범위 밖 |
+| Template | 템플릿 저장소가 Pages 로 발행한 `catalog.json` 취득·캐시(stale-while-error), 카탈로그 API, 프로젝트 생성 시 `templateType` 실재 검증 | **씨딩이 남음** — 고른 템플릿이 실제로 프로젝트에 심기지 않는다(Issue #318 PR-4) |
 
 ---
 
@@ -151,9 +152,20 @@ GitHub API를 사용하는 Project, Agent, Deployment, DomainBinding은 저장�
 POST /projects
 → ProjectFacade
 → ProjectCommandService
+→ ProjectDomainService.create: startMode/templateType/draftMode 검증·정규화
+→ TemplateCatalogGuard.ensureExists: 정규화된 templateType 을 카탈로그와 대조(blank 면 no-op)
 → DRAFT + NOT_BOUND 프로젝트 저장
-→ ProjectCreationService: startMode/templateType/draftMode 기반 CODE Agent task 제출(AgentSubmission)
-→ 202 Accepted + task/승인 정보 반환
+```
+
+프로젝트 생성은 **프로젝트 행만 만든다.** 초기 CODE Agent task 를 함께 제출하던 경로는 제거됐다 — 그 task 는 conversationId 없이 제출돼 아무도 볼 수 없는 승인 뒤에 영구히 남았고, 한 번도 실행된 적이 없다. 첫 코드는 사용자의 첫 요청 때 CodeAgentService 가 만든다.
+
+템플릿 실재 검증이 **도메인이 아니라 애플리케이션 계층**에 있는 이유는 네트워크 호출이기 때문이다. 형식 정규화는 도메인이 끝내고, 정규화된 결과를 카탈로그에 묻는다 — 정규화 전 값으로 물으면 `"E Commerce"` 가 카탈로그의 `e-commerce` 와 어긋난다.
+
+```text
+PagesTemplateCatalogClient
+→ GET https://dvely.github.io/qeploy-templates/catalog.json  (10분 주기)
+→ 실패 시 직전 스냅샷 유지 + WARN (stale-while-error)
+→ 한 번도 못 읽었을 때만 503 TEMPLATE_CATALOG_UNAVAILABLE
 ```
 
 이 시점에는:
