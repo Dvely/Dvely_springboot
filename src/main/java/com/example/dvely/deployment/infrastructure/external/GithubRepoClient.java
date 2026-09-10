@@ -75,8 +75,8 @@ public class GithubRepoClient implements GithubRepoPort {
     }
 
     /**
-     * 404 를 어떻게 읽을지 정하는 순수 판단부. 이 클래스가 RestClient 를 직접 만들어 쓰는 탓에
-     * HTTP 를 끼운 테스트가 어려워서, 실제로 틀리기 쉬운 판단만 떼어 두었다.
+     * 404 를 어떻게 읽을지 정하는 순수 판단부. 실제로 틀리기 쉬운 것은 왕복이 아니라 이 판단이라
+     * 떼어 두었다(이 클래스가 RestClient 를 주입받게 된 뒤로는 HTTP 를 끼운 테스트도 가능하다).
      */
     static boolean interpretCompareNotFound(String repoFullName, String base, String head,
                                             boolean headExists, boolean baseExists) {
