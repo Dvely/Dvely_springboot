@@ -980,7 +980,7 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 남은 연결:
 
-- **CODE 스텝 배선 미완**: `CodeAgentService` 의 루프는 이미 떠 있는 프리뷰 컨테이너 안에서 툴을 돌리는데, 코딩 에이전트는 자기 컨테이너에 호스트 체크아웃을 마운트한다. 워크스페이스 모델이 달라 다리를 놓는 것이 별도 단위다. 그때까지 CODE 스텝은 해당 제공자를 거절한다.
+- **CODE 스텝 배선 미완** (Issue #325): `CodeAgentService` 의 루프는 이미 떠 있는 프리뷰 컨테이너 안에서 툴을 돌리는데, 코딩 에이전트는 자기 컨테이너에 호스트 체크아웃을 마운트한다. 워크스페이스 모델이 달라 다리를 놓는 것이 별도 단위다. 그때까지 CODE 스텝은 해당 제공자를 거절한다.
 - **SRS FR-4(등록 시 키 유효성 실검증) 보류**: 실검증은 사용자 키를 기존 HTTP 클라이언트에 흘려야 하는데, 그 클라이언트들은 배포 키(`AiProperties`)에 묶여 있고 병렬 작업의 핫파일이다. 설계에서 "기존 HTTP 클라이언트 BYOK" 를 후속으로 분리해 둔 것과 같은 이유로 함께 미룬다.
 - ~~CLI 비대화 인자 실측 미완~~ → **실측 완료(2026-09-05)**. 이미지를 빌드해 실제로 돌려 확인했다(Claude Code 2.1.260 · codex-cli 0.153.2). `claude -p` · `codex exec` 는 맞았으나 **Codex 인증 방식이 틀려서 코드를 고쳤다** — `codex exec` 는 `OPENAI_API_KEY` 를 읽지 않고(401 Missing bearer) `codex login --with-api-key`(stdin) 선행이 필요하다. 러너에 로그인 단계 + stdin 지원을 추가하고, 로그인 실패 시 에이전트를 돌리지 않고 즉시 반환하도록 했다. `codex exec` 가 git 저장소 밖을 거부하는 것도 확인(워크스페이스가 clone 이라 자연 통과, `--skip-git-repo-check` 는 기본값에 넣지 않음).
 - **Codex 경로 end-to-end 검증 완료(2026-09-05)**: 사용자가 넣어준 유효 OpenAI 키로 `codex login`(stdin) → `codex exec --model gpt-5.6-luna` → exit 0, 에이전트 응답 "OK". 모델은 별도 설정(`qeploy.coding-agent.codex.model`)으로 빼고 기본값을 최저 등급 `gpt-5.6-luna`로 잡았다(같은 프롬프트 실측: luna 9,692 vs CLI 기본 sol 11,203 토큰, 답 동일).
@@ -994,7 +994,7 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 ## 4.22 P1: 에이전트용 개인 액세스 토큰 PAT (Issue #304)
 
-상태: PR #306 리뷰 대기. 브랜치 `danto/agent-pat`, V60.
+상태: PR #306 CI 성공, 머지 대기. 브랜치 `danto/agent-pat`, V60(V56 에서 세 번 밀렸다).
 
 무엇: 브라우저 JWT 가 1시간이라 헤드리스 클라이언트(MCP 서버·CLI·CI)가 쓸 장수명 자격이 없었다. PAT 로 채운다. MCP·CLI 단위(PRD 부록 A-2, `srs.md` §B)의 유일한 선행 요건이다.
 
@@ -1011,7 +1011,7 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 ## 4.23 P1: 에이전트 연동 — MCP 서버 + CLI (PRD 부록 A-2)
 
-상태: PR #306 리뷰 대기. 브랜치 `danto/agent-pat`. PAT 와 한 PR 로 묶었다 — MCP 는 PAT 없이는 인증 자체가 성립하지 않아 따로 머지할 실익이 없다.
+상태: PR #306 CI 성공, 머지 대기. 브랜치 `danto/agent-pat`. PAT 와 한 PR 로 묶었다 — MCP 는 PAT 없이는 인증 자체가 성립하지 않아 따로 머지할 실익이 없다.
 
 무엇: 사용자의 Claude Code·Codex 가 Qeploy 를 도구로 호출한다. §4.21(BYOK)과 호출 방향이 반대라 Qeploy 는 추론하지 않고 AI 자격증명을 보지도 중계하지도 않는다 — 컴플라이언스 이슈가 없고 이 경로의 AI 비용은 0 이다.
 
