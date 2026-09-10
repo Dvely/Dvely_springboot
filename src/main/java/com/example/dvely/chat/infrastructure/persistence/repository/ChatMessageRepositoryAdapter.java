@@ -15,14 +15,9 @@ public class ChatMessageRepositoryAdapter implements ChatMessageRepository {
 
     @Override
     public List<ChatMessage> findAllByConversationIdOrderByCreatedAtAsc(Long conversationId) {
-        return springDataChatMessageRepository.findByConversationIdOrderByCreatedAtAsc(conversationId).stream()
+        return springDataChatMessageRepository.findByConversationIdOrderByIdAsc(conversationId).stream()
                 .map(ChatMessageEntity::toDomain)
                 .toList();
-    }
-
-    @Override
-    public void deleteAllByConversationId(Long conversationId) {
-        springDataChatMessageRepository.deleteAllByConversationId(conversationId);
     }
 
     @Override

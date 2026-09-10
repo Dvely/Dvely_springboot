@@ -87,7 +87,11 @@ public class ChatCommandService {
             if (conversation.getId() == null) {
                 continue;
             }
-            chatMessageRepository.deleteAllByConversationId(conversation.getId());
+            // 메시지는 따로 지우지 않는다(#338). chat_messages 의 FK 는 V19 부터
+            // ON DELETE CASCADE 라 아래 한 줄이 메시지까지 지운다. 앞서 있던
+            // deleteAllByConversationId 는 엔티티를 N 건 로드해 한 건씩 지운 뒤 CASCADE 가
+            // 같은 일을 또 하는 이중 삭제였다. 바로 아래 purgeExpiredConversations 도
+            // 예전부터 deleteById 하나로만 지우고 있었다 — 그쪽이 맞는 쪽이었다.
             conversationRepository.deleteById(conversation.getId());
         }
     }
