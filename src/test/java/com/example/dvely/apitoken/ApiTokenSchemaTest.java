@@ -20,7 +20,7 @@ class ApiTokenSchemaTest {
     private JdbcTemplate jdbcTemplate;
 
     @Test
-    void v56MigrationAppliedSuccessfully() {
+    void v60MigrationAppliedSuccessfully() {
         String applied = jdbcTemplate.queryForObject(
                 "select coalesce(max(success), 0) from flyway_schema_history where version = '56'",
                 String.class);
