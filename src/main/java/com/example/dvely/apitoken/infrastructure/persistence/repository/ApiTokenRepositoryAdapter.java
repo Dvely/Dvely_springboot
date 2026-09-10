@@ -43,4 +43,15 @@ public class ApiTokenRepositoryAdapter implements ApiTokenRepository {
     public void touchLastUsed(Long id, LocalDateTime now) {
         springDataRepository.touchLastUsed(id, now);
     }
+
+    /**
+     * {@code @Transactional} 이 필수다 — 호출자(TokenCleanupScheduler)는 주변 트랜잭션 없이
+     * 도는 {@code @Scheduled} 메서드이고, Spring Data 프록시는 커스텀 {@code @Modifying} 쿼리에
+     * 대해서는 CRUD 메서드와 달리 트랜잭션을 열어주지 않는다.
+     */
+    @Override
+    @Transactional
+    public int deleteExpiredBefore(LocalDateTime cutoff) {
+        return springDataRepository.deleteExpiredBefore(cutoff);
+    }
 }
