@@ -72,7 +72,7 @@ public class DomainBindingRepositoryAdapter implements DomainBindingRepository {
 
     @Override
     public boolean existsByHostnameIgnoreCase(String hostname) {
-        return springDataRepository.existsByHostnameIgnoreCase(hostname);
+        return springDataRepository.existsByHostname(hostname);
     }
 
     @Override
@@ -83,6 +83,6 @@ public class DomainBindingRepositoryAdapter implements DomainBindingRepository {
     @Override
     public boolean existsByHostnameIgnoreCaseAndHostingTarget(String hostname,
             com.example.dvely.domainbinding.domain.value.DomainHostingTarget hostingTarget) {
-        return springDataRepository.existsByHostnameIgnoreCaseAndHostingTarget(hostname, hostingTarget.name());
+        return springDataRepository.existsByHostnameAndHostingTarget(hostname, hostingTarget.name());
     }
 }

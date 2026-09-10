@@ -28,9 +28,18 @@ public interface DomainBindingRepository {
      */
     boolean claimForCdnProvision(Long id, String owner);
 
+    /**
+     * 이름의 {@code IgnoreCase} 는 계약("대소문자를 구분하지 않고 본다")이지 구현 수단이 아니다.
+     * 그 대소문자 무시는 {@code domains.domain_name} 의 {@code utf8mb4_unicode_ci} 컬레이션이
+     * 제공한다 — 쿼리에서 {@code upper()} 를 씌우던 방식은 {@code uk_domains_domain_name} 을
+     * 못 쓰게 만들어 걷어냈다(#338). 호출부가 볼 동작은 같다.
+     */
     boolean existsByHostnameIgnoreCase(String hostname);
 
-    /** 이 호스트네임이 특정 호스팅 대상으로 등록돼 있는지. 백엔드(AWS) 도메인의 TLS 발급 허가 판단에 쓴다. */
+    /**
+     * 이 호스트네임이 특정 호스팅 대상으로 등록돼 있는지. 백엔드(AWS) 도메인의 TLS 발급 허가 판단에 쓴다.
+     * {@code IgnoreCase} 의 의미는 위와 같다.
+     */
     boolean existsByHostnameIgnoreCaseAndHostingTarget(String hostname,
             com.example.dvely.domainbinding.domain.value.DomainHostingTarget hostingTarget);
 
