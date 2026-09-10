@@ -117,6 +117,17 @@ public class DeploymentFailureAnalysisService {
     private final ConcurrentHashMap<Long, Object> inFlightLocks = new ConcurrentHashMap<>();
 
     /**
+     * LLM 호출을 요청 스레드에서 떼어내 시간 상한을 씌우기 위한 executor(용도는 {@link #runAnalysis}
+     * 참고). 호출마다 만들지 않고 하나를 계속 쓴다 — 매번 만들면 그 수만큼 executor 객체가 생기고,
+     * 정작 상한을 넘겨 버려진 태스크는 어느 쪽이든 그대로 남는다.
+     *
+     * <p>여기에 {@code shutdown()} 을 걸지 않는 것이 요점이다. 호출 하나가 끝날 때마다 닫으면
+     * 다음 호출이 RejectedExecutionException 을 맞는다. 가상 스레드는 항상 데몬이라 열어둔 채로도
+     * JVM 종료를 막지 않는다.</p>
+     */
+    private final ExecutorService llmCallExecutor = Executors.newVirtualThreadPerTaskExecutor();
+
+    /**
      * GET semantics: returns only a previously saved analysis, no side effects, no LLM/GitHub
      * calls. 404 when nothing has been saved yet — the FE is expected to offer a "run analysis"
      * action ({@link #analyze}) in that case (design §1.2).
@@ -331,13 +342,12 @@ public class DeploymentFailureAnalysisService {
         // stuck upstream connection could otherwise block this call forever and never reach the
         // rule-based fallback below. CompletableFuture#orTimeout enforces a caller-side cutoff
         // without touching ClaudeClient itself.
-        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         try {
             String raw = CompletableFuture
                     .supplyAsync(
                             () -> llmRouter.route(AiProvider.ANTHROPIC)
                                     .complete(SYSTEM_PROMPT, List.of(new LlmMessage("user", excerpt))),
-                            executor
+                            llmCallExecutor
                     )
                     .orTimeout(llmTimeoutSeconds, TimeUnit.SECONDS)
                     .join();
@@ -360,17 +370,10 @@ public class DeploymentFailureAnalysisService {
             log.warn("배포 실패 분석 LLM 실패, 룰 기반으로 폴백: exceptionType={}", cause.getClass().getSimpleName());
             BuildFailureAnalyzer.Analysis ruleBased = buildFailureAnalyzer.analyze(excerpt);
             return new AnalysisOutcome(AnalysisSource.RULE_BASED, ruleBased.userMessage(), ruleBased.suggestedFix(), null, null);
-        } finally {
-            // Non-blocking: shutdown() only stops the executor from accepting new tasks, it does
-            // NOT cancel or wait for the LLM call submitted above. If that call is still running
-            // past the timeout (exactly the case this whole wrapper exists for), it is simply
-            // abandoned to finish or die on its own virtual thread — deliberately NOT using
-            // try-with-resources/ExecutorService#close() here, since close() awaits termination
-            // and would block just as indefinitely as the un-timed-out call would have, defeating
-            // the point of this fix. Virtual threads are always daemon threads, so an abandoned
-            // one cannot prevent JVM shutdown either.
-            executor.shutdown();
         }
+        // 상한을 넘긴 호출은 정리하지 않고 그대로 버린다. try-with-resources 나 shutdown() 뒤의
+        // awaitTermination 은 바로 그 반환되지 않는 호출을 기다리므로, 상한을 씌운 의미가 사라진다.
+        // 버려진 태스크는 자기 가상 스레드(데몬) 위에서 끝나거나 죽는다.
     }
 
     @SuppressWarnings("unchecked")
