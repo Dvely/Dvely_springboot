@@ -10,6 +10,7 @@ import com.example.dvely.project.application.port.out.GithubRepositoryPort;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -37,6 +38,9 @@ public class GithubProjectClient implements GithubRepositoryPort {
     private final GithubProperties githubProperties;
     private final RestClient restClient;
 
+    /** 목록 한 번이 GitHub 왕복 최대 10 번이다 — 사용자별로 아주 짧게만 들고 있는다. */
+    private final RepositoryListCache repositoryLists = new RepositoryListCache();
+
     // 생성자를 직접 쓰는 이유: RestClient 빈이 여럿이라 타입만으로는 고를 수 없는데,
     // Lombok 은 필드의 @Qualifier 를 생성자 파라미터로 옮겨주지 않는다.
     public GithubProjectClient(UserRepository userRepository,
@@ -52,7 +56,16 @@ public class GithubProjectClient implements GithubRepositoryPort {
     }
 
     @Override
-    public List<GithubRepository> listRepositories(Long ownerUserId) {
+    public List<GithubRepository> listRepositories(Long ownerUserId, boolean refresh) {
+        Instant now = Instant.now();
+        if (refresh) {
+            repositoryLists.invalidate(ownerUserId);
+        } else {
+            Optional<List<GithubRepository>> cached = repositoryLists.find(ownerUserId, now);
+            if (cached.isPresent()) {
+                return cached.get();
+            }
+        }
         try {
             String token = getGithubInstallationAccessToken(ownerUserId);
             List<GithubRepository> repositories = new ArrayList<>();
@@ -92,6 +105,7 @@ public class GithubProjectClient implements GithubRepositoryPort {
                     break;
                 }
             }
+            repositoryLists.put(ownerUserId, repositories, now);
             return repositories;
         } catch (RestClientResponseException e) {
             throw githubResponseFailure("GitHub 저장소 목록 조회", e);

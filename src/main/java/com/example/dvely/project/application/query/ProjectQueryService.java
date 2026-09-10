@@ -54,8 +54,8 @@ public class ProjectQueryService {
     private final DomainBindingQueryService domainBindingQueryService;
     private final ProjectInfrastructureSettingsService infrastructureSettingsService;
 
-    public List<GithubRepositoryResult> getGithubRepositories(Long ownerUserId) {
-        return githubRepositoryPort.listRepositories(ownerUserId).stream()
+    public List<GithubRepositoryResult> getGithubRepositories(Long ownerUserId, boolean refresh) {
+        return githubRepositoryPort.listRepositories(ownerUserId, refresh).stream()
                 .map(repository -> new GithubRepositoryResult(
                         repository.fullName(),
                         repository.name(),
