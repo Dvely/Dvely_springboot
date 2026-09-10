@@ -200,7 +200,7 @@ Base path: `/api/v1/projects`
 | POST | `/api/v1/projects` | GitHub 저장소 없이 DRAFT 프로젝트 생성, 초기 코드 생성 CODE Agent task 제출 |
 | POST | `/api/v1/projects/{projectId}/repository` | 새 저장소 생성 또는 기존 저장소 연결 |
 | DELETE | `/api/v1/projects/{projectId}/repository` | GitHub 저장소 연결 해제(비파괴, GitHub 호출 없음) |
-| GET | `/api/v1/projects/github/repositories` | 접근 가능한 GitHub 저장소 목록 조회 |
+| GET | `/api/v1/projects/github/repositories` | 접근 가능한 GitHub 저장소 목록 조회. 유저별 60초 캐시, `?refresh=true`로 무효화 |
 | GET | `/api/v1/projects` | 내 프로젝트 목록을 최근 수정순 조회 |
 | GET | `/api/v1/projects/{projectId}` | 프로젝트 기본 정보 조회 |
 | PATCH | `/api/v1/projects/{projectId}` | 프로젝트 이름 수정 |

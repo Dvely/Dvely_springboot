@@ -3,9 +3,12 @@ package com.example.dvely.config;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.Test;
@@ -61,6 +64,40 @@ class HttpClientConfigTest {
                     .isInstanceOf(ResourceAccessException.class);
             assertThat(elapsedMillis(start)).isLessThan(ALLOWED_MILLIS);
         });
+    }
+
+    /**
+     * Actions job 로그 엔드포인트는 302 로 스토리지 URL 을 준다 — 따라가지 않으면 로그 본문 대신
+     * 빈 응답을 읽는다. 요청 팩토리를 명시하면서 전송 계층이 바뀌었으므로, 리다이렉트를 여전히
+     * 따라간다는 것을 여기서 고정한다.
+     */
+    @Test
+    void 리다이렉트를_따라간다() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        int port = server.getAddress().getPort();
+        server.createContext("/logs", exchange -> {
+            exchange.getResponseHeaders().add("Location", "http://127.0.0.1:" + port + "/blob");
+            exchange.sendResponseHeaders(302, -1);
+            exchange.close();
+        });
+        server.createContext("/blob", exchange -> {
+            byte[] body = "build log".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            try (var out = exchange.getResponseBody()) {
+                out.write(body);
+            }
+        });
+        server.start();
+        try {
+            String body = timedClient().get()
+                    .uri("http://127.0.0.1:" + port + "/logs")
+                    .retrieve()
+                    .body(String.class);
+
+            assertThat(body).isEqualTo("build log");
+        } finally {
+            server.stop(0);
+        }
     }
 
     private static long elapsedMillis(long startNanos) {
