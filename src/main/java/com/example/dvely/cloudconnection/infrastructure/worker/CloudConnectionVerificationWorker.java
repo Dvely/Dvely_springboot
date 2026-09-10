@@ -2,7 +2,10 @@ package com.example.dvely.cloudconnection.infrastructure.worker;
 
 import com.example.dvely.cloudconnection.application.service.CloudConnectionVerificationService;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionVerificationJobRepository;
+import com.example.dvely.common.worker.WorkQueue;
+import com.example.dvely.common.worker.WorkerPollGate;
 import java.lang.management.ManagementFactory;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -29,12 +32,28 @@ public class CloudConnectionVerificationWorker {
 
     private final CloudConnectionVerificationJobRepository verificationJobRepository;
     private final CloudConnectionVerificationService verificationService;
+    private final WorkerPollGate pollGate;
     private final String workerId = ManagementFactory.getRuntimeMXBean().getName() + "-cloud-connection";
 
     @Scheduled(fixedDelayString = "${qeploy.cloud-connection.worker.poll-interval-ms:1000}")
     public void dispatchPendingJobs() {
-        verificationJobRepository.recoverExpiredLeases();
-        for (String jobId : verificationJobRepository.claimPending(workerId, CLAIM_BATCH_SIZE)) {
+        // #340 5-1: 틱은 1초마다 오지만, 일이 없는 동안에는 DB 를 치지 않는다.
+        if (!pollGate.shouldPoll(WorkQueue.CLOUD_CONNECTION_VERIFICATION)) {
+            return;
+        }
+        List<String> jobIds;
+        try {
+            jobIds = verificationJobRepository.recoverAndClaimPending(workerId, CLAIM_BATCH_SIZE);
+        } catch (RuntimeException exception) {
+            pollGate.recordIdle(WorkQueue.CLOUD_CONNECTION_VERIFICATION);
+            throw exception;
+        }
+        if (jobIds.isEmpty()) {
+            pollGate.recordIdle(WorkQueue.CLOUD_CONNECTION_VERIFICATION);
+        } else {
+            pollGate.recordBusy(WorkQueue.CLOUD_CONNECTION_VERIFICATION);
+        }
+        for (String jobId : jobIds) {
             dispatchOne(jobId);
         }
     }

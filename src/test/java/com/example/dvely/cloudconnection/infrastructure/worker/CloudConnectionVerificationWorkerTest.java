@@ -10,23 +10,33 @@ import static org.mockito.Mockito.when;
 
 import com.example.dvely.cloudconnection.application.service.CloudConnectionVerificationService;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionVerificationJobRepository;
+import com.example.dvely.common.worker.WorkerPollGate;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.TaskRejectedException;
 
 class CloudConnectionVerificationWorkerTest {
+
+    /** 백오프가 이 파일의 dispatch 검증에 끼어들지 않도록 게이트를 항상 열어 둔다. */
+    private static WorkerPollGate openGate() {
+        AtomicLong nanos = new AtomicLong();
+        return new WorkerPollGate(1000L, 30_000L, () -> nanos.addAndGet(TimeUnit.MINUTES.toNanos(1)));
+    }
 
     @Test
     void dispatchPendingJobs_recoversClaimsAndDelegatesJobs() {
         CloudConnectionVerificationJobRepository repository =
                 mock(CloudConnectionVerificationJobRepository.class);
         CloudConnectionVerificationService service = mock(CloudConnectionVerificationService.class);
-        CloudConnectionVerificationWorker worker = new CloudConnectionVerificationWorker(repository, service);
-        when(repository.claimPending(anyString(), eq(2))).thenReturn(List.of("job-1", "job-2"));
+        CloudConnectionVerificationWorker worker = new CloudConnectionVerificationWorker(repository, service, openGate());
+        when(repository.recoverAndClaimPending(anyString(), eq(2))).thenReturn(List.of("job-1", "job-2"));
 
         worker.dispatchPendingJobs();
 
-        verify(repository).recoverExpiredLeases();
+        // #340 5-1: 회수와 claim 은 이제 한 트랜잭션(recoverAndClaimPending)이다.
+        verify(repository).recoverAndClaimPending(anyString(), eq(2));
         verify(service).executeQueued("job-1");
         verify(service).executeQueued("job-2");
     }
@@ -41,8 +51,8 @@ class CloudConnectionVerificationWorkerTest {
         CloudConnectionVerificationJobRepository repository =
                 mock(CloudConnectionVerificationJobRepository.class);
         CloudConnectionVerificationService service = mock(CloudConnectionVerificationService.class);
-        CloudConnectionVerificationWorker worker = new CloudConnectionVerificationWorker(repository, service);
-        when(repository.claimPending(anyString(), eq(2))).thenReturn(List.of("job-1", "job-2"));
+        CloudConnectionVerificationWorker worker = new CloudConnectionVerificationWorker(repository, service, openGate());
+        when(repository.recoverAndClaimPending(anyString(), eq(2))).thenReturn(List.of("job-1", "job-2"));
         doThrow(new TaskRejectedException("cloudConnectionExecutor 포화"))
                 .when(service).executeQueued("job-1");
 

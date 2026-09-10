@@ -10,8 +10,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.deployment.application.command.DeploymentCommandService;
+import com.example.dvely.common.worker.WorkerPollGate;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.task.TaskRejectedException;
 
@@ -19,16 +22,23 @@ class DeploymentRunWorkerTest {
 
     private static final long BACKOFF_MS = 5000L;
 
+    /** 백오프가 이 파일의 dispatch 검증에 끼어들지 않도록 게이트를 항상 열어 둔다. */
+    private static WorkerPollGate openGate() {
+        AtomicLong nanos = new AtomicLong();
+        return new WorkerPollGate(1000L, 30_000L, () -> nanos.addAndGet(TimeUnit.MINUTES.toNanos(1)));
+    }
+
     @Test
     void dispatchPendingDeployments_recoversClaimsAndDelegatesJobs() {
         DeploymentHistoryRepository repository = mock(DeploymentHistoryRepository.class);
         DeploymentCommandService commandService = mock(DeploymentCommandService.class);
-        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, BACKOFF_MS);
-        when(repository.claimPending(anyString(), eq(2))).thenReturn(List.of(51L, 52L));
+        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, openGate(), BACKOFF_MS);
+        when(repository.recoverAndClaimPending(anyString(), eq(2))).thenReturn(List.of(51L, 52L));
 
         worker.dispatchPendingDeployments();
 
-        verify(repository).recoverExpiredLeases();
+        // #340 5-1: 회수와 claim 은 이제 한 트랜잭션(recoverAndClaimPending)이다.
+        verify(repository).recoverAndClaimPending(anyString(), eq(2));
         verify(commandService).executeQueued(51L);
         verify(commandService).executeQueued(52L);
     }
@@ -44,8 +54,8 @@ class DeploymentRunWorkerTest {
     void executorRejectionDoesNotStrandTheRestOfTheClaimedBatch() {
         DeploymentHistoryRepository repository = mock(DeploymentHistoryRepository.class);
         DeploymentCommandService commandService = mock(DeploymentCommandService.class);
-        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, BACKOFF_MS);
-        when(repository.claimPending(anyString(), eq(2))).thenReturn(List.of(51L, 52L));
+        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, openGate(), BACKOFF_MS);
+        when(repository.recoverAndClaimPending(anyString(), eq(2))).thenReturn(List.of(51L, 52L));
         doThrow(new TaskRejectedException("deploymentExecutor 포화"))
                 .when(commandService).executeQueued(51L);
 
@@ -61,8 +71,8 @@ class DeploymentRunWorkerTest {
     void anyPreSubmissionFailureReleasesTheClaimToo() {
         DeploymentHistoryRepository repository = mock(DeploymentHistoryRepository.class);
         DeploymentCommandService commandService = mock(DeploymentCommandService.class);
-        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, BACKOFF_MS);
-        when(repository.claimPending(anyString(), eq(2))).thenReturn(List.of(51L));
+        DeploymentRunWorker worker = new DeploymentRunWorker(repository, commandService, openGate(), BACKOFF_MS);
+        when(repository.recoverAndClaimPending(anyString(), eq(2))).thenReturn(List.of(51L));
         doThrow(new IllegalStateException("제출 전 예외")).when(commandService).executeQueued(51L);
 
         worker.dispatchPendingDeployments();

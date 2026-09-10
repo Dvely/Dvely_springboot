@@ -20,9 +20,12 @@ import com.example.dvely.agent.application.orchestrator.AgentPlanExecutor;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.common.worker.WorkerPollGate;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.core.task.TaskRejectedException;
@@ -38,16 +41,17 @@ class AgentRunWorkerTest {
         AgentMessageService messageService = mock(AgentMessageService.class);
         AgentPlanExecutor executor = mock(AgentPlanExecutor.class);
         AgentExecutionRegistry registry = new AgentExecutionRegistry();
-        AgentRunWorker worker = new AgentRunWorker(taskStore, executor, messageService, registry, freeExecutor(), BACKOFF_MS);
+        AgentRunWorker worker = newWorker(taskStore, executor, messageService, registry, freeExecutor(), BACKOFF_MS);
         AgentPlan plan = new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L);
         AgentTask task = agentTask();
-        when(taskStore.claimRunnableTasks(anyString(), eq(2))).thenReturn(List.of("task-1"));
+        stubPoll(taskStore, List.of(), List.of("task-1"));
         when(taskStore.get("task-1")).thenReturn(task);
         when(taskStore.getPlan("task-1")).thenReturn(plan);
 
         worker.dispatchQueuedRuns();
 
-        verify(taskStore).recoverExpiredLeases();
+        // #340 5-1: 회수와 claim 은 이제 한 트랜잭션(recoverAndClaim)이다.
+        verify(taskStore).recoverAndClaim(anyString(), eq(2));
         verify(executor).execute(plan, "task-1", 1L);
     }
 
@@ -61,11 +65,10 @@ class AgentRunWorkerTest {
         TaskStore taskStore = mock(TaskStore.class);
         AgentMessageService messageService = mock(AgentMessageService.class);
         AgentExecutionRegistry registry = new AgentExecutionRegistry();
-        AgentRunWorker worker = new AgentRunWorker(
+        AgentRunWorker worker = newWorker(
                 taskStore, mock(AgentPlanExecutor.class), messageService, registry, freeExecutor(), BACKOFF_MS);
-        when(taskStore.recoverExpiredLeases()).thenReturn(List.of("task-1"));
+        stubPoll(taskStore, List.of("task-1"), List.of());
         when(taskStore.get("task-1")).thenReturn(agentTask());
-        when(taskStore.claimRunnableTasks(anyString(), eq(2))).thenReturn(List.of());
 
         worker.dispatchQueuedRuns();
 
@@ -79,10 +82,9 @@ class AgentRunWorkerTest {
         TaskStore taskStore = mock(TaskStore.class);
         AgentMessageService messageService = mock(AgentMessageService.class);
         AgentExecutionRegistry registry = new AgentExecutionRegistry();
-        AgentRunWorker worker = new AgentRunWorker(
+        AgentRunWorker worker = newWorker(
                 taskStore, mock(AgentPlanExecutor.class), messageService, registry, freeExecutor(), BACKOFF_MS);
-        when(taskStore.recoverExpiredLeases()).thenReturn(List.of());
-        when(taskStore.claimRunnableTasks(anyString(), eq(2))).thenReturn(List.of());
+        stubPoll(taskStore, List.of(), List.of());
 
         worker.dispatchQueuedRuns();
 
@@ -97,10 +99,10 @@ class AgentRunWorkerTest {
         AgentMessageService messageService = mock(AgentMessageService.class);
         AgentPlanExecutor executor = mock(AgentPlanExecutor.class);
         AgentExecutionRegistry registry = mock(AgentExecutionRegistry.class);
-        AgentRunWorker worker = new AgentRunWorker(taskStore, executor, messageService, registry, freeExecutor(), BACKOFF_MS);
+        AgentRunWorker worker = newWorker(taskStore, executor, messageService, registry, freeExecutor(), BACKOFF_MS);
         AgentPlan plan = new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L);
         AgentTask task = agentTask();
-        when(taskStore.claimRunnableTasks(anyString(), eq(2))).thenReturn(List.of("task-1"));
+        stubPoll(taskStore, List.of(), List.of("task-1"));
         when(taskStore.get("task-1")).thenReturn(task);
         when(taskStore.getPlan("task-1")).thenReturn(plan);
 
@@ -122,11 +124,11 @@ class AgentRunWorkerTest {
         AgentMessageService messageService = mock(AgentMessageService.class);
         AgentPlanExecutor executor = mock(AgentPlanExecutor.class);
         AgentExecutionRegistry registry = mock(AgentExecutionRegistry.class);
-        AgentRunWorker worker = new AgentRunWorker(taskStore, executor, messageService, registry, freeExecutor(), BACKOFF_MS);
+        AgentRunWorker worker = newWorker(taskStore, executor, messageService, registry, freeExecutor(), BACKOFF_MS);
         AgentPlan plan = new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L);
         AgentTask rejectedTask = agentTask("task-1");
         AgentTask okTask = agentTask("task-2");
-        when(taskStore.claimRunnableTasks(anyString(), eq(2))).thenReturn(List.of("task-1", "task-2"));
+        stubPoll(taskStore, List.of(), List.of("task-1", "task-2"));
         when(taskStore.get("task-1")).thenReturn(rejectedTask);
         when(taskStore.get("task-2")).thenReturn(okTask);
         when(taskStore.getPlan("task-1")).thenReturn(plan);
@@ -152,7 +154,7 @@ class AgentRunWorkerTest {
         TaskStore taskStore = mock(TaskStore.class);
         AgentMessageService messageService = mock(AgentMessageService.class);
         AgentExecutionRegistry registry = new AgentExecutionRegistry();
-        AgentRunWorker worker = new AgentRunWorker(taskStore, mock(AgentPlanExecutor.class), messageService, registry,
+        AgentRunWorker worker = newWorker(taskStore, mock(AgentPlanExecutor.class), messageService, registry,
                 freeExecutor(), BACKOFF_MS);
 
         worker.renewLeases();
@@ -167,7 +169,7 @@ class AgentRunWorkerTest {
         AgentExecutionRegistry registry = new AgentExecutionRegistry();
         registry.register("task-1");
         registry.register("task-2");
-        AgentRunWorker worker = new AgentRunWorker(taskStore, mock(AgentPlanExecutor.class), messageService, registry,
+        AgentRunWorker worker = newWorker(taskStore, mock(AgentPlanExecutor.class), messageService, registry,
                 freeExecutor(), BACKOFF_MS);
 
         worker.renewLeases();
@@ -206,17 +208,42 @@ class AgentRunWorkerTest {
         });
         try {
             started.await(2, java.util.concurrent.TimeUnit.SECONDS);
-            AgentRunWorker worker = new AgentRunWorker(taskStore, mock(AgentPlanExecutor.class), messageService,
+            stubPoll(taskStore, List.of(), List.of());
+            AgentRunWorker worker = newWorker(taskStore, mock(AgentPlanExecutor.class), messageService,
                     new AgentExecutionRegistry(), saturated, BACKOFF_MS);
 
             worker.dispatchQueuedRuns();
 
-            verify(taskStore).recoverExpiredLeases();
-            verify(taskStore, never()).claimRunnableTasks(anyString(), org.mockito.ArgumentMatchers.anyInt());
+            // #340 5-1: 포화여도 회수는 돌아야 한다(좀비 리스가 그만큼 오래 남으므로). 그래서
+            // 폴링을 건너뛰는 대신 claimLimit=0 으로 회수만 시킨다.
+            verify(taskStore).recoverAndClaim(anyString(), eq(0));
         } finally {
             release.countDown();
             saturated.shutdown();
         }
+    }
+
+    /**
+     * 게이트를 항상 열어 두는 워커. 이 파일의 테스트들은 백오프가 아니라 dispatch 동작을 보므로,
+     * 폴링 호출마다 시계를 넉넉히 흘려 게이트가 판단에 끼어들지 않게 한다. 백오프 자체는
+     * {@code WorkerPollGateTest} 와 {@code AgentRunWorkerBackoffTest} 가 따로 못박는다.
+     */
+    private static AgentRunWorker newWorker(TaskStore taskStore,
+                                            AgentPlanExecutor planExecutor,
+                                            AgentMessageService messageService,
+                                            AgentExecutionRegistry registry,
+                                            ThreadPoolTaskExecutor agentExecutor,
+                                            long backoffMs) {
+        AtomicLong nanos = new AtomicLong();
+        WorkerPollGate openGate = new WorkerPollGate(
+                1000L, 30_000L, () -> nanos.addAndGet(TimeUnit.MINUTES.toNanos(1)));
+        return new AgentRunWorker(
+                taskStore, planExecutor, messageService, registry, agentExecutor, openGate, backoffMs);
+    }
+
+    private static void stubPoll(TaskStore taskStore, List<String> leaseExhausted, List<String> claimed) {
+        when(taskStore.recoverAndClaim(anyString(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(new TaskStore.PollBatch(leaseExhausted, claimed));
     }
 
     private String workerIdOf(AgentRunWorker worker) {

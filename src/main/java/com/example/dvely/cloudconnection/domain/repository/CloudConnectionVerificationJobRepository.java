@@ -16,6 +16,14 @@ public interface CloudConnectionVerificationJobRepository {
 
     List<String> claimPending(String workerId, int limit);
 
+    /**
+     * 폴링 한 번이 하는 일 전부 — 만료 리스 회수와 claim 을 <b>한 트랜잭션</b>으로 묶는다(#340 5-1).
+     * 따로 부르면 폴링 한 번이 트랜잭션 두 개가 되고, 트랜잭션마다 붙는 {@code SET autocommit} ·
+     * {@code COMMIT} 의례가 유휴 DB 비용의 대부분이었다. 회수 UPDATE 가 같은 트랜잭션에서 먼저
+     * 반영되므로, 방금 회수된 행을 같은 폴링의 claim 이 곧바로 집는다.
+     */
+    List<String> recoverAndClaimPending(String workerId, int limit);
+
     void recoverExpiredLeases();
 
     /**

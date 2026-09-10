@@ -1,8 +1,11 @@
 package com.example.dvely.deployment.infrastructure.worker;
 
 import com.example.dvely.deployment.application.command.DeploymentCommandService;
+import com.example.dvely.common.worker.WorkQueue;
+import com.example.dvely.common.worker.WorkerPollGate;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import java.lang.management.ManagementFactory;
+import java.util.List;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -26,22 +29,41 @@ public class DeploymentRunWorker {
 
     private final DeploymentHistoryRepository deploymentHistoryRepository;
     private final DeploymentCommandService deploymentCommandService;
+    private final WorkerPollGate pollGate;
     private final long dispatchRejectBackoffMs;
     private final String workerId = ManagementFactory.getRuntimeMXBean().getName() + "-deployment";
 
     public DeploymentRunWorker(DeploymentHistoryRepository deploymentHistoryRepository,
                                DeploymentCommandService deploymentCommandService,
+                               WorkerPollGate pollGate,
                                @Value("${qeploy.deployment.worker.dispatch-reject-backoff-ms:5000}")
                                long dispatchRejectBackoffMs) {
         this.deploymentHistoryRepository = deploymentHistoryRepository;
         this.deploymentCommandService = deploymentCommandService;
+        this.pollGate = pollGate;
         this.dispatchRejectBackoffMs = dispatchRejectBackoffMs;
     }
 
     @Scheduled(fixedDelayString = "${qeploy.deployment.worker.poll-interval-ms:1000}")
     public void dispatchPendingDeployments() {
-        deploymentHistoryRepository.recoverExpiredLeases();
-        for (Long historyId : deploymentHistoryRepository.claimPending(workerId, CLAIM_BATCH_SIZE)) {
+        // #340 5-1: 틱은 1초마다 오지만, 일이 없는 동안에는 DB 를 치지 않는다.
+        if (!pollGate.shouldPoll(WorkQueue.DEPLOYMENT_RUN)) {
+            return;
+        }
+        List<Long> historyIds;
+        try {
+            historyIds = deploymentHistoryRepository.recoverAndClaimPending(workerId, CLAIM_BATCH_SIZE);
+        } catch (RuntimeException exception) {
+            // DB 가 흔들리는 동안 매초 같은 쿼리를 던져봐야 소용이 없다 — 물러나며 재시도한다.
+            pollGate.recordIdle(WorkQueue.DEPLOYMENT_RUN);
+            throw exception;
+        }
+        if (historyIds.isEmpty()) {
+            pollGate.recordIdle(WorkQueue.DEPLOYMENT_RUN);
+        } else {
+            pollGate.recordBusy(WorkQueue.DEPLOYMENT_RUN);
+        }
+        for (Long historyId : historyIds) {
             dispatchOne(historyId);
         }
     }

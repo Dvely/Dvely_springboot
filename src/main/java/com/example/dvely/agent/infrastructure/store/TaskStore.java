@@ -11,6 +11,8 @@ import com.example.dvely.agent.infrastructure.persistence.entity.AgentRunEntity;
 import com.example.dvely.agent.infrastructure.persistence.entity.AgentRunEventEntity;
 import com.example.dvely.agent.infrastructure.persistence.repository.SpringDataAgentRunEventRepository;
 import com.example.dvely.agent.infrastructure.persistence.repository.SpringDataAgentRunRepository;
+import com.example.dvely.common.worker.WorkQueue;
+import com.example.dvely.common.worker.WorkQueuedEvent;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
@@ -21,6 +23,7 @@ import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
@@ -52,6 +55,7 @@ public class TaskStore {
     private final SpringDataAgentRunRepository runRepository;
     private final SpringDataAgentRunEventRepository eventRepository;
     private final ObjectMapper objectMapper;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Transactional
     public void save(AgentTask task) {
@@ -164,6 +168,7 @@ public class TaskStore {
         AgentRunEntity run = requireRun(taskId);
         run.enqueue(false);
         appendEvent(taskId, "QUEUED", TaskStatus.QUEUED, "Agent task 실행을 대기합니다.");
+        signalWorkQueued();
     }
 
     @Transactional
@@ -177,7 +182,44 @@ public class TaskStore {
         }
         run.enqueue(true);
         appendEvent(taskId, "RETRY_QUEUED", TaskStatus.RETRY_WAIT, "수정안을 적용해 작업을 다시 실행합니다.");
+        signalWorkQueued();
         return true;
+    }
+
+    /**
+     * 폴링 한 번이 하는 일 전부 — 만료 리스 회수와 claim 을 <b>한 트랜잭션</b>으로 묶는다(#340 5-1).
+     *
+     * <p>둘을 따로 부르면 폴링 한 번이 트랜잭션 두 개가 되고, 트랜잭션 하나는
+     * {@code SET autocommit=0} → 쿼리 → {@code COMMIT} → {@code SET autocommit=1} 로 왕복 네 번이다.
+     * 유휴 상태 실측에서 비용의 대부분이 SELECT 가 아니라 이 의례였다 — 합치는 것만으로 절반이
+     * 줄어든다.</p>
+     *
+     * <p>덤으로 회수 지연이 한 폴링 짧아진다. 회수 UPDATE 가 같은 트랜잭션에서 먼저 반영되므로,
+     * 방금 RETRY_WAIT 로 돌아온 태스크를 <b>같은 폴링의</b> claim 이 곧바로 집는다.</p>
+     *
+     * @param claimLimit 0 이하면 claim 쿼리를 아예 내지 않는다 — 실행기가 포화라 집어봐야 곧바로
+     *                   되돌려야 하는 상황(ADR-Y3)에서도 <b>회수는 계속 돌아야</b> 하기 때문이다.
+     *                   포화를 이유로 폴링을 통째로 건너뛰면 좀비 리스가 그만큼 오래 남는다.
+     */
+    @Transactional
+    public PollBatch recoverAndClaim(String workerId, int claimLimit) {
+        List<String> leaseExhausted = recoverExpiredLeases();
+        List<String> claimed = claimLimit > 0 ? claimRunnableTasks(workerId, claimLimit) : List.of();
+        return new PollBatch(leaseExhausted, claimed);
+    }
+
+    /**
+     * 폴링 한 번의 결과.
+     *
+     * @param leaseExhausted 복구 횟수를 소진해 FAILED 로 닫힌 taskId — 호출자가 사용자에게 알린다
+     * @param claimed        이번 폴링이 집은 taskId
+     */
+    public record PollBatch(List<String> leaseExhausted, List<String> claimed) {
+
+        /** 이번 폴링이 무언가라도 건드렸는가 — 워커의 백오프 판단 근거. */
+        public boolean touchedWork() {
+            return !leaseExhausted.isEmpty() || !claimed.isEmpty();
+        }
     }
 
     @Transactional
@@ -398,6 +440,7 @@ public class TaskStore {
                 TaskStatus.QUEUED,
                 "지연된 승인 처리를 복구해 작업을 시작합니다."
         );
+        signalWorkQueued();
     }
 
     /**
@@ -554,6 +597,7 @@ public class TaskStore {
             return false;
         }
         appendEvent(taskId, eventType, TaskStatus.QUEUED, message);
+        signalWorkQueued();
         return true;
     }
 
@@ -585,6 +629,19 @@ public class TaskStore {
         }
         run.replacePlan(writePlan(newPlan));
         appendEvent(taskId, "REPLANNED", TaskStatus.QUEUED, "되묻기 답을 반영해 재계획했습니다.");
+        signalWorkQueued();
+    }
+
+    /**
+     * 이 태스크가 워커가 집을 수 있는 상태가 됐다고 알린다(#340 5-1).
+     *
+     * <p>{@code WorkerPollGate} 가 커밋 뒤에 받아 백오프를 즉시 푼다. 이 신호가 없으면, 유휴가
+     * 길어져 폴링 간격이 상한까지 늘어난 상태에서 사용자가 메시지를 보냈을 때 그 상한만큼
+     * 기다리게 된다 — 명백한 UX 회귀다. 신호가 있으면 백오프 값과 무관하게 다음 틱(≤1초)에
+     * 집힌다.</p>
+     */
+    private void signalWorkQueued() {
+        eventPublisher.publishEvent(new WorkQueuedEvent(WorkQueue.AGENT_RUN));
     }
 
     private String writeClarification(ClarificationRequest clarification) {
@@ -607,6 +664,7 @@ public class TaskStore {
         }
         run.supplyInput(value.trim());
         appendEvent(taskId, "INPUT_RECEIVED", TaskStatus.QUEUED, "사용자 입력을 받아 task를 다시 대기열에 넣었습니다.");
+        signalWorkQueued();
         return true;
     }
 
