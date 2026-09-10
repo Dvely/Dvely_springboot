@@ -77,6 +77,100 @@ class DeployWorkflowTemplateTest {
      *
      * 그래서 두 어휘를 섞지 않는다 — 배포 경로는 저장소 감지 결과만 쓴다.
      */
+    /**
+     * 나머지 프레임워크도 커밋된 config 를 이긴다.
+     *
+     * 이 다섯은 Qeploy 가 스캐폴딩하지 않는다 — CODE 프롬프트가 만드는 것은 Vite+React·CRA·
+     * Next.js·create-vue·순수 HTML 뿐이다. 즉 이들은 <b>연결된 저장소로만</b> 들어오고, 그
+     * 저장소에는 스캐폴더가 첫날 써 둔 config 가 반드시 있다. 예전 스텝은 그때 경고만 하고
+     * 넘어갔으므로, 이 경로로 들어온 프로젝트는 사실상 항상 base 가 어긋난 채 배포됐다.
+     */
+    @Test
+    void generate_everyFrameworkOverridesACommittedBaseInsteadOfWarning() {
+        record Case(String type, String warning, String override) {}
+        var cases = new Case[]{
+                new Case("vue-cli", "::warning::vue.config", "publicPath: basePath,"),
+                new Case("sveltekit", "::warning::svelte.config", "paths: { ...(resolved.kit?.paths ?? {}), base }"),
+                new Case("gatsby", "::warning::gatsby-config", "pathPrefix: base,"),
+                new Case("astro", "::warning::astro.config", "base: base || '/',"),
+        };
+        for (Case c : cases) {
+            String workflow = DeployWorkflowTemplate.generate(c.type(), null, PackageManager.NPM, "20");
+            assertThat(workflow).as(c.type() + " 는 더 이상 경고만 하지 않는다").doesNotContain(c.warning());
+            assertThat(workflow).as(c.type() + " 가 base 를 확정한다").contains(c.override());
+            assertThat(workflow).as(c.type() + " 가 사용자 설정을 보존한다").contains("...resolved,");
+        }
+    }
+
+    /**
+     * Nuxt 는 분기 자체가 없어 커밋된 nuxt.config 이 유일한 진실이었다.
+     */
+    @Test
+    void generate_nuxtNowHasABaseStepAtAll() {
+        String workflow = DeployWorkflowTemplate.generate("nuxt", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("Configure Nuxt base URL");
+        // baseURL 은 trailing slash 를 포함해야 한다 — Nuxt 가 자산 URL 앞에 그대로 이어 붙인다.
+        assertThat(workflow).contains("baseURL: basePath");
+        assertThat(workflow).contains("nuxt.config.qeploy-user.$EXT");
+    }
+
+    /**
+     * 확장자만으로 모듈 종류를 정하면 SvelteKit 에서 깨진다.
+     *
+     * svelte.config.js 는 확장자가 js 지만 SvelteKit 프로젝트는 항상 "type": "module" 이라
+     * ESM 이다. 확장자만 보고 CJS 로 감싸면 require 가 ESM 을 읽다 그 자리에서 죽는다.
+     */
+    @Test
+    void generate_decidesModuleKindByPackageJsonNotOnlyByExtension() {
+        String workflow = DeployWorkflowTemplate.generate("sveltekit", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("grep -q '\"type\"[[:space:]]*:[[:space:]]*\"module\"' package.json");
+        assertThat(workflow).contains("case \"$EXT\" in mjs|ts) IS_ESM=true;; esac");
+    }
+
+    /**
+     * 커스텀 도메인이면 base 는 비어야 하는데, Gatsby 는 그 경우 스텝을 통째로 건너뛰었다.
+     *
+     * 건너뛰면 커밋된 pathPrefix 가 그대로 남아 자산 앞에 "/repo" 가 붙는다. 그 경로에는 아무것도
+     * 없으므로 전부 404 다. 비어 있는 것도 확정해야 할 값이다.
+     */
+    @Test
+    void generate_gatsbyDoesNotSkipItselfWhenTheBaseIsEmpty() {
+        String workflow = DeployWorkflowTemplate.generate("gatsby", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).doesNotContain("if [ -z \"$BASE\" ]; then exit 0; fi");
+        assertThat(workflow).contains("pathPrefix: base,");
+    }
+
+    /**
+     * config 가 없는 저장소에서는 예전처럼 새로 만든다 — 지금 동작하는 경로다.
+     */
+    @Test
+    void generate_stillCreatesAConfigWhenTheRepositoryHasNone() {
+        for (String type : new String[]{"vue-cli", "sveltekit", "gatsby", "astro", "nuxt"}) {
+            String workflow = DeployWorkflowTemplate.generate(type, null, PackageManager.NPM, "20");
+            assertThat(workflow).as(type).contains("if [ -z \"$USER_CONFIG\" ]; then");
+            assertThat(workflow).as(type).contains("생성 완료");
+        }
+    }
+
+    /**
+     * SvelteKit 은 사용자의 adapter 를 갈아치우지 않는다.
+     *
+     * 정적 어댑터가 아니면 배포가 성립하지 않지만 그건 base 문제가 아니고, 남의 어댑터를 바꾸는
+     * 것은 이 스텝이 할 일보다 훨씬 큰 개입이다. 설치와 경고까지만 한다.
+     */
+    @Test
+    void generate_sveltekitKeepsTheUsersAdapterWhenWrapping() {
+        String workflow = DeployWorkflowTemplate.generate("sveltekit", null, PackageManager.NPM, "20");
+
+        // 감싼 config 는 kit 를 펼쳐 넣으므로 adapter 가 살아남는다.
+        assertThat(workflow).contains("kit: { ...(resolved.kit ?? {})");
+        // 덮어쓰는 것은 paths.base 뿐이다.
+        assertThat(workflow).doesNotContain("adapter: adapter({ fallback: '404.html' }),\\n\" + \"              echo \"  kit");
+    }
+
     @Test
     void generate_contentTemplateNamesAreNotFrameworkVocabulary() {
         for (String contentTemplate : new String[]{"landing", "portfolio", "e-commerce"}) {

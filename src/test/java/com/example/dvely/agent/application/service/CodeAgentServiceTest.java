@@ -22,6 +22,7 @@ import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
+import com.example.dvely.agent.infrastructure.codingagent.CodingAgentWorkspaceBridge;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
 import com.example.dvely.agent.infrastructure.llm.GlmToolClient;
@@ -102,7 +103,8 @@ class CodeAgentServiceTest {
                 previewWorkspaceService,
                 buildFailureAnalyzer,
                 templateSeedingService,
-                aiProperties
+                aiProperties,
+                mock(CodingAgentWorkspaceBridge.class)
         );
         when(previewSessionService.acquire(TASK_ID)).thenReturn(previewSession());
     }

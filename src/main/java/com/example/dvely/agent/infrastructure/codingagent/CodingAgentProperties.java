@@ -87,7 +87,14 @@ public class CodingAgentProperties {
          * anchored regex with its dots escaped, so {@code api.openai.com} cannot also permit
          * {@code api.openai.com.evil.test}.
          */
-        private List<String> allowedHosts = List.of("api.anthropic.com", "api.openai.com");
+        private List<String> allowedHosts = List.of(
+                "api.anthropic.com",
+                "api.openai.com",
+                // An agent that cannot install a dependency cannot finish most requests: it would
+                // write an import for a package that is not there and call the job done. The
+                // registry widens egress, and that is the trade — a well-known host that can be
+                // POSTed to, against an agent that can actually build what it was asked for.
+                "registry.npmjs.org");
 
         public String proxyUrl() {
             return "http://" + proxyAlias + ":" + proxyPort;

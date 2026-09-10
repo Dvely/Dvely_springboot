@@ -46,6 +46,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -818,6 +819,79 @@ public class DockerContainerService {
         } catch (IOException e) {
             throw new RuntimeException("컨테이너 파일 추출 실패: " + containerPath, e);
         }
+    }
+
+    /**
+     * 컨테이너 안의 디렉터리를 통째로 호스트로 꺼낸다.
+     *
+     * <p>{@code skipSegments} 에 든 이름이 경로의 어느 구간으로든 나타나면 그 항목은 건너뛴다.
+     * {@code node_modules} 처럼 수만 개 파일이면서 반대편에서 다시 만들 수 있는 것을 나르지 않기
+     * 위한 것이다 — 그걸 나르면 한 번의 복사가 실행 전체를 지배한다.</p>
+     *
+     * @return 실제로 꺼낸 파일 수
+     */
+    public long copyDirectoryFromContainer(String containerId,
+                                           String containerPath,
+                                           Path destDir,
+                                           Set<String> skipSegments) {
+        long files = 0;
+        try (InputStream tar = dockerClient.copyArchiveFromContainerCmd(containerId, containerPath).exec();
+             TarArchiveInputStream tin = new TarArchiveInputStream(tar)) {
+
+            TarArchiveEntry entry;
+            while ((entry = tin.getNextEntry()) != null) {
+                if (hasSkippedSegment(entry.getName(), skipSegments)) {
+                    continue;
+                }
+                Path target = resolveInside(destDir, entry.getName());
+                if (entry.isDirectory()) {
+                    Files.createDirectories(target);
+                    continue;
+                }
+                if (!entry.isFile()) {
+                    // 심볼릭 링크·장치 파일은 프로젝트가 나를 필요가 없고, 링크를 따라가는 것이
+                    // 바로 tar 추출이 잘못되는 경로다.
+                    continue;
+                }
+                Files.createDirectories(target.getParent());
+                try (OutputStream out = Files.newOutputStream(target)) {
+                    tin.transferTo(out);
+                }
+                files++;
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("컨테이너 디렉터리 반출 실패: " + containerPath, e);
+        }
+        return files;
+    }
+
+    /** 호스트 디렉터리를 컨테이너의 {@code remoteParent} 밑으로 넣는다(디렉터리 이름 그대로). */
+    public void copyDirectoryToContainer(String containerId, Path hostDir, String remoteParent) {
+        dockerClient.copyArchiveToContainerCmd(containerId)
+                .withHostResource(hostDir.toString())
+                .withRemotePath(remoteParent)
+                .exec();
+    }
+
+    private boolean hasSkippedSegment(String entryName, Set<String> skipSegments) {
+        for (String segment : entryName.split("/")) {
+            if (skipSegments.contains(segment)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * tar 항목을 목적지 안쪽으로만 푼다. tar 는 {@code ../../etc/passwd} 를 이름으로 가질 수 있고,
+     * 이건 사용자의 코드가 도는 컨테이너에서 오는 tar 다.
+     */
+    private Path resolveInside(Path root, String entryName) {
+        Path resolved = root.resolve(entryName).normalize();
+        if (!resolved.startsWith(root)) {
+            throw new IllegalStateException("디렉터리 밖을 가리키는 tar 항목입니다: " + entryName);
+        }
+        return resolved;
     }
 
     public void removeContainer(String containerId) {

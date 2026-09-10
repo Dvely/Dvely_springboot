@@ -10,6 +10,7 @@ import com.example.dvely.agent.application.port.out.ToolDefinition;
 import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
+import com.example.dvely.agent.infrastructure.codingagent.CodingAgentWorkspaceBridge;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
 import com.example.dvely.agent.infrastructure.llm.GlmToolClient;
@@ -72,6 +73,7 @@ public class CodeAgentService {
     private final BuildFailureAnalyzer    buildFailureAnalyzer;
     private final TemplateSeedingService  templateSeedingService;
     private final AiProperties            aiProperties;
+    private final CodingAgentWorkspaceBridge codingAgentWorkspaceBridge;
 
     private static final String SYSTEM_PROMPT = """
             You are an expert full-stack developer working inside a Docker container (node:20-alpine).
@@ -112,6 +114,12 @@ public class CodeAgentService {
             - CRITICAL: scaffold → implement feature → build. Never build before implementing.
             - If a command fails, read the error and fix it before continuing.
             - Each execute_command runs independently; chain with: cd /path && command
+            - Do NOT pin a router basename, or a build-time `base`, to a deploy path. The usual
+              GitHub Pages recipe — `<BrowserRouter basename={import.meta.env.BASE_URL}>` — is
+              inlined when the app is built, but the preview serves it under a different path that
+              changes every time it is opened. The router then matches nothing and shows a
+              blank page with no console error, which is nearly impossible to diagnose.
+              Leave both unset; deployment sets its own base at build time.
             - When the build succeeds, respond with TEXT ONLY (no tool calls). This closing text is
               shown DIRECTLY TO THE END USER — the non-technical owner of the app, not a developer —
               so write a short, friendly product summary, NOT a build log. Rules for it:
@@ -206,13 +214,12 @@ public class CodeAgentService {
                         openAiToolClient, "OpenAI", instruction, containerId, modelOptions);
                 case GLM -> runOpenAiCompatibleLoop(
                         glmToolClient, "GLM", instruction, containerId, modelOptions);
-                // Not wired into this step yet, and the gap is structural rather than missing code:
-                // this loop drives tools inside an already-running preview container, while a
-                // coding agent brings its own container and works on a bind-mounted host checkout.
-                // Reconciling those two workspace models is its own unit; until then a CODE step
-                // must refuse the provider rather than silently run a different engine.
-                case CLAUDE_CODE, CODEX -> throw new IllegalArgumentException(
-                        "코딩 에이전트 제공자는 아직 CODE 스텝에 배선되지 않았습니다: " + provider);
+                // A coding agent does not share this loop: it brings its own container and edits a
+                // bind-mounted host checkout, while everything here drives tools inside the running
+                // preview container. The bridge carries the project across and back, so the rest of
+                // the step — preview launch, diff, push — sees the same /workspace/app it always has.
+                case CLAUDE_CODE, CODEX ->
+                        codingAgentWorkspaceBridge.run(containerId, userId, provider, instruction);
             };
 
             // 세션은 PROVISIONING 으로 만들어져 있다. 서버가 실제로 뜬 뒤에만 ACTIVE 로 올려야

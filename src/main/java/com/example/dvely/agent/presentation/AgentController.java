@@ -93,11 +93,14 @@ public class AgentController {
             summary = "사용 가능한 AI 제공자·모델 목록",
             description = "요청 body 의 aiProvider·model 에 지정할 수 있는 값들을 반환합니다. "
                           + "apiKey 가 설정된 제공자만 담기며, 각 제공자의 기본 모델·선택 가능 모델·"
-                          + "thinking 지원 모델을 함께 줍니다. FE 의 제공자 선택 UI 가 이걸 소비합니다."
+                          + "thinking 지원 모델을 함께 줍니다. FE 의 제공자 선택 UI 가 이걸 소비합니다. "
+                          + "코딩 에이전트(CLAUDE_CODE·CODEX)는 서버 키가 아니라 **본인이 등록한 키**로 "
+                          + "갈리므로, 해당 벤더 키를 등록한 사용자에게만 나타납니다. 이들은 모델·thinking 을 "
+                          + "CLI 가 정하므로 목록이 비어 있습니다."
     )
     @GetMapping("/ai-providers")
-    public AiProvidersResponse aiProviders() {
-        List<AiProvidersResponse.Provider> providers = aiProviderQueryService.availableProviders().stream()
+    public AiProvidersResponse aiProviders(@Parameter(hidden = true) @AuthenticationPrincipal Long userId) {
+        List<AiProvidersResponse.Provider> providers = aiProviderQueryService.availableProviders(userId).stream()
                 .map(v -> new AiProvidersResponse.Provider(
                         v.provider(), v.defaultModel(), v.models(), v.thinkingModels()))
                 .toList();
