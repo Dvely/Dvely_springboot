@@ -29,8 +29,12 @@ import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
+import com.example.dvely.template.application.port.out.TemplateCatalogPort;
+import com.example.dvely.template.application.service.TemplateCatalogGuard;
+import com.example.dvely.template.domain.model.Template;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -57,6 +61,9 @@ class ProjectCommandServiceTest {
     @Mock
     private AuditRecorder auditRecorder;
 
+    @Mock
+    private TemplateCatalogPort templateCatalogPort;
+
     private ProjectCommandService projectCommandService;
 
     @BeforeEach
@@ -71,7 +78,10 @@ class ProjectCommandServiceTest {
                 // 실제 구현을 물린다. 저장소 연결의 마지막 순서(preview 브랜치 준비 → 바인딩 →
                 // 저장 → 감사)는 이 서비스로 옮겨갔을 뿐 동작이 바뀐 게 아니라, mock 으로 막으면
                 // 기존 검증이 전부 무의미해진다.
-                new RepositoryProvisioningService(githubRepositoryPort, projectRepository, auditRecorder)
+                new RepositoryProvisioningService(githubRepositoryPort, projectRepository, auditRecorder),
+                // 같은 이유로 실제 구현을 물린다. blank 로 시작하는 프로젝트는 확인할 템플릿이
+                // 없어 카탈로그를 건드리지 않는데, mock 으로 막으면 그 사실이 검증되지 않는다.
+                new TemplateCatalogGuard(templateCatalogPort)
         );
     }
 
@@ -94,6 +104,11 @@ class ProjectCommandServiceTest {
 
     @Test
     void createProject_normalizesTemplateAndDefaultsDraftMode() {
+        // 카탈로그에는 정규화된 ID 만 있다. 여기서 "E Commerce" 로 스텁하지 않는 것이 요점이다 —
+        // 정규화 전 값으로 물으면 이 스텁이 비어 있어 생성이 실패한다.
+        when(templateCatalogPort.findById("e-commerce")).thenReturn(Optional.of(
+                new Template("e-commerce", "이커머스", "설명", List.of(), "vanilla",
+                        "index.html", List.of(), "demo", "src")));
         when(projectRepository.save(any(Project.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         ProjectDetailResult result = projectCommandService.createProject(
@@ -104,6 +119,22 @@ class ProjectCommandServiceTest {
         assertThat(result.startMode()).isEqualTo("template");
         assertThat(result.templateType()).isEqualTo("e-commerce");
         assertThat(result.draftMode()).isEqualTo("fast");
+    }
+
+    @Test
+    void createProject_rejectsTemplateThatIsNotInCatalog() {
+        // 이전에는 슬러그 형식만 맞으면 무엇이든 저장됐다. 값을 읽는 코드가 없어 드러나지 않았을
+        // 뿐이고, 씨딩이 붙으면 "고를 때는 성공, 만들 때는 실패" 가 된다.
+        when(templateCatalogPort.findById("made-up-template")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> projectCommandService.createProject(
+                1L,
+                new CreateProjectCommand("store", "template", "made-up-template", null)
+        ))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("made-up-template");
+
+        verify(projectRepository, never()).save(any(Project.class));
     }
 
     @Test

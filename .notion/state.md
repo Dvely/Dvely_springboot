@@ -36,7 +36,8 @@
 ## 2.2 프로젝트와 GitHub 저장소
 
 - GitHub 저장소 없이 DRAFT 프로젝트 생성
-- 프로젝트 생성 직후 startMode/templateType/draftMode 기반 CODE Agent task 제출 (202 Accepted)
+- 프로젝트 생성은 프로젝트 행만 만든다 — 초기 CODE task 제출 경로는 제거됨(제출돼도 실행된 적이 없었다). 첫 코드는 사용자의 첫 요청 때 CODE Agent 가 만든다
+- `startMode=template` 이면 `templateType` 을 템플릿 카탈로그와 대조한다(§4.22). 없는 ID 는 400
 - 프로젝트와 저장소를 분리해 관리
 - 새 GitHub 저장소 생성 후 연결
 - 기존 GitHub 저장소 접근 확인 후 연결
@@ -994,6 +995,28 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 # 5. 권장 구현 순서
 
 `.notion/ROADMAP.md`가 단위(Unit) 단위 실행 순서의 SSOT다. 아래는 지금까지 진행해 온 Phase 이력이며, U1~U7·Issue #45·Cost & Budget·Cloud Ops Agent·Issue #56·Issue #55·Issue #57·Issue #74(Audit Log)·Issue #76(Preview 외부 노출 차단, BI-081/G1)·Issue #77(게이트웨이 인가, G2·G4)이 모두 완료된 이후 신규 작업은 ROADMAP의 "이후 백로그"(`BI-163~165` Project Settings 나머지)와 U-sec 단위를 따른다.
+
+
+## 4.22 퍼블리싱 템플릿 카탈로그 (Issue #318, PR-1·2·3)
+
+**되는 것**
+
+- 템플릿 저장소 `Dvely/qeploy-templates` 가 GitHub Pages 로 셋을 발행한다 — `catalog.json`(카탈로그 정본) · `t/<id>/`(데모) · `src/<id>.tar.gz`(씨앗). main 머지가 곧 발행이다
+- 데모는 iframe 임베드 가능(2026-09-10 실측: 정상 문서에 `X-Frame-Options`·`CSP frame-ancestors` 없음)
+- `GET /api/v1/templates`, `GET /api/v1/templates/{id}` — 인증 불필요. 서버는 카탈로그를 읽어 나를 뿐 **소스를 들지 않는다**
+- 카탈로그는 10분 주기로 갱신하고, 갱신 실패 시 직전 목록으로 계속 응답한다(stale-while-error). 한 번도 읽지 못한 경우에만 `503 TEMPLATE_CATALOG_UNAVAILABLE`
+- 프로젝트 생성 시 `templateType` 을 **정규화 후 카탈로그와 대조**한다. 없는 ID 는 400
+- 참조 템플릿 3종: `landing-minimal` · `portfolio-grid` · `shop-single` (전부 vanilla·자기완결·외부 자산 없음)
+
+**아직 안 되는 것**
+
+- **씨딩이 없다.** 고른 템플릿이 실제로 프로젝트에 심기지 않는다 — 첫 CODE 스텝에서 tarball 을 `/workspace/app` 에 푸는 경로가 PR-4 로 남아 있다. 지금은 카탈로그에 있는 ID 만 통과할 뿐, 통과한 뒤의 동작은 여전히 백지 생성이다
+- FE 템플릿 갤러리 UI (별도 담당)
+- 썸네일 자동 생성
+
+**배경**
+
+이전에는 `startMode`/`templateType` 이 검증·저장되기만 하고 읽는 코드가 없었다. 사용자가 템플릿을 골라도 조용히 무시되고 백지 생성됐다. 설계는 `docs/template-architecture-design.md`.
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
 

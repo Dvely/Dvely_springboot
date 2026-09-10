@@ -68,6 +68,7 @@
 - Preview (PreviewGateway, PreviewSession)
 - Environment
 - AuditLog
+- Template
 
 ---
 
@@ -227,7 +228,13 @@ Base path: `/api/v1/projects`
 }
 ```
 
-`startMode`(`blank`/`template`)와 `draftMode`(`fast`/`quality`)는 검증·정규화되어 저장된다. 저장 직후 생성된 프로젝트 ID에 연결된 CODE Agent task를 제출하고 `202 Accepted`로 task 상태와 승인 정보를 함께 반환한다. `template`이면 지정 유형을 초기 생성 지시에 반영하고, `quality`/`fast`에 따라 생성 품질과 AI provider를 선택한다. ZIP 업로드 처리는 아직 없다(§14.1 참고).
+`startMode`(`blank`/`template`)와 `draftMode`(`fast`/`quality`)는 검증·정규화되어 저장된다. 프로젝트 생성은 **프로젝트 행만 만든다** — 초기 CODE task 를 함께 제출하던 경로는 제거됐다(제출돼도 실행된 적이 없었다). 첫 코드는 사용자가 첫 요청을 보낼 때 CODE Agent 가 만든다.
+
+`startMode=template` 이면 `templateType` 은 **템플릿 카탈로그(§17)에 실재하는 ID 여야 한다.** 정규화(소문자화·공백→하이픈) 후 대조하므로 `"E Commerce"` 는 `e-commerce` 로 조회된다. 없는 ID 는 `400`, 카탈로그를 한 번도 읽지 못한 상태면 `503 TEMPLATE_CATALOG_UNAVAILABLE`.
+
+> 이전에는 슬러그 형식(`[a-z0-9][a-z0-9_-]{0,49}`)만 검증하고 값을 읽는 코드가 없었다. 존재하지 않는 템플릿도 `200` 으로 통과했고, 고른 템플릿은 조용히 무시된 채 백지 생성됐다.
+
+ZIP 업로드 처리는 아직 없다(§14.1 참고).
 
 ### 6.2 저장소 연결/해제
 
@@ -1168,3 +1175,51 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 ### 16.5 저장 스키마
 
 `ai_provider_credentials`(V44): `user_id`, `provider`, `encrypted_api_key`, `label`, timestamps. `UNIQUE(user_id, provider)` + 사용자 삭제 시 CASCADE.
+
+---
+
+## 17. Template API
+
+퍼블리싱 템플릿 카탈로그. **정본은 이 서버가 아니다** — 템플릿 저장소(`Dvely/qeploy-templates`)가 GitHub Pages 로 발행하는 `catalog.json` 을 서버가 읽어 나른다. 서버는 템플릿 소스를 들지 않는다.
+
+설계 배경은 `docs/template-architecture-design.md`.
+
+**인증 불필요.** 내용 자체가 이미 공개 Pages 에 있는 정적 목록이고 사용자 데이터가 없어, 로그인 전 화면에서도 갤러리를 띄울 수 있게 열려 있다.
+
+### 17.1 목록 조회
+
+`GET /api/v1/templates`
+
+```json
+[
+  {
+    "templateId": "landing-minimal",
+    "name": "미니멀 랜딩",
+    "description": "제품·서비스 하나를 소개하는 한 장짜리 랜딩 페이지",
+    "tags": ["landing", "one-page", "product"],
+    "stack": "vanilla",
+    "demoUrl": "https://dvely.github.io/qeploy-templates/t/landing-minimal/",
+    "contentHints": [
+      { "key": "hero.title", "where": "index.html", "desc": "히어로 대제목 — 한 문장으로 무엇인지" }
+    ]
+  }
+]
+```
+
+`demoUrl` 은 **iframe 으로 띄울 수 있다.** GitHub Pages 는 정상 문서에 `X-Frame-Options` 도 `CSP frame-ancestors` 도 보내지 않는다(2026-09-10 실측). 고르기 전에 조작해보게 하는 것이 이 필드의 목적이다.
+
+`contentHints` 는 "어디가 바꿔도 되는 내용인지" 에 대한 템플릿 자신의 선언이다. 없으면 코딩 에이전트가 무엇이 내용이고 무엇이 구조인지 추측한다.
+
+씨앗 tarball 주소(`sourceUrl`)는 **응답에 담지 않는다.** 서버가 컨테이너에 풀 때만 쓰는 내부 경로다.
+
+### 17.2 단건 조회
+
+`GET /api/v1/templates/{templateId}`
+
+목록과 같은 형태의 단건. 없는 ID 는 `404`.
+
+### 17.3 카탈로그를 읽지 못할 때
+
+갱신에 실패해도 **직전에 읽어둔 목록으로 계속 응답한다**(stale-while-error). 카탈로그는 정적 문서라 잠깐 낡은 목록을 보여주는 편이 기능을 멈추는 것보다 낫다. 낡은 것을 쓰는 동안은 WARN 로그가 남는다.
+
+`503 TEMPLATE_CATALOG_UNAVAILABLE` 은 **한 번도 읽지 못한 경우에만** 나간다.
