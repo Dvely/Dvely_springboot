@@ -74,14 +74,23 @@ public class TemplateSeedingService {
             throw new IllegalStateException("템플릿 소스 주소를 신뢰할 수 없습니다: " + templateId);
         }
 
+        // --no-same-owner 가 없으면 안 된다. 씨앗 tarball 은 CI 러너(uid 1001)가 묶어서 소유자가
+        // 그대로 기록돼 있고, root 로 푸는 tar 는 그 기록대로 대상 디렉터리를 1001 로 chown 한다.
+        // 컨테이너는 CapDrop=ALL 에 CHOWN 만 되살린 상태라 chown 은 성공하지만, 그 직후 root 가
+        // 남의 디렉터리에 쓰려다 막힌다(CAP_DAC_OVERRIDE 가 없다). 첫 파일에서 Permission denied 로
+        // 죽는다 — dev 에서 실제로 이렇게 실패했다.
         DockerContainerService.ExecResult result = dockerService.execWithExitCode(
                 containerId,
                 "mkdir -p " + ContainerPaths.APP_DIR
-                        + " && wget -qO- '" + sourceUrl + "' | tar -xz -C " + ContainerPaths.APP_DIR);
+                        + " && wget -qO- '" + sourceUrl + "' | tar -xz --no-same-owner -C "
+                        + ContainerPaths.APP_DIR);
 
         if (!result.succeeded()) {
+            // 출력을 함께 담는다. exit 코드만 남기면 무엇이 막혔는지 알 수 없어, 원인을 찾으려고
+            // 컨테이너에 들어가 같은 명령을 다시 돌려야 한다(실제로 그렇게 됐다).
             throw new IllegalStateException(
-                    "템플릿을 내려받지 못했습니다: " + templateId + " (exit=" + result.exitCode() + ")");
+                    "템플릿을 내려받지 못했습니다: " + templateId + " (exit=" + result.exitCode() + ")"
+                            + firstLineOf(result.output()));
         }
         // wget 이 파이프 앞이라 종료코드가 tar 의 것이다. 빈 입력에도 tar 가 0 을 낼 수 있어
         // 결과를 직접 확인한다 — "성공했는데 아무것도 없는" 상태가 가장 나쁘다.
@@ -91,6 +100,15 @@ public class TemplateSeedingService {
 
         log.info("[TemplateSeed] 씨딩 완료 | projectId={} templateId={} url={}", projectId, templateId, sourceUrl);
         return Optional.of(template);
+    }
+
+    /** 예외 메시지에 들어가므로 한 줄로 자른다. 전체 출력은 로그가 아니라 여기서만 쓴다. */
+    private String firstLineOf(String output) {
+        if (output == null || output.isBlank()) {
+            return "";
+        }
+        String first = output.strip().lines().findFirst().orElse("");
+        return first.isBlank() ? "" : " — " + (first.length() > 200 ? first.substring(0, 200) : first);
     }
 
     private boolean hasFiles(String containerId) {
