@@ -31,7 +31,12 @@
 - `POST /api/v1/webhook/github`
 - Swagger/OpenAPI 경로
 
-### 2.2 응답 형식
+### 2.2 요청 상관관계 ID (Issue #345)
+
+- 모든 응답에 `X-Request-Id`가 붙는다. 장애 문의 시 이 값으로 서버 로그를 바로 집을 수 있다.
+- 클라이언트가 같은 헤더로 값을 보내면 그대로 이어받는다. 다만 `[A-Za-z0-9._-]{1,64}`에 맞을 때만 받고, 어긋나면 조용히 새로 만든다(로그 인젝션 차단). 거절이 아니라 대체이므로 요청은 그대로 처리된다.
+
+### 2.3 응답 형식
 
 현재 응답 형식은 통일되어 있지 않다.
 
@@ -41,7 +46,7 @@
 - Agent 상태 조회/입력: `ResponseEntity`
 - 일반 JSON 성공 응답은 `RawApiResponse` 처리를 거치지 않는 한 공통 MVC advice가 `status/code/message/data` envelope로 자동 변환한다. `@RawApiResponse`가 붙은 Agent/Auth/User/Webhook/PreviewGateway 컨트롤러는 원본 응답을 유지한다.
 
-### 2.3 공통 오류
+### 2.4 공통 오류
 
 `GlobalExceptionHandler`가 처리하는 주요 오류:
 
@@ -52,7 +57,7 @@
 - `409 Conflict`: 중복 생성 등 상태 충돌 (예: 동일 (project, scope, key) 환경변수 재생성)
 - `500 Internal Server Error`: 처리되지 않은 외부 연동/서버 오류
 
-### 2.4 현재 모듈
+### 2.5 현재 모듈
 
 - Auth
 - User

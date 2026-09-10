@@ -1019,3 +1019,66 @@ InfrastructureChangeApprovalHandler(인프라 설정 승인/거절 집행)
 - 계정 수준 감사(GitHub App installation 이벤트, 로그인 이력)와 `/me/audit-logs`는 이번 단위 범위 밖이다(§16 목록의 후속 검토 대상).
 - 환경변수 변경은 audit에 편입되지 않았다 — `environment_variable_histories`(§14.2)가 이미 자체 이력(action+valueChanged)을 보유해 충분하다고 판단했다.
 - BI-195(권한 최소화)는 이번 단위에서 감사 접근 최소화(소유자 404)·데이터 최소화(레닥션·화이트리스트)·권한 사용 가시화(카탈로그 16종)까지만 처리한 **부분 완료**다. GitHub App 권한 재검토와 컨테이너 git credential 평문(`/tmp/.git-credentials`) 개선은 보안 성격의 별도 후속 항목으로 분리되어 있다(`ROADMAP.md` "이후 백로그" 참고, 아직 이슈 미신설).
+
+---
+
+## 18. 요청 경로 성능 연결 (Issue #345)
+
+### 18.1 인증 필터 한 요청의 비용
+
+`RequestIdFilter`(가장 앞) → Spring Security 체인 → `JwtAuthenticationFilter` 순서다.
+
+`JwtAuthenticationFilter`는 PAT(`qp_` 접두사)와 서비스 JWT를 접두사로 가른다. JWT 경로는 이제 `TokenPort.parseClaims`를 **한 번** 불러 `userId`·`jti`를 함께 얻는다(이전에는 `getUserId`/`getJti`가 각각 파서를 세워 서명 검증이 두 번 돌았다). `JwtProvider`는 `SecretKey`와 `JwtParser`를 생성자에서 1회 만들어 재사용한다 — `JwtParser`는 상태가 없어 스레드 안전하다.
+
+PAT 경로(`ApiTokenAuthenticator`)는 SHA-256 + UNIQUE 인덱스 조회 1회 + `last_used_at` 1시간 스로틀로 이미 가벼워 이번 단위에서 건드리지 않았다.
+
+### 18.2 폐기 토큰: 캐시와 DB의 관계
+
+```
+JwtAuthenticationFilter
+  └─ TokenBlacklistPort.isRevoked(jti)
+       └─ RevokedTokenRepositoryAdapter
+            ├─ RevokedTokenCache.lookup(jti)   TRUE/FALSE → 즉시 반환
+            └─ null(모름)                       → SpringDataRevokedTokenRepository.findByJti → 캐시에 적재
+```
+
+**정본은 `revoked_access_tokens` 테이블이고 캐시는 그 앞의 단축 경로다.** 캐시가 모른다고 답하면 반드시 DB를 본다 — 이 성질이 재기동·항목 축출에도 폐기가 유지되는 근거다. 완전한 목록을 메모리에 들고 "없으면 폐기 안 된 것"이라 답하는 설계는 목록이 한 번이라도 불완전해지는 순간 조용히 열리는 쪽으로 틀리기 때문에 택하지 않았다.
+
+캐시는 둘로 나뉜다. 두 방향의 위험이 다르기 때문이다 — "폐기됨"을 놓치면 로그아웃한 토큰이 계속 통과하고(되돌릴 수 없다), "폐기 안 됨"을 잘못 기억하면 사용자가 다시 로그인하면 된다.
+
+| | 만료 | 넘칠 때 |
+|---|---|---|
+| 폐기됨(positive) | 토큰 자체의 만료 시각 | 축출돼도 다음 조회에서 DB가 다시 알려준다 |
+| 폐기 안 됨(negative) | `not-revoked-ttl`(기본 60초, `0`이면 비활성) | 같음 |
+
+`revoke`는 **DB 저장보다 먼저** 캐시를 갱신하고 부정 캐시 항목을 지운다. 로그아웃은 `@Transactional` 안에서 일어나 행 커밋이 나중이라, 그 사이에 같은 토큰이 통과하면 안 된다. 조회가 폐기됨을 먼저 확인하는 것도 같은 이유다 — 두 캐시에 같은 jti가 잠깐 함께 있을 수 있고, 그때 닫히는 쪽이 이겨야 한다.
+
+`not-revoked-ttl`은 **다중 인스턴스에서 로그아웃이 다른 인스턴스로 전파되는 지연 상한**이다. 폐기를 수행한 인스턴스 자신은 즉시 반영된다.
+
+### 18.3 감사 로그 쓰기 경로
+
+```
+훅(10개 서비스) → AuditRecorder.record  ── 즉시 큐 투입, 요청 스레드는 바로 복귀
+                                          └─ auditLogExecutor(스레드 1개)
+                                               └─ AuditLogWriter.write  @Transactional(REQUIRES_NEW)
+                                                    └─ audit_logs INSERT 1건
+```
+
+스레드를 하나만 두는 것이 핵심이다. 감사 쓰기가 쓰는 커넥션이 앱 전체를 통틀어 최대 1개로 묶여, 쓰기 요청마다 순간적으로 커넥션을 하나 더 빌리던 결합이 끊긴다. 부수로 INSERT가 호출 순서를 유지한다.
+
+**커밋 후로 미루지 않는다.** `REQUIRES_NEW`는 "감사 실패가 요청을 죽이지 않는다"(ADR-A2)만이 아니라 "바깥 트랜잭션이 되감겨도 감사 기록은 남는다"도 함께 뜻한다. `RepositoryProvisioningService.bindToProject`처럼 **이미 일어난 외부 효과**(GitHub 저장소 생성)를 기록하는 훅이 있고, 되감겨도 그 저장소는 GitHub에 남는다 — `afterCommit`으로 미루면 되돌릴 수 없는 효과의 유일한 증거가 사라진다. `AuditRecorderIntegrationTest.auditRowSurvivesOuterTransactionRollback`이 이 계약을 고정한다.
+
+큐가 넘치면 **버리지 않고** 호출 스레드에서 실행한다. 과부하에서 최악이 "예전처럼 느려지는 것"이지 "기록이 사라지는 것"이면 안 된다. 동시에 자연스러운 배압이라 큐가 무한정 자라지 않는다. `ThreadPoolExecutor.CallerRunsPolicy`는 실행기가 이미 종료된 경우 말없이 버리므로 쓰지 않았다.
+
+**바뀐 것 하나**: 프로세스가 갑자기 죽으면 큐에 남은 이벤트가 사라진다. 정상 종료에서는 실행기가 큐를 흘려보내고 내려간다(§17의 "유실 창"의 연장).
+
+### 18.4 요청 상관관계 ID
+
+`RequestIdFilter`가 MDC `requestId`를 심고 응답 `X-Request-Id`로 돌려준다. 로그 패턴은 Spring Boot 기본 패턴이 참조하는 `LOG_LEVEL_PATTERN` 자리만 바꿔 얹었다(`logging.pattern.level`) — 콘솔 패턴 전체를 갈아엎지 않아 부트 기본값이 달라져도 따라간다.
+
+`AuditRecorder`는 MDC를 감사 스레드로 넘긴다. 감사 스레드가 남기는 `AUDIT_FALLBACK` 로그가 어느 요청의 것인지 모르면 정작 추적이 필요할 때 추적이 안 된다.
+
+### 18.5 현재 한계
+
+- `RequestIdFilter`는 `OncePerRequestFilter` 기본값을 따라 **ASYNC 디스패치에서는 다시 돌지 않는다**. SSE의 비동기 디스패치 구간 로그에는 `requestId`가 비어 나온다.
+- 폐기 토큰 부정 캐시의 다중 인스턴스 전파 지연(기본 60초)은 설계상 남는 창이다. 없애려면 `not-revoked-ttl: 0`으로 매 요청 DB 조회로 돌아가거나, 인스턴스 간 무효화 전파(pub/sub) 수단이 필요하다 — 후자는 현재 인프라에 없다.
