@@ -68,7 +68,7 @@ class ChangeServiceTest {
                 .thenReturn("yes");
         when(dockerService.execWithExitCode(
                 "container-1",
-                "cd /workspace/app && (git add -N . >/dev/null 2>&1 || true) && git diff --no-ext-diff -- ."
+                "cd /workspace/app && (apk add --no-cache git >/dev/null 2>&1 || true) && (git add -N . >/dev/null 2>&1 || true) && git diff --no-ext-diff -- ."
         )).thenReturn(new DockerContainerService.ExecResult(0, "diff --git a/src/App.jsx b/src/App.jsx"));
 
         service.record("task-1", "FAQ 추가");
@@ -101,6 +101,8 @@ class ChangeServiceTest {
         // 작업 트리 밖의 일회용 저장소를 쓴다. 워크스페이스에 .git 을 만들면
         // PreviewBranchPushService 가 "이미 저장소가 있다" 로 분기해 push 가 통째로 실패한다.
         assertThat(command.getValue())
+                // git 은 이미지에 없다. 이 줄이 빠지면 exit=127 로 diff 가 늘 빈 값이 된다.
+                .contains("apk add --no-cache git")
                 .contains("--git-dir=/tmp/qeploy-diff.git")
                 .contains("--work-tree=.")
                 .doesNotContain("git init -b preview");

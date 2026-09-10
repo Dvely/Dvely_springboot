@@ -87,9 +87,15 @@ public class ChangeService {
                 ? ""
                 : "rm -rf " + SCRATCH_GIT_DIR + " && " + gitPrefix + "init -q && ";
 
+        // git 은 이미지(node:20-alpine)에 없다. PreviewBranchPushService 가 깔긴 하지만 그건 결과
+        // 승인 이후라 여기보다 한참 뒤다 — 그래서 이 자리에서는 언제나 exit=127 이었고, 저장소가
+        // 없는 프로젝트의 diff 는 늘 빈 값이었다(2026-09-10 dev, project 52 에서 확인).
+        // 실패를 허용하는 형태는 같은 저장소의 다른 세 곳과 맞춘다 — 이미 깔려 있거나 이미지가
+        // alpine 이 아닐 수 있고, 그때는 뒤의 git 이 알아서 동작한다.
         DockerContainerService.ExecResult result = dockerService.execWithExitCode(
                 containerId,
-                ContainerPaths.inApp(prepare
+                ContainerPaths.inApp("(apk add --no-cache git >/dev/null 2>&1 || true) && "
+                        + prepare
                         + "(" + gitPrefix + "add -N . >/dev/null 2>&1 || true) && "
                         + gitPrefix + "diff --no-ext-diff -- ."));
 
