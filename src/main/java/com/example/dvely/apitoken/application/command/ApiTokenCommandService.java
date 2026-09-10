@@ -17,23 +17,37 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class ApiTokenCommandService {
 
-    /** Default lifetime when the caller does not choose one. */
-    private static final int DEFAULT_EXPIRY_DAYS = 90;
-
     /**
-     * A year is long for a credential that authenticates an automated client, but a hard ceiling
-     * beats an unbounded one: a token nobody remembers issuing eventually stops working on its own.
+     * Lifetimes differ by scope, because what a leaked token can do differs by scope.
+     *
+     * <p>A {@code READ} token exposes what its owner can already see. A {@code WRITE} token can
+     * deploy, rewrite environment variables, and bind domains — and it does so from a headless
+     * client, where nobody is watching a screen to notice. The window in which a stolen one is
+     * still useful should be short enough that rotation is a real defence rather than a policy
+     * nobody gets around to.</p>
+     *
+     * <p>A hard ceiling matters more than the exact number: a token nobody remembers issuing
+     * eventually stops working on its own.</p>
      */
-    private static final int MAX_EXPIRY_DAYS = 365;
+    private static final int READ_DEFAULT_DAYS = 90;
+    private static final int READ_MAX_DAYS = 365;
+    private static final int WRITE_DEFAULT_DAYS = 30;
+    private static final int WRITE_MAX_DAYS = 90;
 
     private final ApiTokenRepository apiTokenRepository;
 
     @Transactional
     public IssuedApiTokenResult issue(Long userId, ApiTokenScope scope, String label, Integer expiresInDays) {
-        int days = expiresInDays == null ? DEFAULT_EXPIRY_DAYS : expiresInDays;
-        if (days < 1 || days > MAX_EXPIRY_DAYS) {
+        boolean write = scope == ApiTokenScope.WRITE;
+        int defaultDays = write ? WRITE_DEFAULT_DAYS : READ_DEFAULT_DAYS;
+        int maxDays = write ? WRITE_MAX_DAYS : READ_MAX_DAYS;
+
+        int days = expiresInDays == null ? defaultDays : expiresInDays;
+        if (days < 1 || days > maxDays) {
+            // The scope is named in the message: asking for 365 days is reasonable until you know
+            // that this token can deploy, and a bare "1~90" does not say why the answer changed.
             throw new IllegalArgumentException(
-                    "만료일은 1일 이상 " + MAX_EXPIRY_DAYS + "일 이하여야 합니다.");
+                    "만료일은 1일 이상 " + maxDays + "일 이하여야 합니다(" + scope + " 스코프).");
         }
 
         IssuedApiToken issued = ApiTokenGenerator.issue(

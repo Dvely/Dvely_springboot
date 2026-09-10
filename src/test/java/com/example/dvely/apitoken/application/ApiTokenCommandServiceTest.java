@@ -64,7 +64,7 @@ class ApiTokenCommandServiceTest {
     }
 
     @Test
-    void defaultsToNinetyDays() {
+    void readDefaultsToNinetyDays() {
         LocalDateTime before = LocalDateTime.now();
 
         service.issue(USER_ID, ApiTokenScope.READ, null, null);
@@ -73,6 +73,41 @@ class ApiTokenCommandServiceTest {
         verify(repository).save(saved.capture());
         assertThat(saved.getValue().getExpiresAt())
                 .isBetween(before.plusDays(90).minusMinutes(1), LocalDateTime.now().plusDays(90));
+    }
+
+    /**
+     * 쓰기 토큰은 더 짧게 산다. 유출됐을 때 할 수 있는 일이 다르기 때문이다 — READ 는 소유자가
+     * 이미 볼 수 있는 것을 드러낼 뿐이지만, WRITE 는 배포하고 환경변수를 바꾸고 도메인을 붙인다.
+     * 그것도 헤드리스 클라이언트에서, 아무도 화면을 보고 있지 않은 채로.
+     */
+    @Test
+    void writeDefaultsToThirtyDays() {
+        LocalDateTime before = LocalDateTime.now();
+
+        service.issue(USER_ID, ApiTokenScope.WRITE, null, null);
+
+        ArgumentCaptor<ApiToken> saved = ArgumentCaptor.captor();
+        verify(repository).save(saved.capture());
+        assertThat(saved.getValue().getExpiresAt())
+                .isBetween(before.plusDays(30).minusMinutes(1), LocalDateTime.now().plusDays(30));
+    }
+
+    @Test
+    void writeCannotOutliveNinetyDaysEvenIfAsked() {
+        assertThatThrownBy(() -> service.issue(USER_ID, ApiTokenScope.WRITE, null, 180))
+                .isInstanceOf(IllegalArgumentException.class)
+                // 왜 답이 달라졌는지 알려면 스코프가 문장에 있어야 한다.
+                .hasMessageContaining("WRITE")
+                .hasMessageContaining("90");
+    }
+
+    @Test
+    void readMayStillRunToAYear() {
+        service.issue(USER_ID, ApiTokenScope.READ, null, 365);
+
+        ArgumentCaptor<ApiToken> saved = ArgumentCaptor.captor();
+        verify(repository).save(saved.capture());
+        assertThat(saved.getValue().getExpiresAt()).isAfter(LocalDateTime.now().plusDays(364));
     }
 
     @Test
