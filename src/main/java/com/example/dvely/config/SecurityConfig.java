@@ -3,6 +3,7 @@ package com.example.dvely.config;
 import jakarta.servlet.DispatcherType;
 import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
 import com.example.dvely.auth.application.port.out.TokenPort;
+import com.example.dvely.apitoken.application.service.ApiTokenAuthenticator;
 import com.example.dvely.auth.infrastructure.config.security.JwtAuthenticationFilter;
 import com.example.dvely.common.response.ApiResponse;
 import com.example.dvely.common.response.ErrorCode;
@@ -33,6 +34,7 @@ public class SecurityConfig {
             HttpSecurity http,
             TokenPort tokenPort,
             TokenBlacklistPort tokenBlacklistPort,
+            ApiTokenAuthenticator apiTokenAuthenticator,
             CorsConfigurationSource corsConfigurationSource,
             ObjectMapper objectMapper
     ) throws Exception {
@@ -98,7 +100,7 @@ public class SecurityConfig {
                         ))
                 )
                 .addFilterBefore(
-                        new JwtAuthenticationFilter(tokenPort, tokenBlacklistPort),
+                        new JwtAuthenticationFilter(tokenPort, tokenBlacklistPort, apiTokenAuthenticator),
                         UsernamePasswordAuthenticationFilter.class
                 )
                 .build();

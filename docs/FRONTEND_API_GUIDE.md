@@ -2,7 +2,7 @@
 
 이 문서는 프론트엔드 개발자가 Swagger UI와 함께 참고하는 통합 작업 문서입니다. 컨트롤러·DTO·설계서(`.agent-team/04-architecture/`)의 실제 계약만을 근거로 작성했으며, 추측/날조된 필드나 동작은 없습니다. 필드 하나하나의 상세 스키마(타입, `nullable`, `example`)는 Swagger UI(`/swagger-ui/index.html`)가 항상 최신 소스이므로, 이 문서는 **"무엇을 언제 왜 호출하는가"**에 집중하고 세부 스키마는 Swagger로 위임합니다.
 
-- **컨트롤러 수**: 21개 · **엔드포인트 매핑 수**: 105개 (2026-09-05 실측)
+- **컨트롤러 수**: 22개 · **엔드포인트 매핑 수**: 112개 (2026-09-08 실측)
 - 아래 §4 카탈로그는 아직 전수가 아니다. `AuditLog` · `DatabaseProvisioning` · `DomainTls` · `PreviewRuntimeConfig` · `ServerProvisioning` 컨트롤러는 절이 없으므로, 그 영역은 Swagger UI 를 정본으로 본다.
 - **작성 기준 커밋**: main `eb0ec2d` (U0~U7 · I45 · Cost(#58) · CloudOps(#59) · 결과 승인 2단계(#56) · pendingApprovalId/retryable 재정의(#57) · retry TOCTOU 제거(#64) · 결과 게이트 이력 판정 보강(#62) 머지 완료)
 
@@ -513,6 +513,28 @@ setIframeSrc(previewUrl);   // ← 반드시 이 응답의 previewUrl 을 사용
 | 메서드 | 경로 | 용도 |
 |---|---|---|
 | POST | `/api/v1/webhook/github` | GitHub App webhook 수신 전용(**FE에서 호출하지 않음**). `X-Hub-Signature-256` HMAC 서명 검증 후 push/pull_request/installation 이벤트 처리 |
+
+### 4.13 ApiToken — `com.example.dvely.apitoken.presentation` (3)
+
+에이전트·CLI 용 개인 액세스 토큰(PAT). 브라우저 JWT 는 1시간이라 헤드리스 클라이언트가 쓸 수 없어 이 토큰을 쓴다. `Authorization: Bearer qp_...` 형태로 기존 API 를 그대로 호출한다.
+
+| 메서드 | 경로 | 용도 |
+|---|---|---|
+| GET | `/api/v1/api-tokens` | 본인이 발급한 토큰 목록(평문 없음) |
+| POST | `/api/v1/api-tokens` | 발급. **평문은 이 응답에서만 한 번** |
+| DELETE | `/api/v1/api-tokens/{apiTokenId}` | 폐기. 미발급 ID 면 404 |
+
+```
+POST /api/v1/api-tokens
+{ "scope": "READ", "label": "내 노트북 Claude Code", "expiresInDays": 90 }
+  → 201 { "token": "qp_...", "info": { "apiTokenId": 1, "tokenPrefix": "qp_a1b2c3d4", ... } }
+```
+
+**평문은 발급 응답에서만 볼 수 있다.** 서버는 해시만 보관하므로 재조회가 불가능하고, 잃어버리면 새로 발급해야 한다. 목록에는 `tokenPrefix`(앞 11자)만 나온다 — 어느 토큰인지 알아보기 위한 것이지 재노출이 아니다.
+
+**스코프는 HTTP 메서드로 강제된다.** `READ` 토큰은 GET 만 가능하고 POST·PUT·PATCH·DELETE 는 **403**(`FORBIDDEN`)이다. 401 이 아닌 이유는 인증 자체는 성공했기 때문이며, 재인증하러 보낼 일이 아니다.
+
+만료·폐기·미상 토큰은 전부 **401** 로 동일하게 응답한다(어느 쪽인지 구분해 알려주지 않는다). 만료는 기본 90일, 최대 365일이다.
 
 ### 4.12 AiCredential — `com.example.dvely.aiaccount.presentation` (3)
 
