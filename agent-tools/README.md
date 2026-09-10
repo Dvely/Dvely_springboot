@@ -17,19 +17,39 @@
 API 와 함께 두고 반복하기 위해서다. 자립적인 디렉터리라 공개 저장소로 떼어내는 것은 나중에 언제든
 가능하고, 그 시점은 오픈소스 공개를 결정할 때다.
 
-## 사용
+## 시작하기 — 로그인 한 번
 
 ```bash
-# 토큰 발급: 웹 UI 또는
-#   POST /api/v1/api-tokens  {"scope":"READ","label":"내 노트북"}
-export QEPLOY_API_URL=https://qeploy.com
-export QEPLOY_TOKEN=qp_...
+npx @qeploy/cli login          # 브라우저 토큰 → 개인 액세스 토큰 발급·저장
+```
 
+`~/.config/qeploy/config.json` 에 0600 으로 저장하고, **CLI 와 MCP 서버가 같은 파일을 읽는다.**
+에이전트는 `npx @qeploy/mcp` 로 실행되어 환경변수를 받을 자리가 없고, 에이전트 설정 파일에
+자격증명을 적어 넣으면 비밀이 있을 필요 없는 곳에 하나 더 생긴다.
+
+```bash
 # Claude Code
 claude mcp add qeploy -- npx -y @qeploy/mcp
 # Codex
 codex mcp add qeploy -- npx -y @qeploy/mcp
 ```
+
+환경변수를 쓰고 싶으면 그쪽이 이깁니다 — CI 가 `QEPLOY_TOKEN` 을 설정했는데 개발자의 로그인
+파일이 조용히 덮어쓰면 안 되기 때문입니다.
+
+```bash
+export QEPLOY_API_URL=https://qeploy.com
+export QEPLOY_TOKEN=qp_...
+```
+
+### 지금은 붙여넣기다
+
+`login` 은 브라우저에서 로그인한 뒤 개발자도구의 `accessToken` 을 한 번 붙여넣게 합니다. 입력은
+화면에 표시되지 않고, 붙여넣은 브라우저 토큰은 한 시간이면 만료됩니다 — 오래 사는 것은 그걸로
+바꿔 받은 PAT 쪽입니다.
+
+브라우저로 왕복하는 `gh auth login` 식 흐름은 GitHub OAuth 앱을 하나 더 등록해야 해서 별건으로
+두었습니다(`Dvely_springboot` #327).
 
 ## 쓰기 도구는 기본으로 꺼져 있다
 
@@ -53,13 +73,18 @@ MCP 를 지원하지 않는 에이전트, CI, 그리고 사람이 직접 쓰는 
 export QEPLOY_API_URL=https://qeploy.com
 export QEPLOY_TOKEN=qp_...
 
+npx @qeploy/cli login
 npx @qeploy/cli projects
 npx @qeploy/cli status 340
 npx @qeploy/cli deploy 12 --yes
 npx @qeploy/cli env:set 12 API_URL=https://api.example.com --scope PRODUCTION --yes
 ```
 
-**토큰은 옵션으로 받지 않는다.** 명령행 인자는 셸 히스토리와 `ps` 출력에 남는다. 환경변수만 읽는다.
+**토큰은 옵션으로 받지 않는다.** 명령행 인자는 셸 히스토리와 `ps` 출력에 남는다. 환경변수와
+로그인 파일만 읽는다.
+
+`logout` 은 로컬 파일만 지운다. 서버의 토큰은 살아 있고, 그 사실을 출력에 적는다 — 죽은 줄 아는
+자격증명이 살아 있는 것이 로그아웃이 없는 것보다 나쁘다.
 
 ### CI 에서
 

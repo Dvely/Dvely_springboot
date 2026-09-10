@@ -12,7 +12,7 @@ export const VERSION = '0.1.0';
 export const EXIT = { OK: 0, ERROR: 1, USAGE: 2, AUTH: 3 };
 
 /** Flags that take a value; everything else is a boolean switch. */
-const VALUED = new Set(['target-version', 'scope', 'api-url']);
+const VALUED = new Set(['target-version', 'scope', 'api-url', 'expires-in-days']);
 
 const camel = (name) => name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 
@@ -87,8 +87,12 @@ ${rows}
   --version            버전
 
 환경변수:
-  QEPLOY_TOKEN         개인 액세스 토큰(필수). 웹 UI 에서 발급합니다
+  QEPLOY_TOKEN         개인 액세스 토큰. 없으면 qeploy login 이 저장한 것을 씁니다
   QEPLOY_API_URL       API 주소
+  QEPLOY_CONFIG_HOME   설정 위치 (기본: XDG_CONFIG_HOME 또는 ~/.config)
+
+처음이라면 qeploy login 을 한 번 실행하세요. 토큰을 ~/.config/qeploy/config.json 에
+0600 으로 저장하므로, 이후에는 환경변수를 매번 내보낼 필요가 없습니다.
 
 토큰은 옵션으로 받지 않습니다 — 명령행 인자는 셸 히스토리와 프로세스 목록에 남습니다.
 
@@ -121,7 +125,8 @@ export async function run(argv, deps) {
   }
   if (!name) {
     out(helpText());
-    return EXIT.USAGE;
+    // Asking for help is not a usage error; running with no arguments at all is.
+    return flags.help ? EXIT.OK : EXIT.USAGE;
   }
 
   const command = commands[name];
@@ -135,12 +140,16 @@ export async function run(argv, deps) {
     return EXIT.USAGE;
   }
 
-  let client;
-  try {
-    client = deps.createClient(flags);
-  } catch (e) {
-    err(e.message);
-    return EXIT.USAGE;
+  let client = null;
+  if (command.auth !== false) {
+    // `login` runs before there is anything to authenticate with, so it builds its own client from
+    // the credential the user is in the middle of providing.
+    try {
+      client = deps.createClient(flags);
+    } catch (e) {
+      err(e.message);
+      return EXIT.USAGE;
+    }
   }
 
   try {
@@ -149,6 +158,9 @@ export async function run(argv, deps) {
       args: args.slice(1),
       flags,
       confirm: deps.confirm,
+      deps,
+      out,
+      err,
     });
     // A cancelled write is not a failure of the command, but it is not the requested outcome
     // either; CI should be able to notice that nothing happened.

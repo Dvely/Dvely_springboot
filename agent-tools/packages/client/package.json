@@ -4,5 +4,9 @@
   "description": "Qeploy REST client",
   "type": "module",
   "main": "src/index.js",
-  "license": "MIT"
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.js",
+    "./config": "./src/config.js"
+  }
 }
