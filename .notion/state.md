@@ -994,7 +994,7 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 ## 4.22 P1: 에이전트용 개인 액세스 토큰 PAT (Issue #304)
 
-상태: PR #306 CI 성공, 머지 대기. 브랜치 `danto/agent-pat`, V60(V56 에서 세 번 밀렸다).
+상태: **머지 완료** (2026-09-10, develop `d8237b7`). V60 — 착수 때 V56 이었는데 develop 이 V56~V59 를 가져가는 사이 세 번 밀렸다.
 
 무엇: 브라우저 JWT 가 1시간이라 헤드리스 클라이언트(MCP 서버·CLI·CI)가 쓸 장수명 자격이 없었다. PAT 로 채운다. MCP·CLI 단위(PRD 부록 A-2, `srs.md` §B)의 유일한 선행 요건이다.
 
@@ -1011,7 +1011,7 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 ## 4.23 P1: 에이전트 연동 — MCP 서버 + CLI (PRD 부록 A-2)
 
-상태: PR #306 CI 성공, 머지 대기. 브랜치 `danto/agent-pat`. PAT 와 한 PR 로 묶었다 — MCP 는 PAT 없이는 인증 자체가 성립하지 않아 따로 머지할 실익이 없다.
+상태: **머지 완료** (2026-09-10, develop `d8237b7`). PAT 와 한 PR 로 묶었다 — MCP 는 PAT 없이는 인증 자체가 성립하지 않아 따로 머지할 실익이 없다.
 
 무엇: 사용자의 Claude Code·Codex 가 Qeploy 를 도구로 호출한다. §4.21(BYOK)과 호출 방향이 반대라 Qeploy 는 추론하지 않고 AI 자격증명을 보지도 중계하지도 않는다 — 컴플라이언스 이슈가 없고 이 경로의 AI 비용은 0 이다.
 
@@ -1040,7 +1040,7 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 재현: `agent-tools/e2e-cli.sh`(CLI), `agent-tools/e2e.mjs`(MCP). JS 테스트 60개.
 
-남은 것: FE 의 PAT 발급 화면(`Dvely_FE` #76). npm 배포는 오픈소스 공개를 결정할 때. 공개 저장소 분리와 npm 배포는 오픈소스 공개 결정 시점의 일이다.
+남은 것: FE 의 PAT 발급 화면(`Dvely_FE` #76) — 지금 FE 쪽 에이전트 작업 중 **막힌 것이 없는 유일한 건**이다. npm 배포는 오픈소스 공개를 결정할 때. 공개 저장소 분리와 npm 배포는 오픈소스 공개 결정 시점의 일이다.
 
 ---
 
