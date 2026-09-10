@@ -1,5 +1,8 @@
+import { hostname } from 'node:os';
 import { renderTable, renderDetail } from './render.js';
 import { UsageError } from './confirm.js';
+import { clearConfig, configPath, readConfig, resolveApiUrl, writeConfig } from '@qeploy/client/config';
+import { readSecret } from './prompt.js';
 
 /**
  * The command table.
@@ -37,6 +40,86 @@ function requireId(args, what) {
 }
 
 export const commands = {
+  login: {
+    usage: 'qeploy login [--scope READ|WRITE] [--expires-in-days N]',
+    summary: '브라우저 토큰으로 개인 액세스 토큰을 발급받아 저장한다',
+    // Runs before there is anything to authenticate with, so it builds its own client.
+    auth: false,
+    async run({ deps, flags, out, err }) {
+      const apiUrl = resolveApiUrl(flags, deps.env);
+      const scope = String(flags.scope ?? 'READ').toUpperCase();
+      if (scope !== 'READ' && scope !== 'WRITE') {
+        throw new UsageError('--scope 는 READ 또는 WRITE 여야 합니다.');
+      }
+
+      err(`Qeploy: ${apiUrl}`);
+      err('');
+      err('1. 브라우저에서 Qeploy 에 로그인합니다.');
+      err('2. 개발자도구 → Application → Local Storage → accessToken 값을 복사합니다.');
+      err('3. 아래에 붙여넣습니다. 입력은 화면에 표시되지 않습니다.');
+      err('');
+
+      // The browser JWT, not the PAT. It lives about an hour, which is plenty to trade it for a
+      // long-lived token and means a leaked paste stops mattering quickly.
+      // Trimmed here rather than trusting the prompt to have done it: copying a token often picks
+      // up a trailing newline, and a whitespace-only paste must fail as "empty", not as a 401.
+      const jwt = String(await deps.readSecret('accessToken: ') ?? '').trim();
+      if (!jwt) throw new UsageError('토큰이 비어 있습니다.');
+      if (jwt.startsWith('qp_')) {
+        // Pasting a PAT here would "work" only until it expired, and the user would have no idea
+        // why, because nothing was issued and nothing is refreshable.
+        throw new UsageError(
+          '이건 이미 발급된 개인 액세스 토큰(qp_...)입니다. 브라우저의 accessToken 을 붙여넣어 주세요.'
+        );
+      }
+
+      const client = deps.createClient({ ...flags, apiUrl }, jwt);
+      const issued = await client.issueApiToken({
+        scope,
+        // Naming it after the machine is what makes the token list usable later — "which of these
+        // five do I revoke" has no answer if they are all called "CLI".
+        label: `qeploy CLI (${hostname()})`,
+        expiresInDays: flags.expiresInDays ? Number(flags.expiresInDays) : undefined,
+      });
+
+      const token = issued?.token;
+      if (!token) throw new Error('서버가 토큰을 반환하지 않았습니다.');
+
+      const path = writeConfig(
+        { ...readConfig(deps.env), token, apiUrl, apiTokenId: issued?.info?.apiTokenId ?? null },
+        deps.env
+      );
+
+      // Deliberately not printed. It is already saved, and echoing it would put a 90-day credential
+      // into the scrollback for the sake of information the user does not need.
+      return {
+        data: { scope, expiresAt: issued?.info?.expiresAt ?? null, configPath: path },
+        text:
+          `로그인했습니다. ${scope} 스코프 토큰을 ${path} 에 저장했습니다(0600).\n` +
+          `만료: ${issued?.info?.expiresAt ?? '알 수 없음'}\n` +
+          '확인: qeploy projects',
+      };
+    },
+  },
+
+  logout: {
+    usage: 'qeploy logout',
+    summary: '저장된 토큰을 지운다 (서버에서 폐기하지는 않는다)',
+    auth: false,
+    async run({ deps }) {
+      const { apiTokenId } = readConfig(deps.env);
+      const path = clearConfig(deps.env);
+      if (!path) {
+        return { data: null, text: `저장된 토큰이 없습니다 (${configPath(deps.env)}).` };
+      }
+      // Revoking would need a write-scoped call, and a READ token — the default — cannot make one.
+      // Saying so is better than silently leaving a live credential the user thinks is gone.
+      const hint = apiTokenId
+        ? `서버에서도 무효화하려면 웹 UI 에서 토큰 #${apiTokenId} 을 폐기하세요.`
+        : '서버에서도 무효화하려면 웹 UI 에서 해당 토큰을 폐기하세요.';
+      return { data: null, text: `${path} 를 지웠습니다.\n${hint}` };
+    },
+  },
   projects: {
     usage: 'qeploy projects',
     summary: '내 프로젝트 목록',

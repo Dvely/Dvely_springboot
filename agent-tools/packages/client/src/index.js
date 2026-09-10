@@ -111,6 +111,30 @@ export class QeployClient {
     return this.request('PATCH', path, body);
   }
 
+  // ── API tokens ────────────────────────────────────────────────────────────
+  /**
+   * Issues a personal access token. Called with a browser JWT, not a PAT — this is how a headless
+   * client bootstraps itself.
+   *
+   * The plaintext comes back in this response and nowhere else; the server stores only a hash, so a
+   * caller that discards it has to issue a new one.
+   */
+  issueApiToken({ scope = 'READ', label, expiresInDays } = {}) {
+    return this.post('/api/v1/api-tokens', {
+      scope,
+      ...(label ? { label } : {}),
+      ...(expiresInDays ? { expiresInDays } : {}),
+    });
+  }
+
+  listApiTokens() {
+    return this.get('/api/v1/api-tokens');
+  }
+
+  revokeApiToken(apiTokenId) {
+    return this.request('DELETE', `/api/v1/api-tokens/${apiTokenId}`);
+  }
+
   // ── Projects ──────────────────────────────────────────────────────────────
   listProjects() {
     return this.get('/api/v1/projects');

@@ -1,20 +1,25 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { QeployClient } from '@qeploy/client';
+import { resolveApiUrl, resolveToken } from '@qeploy/client/config';
 import { createServer } from './server.js';
 
 /**
  * stdio entrypoint. Configuration comes from the environment because that is what both Claude Code
  * and Codex hand an MCP server; there is no config file of our own to get out of sync.
  */
-const baseUrl = process.env.QEPLOY_API_URL ?? 'https://qeploy.com';
-const token = process.env.QEPLOY_TOKEN;
+const baseUrl = resolveApiUrl({}, process.env);
+// Falls back to what `qeploy login` stored. An agent launched as `npx @qeploy/mcp` inherits whatever
+// environment the agent had, which usually has nothing in it — and telling the user to paste a
+// credential into their agent's config file would put it in one more place it does not need to be.
+const { token } = resolveToken(process.env);
 
 if (!token) {
   // stderr, not stdout: stdout is the protocol channel and anything printed there corrupts it.
   process.stderr.write(
-    'QEPLOY_TOKEN 이 설정되지 않았습니다.\n' +
-      'Qeploy 웹에서 개인 액세스 토큰을 발급한 뒤 환경변수로 넣어주세요.\n' +
+    'Qeploy 토큰이 없습니다.\n' +
+      '  npx @qeploy/cli login\n' +
+      '을 한 번 실행하거나, 환경변수로 넣어주세요.\n' +
       '  export QEPLOY_TOKEN=qp_...\n'
   );
   process.exit(1);
