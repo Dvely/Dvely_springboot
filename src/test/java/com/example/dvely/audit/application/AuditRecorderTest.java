@@ -14,6 +14,8 @@ import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.audit.domain.value.AuditActorType;
 import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.audit.infrastructure.config.AuditExecutorConfig;
+import com.example.dvely.audit.infrastructure.config.AuditLogExecutor;
+import java.time.Duration;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -25,7 +27,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 /**
  * Review follow-up (Medium-1, ad-audit-review.md): pins the {@code AUDIT_FALLBACK} log line's
@@ -39,19 +40,19 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 class AuditRecorderTest {
 
     /** 실행기를 실제로 쓰는 테스트가 자기 것을 여기 담아두면 끝나고 정리된다. */
-    private ThreadPoolTaskExecutor executor;
+    private AuditLogExecutor executor;
 
     @AfterEach
     void tearDown() {
         MDC.clear();
         if (executor != null) {
-            executor.shutdown();
+            executor.destroy();
             executor = null;
         }
     }
 
-    private ThreadPoolTaskExecutor realExecutor() {
-        executor = (ThreadPoolTaskExecutor) new AuditExecutorConfig().auditLogExecutor();
+    private AuditLogExecutor realExecutor() {
+        executor = new AuditExecutorConfig().auditLogExecutor();
         return executor;
     }
 
@@ -161,10 +162,30 @@ class AuditRecorderTest {
     }
 
     @Test
+    void awaitDrainedReturnsOnlyAfterEveryQueuedWriteHasActuallyRun() {
+        // 통합 테스트가 비동기 경계를 넘는 근거. 이게 성립하지 않으면 그쪽이 조용히 플래키가 된다.
+        AuditLogWriter writer = mock(AuditLogWriter.class);
+        AtomicInteger writes = new AtomicInteger();
+        doAnswer(invocation -> {
+            writes.incrementAndGet();
+            return null;
+        }).when(writer).write(any());
+        AuditRecorder recorder = new AuditRecorder(writer, realExecutor());
+
+        int events = 200;
+        for (int i = 0; i < events; i++) {
+            recorder.record(event(null));
+        }
+
+        assertThat(executor.awaitDrained(Duration.ofSeconds(10))).isTrue();
+        assertThat(writes.get()).isEqualTo(events);
+    }
+
+    @Test
     void anOverflowingQueueFallsBackToTheCallerInsteadOfDroppingEvents() throws Exception {
         // 큐 포화에서 버리지 않는다는 정책을 고정한다. 최악이 "예전처럼 느려지는 것"이어야지
         // "기록이 사라지는 것"이면 안 된다.
-        ThreadPoolTaskExecutor pool = realExecutor();
+        AuditLogExecutor pool = realExecutor();
         CountDownLatch release = new CountDownLatch(1);
         AtomicInteger executed = new AtomicInteger();
         Set<String> threadsThatRan = ConcurrentHashMap.newKeySet();
@@ -187,11 +208,15 @@ class AuditRecorderTest {
             }
             // 넘친 몫은 호출 스레드가 직접 실행했어야 한다.
             assertThat(threadsThatRan).contains(Thread.currentThread().getName());
+
+            // 이 상황에서 awaitDrained 는 참을 돌려주면 안 된다. 표식이 호출 스레드에서 실행돼
+            // 앞선 작업이 아직 남아 있는데도 "다 비었다"고 답하면 그 순간부터 거짓말이 된다.
+            assertThat(pool.awaitDrained(Duration.ofMillis(200))).isFalse();
         } finally {
             release.countDown();
         }
 
-        pool.shutdown();
+        pool.destroy();
         executor = null; // 위에서 이미 내렸다
 
         // 그리고 한 건도 버려지지 않았어야 한다.

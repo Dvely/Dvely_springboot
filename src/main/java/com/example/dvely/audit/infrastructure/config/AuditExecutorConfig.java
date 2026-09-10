@@ -4,8 +4,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
-import java.util.concurrent.Executor;
-
 /**
  * 감사 로그 INSERT 를 요청 스레드에서 떼어내는 전용 실행기.
  *
@@ -23,7 +21,7 @@ public class AuditExecutorConfig {
      * 않는다. 감사 쓰기는 FK 없는 leaf 테이블에 INSERT 한 건이라 한 스레드로도 충분히 빠르다.</p>
      */
     @Bean
-    public Executor auditLogExecutor() {
+    public AuditLogExecutor auditLogExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(1);
         executor.setMaxPoolSize(1);
@@ -49,7 +47,7 @@ public class AuditExecutorConfig {
         executor.setAwaitTerminationSeconds(AWAIT_TERMINATION_SECONDS);
 
         executor.initialize();
-        return executor;
+        return new AuditLogExecutor(executor);
     }
 
     /**

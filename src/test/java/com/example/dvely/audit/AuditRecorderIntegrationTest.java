@@ -10,6 +10,7 @@ import com.example.dvely.audit.domain.repository.AuditLogRepository;
 import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.audit.domain.value.AuditActorType;
 import com.example.dvely.audit.domain.value.AuditOutcome;
+import com.example.dvely.audit.infrastructure.config.AuditLogExecutor;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -36,6 +37,9 @@ class AuditRecorderIntegrationTest {
 
     @Autowired
     private PlatformTransactionManager transactionManager;
+
+    @Autowired
+    private AuditLogExecutor auditLogExecutor;
 
     @Test
     void auditRowSurvivesOuterTransactionRollback() {
@@ -87,24 +91,15 @@ class AuditRecorderIntegrationTest {
     }
 
     /**
-     * 감사 행이 나타날 때까지 기다린다. 감사 스레드가 자기 트랜잭션으로 커밋하므로, 호출이 돌아온
-     * 시점에는 아직 안 보일 수 있다.
+     * 감사 스레드가 자기 트랜잭션으로 커밋하므로 {@code record()} 가 돌아온 시점에는 행이 아직 안 보일
+     * 수 있다. 큐가 빈 것을 확정한 뒤 읽는다 - 읽고 나서 없으면 그건 지연이 아니라 진짜 유실이다.
      */
     private AuditLog awaitSingleRow(long projectId) {
-        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
-        List<AuditLog> found = List.of();
-        while (System.nanoTime() < deadline) {
-            found = auditLogRepository.findByProjectIdOrderByIdDesc(projectId, 10);
-            if (!found.isEmpty()) {
-                break;
-            }
-            try {
-                Thread.sleep(25);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException(e);
-            }
-        }
+        assertThat(auditLogExecutor.awaitDrained(Duration.ofSeconds(10)))
+                .withFailMessage("감사 큐가 비지 않았습니다 (projectId=%d)", projectId)
+                .isTrue();
+
+        List<AuditLog> found = auditLogRepository.findByProjectIdOrderByIdDesc(projectId, 10);
         assertThat(found)
                 .withFailMessage("감사 행이 남지 않았습니다 (projectId=%d)", projectId)
                 .hasSize(1);
