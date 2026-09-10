@@ -63,10 +63,15 @@ class TemplateSeedingServiceTest {
         when(dockerService.exec(eq(CONTAINER), contains("ls -A"))).thenReturn("", "index.html");
         when(dockerService.execWithExitCode(eq(CONTAINER), contains("tar -xz")))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+        when(dockerService.execWithExitCode(eq(CONTAINER), contains("commit")))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
 
         Optional<Template> seeded = service().seedIfNeeded(CONTAINER, PROJECT_ID);
 
         assertThat(seeded).isPresent();
+        // 기준 커밋이 없으면 변경 내역이 템플릿 전체를 "새 파일" 로 잡아, 요청한 3줄 수정이
+        // 1만 자에 묻힌다(dev project 53 에서 실제로 그랬다).
+        verify(dockerService).execWithExitCode(eq(CONTAINER), contains("commit -q -m 'template: landing-minimal'"));
         verify(dockerService).execWithExitCode(eq(CONTAINER), contains(SOURCE_URL));
         // --no-same-owner 가 빠지면 dev 에서 났던 실패가 그대로 재현된다: 씨앗은 CI 러너(uid 1001)가
         // 묶어서 tar 가 대상 디렉터리를 1001 로 chown 하고, CAP_DAC_OVERRIDE 없는 root 가 그 안에
@@ -151,5 +156,20 @@ class TemplateSeedingServiceTest {
         assertThatThrownBy(() -> service().seedIfNeeded(CONTAINER, PROJECT_ID))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("landing-minimal");
+    }
+
+
+    @Test
+    @DisplayName("기준 커밋에 실패해도 씨딩은 성공이다 — diff 가 덜 편해질 뿐 작업물은 멀쩡하다")
+    void baselineFailureDoesNotFailSeeding() {
+        when(projectRepository.findById(PROJECT_ID)).thenReturn(Optional.of(project("template", "landing-minimal")));
+        when(templateCatalogPort.findById("landing-minimal")).thenReturn(Optional.of(template(SOURCE_URL)));
+        when(dockerService.exec(eq(CONTAINER), contains("ls -A"))).thenReturn("", "index.html");
+        when(dockerService.execWithExitCode(eq(CONTAINER), contains("tar -xz")))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
+        when(dockerService.execWithExitCode(eq(CONTAINER), contains("commit")))
+                .thenReturn(new DockerContainerService.ExecResult(1, "git: not found"));
+
+        assertThat(service().seedIfNeeded(CONTAINER, PROJECT_ID)).isPresent();
     }
 }

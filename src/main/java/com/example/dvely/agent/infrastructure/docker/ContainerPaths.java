@@ -28,6 +28,22 @@ public final class ContainerPaths {
     public static final String APP_DIR = "/workspace/app";
 
     /**
+     * 변경 내역을 뜨는 데 쓰는 일회용 git 디렉터리. <b>작업 트리 밖</b>에 둔다 — 워크스페이스에
+     * {@code .git} 을 만들면 {@code PreviewBranchPushService} 가 "이미 저장소가 있다" 로 분기해
+     * remote 도 없는 상태에서 push 가 통째로 실패한다.
+     *
+     * <p>씨딩과 diff 가 같은 값을 봐야 한다. 씨딩이 여기에 템플릿 상태를 기준 커밋으로 남기고,
+     * diff 가 그 기준 대비 변경분만 뜬다. 값이 갈리면 기준선이 조용히 무시되고 템플릿 전체가
+     * 다시 "새 파일" 로 잡힌다.</p>
+     */
+    public static final String DIFF_GIT_DIR = "/tmp/qeploy-diff.git";
+
+    /** 작업 트리 밖 저장소를 가리키는 git 명령 접두사. 뒤에 하위 명령을 잇는다. */
+    public static String diffGit() {
+        return "git --git-dir=" + DIFF_GIT_DIR + " --work-tree=. ";
+    }
+
+    /**
      * 앱 디렉터리에서 명령을 실행하는 문자열을 만든다. {@code "cd /workspace/app && ..."} 를 손으로
      * 잇던 자리를 대체한다 — 그 손 조립이 경로 사본이 늘어나던 주된 경로였다.
      */

@@ -104,6 +104,10 @@ class ChangeServiceTest {
                 // git 은 이미지에 없다. 이 줄이 빠지면 exit=127 로 diff 가 늘 빈 값이 된다.
                 .contains("apk add --no-cache git")
                 .contains("--git-dir=/tmp/qeploy-diff.git")
+                // 씨딩이 남긴 템플릿 기준 커밋을 지우면 안 된다. rm -rf 로 돌아가면 템플릿 전체가
+                // 다시 "새 파일" 로 잡혀 실제 변경분이 묻힌다.
+                .doesNotContain("rm -rf /tmp/qeploy-diff.git")
+                .contains("[ -d /tmp/qeploy-diff.git ]")
                 .contains("--work-tree=.")
                 .doesNotContain("git init -b preview");
 
