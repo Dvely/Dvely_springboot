@@ -20,6 +20,7 @@ import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.CreateNetworkCmd;
 import com.github.dockerjava.api.command.InspectContainerCmd;
 import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.github.dockerjava.api.command.InspectImageCmd;
 import com.github.dockerjava.api.command.InspectNetworkCmd;
 import com.github.dockerjava.api.command.ListNetworksCmd;
 import com.github.dockerjava.api.command.LogContainerCmd;
@@ -309,6 +310,53 @@ class DockerContainerServiceTest {
 
         assertThat(containerId).isEqualTo("container-1");
         verify(dockerClient).startContainerCmd("container-1");
+    }
+
+    // --- Issue #342 7-5: 로컬에 있는 이미지는 pull 하지 않는다 ---------------------------
+
+    /**
+     * 예전에는 컨테이너를 만들 때마다 조건 없이 pull 했다. 이미 있는 이미지에도 레지스트리 왕복을
+     * 하고, 레지스트리가 느리면 컨테이너 생성이 최대 3 분을 기다린다 — 프리뷰를 띄우는 사용자가 그
+     * 시간을 그대로 본다. 선확인이 성공하면 pull 이 <b>아예 나가지 않아야</b> 한다.
+     */
+    @Test
+    void createAndStartContainerSkipsThePullWhenTheImageIsAlreadyLocal() {
+        mockNetworkAlreadyExists(true);
+        when(dockerClient.inspectImageCmd(anyString())).thenReturn(mock(InspectImageCmd.class));
+        mockContainerCreation();
+
+        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+
+        verify(dockerClient, never()).pullImageCmd(anyString());
+    }
+
+    /**
+     * 반대로 없으면 받아온다 — 이 이미지는 공개 베이스(node:20-alpine)라 첫 기동에 pull 하는 것이
+     * 정상 경로다(로컬 빌드 전용인 코딩 에이전트 이미지와 다른 점).
+     */
+    @Test
+    void createAndStartContainerStillPullsWhenTheImageIsMissing() {
+        mockNetworkAlreadyExists(true);
+        InspectImageCmd inspect = mock(InspectImageCmd.class);
+        when(dockerClient.inspectImageCmd(anyString())).thenReturn(inspect);
+        when(inspect.exec()).thenThrow(new NotFoundException("no such image"));
+        mockContainerCreation();
+
+        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+
+        verify(dockerClient).pullImageCmd(anyString());
+    }
+
+    /** 컨테이너 생성·기동 스텁. 위 두 테스트가 captor 로 쓰는 createCommand 를 남긴다. */
+    private CreateContainerCmd createCommand;
+
+    private void mockContainerCreation() {
+        createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
+        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
+        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
+        when(createCommand.exec()).thenReturn(createResponse);
+        when(createResponse.getId()).thenReturn("container-1");
+        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
     }
 
     /**

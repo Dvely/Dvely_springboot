@@ -80,6 +80,7 @@ public class DockerContainerService {
     public static final long JAVA_MEMORY_LIMIT_BYTES = 2L << 30; // 2 GiB
     private static final long NANO_CPUS = 1_000_000_000L; // 1.0 vCPU per session, fair-share
     private static final long PIDS_LIMIT = 256L; // fork-bomb guard; ~4x observed npm install process counts
+
     private static final String PREVIEW_NETWORK_NAME = "qeploy-preview";
     // one-shot `stats` needs ~1s to sample a CPU delta (see getContainerStats); 3s is the
     // point past which we degrade the /status response instead of blocking the caller.
@@ -952,12 +953,45 @@ public class DockerContainerService {
         pullImageIfNeeded(IMAGE);
     }
 
+    /**
+     * 로컬에 없을 때만 pull 한다 (Issue #342, 7-5).
+     *
+     * <p>예전에는 컨테이너를 만들 때마다 조건 없이 {@code pullImageCmd} 를 돌렸다. 이미 있는
+     * 이미지에도 레지스트리 왕복을 하고, 네트워크가 느리거나 레지스트리가 응답하지 않으면 컨테이너
+     * 생성이 최대 3 분을 기다린 뒤에야 진행됐다 — 프리뷰를 띄우는 사용자가 그 시간을 그대로 본다.
+     * 같은 문제를 코딩 에이전트 쪽은 {@code inspectImageCmd} 선확인으로 이미 피하고 있다
+     * ({@code CodingAgentContainerRunner#assertImagePresent}).</p>
+     *
+     * <p>다만 그쪽과 달리 여기서는 없으면 <b>pull 한다.</b> 코딩 에이전트 이미지는 로컬에서만 빌드하는
+     * 것이라 부재가 곧 설정 오류이지만, 이 이미지는 공개 베이스({@code node:20-alpine})라 첫 기동에
+     * 받아오는 것이 정상 경로다.</p>
+     */
     private void pullImageIfNeeded(String image) {
+        if (imagePresentLocally(image)) {
+            log.debug("Docker 이미지가 이미 로컬에 있음(pull 생략): {}", image);
+            return;
+        }
         try {
             dockerClient.pullImageCmd(image).start().awaitCompletion(3, TimeUnit.MINUTES);
             log.info("Docker 이미지 준비 완료: {}", image);
         } catch (Exception e) {
             log.warn("이미지 pull 실패 (로컬에 존재할 수 있음): {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 판정이 안 되면 "없다"로 답한다 — 그러면 호출부가 pull 로 떨어져 예전 동작이 된다. 선확인의
+     * 목적은 왕복을 줄이는 것이지 새로운 실패 지점을 만드는 것이 아니다.
+     */
+    private boolean imagePresentLocally(String image) {
+        try {
+            dockerClient.inspectImageCmd(image).exec();
+            return true;
+        } catch (NotFoundException e) {
+            return false;
+        } catch (RuntimeException e) {
+            log.debug("이미지 로컬 존재 확인 실패(pull 로 진행): image={} {}", image, e.getMessage());
+            return false;
         }
     }
 
