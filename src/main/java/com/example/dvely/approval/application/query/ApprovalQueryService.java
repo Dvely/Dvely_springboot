@@ -8,6 +8,8 @@ import com.example.dvely.project.domain.value.RepositoryNamePolicy;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.common.paging.CursorPage;
+import com.example.dvely.common.paging.CursorPaging;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import java.util.List;
@@ -23,14 +25,30 @@ public class ApprovalQueryService {
     private final ApprovalRepository approvalRepository;
     private final ProjectRepository projectRepository;
 
+    /**
+     * limit 를 안 받는 호출(프로젝트 개요·활동로그)의 상한. 승인은 사용자 요청 1회당 0~2건이라
+     * 200 이면 최근 100회 이상의 작업을 덮는다. 활동로그는 최신순으로 합쳐 보여주는 화면이라
+     * 잘리는 쪽은 맨 아래다.
+     */
+    private static final int DEFAULT_APPROVAL_LIMIT = 200;
+    private static final int MAX_APPROVAL_LIMIT = 500;
+
     public List<ApprovalResult> getProjectApprovals(Long ownerUserId, Long projectId) {
+        return getProjectApprovals(ownerUserId, projectId, null, null).items();
+    }
+
+    /** U6(#341) 6-4: 상한 + 커서. 최신순이라 {@code after} 는 "그 승인보다 오래된 것" 을 뜻한다. */
+    public CursorPage<ApprovalResult> getProjectApprovals(Long ownerUserId,
+                                                         Long projectId,
+                                                         Integer limit,
+                                                         String after) {
         projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, ownerUserId)
                 .orElseThrow(() -> new ProjectNotFoundException(projectId, ownerUserId));
-        return approvalRepository
-                .findByProjectIdAndOwnerUserIdOrderByCreatedAtDesc(projectId, ownerUserId)
-                .stream()
-                .map(this::toResult)
-                .toList();
+        int size = CursorPaging.clamp(limit, DEFAULT_APPROVAL_LIMIT, MAX_APPROVAL_LIMIT);
+        List<Approval> probed = approvalRepository.findProjectApprovalsPage(
+                projectId, ownerUserId, CursorPaging.parseCursor(after), size + 1);
+        return CursorPaging.slice(probed, size, approval -> String.valueOf(approval.getId()))
+                .map(this::toResult);
     }
 
     public ApprovalResult getApproval(Long ownerUserId, Long approvalId) {

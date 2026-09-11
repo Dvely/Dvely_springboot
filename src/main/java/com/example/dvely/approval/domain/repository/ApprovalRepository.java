@@ -32,7 +32,11 @@ public interface ApprovalRepository {
      */
     Optional<ApprovalRouting> findRoutingInfo(Long approvalId, Long ownerUserId);
 
-    List<Approval> findByProjectIdAndOwnerUserIdOrderByCreatedAtDesc(Long projectId, Long ownerUserId);
+    /**
+     * U6(#341) 6-4: 프로젝트 승인 목록 한 페이지. 최신순이고 {@code after}(승인 id, 배타적)보다
+     * 오래된 것만 준다. {@code after} 가 null 이면 처음부터다.
+     */
+    List<Approval> findProjectApprovalsPage(Long projectId, Long ownerUserId, Long after, int limit);
 
     List<Approval> findByTaskIdOrderByIdAsc(String taskId);
 

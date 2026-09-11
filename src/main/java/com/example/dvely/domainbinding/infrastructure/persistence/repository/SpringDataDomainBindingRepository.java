@@ -13,6 +13,22 @@ public interface SpringDataDomainBindingRepository extends JpaRepository<DomainB
 
     List<DomainBindingEntity> findByProjectIdOrderByCreatedAtDesc(Long projectId);
 
+    // U6(#341) 6-4: 목록 응답 전용 페이지. 위 메서드는 배포·도메인 로직 여러 곳이 "프로젝트의 전체
+    // 도메인" 으로 쓰므로 그대로 두고, 사용자에게 내보내는 목록만 상한을 받는다. created_at 이
+    // DATETIME(초) 라 id 를 tiebreaker 로 붙였다 — 커서가 행을 건너뛰거나 두 번 주지 않게.
+    @org.springframework.data.jpa.repository.Query("""
+            select d
+            from DomainBindingEntity d
+            where d.projectId = :projectId
+              and (:after is null or d.id < :after)
+            order by d.createdAt desc, d.id desc
+            """)
+    List<DomainBindingEntity> findProjectDomainsPage(
+            @org.springframework.data.repository.query.Param("projectId") Long projectId,
+            @org.springframework.data.repository.query.Param("after") Long after,
+            org.springframework.data.domain.Pageable pageable
+    );
+
     // status 컬럼은 enum 이 아니라 String 이다(DomainBindingEntity:46).
     List<DomainBindingEntity> findByStatusOrderByCreatedAtAsc(String status, Pageable pageable);
 

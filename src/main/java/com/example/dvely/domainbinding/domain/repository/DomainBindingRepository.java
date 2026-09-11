@@ -14,6 +14,13 @@ public interface DomainBindingRepository {
     List<DomainBinding> findByProjectIdOrderByCreatedAtDesc(Long projectId);
 
     /**
+     * U6(#341) 6-4: 사용자에게 내보내는 도메인 목록 한 페이지. 최신순이고 {@code after}(도메인 id,
+     * 배타적)보다 오래된 것만 준다. 위의 무제한 조회는 배포·도메인 로직이 "프로젝트의 전체 도메인"
+     * 으로 쓰므로 그대로 남긴다.
+     */
+    List<DomainBinding> findProjectDomainsPage(Long projectId, Long after, int limit);
+
+    /**
      * 해당 상태의 도메인을 오래된 순으로 최대 {@code limit} 건 읽는다. 검증 워커가 매 주기마다
      * 외부 API(Cloudflare · 호스팅)를 도메인 수만큼 때리므로 한 번에 집는 양을 묶어야 한다.
      */

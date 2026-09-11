@@ -41,8 +41,9 @@ public class ApprovalRepositoryAdapter implements ApprovalRepository {
     }
 
     @Override
-    public List<Approval> findByProjectIdAndOwnerUserIdOrderByCreatedAtDesc(Long projectId, Long ownerUserId) {
-        return springDataRepository.findByProjectIdAndOwnerUserIdOrderByCreatedAtDesc(projectId, ownerUserId)
+    public List<Approval> findProjectApprovalsPage(Long projectId, Long ownerUserId, Long after, int limit) {
+        return springDataRepository.findProjectApprovalsPage(
+                        projectId, ownerUserId, after, org.springframework.data.domain.PageRequest.of(0, limit))
                 .stream()
                 .map(ApprovalEntity::toDomain)
                 .toList();
