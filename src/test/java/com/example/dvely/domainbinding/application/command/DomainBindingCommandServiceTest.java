@@ -132,7 +132,7 @@ class DomainBindingCommandServiceTest {
         assertThat(result.certificateStatus()).isEqualTo(CertificateStatus.PENDING);
         verify(cloudflareDnsPort).createCnameRecord("my-project.qeploy.com", "octo.github.io");
         verify(hostingAdapter).bind(any(), org.mockito.ArgumentMatchers.eq("my-project.qeploy.com"));
-        verify(deploymentHistoryRepository, never()).findByProjectIdOrderByTriggeredAtDesc(11L);
+        verify(deploymentHistoryRepository, never()).findLatestLiveDeployedUrl(11L);
         // H10 (design §4): no taskId on this command -> USER actor.
         org.mockito.ArgumentCaptor<AuditEvent> auditCaptor = org.mockito.ArgumentCaptor.forClass(AuditEvent.class);
         verify(auditRecorder).record(auditCaptor.capture());

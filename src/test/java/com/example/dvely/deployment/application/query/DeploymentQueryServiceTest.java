@@ -16,6 +16,7 @@ import com.example.dvely.deployment.application.port.out.GithubActionsPort.Workf
 import com.example.dvely.deployment.application.result.DeploymentStatusResult;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
+import com.example.dvely.deployment.domain.repository.DeploymentVersionView;
 import com.example.dvely.deployment.domain.value.DeployTargetType;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.project.domain.model.Project;
@@ -151,8 +152,8 @@ class DeploymentQueryServiceTest {
         );
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(boundProject()));
-        when(deploymentHistoryRepository.findByProjectIdOrderByTriggeredAtDesc(11L))
-                .thenReturn(List.of(history));
+        when(deploymentHistoryRepository.findLabeledVersionViews(11L))
+                .thenReturn(List.of(versionViewOf(history)));
 
         var versions = queryService.getVersions(1L, 11L);
         var detail = queryService.getVersionDetail(1L, 101L);
@@ -241,6 +242,21 @@ class DeploymentQueryServiceTest {
                 workflowRunId,
                 now,
                 now
+        );
+    }
+
+    /** U6 6-2: 버전 목록은 엔티티가 아니라 읽기 모델을 받는다. 같은 이력에서 그 뷰를 만든다. */
+    private DeploymentVersionView versionViewOf(DeploymentHistory history) {
+        return new DeploymentVersionView(
+                history.getId(),
+                history.getVersionLabel(),
+                history.getCommitSha(),
+                history.getTitle(),
+                history.getStatus().name(),
+                history.getDeployedUrl(),
+                history.getTriggeredAt(),
+                history.getMergedAt(),
+                history.getUpdatedAt()
         );
     }
 
