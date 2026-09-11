@@ -17,6 +17,7 @@ import com.github.dockerjava.api.model.CpuUsageConfig;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.LogConfig;
 import com.github.dockerjava.api.model.MemoryStatsConfig;
 import com.github.dockerjava.api.model.Network;
 import com.github.dockerjava.api.model.Ports;
@@ -80,6 +81,22 @@ public class DockerContainerService {
     public static final long JAVA_MEMORY_LIMIT_BYTES = 2L << 30; // 2 GiB
     private static final long NANO_CPUS = 1_000_000_000L; // 1.0 vCPU per session, fair-share
     private static final long PIDS_LIMIT = 256L; // fork-bomb guard; ~4x observed npm install process counts
+
+    /**
+     * 컨테이너 로그 상한 (Issue #342, 7-6).
+     *
+     * <p>로그 드라이버에 상한이 없으면 dev 서버 stdout 이 TTL 동안 무제한으로 쌓인다 — 사용자 코드가
+     * 루프 안에서 찍는 로그 한 줄이 호스트 디스크를 채우는 경로이고, 그 컨테이너가 도는 것은 우리
+     * 호스트다. 크기 상한과 회전 개수를 둬 컨테이너 하나가 쓰는 로그를 유계로 만든다.</p>
+     *
+     * <p>값의 근거: 로그 조회 API({@code getContainerLogs})는 꼬리만 읽으므로 진단에 필요한 것은
+     * "최근"뿐이다. 10 MiB × 2 개면 빌드 실패 원인을 찾기에 넉넉하고, 컨테이너당 20 MiB 로 묶인다.
+     * 드라이버를 {@code json-file} 로 명시하는 이유는 이 옵션이 그 드라이버의 것이라서다 — 호스트
+     * 기본 드라이버가 다르면(journald 등) 옵션이 조용히 무시된다.</p>
+     */
+    private static final LogConfig BOUNDED_LOG_CONFIG = new LogConfig(
+            LogConfig.LoggingType.JSON_FILE,
+            Map.of("max-size", "10m", "max-file", "2"));
     private static final String PREVIEW_NETWORK_NAME = "qeploy-preview";
     // one-shot `stats` needs ~1s to sample a CPU delta (see getContainerStats); 3s is the
     // point past which we degrade the /status response instead of blocking the caller.
@@ -174,6 +191,7 @@ public class DockerContainerService {
                         .withCapDrop(Capability.ALL)
                         .withCapAdd(Capability.CHOWN, Capability.SETUID, Capability.SETGID)
                         .withSecurityOpts(List.of("no-new-privileges"))
+                        .withLogConfig(BOUNDED_LOG_CONFIG)
                         .withNetworkMode(PREVIEW_NETWORK_NAME))
                 .withLabels(labels)
                 .withCmd("tail", "-f", "/dev/null")
@@ -669,6 +687,7 @@ public class DockerContainerService {
                         .withCapAdd(Capability.CHOWN, Capability.SETUID, Capability.SETGID,
                                 Capability.DAC_OVERRIDE, Capability.FOWNER, Capability.SETFCAP)
                         .withSecurityOpts(List.of("no-new-privileges"))
+                        .withLogConfig(BOUNDED_LOG_CONFIG)
                         .withNetworkMode(networkName))
                 .withAliases(networkAlias)
                 .withLabels(Map.of(AGENT_LABEL, "true"))
@@ -952,12 +971,45 @@ public class DockerContainerService {
         pullImageIfNeeded(IMAGE);
     }
 
+    /**
+     * 로컬에 없을 때만 pull 한다 (Issue #342, 7-5).
+     *
+     * <p>예전에는 컨테이너를 만들 때마다 조건 없이 {@code pullImageCmd} 를 돌렸다. 이미 있는
+     * 이미지에도 레지스트리 왕복을 하고, 네트워크가 느리거나 레지스트리가 응답하지 않으면 컨테이너
+     * 생성이 최대 3 분을 기다린 뒤에야 진행됐다 — 프리뷰를 띄우는 사용자가 그 시간을 그대로 본다.
+     * 같은 문제를 코딩 에이전트 쪽은 {@code inspectImageCmd} 선확인으로 이미 피하고 있다
+     * ({@code CodingAgentContainerRunner#assertImagePresent}).</p>
+     *
+     * <p>다만 그쪽과 달리 여기서는 없으면 <b>pull 한다.</b> 코딩 에이전트 이미지는 로컬에서만 빌드하는
+     * 것이라 부재가 곧 설정 오류이지만, 이 이미지는 공개 베이스({@code node:20-alpine})라 첫 기동에
+     * 받아오는 것이 정상 경로다.</p>
+     */
     private void pullImageIfNeeded(String image) {
+        if (imagePresentLocally(image)) {
+            log.debug("Docker 이미지가 이미 로컬에 있음(pull 생략): {}", image);
+            return;
+        }
         try {
             dockerClient.pullImageCmd(image).start().awaitCompletion(3, TimeUnit.MINUTES);
             log.info("Docker 이미지 준비 완료: {}", image);
         } catch (Exception e) {
             log.warn("이미지 pull 실패 (로컬에 존재할 수 있음): {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 판정이 안 되면 "없다"로 답한다 — 그러면 호출부가 pull 로 떨어져 예전 동작이 된다. 선확인의
+     * 목적은 왕복을 줄이는 것이지 새로운 실패 지점을 만드는 것이 아니다.
+     */
+    private boolean imagePresentLocally(String image) {
+        try {
+            dockerClient.inspectImageCmd(image).exec();
+            return true;
+        } catch (NotFoundException e) {
+            return false;
+        } catch (RuntimeException e) {
+            log.debug("이미지 로컬 존재 확인 실패(pull 로 진행): image={} {}", image, e.getMessage());
+            return false;
         }
     }
 

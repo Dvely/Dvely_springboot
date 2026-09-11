@@ -13,6 +13,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import java.util.Locale;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -32,6 +34,12 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 public class PreviewGatewayController {
 
     static final String SEC_FETCH_DEST = "Sec-Fetch-Dest";
+
+    /**
+     * 요청 본문 상한 (Issue #342, 7-3). 프리뷰 앱의 폼·업로드가 쓰기에 충분하면서, 컨테이너 메모리
+     * 상한(1 GiB)에 비해 작다.
+     */
+    private static final int MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 
     /** 문서를 "여는" 요청들 — iframe/새 탭 진입과 그 변종. 여기에만 소유권 쿠키를 요구한다. */
     private static final Set<String> NAVIGATION_DESTS = Set.of("document", "iframe", "frame", "embed", "object");
@@ -56,7 +64,7 @@ public class PreviewGatewayController {
                     "/api/v1/previews/{sessionId}/{accessToken}",
                     "/api/v1/previews/{sessionId}/{accessToken}/**"
             })
-    public ResponseEntity<byte[]> proxy(
+    public ResponseEntity<Resource> proxy(
             @Parameter(description = "Preview 세션 ID") @PathVariable String sessionId,
             @Parameter(description = "세션 발급 시 함께 생성된 1회성 접근 토큰(랜덤 UUID)") @PathVariable String accessToken,
             @CookieValue(name = PreviewAccessCookies.COOKIE_NAME, required = false) String accessCookie,
@@ -75,19 +83,54 @@ public class PreviewGatewayController {
         // 본문을 다 읽지 못하면(클라이언트 중단 등) 400 — 컨테이너로 반쪽 요청을 보내지 않는다.
         byte[] body;
         try {
-            body = request.getInputStream().readAllBytes();
+            body = readBoundedBody(request);
+        } catch (RequestBodyTooLargeException e) {
+            return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).build();
         } catch (java.io.IOException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
         }
         return previewGatewayService.proxy(
-                request.getMethod(),
                 session,
                 prefix,
                 path,
                 request.getQueryString(),
-                body,
-                request.getContentType()
+                new PreviewGatewayService.ProxiedRequest(
+                        request.getMethod(), body, request.getContentType(),
+                        // 브라우저의 조건부 요청을 안쪽 앱까지 전달한다 — 자산이 안 바뀌었으면 304 로
+                        // 끝나 본문이 흐르지 않는다(Issue #342, 7-2). 인가는 예전과 똑같이 매 요청 돈다.
+                        request.getHeader(HttpHeaders.IF_NONE_MATCH),
+                        request.getHeader(HttpHeaders.IF_MODIFIED_SINCE))
         );
+    }
+
+    /**
+     * 요청 본문에 상한을 둔다 (Issue #342, 7-3).
+     *
+     * <p>예전에는 {@code readAllBytes()} 로 무제한으로 읽었다. 이 경로는 서브리소스 요청에 소유권
+     * 쿠키를 요구하지 않으므로(회전 accessToken 이 든 URL 자체가 자격 — {@link #isAuthorized} 참고)
+     * 유효한 프리뷰 주소 하나만 쥐면 <b>로그인 없이</b> 임의 크기의 POST 를 보낼 수 있었고, 그 본문이
+     * 곧 힙이다. 상한을 넘으면 413 으로 끊는다.</p>
+     *
+     * <p>{@code Content-Length} 를 먼저 보되 그것만 믿지는 않는다 — 청크 전송은 길이를 안 싣고, 실린
+     * 값이 사실이라는 보장도 없다. 그래서 실제로 읽는 양도 상한+1 로 끊는다. 상한은 프리뷰 앱의 폼·
+     * 업로드가 쓰기에 충분하고(10 MiB), 컨테이너 메모리 상한(1 GiB)에 비해 작다.</p>
+     */
+    private byte[] readBoundedBody(HttpServletRequest request) throws java.io.IOException {
+        if (request.getContentLengthLong() > MAX_REQUEST_BODY_BYTES) {
+            throw new RequestBodyTooLargeException();
+        }
+        byte[] body = request.getInputStream().readNBytes(MAX_REQUEST_BODY_BYTES + 1);
+        if (body.length > MAX_REQUEST_BODY_BYTES) {
+            throw new RequestBodyTooLargeException();
+        }
+        return body;
+    }
+
+    /** 413 으로 갈라 나가기 위한 내부 신호. 밖으로 나가지 않으므로 스택트레이스를 만들지 않는다. */
+    private static class RequestBodyTooLargeException extends RuntimeException {
+        RequestBodyTooLargeException() {
+            super(null, null, false, false);
+        }
     }
 
     @Operation(

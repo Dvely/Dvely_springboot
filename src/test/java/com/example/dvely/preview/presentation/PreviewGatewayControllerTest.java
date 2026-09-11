@@ -24,6 +24,8 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
@@ -55,23 +57,23 @@ class PreviewGatewayControllerTest {
         controller = new PreviewGatewayController(sessionService, gatewayService, accessCookies, properties);
 
         when(sessionService.resolveGateway(SESSION_ID, ACCESS_TOKEN)).thenReturn(Optional.of(session()));
-        when(gatewayService.proxy(anyString(), any(), anyString(), anyString(), any(), any(), any()))
-                .thenReturn(ResponseEntity.ok("body".getBytes()));
+        when(gatewayService.proxy(any(), anyString(), anyString(), any(), any()))
+                .thenReturn(ResponseEntity.ok(new ByteArrayResource("body".getBytes())));
     }
 
     @Test
     void rejectsARequestWithoutTheOwnershipCookieEvenWhenTheUrlIsCorrect() {
-        ResponseEntity<byte[]> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request());
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-        verify(gatewayService, never()).proxy(anyString(), any(), anyString(), anyString(), any(), any(), any());
+        verify(gatewayService, never()).proxy(any(), anyString(), anyString(), any(), any());
     }
 
     @Test
     void rejectsACookieIssuedForAnotherSession() {
         String foreign = accessCookies.issue("other-session", OWNER, Duration.ofMinutes(30));
 
-        ResponseEntity<byte[]> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, foreign, request());
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, foreign, request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
@@ -80,7 +82,7 @@ class PreviewGatewayControllerTest {
     void rejectsACookieIssuedForAnotherUser() {
         String foreign = accessCookies.issue(SESSION_ID, 99L, Duration.ofMinutes(30));
 
-        ResponseEntity<byte[]> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, foreign, request());
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, foreign, request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
@@ -89,10 +91,10 @@ class PreviewGatewayControllerTest {
     void servesTheOwnerWhoPresentsTheIssuedCookie() {
         String cookie = accessCookies.issue(SESSION_ID, OWNER, Duration.ofMinutes(30));
 
-        ResponseEntity<byte[]> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, cookie, request());
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, cookie, request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        verify(gatewayService).proxy(anyString(), any(), anyString(), anyString(), any(), any(), any());
+        verify(gatewayService).proxy(any(), anyString(), anyString(), any(), any());
     }
 
     /** 세션 자체가 없으면(만료·오토큰) 쿠키 이전에 404다 — 존재 여부를 인가로 흘리지 않는다. */
@@ -100,7 +102,7 @@ class PreviewGatewayControllerTest {
     void keepsReturningNotFoundForAnUnknownSession() {
         when(sessionService.resolveGateway(SESSION_ID, "wrong")).thenReturn(Optional.empty());
 
-        ResponseEntity<byte[]> response = controller.proxy(SESSION_ID, "wrong", null, request());
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, "wrong", null, request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
@@ -112,8 +114,8 @@ class PreviewGatewayControllerTest {
      */
     @Test
     void servesSubresourceRequestsWithoutTheCookie() {
-        ResponseEntity<byte[]> script = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request("script"));
-        ResponseEntity<byte[]> fetch = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request("empty"));
+        ResponseEntity<Resource> script = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request("script"));
+        ResponseEntity<Resource> fetch = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request("empty"));
 
         assertThat(script.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(fetch.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -133,9 +135,130 @@ class PreviewGatewayControllerTest {
     void canBeTurnedOffForEnvironmentsWhoseClientHasNotShippedTheAccessCallYet() {
         properties.setRequireAccessCookie(false);
 
-        ResponseEntity<byte[]> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request());
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request());
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    // ── 요청 본문 상한 (Issue #342, 7-3) ──────────────────────────────────────────────
+
+    /**
+     * 이 경로는 서브리소스 요청에 소유권 쿠키를 요구하지 않는다(회전 accessToken 이 든 URL 자체가
+     * 자격 — {@code isAuthorized} 참고). 그래서 유효한 프리뷰 주소 하나만 쥐면 로그인 없이 임의
+     * 크기의 POST 를 보낼 수 있었고, {@code readAllBytes()} 는 그것을 전부 힙에 올렸다. 선언된
+     * 길이가 상한을 넘으면 본문을 읽기도 전에 413 이어야 한다.
+     */
+    @Test
+    void rejectsARequestWhoseDeclaredBodyExceedsTheLimit() {
+        HttpServletRequest request = request("empty");
+        when(request.getMethod()).thenReturn("POST");
+        when(request.getContentLengthLong()).thenReturn(11L * 1024 * 1024);
+
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.PAYLOAD_TOO_LARGE);
+        verify(gatewayService, never()).proxy(any(), anyString(), anyString(), any(), any());
+    }
+
+    /**
+     * 선언된 길이만 믿으면 안 된다 — 청크 전송은 길이를 안 싣고({@code -1}), 실린 값이 사실이라는
+     * 보장도 없다. 실제로 읽는 양도 끊어야 상한이 상한이다.
+     */
+    @Test
+    void rejectsABodyThatExceedsTheLimitEvenWhenNoLengthWasDeclared() {
+        HttpServletRequest request = request("empty");
+        when(request.getMethod()).thenReturn("POST");
+        when(request.getContentLengthLong()).thenReturn(-1L);   // 청크 전송
+        stubBodyOf(request, 11 * 1024 * 1024);
+
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.PAYLOAD_TOO_LARGE);
+        verify(gatewayService, never()).proxy(any(), anyString(), anyString(), any(), any());
+    }
+
+    /** 상한 안의 본문은 그대로 컨테이너로 간다 — 앱의 폼·등록이 계속 동작해야 한다. */
+    @Test
+    void stillProxiesABodyWithinTheLimit() {
+        HttpServletRequest request = request("empty");
+        when(request.getMethod()).thenReturn("POST");
+        when(request.getContentLengthLong()).thenReturn(-1L);
+        stubBodyOf(request, 64 * 1024);
+
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        verify(gatewayService).proxy(any(), anyString(), anyString(), any(), any());
+    }
+
+    /**
+     * 본문 상한이 인가보다 <b>앞에 오면 안 된다.</b> 소유권을 증명하지 못한 요청에 413 을 주면
+     * "이 프리뷰는 존재하고 본문만 컸다"를 알려주는 셈이고, 무엇보다 인가 전에 본문을 만지기
+     * 시작한다는 뜻이다. 순서는 세션 조회 → 쿠키/Sec-Fetch-Dest → 본문이어야 한다.
+     */
+    @Test
+    void checksOwnershipBeforeTheBodyLimit() {
+        HttpServletRequest request = request();   // Sec-Fetch-Dest 없음 → 탐색으로 간주, 쿠키 필요
+        when(request.getMethod()).thenReturn("POST");
+        when(request.getContentLengthLong()).thenReturn(11L * 1024 * 1024);
+
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    /** 세션이 없으면 본문 크기와 무관하게 404 다 — 존재 여부를 413 으로 흘리지 않는다. */
+    @Test
+    void keepsReturningNotFoundForAnUnknownSessionEvenWithAnOversizedBody() {
+        when(sessionService.resolveGateway(SESSION_ID, "wrong")).thenReturn(Optional.empty());
+        HttpServletRequest request = request("empty");
+        when(request.getMethod()).thenReturn("POST");
+        when(request.getContentLengthLong()).thenReturn(11L * 1024 * 1024);
+
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, "wrong", null, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    /**
+     * 조건부 요청(브라우저 재검증)도 인가를 먼저 받는다 — 쿠키 없는 문서 탐색은 If-None-Match 를
+     * 들고 와도 401 이고, 304 로 새 나가지 않는다.
+     */
+    @Test
+    void stillRequiresTheCookieForAConditionalDocumentRequest() {
+        HttpServletRequest request = request("document");
+        when(request.getHeader(org.springframework.http.HttpHeaders.IF_NONE_MATCH)).thenReturn("\"v1\"");
+
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        verify(gatewayService, never()).proxy(any(), anyString(), anyString(), any(), any());
+    }
+
+    /** 지정한 바이트 수를 게으르게 내보내는 본문. 테스트가 10 MiB 배열을 미리 만들지 않게 한다. */
+    private void stubBodyOf(HttpServletRequest request, int bytes) {
+        ServletInputStream stream = new ServletInputStream() {
+            private int remaining = bytes;
+
+            @Override public int read() {
+                return remaining-- > 0 ? 'x' : -1;
+            }
+
+            @Override public boolean isFinished() {
+                return remaining <= 0;
+            }
+
+            @Override public boolean isReady() {
+                return true;
+            }
+
+            @Override public void setReadListener(ReadListener listener) { }
+        };
+        try {
+            when(request.getInputStream()).thenReturn(stream);
+        } catch (IOException ignored) {
+            // 스텁은 실제 IO 를 하지 않는다 — checked 예외는 형식상일 뿐.
+        }
     }
 
     private PreviewSessionInfo session() {
