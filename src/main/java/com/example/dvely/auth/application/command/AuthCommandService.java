@@ -48,8 +48,15 @@ public class AuthCommandService {
     /**
      * GitHub OAuth 로그인
      * OAuth Token은 유저 정보 조회 후 버림 (저장 X)
+     *
+     * <p>트랜잭션을 걸지 않는다 — GitHub OAuth·User API 두 번을 기다리는 동안 커넥션을 붙들던
+     * 자리다(#337). 로그인은 가장 자주 열리는 경로라 그 점유가 그대로 풀 고갈로 이어졌다.</p>
+     *
+     * <p>실패 시 동작은 그대로다: 외부 호출 두 건이 모두 저장보다 앞에 있어, 둘 중 하나라도
+     * 던지면 아래 저장에 도달하지 않는다 — 예전 롤백과 같은 결과다. 저장 두 건(유저·리프레시
+     * 토큰)이 더는 한 트랜잭션이 아니지만, 이 경로는 githubId 로 찾아 없으면 만드는 멱등 연산이라
+     * 뒤의 저장이 실패해도 재시도가 그대로 복구한다(유저 행만 남고 손상은 없다).</p>
      */
-    @Transactional
     public TokenResult loginWithGithub(GithubLoginCommand command) {
         oAuthStateManager.verify(command.state());
         String oauthToken = githubOAuthPort.getAccessToken(command.code());
@@ -112,19 +119,29 @@ public class AuthCommandService {
     /**
      * GitHub App 설치 완료 콜백 처리
      * installation_id 저장 + code가 있으면 GitHub App User Token 발급
+     *
+     * <p>트랜잭션을 걷어내면서(#337) 순서를 바꿨다. 예전에는 installationId 를 먼저 반영하고
+     * 그 뒤에 GitHub 토큰 교환을 호출했는데, 교환이 실패하면 롤백이 installationId 반영까지
+     * 되돌려 <b>아무것도 저장되지 않는</b> 것이 이 메서드의 실제 동작이었다. 롤백이 사라진
+     * 지금 같은 결과를 얻으려면 외부 호출을 저장보다 앞에 두는 수밖에 없다 — 교환이 던지면
+     * 아래 저장 구간에 도달하지 않는다.</p>
+     *
+     * <p>유저 조회는 외부 호출보다 앞에 남겨 둔다. 없는 유저면 code 를 소모하기 전에 404 가
+     * 나가던 기존 순서를 그대로 지키기 위해서다.</p>
      */
-    @Transactional
     public void linkGithubApp(Long userId, Long installationId, String code) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
 
+        GithubAppPort.GithubUserTokenInfo tokenInfo = code == null ? null : githubAppPort.getUserToken(code);
+
+        // 여기부터가 저장 구간 — 위 외부 호출이 실패했다면 도달하지 않는다.
         // 재인증 콜백은 installation_id 없이 올 수 있음 — 저장된 값 유지
         if (installationId != null) {
             authDomainService.updateInstallationId(user, installationId);
         }
 
-        if (code != null) {
-            GithubAppPort.GithubUserTokenInfo tokenInfo = githubAppPort.getUserToken(code);
+        if (tokenInfo != null) {
             LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(tokenInfo.expiresInSeconds());
             user.updateUserToken(tokenInfo.accessToken(), tokenInfo.refreshToken(), expiresAt);
             log.info("GitHub App User Token 발급 완료: userId={}", userId);
@@ -138,8 +155,10 @@ public class AuthCommandService {
     /**
      * GitHub App 설치 설정 페이지(state 없음)에서 오는 콜백 처리
      * code로 User Token 발급 → GitHub 유저 정보로 DB 유저 식별
+     *
+     * <p>트랜잭션을 걸지 않는다 — GitHub 호출 두 번이 이미 저장보다 앞에 있어, 실패하면 저장에
+     * 도달하지 않는 것은 그대로다(#337). 저장도 {@code save} 한 번뿐이라 원자성이 줄지 않는다.</p>
      */
-    @Transactional
     public void linkGithubAppByCode(Long installationId, String code) {
         if (code == null) {
             throw new IllegalArgumentException("code가 없어 유저를 식별할 수 없습니다");
@@ -170,8 +189,12 @@ public class AuthCommandService {
      * bad_refresh_token 을 맞는다(2026-08-18 운영 실측: 저장소 연결 승인이 이 경로로 실패했다).
      *
      * 그러니 갱신 후에는 다시 읽지 말고 이 반환값을 쓸 것.
+     *
+     * <p>여기에는 트랜잭션을 걸지 않는다(#337). 이 메서드는 자기 DB 작업이 없고 아래 두 호출이
+     * 모두 {@code REQUIRES_NEW} 라, 바깥 트랜잭션은 GitHub 갱신을 기다리는 내내 아무 일도 하지
+     * 않으면서 커넥션 하나를 더 붙들고 있을 뿐이었다(안쪽까지 합쳐 동시에 두 개). 되돌릴 것이
+     * 없으니 롤백에 기대던 동작도 없다.</p>
      */
-    @Transactional
     public String refreshGithubUserToken(Long userId) {
         // 빠른 경로 — 다른 흐름이 이미 갱신했으면 잠금까지 가지 않는다. 그 갱신은 별도
         // 트랜잭션으로 커밋되지만 호출자의 영속성 컨텍스트에는 옛 UserEntity 가 남아 여전히
