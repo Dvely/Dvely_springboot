@@ -220,9 +220,6 @@ class ChatCommandServiceTest {
         verify(conversationRepository, never()).findAllByDeletedTrueAndDeletedAtLessThanEqual(any());
     }
 
-        verify(conversationRepository, never()).deleteById(any());
-    }
-
     private Project project(Long projectId, Long ownerUserId, String sourceRepository, boolean deleted) {
         return new Project(
                 projectId,
