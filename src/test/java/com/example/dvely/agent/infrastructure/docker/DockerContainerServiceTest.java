@@ -37,6 +37,7 @@ import com.github.dockerjava.api.model.CpuUsageConfig;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.LogConfig;
 import com.github.dockerjava.api.model.MemoryStatsConfig;
 import com.github.dockerjava.api.model.Network;
 import com.github.dockerjava.api.model.NetworkSettings;
@@ -347,7 +348,29 @@ class DockerContainerServiceTest {
         verify(dockerClient).pullImageCmd(anyString());
     }
 
-    /** 컨테이너 생성·기동 스텁. 위 두 테스트가 captor 로 쓰는 createCommand 를 남긴다. */
+    // --- Issue #342 7-6: 컨테이너 로그에 상한이 있다 -------------------------------------
+
+    /**
+     * 로그 드라이버에 상한이 없으면 dev 서버 stdout 이 TTL 동안 무제한으로 쌓인다 — 사용자 코드가
+     * 루프에서 찍는 로그 한 줄이 우리 호스트 디스크를 채우는 경로다. 드라이버까지 json-file 로 못
+     * 박아야 옵션이 조용히 무시되지 않는다.
+     */
+    @Test
+    void createAndStartContainerBoundsTheContainerLogSize() {
+        mockNetworkAlreadyExists(true);
+        mockContainerCreation();
+
+        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+
+        ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
+        verify(createCommand).withHostConfig(hostConfigCaptor.capture());
+        LogConfig logConfig = hostConfigCaptor.getValue().getLogConfig();
+        assertThat(logConfig).isNotNull();
+        assertThat(logConfig.getType()).isEqualTo(LogConfig.LoggingType.JSON_FILE);
+        assertThat(logConfig.getConfig()).containsEntry("max-size", "10m").containsEntry("max-file", "2");
+    }
+
+    /** 컨테이너 생성·기동 스텁. 위 세 테스트가 captor 로 쓰는 createCommand 를 남긴다. */
     private CreateContainerCmd createCommand;
 
     private void mockContainerCreation() {

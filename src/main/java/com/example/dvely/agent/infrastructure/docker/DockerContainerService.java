@@ -17,6 +17,7 @@ import com.github.dockerjava.api.model.CpuUsageConfig;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.LogConfig;
 import com.github.dockerjava.api.model.MemoryStatsConfig;
 import com.github.dockerjava.api.model.Network;
 import com.github.dockerjava.api.model.Ports;
@@ -81,6 +82,21 @@ public class DockerContainerService {
     private static final long NANO_CPUS = 1_000_000_000L; // 1.0 vCPU per session, fair-share
     private static final long PIDS_LIMIT = 256L; // fork-bomb guard; ~4x observed npm install process counts
 
+    /**
+     * 컨테이너 로그 상한 (Issue #342, 7-6).
+     *
+     * <p>로그 드라이버에 상한이 없으면 dev 서버 stdout 이 TTL 동안 무제한으로 쌓인다 — 사용자 코드가
+     * 루프 안에서 찍는 로그 한 줄이 호스트 디스크를 채우는 경로이고, 그 컨테이너가 도는 것은 우리
+     * 호스트다. 크기 상한과 회전 개수를 둬 컨테이너 하나가 쓰는 로그를 유계로 만든다.</p>
+     *
+     * <p>값의 근거: 로그 조회 API({@code getContainerLogs})는 꼬리만 읽으므로 진단에 필요한 것은
+     * "최근"뿐이다. 10 MiB × 2 개면 빌드 실패 원인을 찾기에 넉넉하고, 컨테이너당 20 MiB 로 묶인다.
+     * 드라이버를 {@code json-file} 로 명시하는 이유는 이 옵션이 그 드라이버의 것이라서다 — 호스트
+     * 기본 드라이버가 다르면(journald 등) 옵션이 조용히 무시된다.</p>
+     */
+    private static final LogConfig BOUNDED_LOG_CONFIG = new LogConfig(
+            LogConfig.LoggingType.JSON_FILE,
+            Map.of("max-size", "10m", "max-file", "2"));
     private static final String PREVIEW_NETWORK_NAME = "qeploy-preview";
     // one-shot `stats` needs ~1s to sample a CPU delta (see getContainerStats); 3s is the
     // point past which we degrade the /status response instead of blocking the caller.
@@ -175,6 +191,7 @@ public class DockerContainerService {
                         .withCapDrop(Capability.ALL)
                         .withCapAdd(Capability.CHOWN, Capability.SETUID, Capability.SETGID)
                         .withSecurityOpts(List.of("no-new-privileges"))
+                        .withLogConfig(BOUNDED_LOG_CONFIG)
                         .withNetworkMode(PREVIEW_NETWORK_NAME))
                 .withLabels(labels)
                 .withCmd("tail", "-f", "/dev/null")
@@ -670,6 +687,7 @@ public class DockerContainerService {
                         .withCapAdd(Capability.CHOWN, Capability.SETUID, Capability.SETGID,
                                 Capability.DAC_OVERRIDE, Capability.FOWNER, Capability.SETFCAP)
                         .withSecurityOpts(List.of("no-new-privileges"))
+                        .withLogConfig(BOUNDED_LOG_CONFIG)
                         .withNetworkMode(networkName))
                 .withAliases(networkAlias)
                 .withLabels(Map.of(AGENT_LABEL, "true"))
