@@ -464,3 +464,25 @@ CREATE TABLE project_changes (
         FOREIGN KEY (preview_session_id)
         REFERENCES preview_sessions (preview_session_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- U8 8-1 (V63): LLM 호출 한 건의 토큰 사용량. agent_runs 누적 컬럼이 아니라 별도 테이블인
+-- 이유(보존 정책·태스크 밖 호출·라운드별 캐시 적중·뜨거운 행 UPDATE 회피)는 V63 마이그레이션
+-- 주석 참고. FK 없음 — 계측 행이 agent_runs 의 잠금 그래프에 끌려 들어가면 안 된다.
+CREATE TABLE llm_usage (
+    llm_usage_id BIGINT NOT NULL AUTO_INCREMENT,
+    task_id VARCHAR(64) NULL COMMENT '귀속된 에이전트 태스크. 스코프 밖 호출은 NULL',
+    user_id BIGINT NULL,
+    project_id BIGINT NULL,
+    phase VARCHAR(30) NOT NULL COMMENT 'DECISION / AGENT_RUN / DEPLOY_FAILURE_ANALYSIS / UNSCOPED',
+    provider VARCHAR(30) NOT NULL,
+    model VARCHAR(120) NOT NULL,
+    input_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '캐시 읽기/쓰기를 제외한 입력',
+    output_tokens BIGINT NOT NULL DEFAULT 0,
+    cache_creation_input_tokens BIGINT NOT NULL DEFAULT 0,
+    cache_read_input_tokens BIGINT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (llm_usage_id),
+    KEY idx_llm_usage_task (task_id),
+    KEY idx_llm_usage_created (created_at),
+    KEY idx_llm_usage_user_created (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

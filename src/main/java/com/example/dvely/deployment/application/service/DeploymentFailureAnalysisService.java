@@ -2,9 +2,13 @@ package com.example.dvely.deployment.application.service;
 
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.service.BuildFailureAnalyzer;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
+import com.example.dvely.agent.domain.value.ThinkingLevel;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.llm.LlmRouter;
+import com.example.dvely.agent.infrastructure.usage.LlmUsagePhase;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageScope;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -342,11 +346,29 @@ public class DeploymentFailureAnalysisService {
         // stuck upstream connection could otherwise block this call forever and never reach the
         // rule-based fallback below. CompletableFuture#orTimeout enforces a caller-side cutoff
         // without touching ClaudeClient itself.
+        // 제공자와 모델은 설정에서 온다. 예전에는 여기가 ANTHROPIC + 그 제공자의 최상위 기본
+        // 모델로 박혀 있었다 — 12,000자 로그를 한 번 요약하는 데 최상위 모델을 쓸 근거가 없었고,
+        // 배포의 defaultProvider(GLM)와도 어긋났다. 분석 품질이 떨어지면 설정만으로 되돌린다
+        // (AiProperties.FailureAnalysis).
+        AiProvider provider = aiProperties.failureAnalysisProvider();
+        String configuredModel = aiProperties.getFailureAnalysis().modelOrNull();
+        AiModelOptions modelOptions = new AiModelOptions(configuredModel, ThinkingLevel.OFF);
+
         try {
             String raw = CompletableFuture
                     .supplyAsync(
-                            () -> llmRouter.route(AiProvider.ANTHROPIC)
-                                    .complete(SYSTEM_PROMPT, List.of(new LlmMessage("user", excerpt))),
+                            () -> {
+                                // 스코프는 스레드를 넘지 않으므로 이 안에서 연다 — 여기서 열지
+                                // 않으면 이 호출의 토큰이 어느 구간 것인지 남지 않는다.
+                                try (LlmUsageScope ignored = LlmUsageScope.open(
+                                        null, null, null, LlmUsagePhase.DEPLOY_FAILURE_ANALYSIS)) {
+                                    return llmRouter.route(provider).complete(
+                                            SYSTEM_PROMPT,
+                                            List.of(new LlmMessage("user", excerpt)),
+                                            modelOptions);
+                                }
+                            },
+                            // #336: 호출마다 executor 를 새로 만들지 않는다(필드의 공용 가상 스레드 executor).
                             llmCallExecutor
                     )
                     .orTimeout(llmTimeoutSeconds, TimeUnit.SECONDS)
@@ -356,8 +378,8 @@ public class DeploymentFailureAnalysisService {
                     AnalysisSource.LLM,
                     parsed.summary(),
                     parsed.suggestedFix(),
-                    AiProvider.ANTHROPIC.name(),
-                    aiProperties.getAnthropic().getModel()
+                    provider.name(),
+                    modelOptions.modelOr(aiProperties.providerConfig(provider).getModel())
             );
         } catch (RuntimeException exception) {
             // Any LLM transport failure, timeout, or unparseable response falls back to the

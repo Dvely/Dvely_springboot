@@ -64,6 +64,9 @@ qeploy:
     anthropic:
       api-key: ${QEPLOY_AI_ANTHROPIC_API_KEY:${ANTHROPIC_API_KEY:}}
       model: ${QEPLOY_AI_ANTHROPIC_MODEL:claude-opus-4-5-20251101}
+      # Messages API 전체 URL. 사내 프록시를 거치게 하거나, 나가는 요청 본문을 실제로 검사하는
+      # 테스트에서 로컬 서버로 돌릴 때 쓴다.
+      base-url: ${QEPLOY_AI_ANTHROPIC_BASE_URL:https://api.anthropic.com/v1/messages}
       # 요청(DecisionRequest.model)이 지정할 수 있는 추가 모델. 비우면 위 model만 허용된다 —
       # 넓히는 것은 비용 결정이므로 기본값은 최소 권한이다.
       allowed-models: ${QEPLOY_AI_ANTHROPIC_ALLOWED_MODELS:}
@@ -113,6 +116,22 @@ qeploy:
       # CODE 스텝 1회 실행에서 허용하는 LLM 왕복 횟수. 소진되면 성공이 아니라 실패로 처리되고
       # 같은 컨테이너에서 이어서 재시도된다(AgentIterationLimitException).
       max-iterations: ${QEPLOY_AI_CODE_AGENT_MAX_ITERATIONS:40}
+      # 태스크 하나가 쓸 수 있는 누적 토큰(입력+출력+캐시). 0 이면 상한 없음.
+      # 위 max-iterations 와 retry.max-attempts, 그리고 태스크 재시도는 서로 곱해지는데 그 곱에는
+      # 아무 상한이 없었다. 재시도를 건너 이어 세므로 재시도로 상한을 우회하지 못한다.
+      # 걸리면 태스크는 사유가 보이는 실패로 닫힌다(사용자에게 사용량/상한이 그대로 보인다).
+      max-task-tokens: ${QEPLOY_AI_CODE_AGENT_MAX_TASK_TOKENS:1000000}
+    # 도구를 쓰지 않는 한 번짜리 완성 호출의 출력 상한(Anthropic max_tokens).
+    # 1024 였을 때 다단계 계획 JSON 이 중간에서 잘렸고, 그때마다 교정 재시도가 전체 컨텍스트를
+    # 한 번 더 보냈다 — 아끼는 출력 토큰보다 치르는 입력 토큰이 컸다. 상한이지 할당량이 아니다.
+    completion-max-tokens: ${QEPLOY_AI_COMPLETION_MAX_TOKENS:4096}
+    # 배포 실패 로그 요약 전용. 비워 두면 위 default-provider 와 그 제공자의 기본 모델을 따른다.
+    # 예전에는 이 한 경로만 ANTHROPIC + 최상위 모델로 코드에 박혀 있었다 — 12,000자 로그를 한 번
+    # 요약하는 데 쓸 근거가 없었고 default-provider 와도 어긋났다.
+    # 되돌리는 법: provider 에 ANTHROPIC, model 에 claude-opus-4-5-20251101 을 적고 재배포한다.
+    failure-analysis:
+      provider: ${QEPLOY_AI_FAILURE_ANALYSIS_PROVIDER:}
+      model: ${QEPLOY_AI_FAILURE_ANALYSIS_MODEL:}
 
   # BYOK 코딩 에이전트(사용자 본인 공식 API 키로 벤더 CLI 를 헤드리스 실행).
   # qeploy.ai.code-agent(위, CODE 스텝의 LLM 왕복 예산)와는 다른 축이다 — 이름이 비슷하니 주의.

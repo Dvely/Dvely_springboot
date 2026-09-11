@@ -34,6 +34,16 @@ public class DecisionAgentService {
     /** 교정 프롬프트에 되돌려 보여줄 직전 응답의 상한. 어디가 틀렸는지 보는 데는 앞부분이면 된다. */
     private static final int MAX_REPAIR_ECHO_CHARS = 2000;
 
+    /**
+     * 로그에 남길 LLM 원문의 상한.
+     *
+     * <p>원문 전체를 INFO 로 찍던 자리가 있었다. 계획 JSON 에는 사용자가 무엇을 만들라고 했는지가
+     * 그대로 들어가고, 교정 재시도 로그에는 모델이 쓴 응답이 통째로 들어간다 — 운영 로그 수집기로
+     * 사용자 요청과 생성 코드 조각이 흘러나가는 경로였다. 어디가 어긋났는지 보는 데는 앞부분이면
+     * 충분하므로 자르고, 평시에는 아예 남기지 않는다(DEBUG).</p>
+     */
+    private static final int MAX_LOGGED_RAW_CHARS = 300;
+
     private static final String SYSTEM_PROMPT = """
             You are a decision-making agent for Qeploy, an automated web project deployment platform.
             Analyze the user's message, identify ALL intents, and return them as an ordered list of steps.
@@ -306,8 +316,9 @@ public class DecisionAgentService {
                             AiModelOptions modelOptions,
                             Long projectId) {
         String raw = llmRouter.route(provider).complete(SYSTEM_PROMPT, messages, modelOptions);
-        log.info("의사결정 완료: provider={}, model={}, projectId={}, raw={}",
-                provider, modelOptions.model(), projectId, raw);
+        log.info("의사결정 완료: provider={}, model={}, projectId={}, rawLength={}",
+                provider, modelOptions.model(), projectId, raw == null ? 0 : raw.length());
+        log.debug("의사결정 응답 미리보기: {}", preview(raw));
         return raw;
     }
 
@@ -330,8 +341,8 @@ public class DecisionAgentService {
                                 AiProvider provider,
                                 Long projectId,
                                 AiModelOptions modelOptions) {
-        log.warn("의사결정 응답 파싱 실패 — 형식 교정을 요청해 1회 재시도합니다. provider={} projectId={} raw={}",
-                provider, projectId, failedRaw, failure);
+        log.warn("의사결정 응답 파싱 실패 — 형식 교정을 요청해 1회 재시도합니다. provider={} projectId={} rawPreview={}",
+                provider, projectId, preview(failedRaw), failure);
 
         List<LlmMessage> repairMessages = new ArrayList<>(messages);
         repairMessages.add(new LlmMessage("user", repairPrompt(failedRaw, failure)));
@@ -343,8 +354,8 @@ public class DecisionAgentService {
             return plan;
         } catch (RuntimeException retryFailure) {
             retryFailure.addSuppressed(failure);
-            log.warn("의사결정 응답 재시도도 파싱 실패 — 요청을 실패로 닫습니다. provider={} projectId={} raw={}",
-                    provider, projectId, raw, retryFailure);
+            log.warn("의사결정 응답 재시도도 파싱 실패 — 요청을 실패로 닫습니다. provider={} projectId={} rawPreview={}",
+                    provider, projectId, preview(raw), retryFailure);
             throw new LlmProviderException(provider.name(), Reason.MALFORMED_RESPONSE, retryFailure);
         }
     }
@@ -485,6 +496,16 @@ public class DecisionAgentService {
     private String readReasoning(Map<String, Object> map) {
         Object reasoning = map.get("reasoning");
         return reasoning == null ? "" : String.valueOf(reasoning);
+    }
+
+    /** 로그에 실을 만큼만 자른 원문. 잘렸다는 사실을 남겨 "이게 전부인가" 를 묻지 않게 한다. */
+    private String preview(String raw) {
+        if (raw == null) {
+            return "(없음)";
+        }
+        return raw.length() <= MAX_LOGGED_RAW_CHARS
+                ? raw
+                : raw.substring(0, MAX_LOGGED_RAW_CHARS) + "…(" + raw.length() + "자 중 앞부분)";
     }
 
     /**

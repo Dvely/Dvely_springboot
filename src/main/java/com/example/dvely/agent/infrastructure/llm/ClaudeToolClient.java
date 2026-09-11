@@ -5,7 +5,10 @@ import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.domain.value.AiModelOptions;
+import com.example.dvely.agent.domain.value.AiProvider;
+import com.example.dvely.agent.domain.value.LlmUsage;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageRecorder;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -21,7 +24,6 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class ClaudeToolClient implements LlmToolPort {
 
-    private static final String API_URL     = "https://api.anthropic.com/v1/messages";
     private static final String API_VERSION = "2023-06-01";
     // Output budget per round. 4096 was not enough to emit one real source file in a single
     // write_file call, so generation stopped mid-arguments (stop_reason=max_tokens) on ordinary
@@ -31,6 +33,7 @@ public class ClaudeToolClient implements LlmToolPort {
     private static final int    MAX_TOKENS  = 8192;
 
     private final AiProperties aiProperties;
+    private final LlmUsageRecorder llmUsageRecorder;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @SuppressWarnings("unchecked")
@@ -50,7 +53,7 @@ public class ClaudeToolClient implements LlmToolPort {
             AiModelOptions modelOptions) {
 
         List<Map<String, Object>> toolsPayload = tools.stream()
-                .map(t -> Map.of(
+                .map(t -> Map.<String, Object>of(
                         "name",         t.name(),
                         "description",  t.description(),
                         "input_schema", t.inputSchema()
@@ -59,16 +62,20 @@ public class ClaudeToolClient implements LlmToolPort {
 
         LlmProviderErrors.requireApiKey(ClaudeClient.PROVIDER_NAME, aiProperties.getAnthropic().getApiKey());
 
+        String model = modelOptions.modelOr(aiProperties.getAnthropic().getModel());
         Map<String, Object> body = new HashMap<>();
-        body.put("model",    modelOptions.modelOr(aiProperties.getAnthropic().getModel()));
-        body.put("system",   systemPrompt);
-        body.put("tools",    toolsPayload);
-        body.put("messages", messages);
+        body.put("model",    model);
+        // 캐시 브레이크포인트는 tools → system → messages 순으로 렌더된다. 이 루프의 접두는
+        // 고정이다 — 시스템 프롬프트와 도구 정의가 상수이고 트랜스크립트는 덧붙이기만 한다 —
+        // 그래서 마커가 실제로 값을 한다. 자세한 배치 근거는 AnthropicPromptCache 참고.
+        body.put("system",   AnthropicPromptCache.systemBlocks(systemPrompt));
+        body.put("tools",    AnthropicPromptCache.toolsWithCacheControl(toolsPayload));
+        body.put("messages", AnthropicPromptCache.messagesWithRollingCacheControl(messages));
         LlmRequestOptions.applyAnthropic(body, modelOptions, MAX_TOKENS);
 
         String raw = LlmProviderErrors.translate(ClaudeClient.PROVIDER_NAME, aiProperties.getRetry(), () -> LlmHttp.client()
                 .post()
-                .uri(API_URL)
+                .uri(aiProperties.getAnthropic().getBaseUrl())
                 // 키는 호출마다 싣는다 — 공용 클라이언트의 기본 헤더로 박으면 인스턴스에 고정된다.
                 .header("x-api-key", aiProperties.getAnthropic().getApiKey())
                 .header("anthropic-version", API_VERSION)
@@ -77,11 +84,22 @@ public class ClaudeToolClient implements LlmToolPort {
                 .body(String.class));
 
         log.debug("Claude Tool API 응답 수신");
-        return parse(raw);
+        ParsedResponse response = parse(raw, model);
+        // 기록은 parse 밖이다. 안에서 하면 예산 초과 예외가 parse 의 catch(Exception) 에 걸려
+        // "Tool API 응답 파싱 실패" 로 둔갑한다 — 사용자는 무엇에 걸렸는지 못 보게 된다.
+        llmUsageRecorder.record(AiProvider.ANTHROPIC, response.model(), response.usage());
+        return response.response();
+    }
+
+    /** 응답과, 그것을 실제로 답한 모델명을 함께 들고 나온다(기록은 호출부에서 한다). */
+    private record ParsedResponse(LlmToolResponse response, String model) {
+        LlmUsage usage() {
+            return response.usage();
+        }
     }
 
     @SuppressWarnings("unchecked")
-    private LlmToolResponse parse(String raw) {
+    private ParsedResponse parse(String raw, String requestedModel) {
         try {
             Map<String, Object> response   = objectMapper.readValue(raw, Map.class);
             String              stopReason = (String) response.getOrDefault("stop_reason", "end_turn");
@@ -99,9 +117,13 @@ public class ClaudeToolClient implements LlmToolPort {
                 }
             }
 
-            return new LlmToolResponse(toolCalls, contentBlocks, stopReason);
+            LlmUsage usage = LlmUsageParser.anthropic(response);
+            Object answeredModel = response.get("model");
+            return new ParsedResponse(
+                    new LlmToolResponse(toolCalls, contentBlocks, stopReason, usage),
+                    answeredModel instanceof String named ? named : requestedModel);
         } catch (Exception e) {
-            log.error("Claude Tool 응답 파싱 실패: {}", raw, e);
+            log.error("Claude Tool 응답 파싱 실패: {}", LlmLogPreview.of(raw), e);
             throw new RuntimeException("Claude Tool API 응답 파싱 실패", e);
         }
     }

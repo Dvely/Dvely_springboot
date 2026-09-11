@@ -2,6 +2,7 @@ package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.exception.AgentIterationLimitException;
+import com.example.dvely.agent.application.exception.AgentTokenBudgetExceededException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
 import com.example.dvely.agent.application.port.out.LlmToolPort;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
@@ -252,6 +253,13 @@ public class CodeAgentService {
             // the task's retry budget on a call that cannot start succeeding between attempts.
             log.error("[CodeAgent] AI 제공자 호출 실패 | userId={} provider={} reason={}",
                     userId, e.providerName(), e.reason());
+            throw e;
+        } catch (AgentTokenBudgetExceededException e) {
+            // 아래 빌드실패 경로로 흘리면 안 된다. 빌드 로그를 분석해 "프로젝트 빌드가 완료되지
+            // 않았습니다" 로 닫히는데, 빌드는 실패하지 않았고 재시도해도 같은 상한에 곧바로 다시
+            // 걸린다 — 사용자에게는 원인이 안 보이는 실패 두 번이 된다.
+            log.warn("[CodeAgent] 토큰 예산 초과로 중단 | userId={} containerId={} used={} budget={}",
+                    userId, containerId, e.usedTokens(), e.budgetTokens());
             throw e;
         } catch (AgentIterationLimitException e) {
             // Deliberately not routed through BuildFailureAnalyzer like the branch below: nothing

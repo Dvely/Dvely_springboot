@@ -70,13 +70,16 @@ public class AgentMessageService {
      */
     @Transactional(readOnly = true)
     public List<LlmMessage> getConversationContext(Long conversationId) {
-        return chatMessageRepository.findAllByConversationIdOrderByCreatedAtAsc(conversationId)
-                .stream()
-                .map(message -> new LlmMessage(
-                        message.getRole().toStorage(),
-                        message.getContent()
-                ))
-                .toList();
+        // 전량을 싣던 자리다. 오래 쓴 대화일수록 모든 요청이 비싸졌고 언젠가는 컨텍스트 상한에
+        // 닿았다 — 무엇을 잃는지는 ConversationWindow 참고.
+        return ConversationWindow.apply(
+                chatMessageRepository.findAllByConversationIdOrderByCreatedAtAsc(conversationId)
+                        .stream()
+                        .map(message -> new LlmMessage(
+                                message.getRole().toStorage(),
+                                message.getContent()
+                        ))
+                        .toList());
     }
 
     /**
@@ -112,12 +115,14 @@ public class AgentMessageService {
         }
 
         int last = userMessages.size() - 1;
-        return java.util.stream.IntStream.range(0, userMessages.size())
+        // 표시를 먼저 붙이고 그다음에 자른다. 순서가 반대면 창 안의 마지막 턴에 [지금 처리할
+        // 요청] 이 붙어, 이미 처리된 옛 요청이 새 요청으로 둔갑한다.
+        return ConversationWindow.apply(java.util.stream.IntStream.range(0, userMessages.size())
                 .mapToObj(index -> new LlmMessage(
                         ChatRole.USER.toStorage(),
                         (index == last ? CURRENT_REQUEST_LABEL : PAST_REQUEST_LABEL)
                                 + userMessages.get(index).getContent()
                 ))
-                .toList();
+                .toList());
     }
 }

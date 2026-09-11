@@ -5,6 +5,7 @@ import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.exception.AgentInputRequiredException;
+import com.example.dvely.agent.application.exception.AgentTokenBudgetExceededException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
 import com.example.dvely.agent.application.service.BuildFailureRecoveryService;
 import com.example.dvely.agent.application.service.ChatAgentService;
@@ -28,7 +29,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import com.example.dvely.agent.domain.value.AiModelOptions;
+import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageRecorder;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageScope;
 import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
 import com.example.dvely.common.exception.LlmProviderException;
@@ -61,10 +65,15 @@ public class AgentPlanExecutor {
     private final DecisionAgentService decisionAgentService;   // 되묻기 답 반영 재-decide
     private final InputWaitStore inputWaitStore;               // CLARIFY 답 consume
     private final ObjectMapper objectMapper;                   // CLARIFY 구조화 질문 파싱
+    private final LlmUsageRecorder llmUsageRecorder;           // 태스크 토큰 계측·예산 스코프
+    private final AiProperties aiProperties;                   // 태스크당 토큰 상한
 
     @Async("agentExecutor")
     public void execute(AgentPlan plan, String taskId, Long userId) {
-        try {
+        // 이 실행 스레드에서 나는 모든 LLM 호출이 이 태스크에 귀속되고, 누적 토큰이 여기 상한에
+        // 걸린다. 스코프는 스레드를 넘지 않으므로 실행 진입점인 여기가 유일하게 맞는 자리다.
+        try (LlmUsageScope ignored = llmUsageRecorder.openTaskScope(
+                taskId, userId, plan.projectId(), aiProperties.getCodeAgent().getMaxTaskTokens())) {
             doExecute(plan, taskId, userId);
         } finally {
             // The only unregister site for a task that made it onto an executor thread — covers
@@ -166,6 +175,26 @@ public class AgentPlanExecutor {
             }
             buildFailureRecoveryService.handle(taskId, exception);
             log.warn("=== AgentPlan build 실패 및 복구 대기: taskId={} ===", taskId);
+        } catch (AgentTokenBudgetExceededException exception) {
+            // 상한에 걸린 태스크가 조용히 멈추면 사용자에게는 "왜 안 되지" 로만 남는다. 아래
+            // catch-all 로 흘리면 "작업 중 오류가 발생했습니다" 가 앞에 붙어, 사용자가 읽어야 할
+            // 단 하나의 문장(무엇에 걸렸고 무엇을 하면 되는지)이 묻힌다. 그래서 전용 분기다.
+            //
+            // 재시도로 흘리지 않는 것도 의도다 — 누적은 태스크 단위로 이어 세므로, 재시도해도
+            // 첫 호출에서 곧바로 같은 상한에 다시 걸린다.
+            if (taskStore.isCancelled(taskId)) {
+                return;
+            }
+            taskStore.markFailed(taskId, exception.getMessage());
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    exception.getMessage(),
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
+            );
+            log.warn("=== AgentPlan 토큰 예산 초과로 중단: taskId={} used={} budget={} ===",
+                    taskId, exception.usedTokens(), exception.budgetTokens());
         } catch (LlmProviderException exception) {
             // Separated from the catch-all below only for the chat reply: the provider message is
             // already a complete, actionable sentence ("... 크레딧이 부족해 ... 다른 AI 제공자를
