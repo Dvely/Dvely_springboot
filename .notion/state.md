@@ -460,6 +460,18 @@ BACKLOG BI-081(외부 공개 URL 차단) 중 G1 — 컨테이너 호스트 포�
 - 수정: 프리뷰 **HTML 응답에만** `Cache-Control: no-store, no-transform`. Cloudflare는 `no-transform`이 있으면 payload를 변형하지 않아 주입 자체가 일어나지 않는다. 주입은 HTML에만 일어나므로 자산 응답은 `no-store`만 유지해 CDN 압축을 잃지 않는다. 프리뷰는 불투명 오리진이라 RUM이 지금도 아무것도 수집하지 못해 잃는 데이터가 없고, 헤더가 프리뷰 응답에만 붙으므로 본 사이트 Web Analytics는 그대로다.
 - 테스트: **737 tests, 0 failures**(신규 1건 — 문서에는 `no-transform`, 자산에는 미부착, `no-store`는 양쪽 유지). DDL·FE 변경 없음.
 
+## 2.34 요청 경로 성능 U10 (Issue #345, 브랜치 `danto/perf-request-path`, PR 미생성)
+
+인증 요청마다 붙던 미세 비용을 걷어냈다. 개별로는 작지만 **모든 인증 요청**에 붙고, 커넥션 풀이 마를 때 인증까지 함께 죽는 결합이 있었다.
+
+- **JWT 파싱 1회**(10-1): 인증 필터가 `getUserId`/`getJti`를 따로 불러 요청마다 HMAC 키 생성 + 파서 빌드 + 서명 검증이 **두 번** 돌았다. `TokenPort.parseClaims`로 한 번에 받는다. 서명 키와 `JwtParser`는 시크릿이 바뀌지 않으므로 생성자에서 1회만 만든다. 로그아웃 경로(jti + 만료시각)도 같은 이유로 1회로 줄였다. 클레임 하나만 쓰는 `AuthController`를 위해 단건 getter는 남겼다.
+- **폐기 토큰 캐시**(10-2): `revoked_access_tokens` 조회가 인증 요청마다 1회씩 나가고 있었다. `RevokedTokenCache`(Caffeine)를 앞에 뒀다. **캐시는 정답의 출처가 아니라 DB 앞의 단축 경로다** — 항목이 없으면 반드시 DB를 본다. 그래서 재기동으로 캐시가 비거나 크기 상한에 밀려도 폐기된 토큰이 되살아나지 않는다. "폐기됨"은 토큰 만료까지 붙잡고, "폐기 안 됨"만 짧은 TTL(기본 60초, `qeploy.auth.revoked-token-cache.not-revoked-ttl`)로 흘려보낸다. 폐기를 수행한 인스턴스는 반대편 항목을 즉시 지우므로 지연이 없고, 이 TTL은 **다중 인스턴스에서의 로그아웃 전파 지연 상한**이다. `0`을 주면 부정 캐시가 꺼져 이전 동작으로 돌아간다.
+- **AES 컨버터 재사용**(10-3): `Cipher.getInstance`를 매 호출, `new SecureRandom()`을 매 암호화 하던 것을 각각 ThreadLocal 재사용·인스턴스 공유로 바꿨다. `UserEntity`의 GitHub 토큰 2개가 컨버터라 `userRepository.findById` 한 번마다 복호화가 2회 돈다. **암호문 형식은 그대로다** — 이전 구현으로 만든 실제 암호문을 상수로 박아 복호화되는 것을 테스트로 고정했다.
+- **감사 로그 비동기**(10-4): 동기 `REQUIRES_NEW`는 쓰기 요청 하나가 자기 커넥션과 감사용 커넥션을 동시에 쥐게 했다. 전용 **단일 스레드** 실행기로 넘겨 감사 쓰기가 쓰는 커넥션을 앱 전체 통틀어 최대 1개로 묶었고, INSERT 순서도 호출 순서를 유지한다. 큐 포화 시엔 버리지 않고 호출 스레드에서 동기 실행한다. **`afterCommit`으로 미루지 않았다** — `REQUIRES_NEW`는 "바깥 트랜잭션이 되감겨도 감사 기록은 남는다"(ADR-A2)도 함께 뜻하고, `RepositoryProvisioningService`처럼 이미 일어난 외부 효과를 기록하는 훅이 있어 미루면 되돌릴 수 없는 효과의 유일한 증거가 사라진다. 비동기가 **새로 만드는 것은 가시성 지연**이다 — 쓰기 직후 `GET /audit-logs`를 부르면 아직 안 보일 수 있어 `api.md` §15.2에 명시했다(노출되는 조회 경로는 이 하나뿐이며, FE 가이드에는 감사 로그 조회 절 자체가 없다). 테스트는 `AuditLogExecutor.awaitDrained`로 이 경계를 확정적으로 넘는다(`Thread.sleep`·폴링 없음).
+- **요청 상관관계 ID**(10-6): `RequestIdFilter`가 요청마다 ID를 MDC에 심고 응답 `X-Request-Id`로 돌려준다. 필터를 가장 앞에 둬 보안 필터 체인이 남기는 로그(인증 거부 등)까지 같은 ID를 단다. 클라이언트가 준 값은 `[A-Za-z0-9._-]{1,64}`일 때만 받는다 — 개행이 섞인 값을 MDC에 넣으면 로그 줄을 위조할 수 있다(로그 인젝션).
+- 테스트: **1440 tests, 0 failures, 12 skipped**(신규 22건). 새 의존성 `com.github.ben-manes.caffeine:caffeine`(Spring Boot BOM 관리, 전이 의존성 없음). DDL·FE 변경 없음.
+- 이슈의 10-5(`PreviewWorkspaceService` 빌드 로그 전문 출력)는 #332 구역이라 제외했다.
+
 ---
 
 # 3. 해야 할 것

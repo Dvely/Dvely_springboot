@@ -323,6 +323,11 @@ cloudflare:
   proxied: true
 
 logging:
+  pattern:
+    # 모든 로그 줄에 요청 상관관계 ID 를 얹는다(RequestIdFilter 가 MDC 에 심는다). 콘솔 패턴 전체를
+    # 갈아엎는 대신 Spring Boot 기본 패턴이 참조하는 LOG_LEVEL_PATTERN 자리만 바꿔, 부트 버전이
+    # 올라가며 기본 패턴이 달라져도 따라간다. 요청 밖(스케줄러·기동)에서는 빈칸으로 나온다.
+    level: "%5p [%X{requestId:-}]"
   level:
     # docker-java 3.7.1 의 AbstrDockerCmd.exec() 는 LOGGER.debug("Cmd: {}", this) 를 호출하고
     # toString() 은 모든 필드를 reflection 으로 덤프한다. 그 필드에는 exec 의 cmd(프롬프트 전문)와

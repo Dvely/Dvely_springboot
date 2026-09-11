@@ -4,6 +4,7 @@ import com.example.dvely.apitoken.application.service.ApiTokenAuthenticator;
 import com.example.dvely.apitoken.domain.model.ApiToken;
 import com.example.dvely.apitoken.domain.service.ApiTokenGenerator;
 import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
+import com.example.dvely.auth.application.port.out.TokenClaims;
 import com.example.dvely.auth.application.port.out.TokenPort;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -98,16 +99,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private void authenticateWithJwt(String token) {
         try {
-            Long userId = tokenPort.getUserId(token);
-            String jti = tokenPort.getJti(token);
+            // userId 와 jti 를 한 번의 파싱으로 함께 얻는다. 따로 받으면 같은 토큰에 대해 HMAC 키
+            // 생성 + 서명 검증이 요청마다 두 번 돈다.
+            TokenClaims claims = tokenPort.parseClaims(token);
 
-            if (tokenBlacklistPort.isRevoked(jti)) {
+            if (tokenBlacklistPort.isRevoked(claims.jti())) {
                 return;
             }
 
             SecurityContextHolder.getContext().setAuthentication(
                     new UsernamePasswordAuthenticationToken(
-                            userId,
+                            claims.userId(),
                             null,
                             List.of(new SimpleGrantedAuthority("ROLE_USER"))));
         } catch (Exception ignored) {

@@ -31,7 +31,12 @@
 - `POST /api/v1/webhook/github`
 - Swagger/OpenAPI 경로
 
-### 2.2 응답 형식
+### 2.2 요청 상관관계 ID (Issue #345)
+
+- 모든 응답에 `X-Request-Id`가 붙는다. 장애 문의 시 이 값으로 서버 로그를 바로 집을 수 있다.
+- 클라이언트가 같은 헤더로 값을 보내면 그대로 이어받는다. 다만 `[A-Za-z0-9._-]{1,64}`에 맞을 때만 받고, 어긋나면 조용히 새로 만든다(로그 인젝션 차단). 거절이 아니라 대체이므로 요청은 그대로 처리된다.
+
+### 2.3 응답 형식
 
 현재 응답 형식은 통일되어 있지 않다.
 
@@ -41,7 +46,7 @@
 - Agent 상태 조회/입력: `ResponseEntity`
 - 일반 JSON 성공 응답은 `RawApiResponse` 처리를 거치지 않는 한 공통 MVC advice가 `status/code/message/data` envelope로 자동 변환한다. `@RawApiResponse`가 붙은 Agent/Auth/User/Webhook/PreviewGateway 컨트롤러는 원본 응답을 유지한다.
 
-### 2.3 공통 오류
+### 2.4 공통 오류
 
 `GlobalExceptionHandler`가 처리하는 주요 오류:
 
@@ -52,7 +57,7 @@
 - `409 Conflict`: 중복 생성 등 상태 충돌 (예: 동일 (project, scope, key) 환경변수 재생성)
 - `500 Internal Server Error`: 처리되지 않은 외부 연동/서버 오류
 
-### 2.4 현재 모듈
+### 2.5 현재 모듈
 
 - Auth
 - User
@@ -1139,7 +1144,9 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 
 - `detail`/`errorSummary`에는 토큰·시크릿·환경변수 값·로그 본문을 저장하지 않는다. `errorSummary`는 저장 전 시크릿 패턴 레닥션(`SecretRedactor`)을 거친다.
 - 보관 기간은 기본 180일(`qeploy.audit.retention-days`)이며, 만료 행은 시간당 배치 스케줄러(`qeploy.audit.retention-sweep-interval-ms`, 기본 3600000ms)가 삭제한다. 삭제 결과를 조회하는 API는 없다(애플리케이션 로그로만 확인 가능).
-- 감사 기록 자체가 실패해도 원래 요청(레포 연결, 배포 등)은 실패하지 않는다(비차단 계약) — 이 API의 조회 대상에 누락이 생길 수 있는 유일한 경우이며, 그 경우 애플리케이션 로그의 `AUDIT_FALLBACK` 라인에 남는다.
+- 감사 기록 자체가 실패해도 원래 요청(레포 연결, 배포 등)은 실패하지 않는다(비차단 계약). 이 경우 행이 남지 않으며, 애플리케이션 로그의 `AUDIT_FALLBACK` 라인에 흔적이 남는다.
+- **기록은 즉시 보이지 않을 수 있다(Issue #345).** 감사 INSERT 는 요청 처리와 분리된 전용 스레드에서 일어난다. 쓰기 요청이 `200`을 돌려준 직후 이 API 를 호출하면 해당 행이 아직 없을 수 있다 — 실무상 지연은 INSERT 한 건 수준(밀리초)이지만 **순서가 보장되지는 않는다.** 쓰기 직후 감사 목록을 갱신하는 화면이라면 짧은 재조회가 필요하다.
+- 위 지연과 별개로, 프로세스가 **비정상 종료**하면 큐에 남아 있던 기록은 유실된다. 정상 종료에서는 큐를 흘려보내고 내려간다. 즉 조회 대상에 누락이 생기는 경우는 ① 감사 쓰기 실패(`AUDIT_FALLBACK`) ② 비정상 종료 두 가지다.
 
 ---
 
