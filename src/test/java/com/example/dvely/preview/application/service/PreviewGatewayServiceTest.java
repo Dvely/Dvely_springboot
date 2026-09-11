@@ -32,6 +32,9 @@ class PreviewGatewayServiceTest {
 
     private HttpServer container;
     private PreviewGatewayService service;
+    // 컨테이너로 실제로 나간 요청 수 — base 흡수의 왕복 수를 세기 위한 것(7-4).
+    private final java.util.concurrent.atomic.AtomicInteger upstreamRequests =
+            new java.util.concurrent.atomic.AtomicInteger();
     // 안쪽 앱 무응답으로 회수 요청된 sessionId 를 기록한다(게이트웨이가 부르는 reclaimer 대역).
     private final java.util.List<String> reclaimed = new java.util.ArrayList<>();
 
@@ -39,6 +42,7 @@ class PreviewGatewayServiceTest {
     void startFakeContainer() throws IOException {
         container = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         container.createContext("/", exchange -> {
+            upstreamRequests.incrementAndGet();
             byte[] body = "<html><body>preview</body></html>".getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, "text/html");
             exchange.sendResponseHeaders(200, body.length);
@@ -352,6 +356,45 @@ class PreviewGatewayServiceTest {
         assertThat(streamed).contains("data: one").contains("data: two");
     }
 
+    // ── base 흡수 단수 기억 (Issue #342, 7-4) ─────────────────────────────────────────
+
+    /**
+     * base 를 쓰는 프로젝트에서는 자산마다 "틀린 경로로 먼저 묻고 → 접두를 벗겨 다시 묻는" 탐색이
+     * 반복됐다. 자산 수 × 최대 3 회의 컨테이너 왕복이다. 한 세션의 자산은 같은 빌드 산출물이라
+     * base 도 하나이므로, 두 번째 자산부터는 <b>한 번에</b> 맞아야 한다.
+     */
+    @Test
+    void remembersTheAbsorbedBaseSoLaterAssetsCostOneRoundTrip() throws IOException {
+        serveAsset("/assets/first.js", "application/javascript", "console.log(1)");
+        serveAsset("/assets/second.js", "application/javascript", "console.log(2)");
+
+        service.proxy(session(), "/api/v1/previews/s/t/", "my-todo-app/assets/first.js", null);
+        int firstAssetRoundTrips = upstreamRequests.get();
+        upstreamRequests.set(0);
+        ResponseEntity<Resource> second =
+                service.proxy(session(), "/api/v1/previews/s/t/", "my-todo-app/assets/second.js", null);
+
+        assertThat(firstAssetRoundTrips).isEqualTo(2);                       // 첫 자산: 틀린 경로 1 + 벗긴 경로 1
+        assertThat(upstreamRequests.get()).isEqualTo(1);   // 두 번째부터: 바로 맞는다
+        assertThat(bodyOf(second)).isEqualTo("console.log(2)");
+    }
+
+    /**
+     * 기억이 틀린 경우(같은 세션에 base 가 다른 자산이 섞임)에도 자산이 살아나야 한다 — 최적화가
+     * 동작을 바꾸지 않는다는 것이 이 되돌림의 목적이다.
+     */
+    @Test
+    void fallsBackToTheSearchWhenTheRememberedDepthDoesNotFit() throws IOException {
+        serveAsset("/assets/first.js", "application/javascript", "console.log(1)");
+
+        service.proxy(session(), "/api/v1/previews/s/t/", "my-todo-app/assets/first.js", null);
+        // 이번에는 접두가 없는 경로 — 기억한 단수를 적용하면 어긋난다.
+        ResponseEntity<Resource> direct =
+                service.proxy(session(), "/api/v1/previews/s/t/", "assets/first.js", null);
+
+        assertThat(bodyOf(direct)).isEqualTo("console.log(1)");
+    }
+
     /** 응답 본문을 문자열로 읽는다 — 스트리밍 봉투(Resource)로 바뀌어도 테스트가 같은 것을 본다. */
     private String bodyOf(ResponseEntity<Resource> response) throws IOException {
         try (var in = response.getBody().getInputStream()) {
@@ -413,6 +456,7 @@ class PreviewGatewayServiceTest {
     /** 이 경로에만 실제 파일이 있는 상태를 만든다. 나머지 경로는 @BeforeEach 의 "/" 가 받아 index.html 을 돌려준다(serve -s 와 같은 동작). */
     private void serveAsset(String path, String contentType, String content) {
         container.createContext(path, exchange -> {
+            upstreamRequests.incrementAndGet();
             byte[] body = content.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, contentType);
             exchange.sendResponseHeaders(200, body.length);

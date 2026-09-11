@@ -92,6 +92,18 @@ public class PreviewGatewayService {
             .connectTimeout(CONNECT_TIMEOUT)
             .build();
 
+    /**
+     * 세션당 흡수 단수를 기억하는 상한 (Issue #342, 7-4). 게이트웨이는 host-affine 이고 세션 TTL 은
+     * 30 분이라 동시에 살아 있는 세션 수는 이보다 훨씬 작다.
+     */
+    private static final int ABSORB_MEMO_CAPACITY = 512;
+
+    /**
+     * 세션 → 빌드 base 흡수 단수. 값이 있으면 그 세션의 자산은 선행 세그먼트를 그만큼 벗겨야 맞는다.
+     * base 가 없는 프로젝트(대다수)는 여기에 들어오지 않는다 — 흡수가 일어난 세션만 기록한다.
+     */
+    private final java.util.Map<String, Integer> absorbedDepth = new java.util.concurrent.ConcurrentHashMap<>();
+
     private final String contentSecurityPolicy;
     private final boolean reclaimEnabled;
     private final DeadPreviewSessionReclaimer reclaimer;
@@ -163,10 +175,9 @@ public class PreviewGatewayService {
         HttpResponse<InputStream> upstream = null;
         try {
             String safePath = sanitizePath(path);
-            upstream = fetch(session, safePath, query, request);
-            if (request.isGet()) {
-                upstream = absorbBuildBasePath(session, safePath, query, upstream);
-            }
+            upstream = request.isGet()
+                    ? fetchForGet(session, safePath, query)
+                    : fetch(session, safePath, query, request);
             return relay(upstream, gatewayPrefix);
         } catch (InterruptedException exception) {
             closeQuietly(upstream);
@@ -354,6 +365,60 @@ public class PreviewGatewayService {
     }
 
     /**
+     * GET 한 건을 가져오되 빌드 base 어긋남을 흡수한다 — 같은 세션에서 두 번째 자산부터는 한 번에
+     * 맞힌다 (Issue #342, 7-4).
+     *
+     * <p>{@link #absorbBuildBasePath} 는 "틀린 경로로 먼저 물어보고, HTML 이 돌아오면 접두를 벗겨
+     * 다시 묻는다"로 동작한다. 그 탐색이 자산마다 반복되면 base 를 쓰는 프로젝트의 페이지 한 번은
+     * 자산 수 × 최대 3 회의 컨테이너 왕복이 된다. 한 세션의 자산은 <b>같은 빌드 산출물</b>이라 base 도
+     * 하나이므로, 처음 알아낸 단수를 기억해 다음 자산부터 바로 적용한다.</p>
+     *
+     * <p>기억이 틀렸으면(같은 세션에 base 가 다른 자산이 섞인 경우) 기억을 버리고 원래 경로로 돌아가
+     * 예전 탐색을 그대로 한다 — 최적화가 자산을 깨뜨리지 않는다는 것이 이 되돌림의 목적이다.</p>
+     */
+    private HttpResponse<InputStream> fetchForGet(PreviewSessionInfo session, String path, String query)
+            throws java.io.IOException, InterruptedException {
+        Integer remembered = absorbedDepth.get(session.sessionId());
+        if (remembered != null && looksLikeStaticAsset(path)) {
+            String shortcut = stripLeadingSegments(path, remembered);
+            if (shortcut != null) {
+                HttpResponse<InputStream> response = fetch(session, shortcut, query, ProxiedRequest.get());
+                if (!isHtml(response)) {
+                    return response;   // 기억한 단수로 한 번에 맞았다 — 왕복 1 회
+                }
+                closeQuietly(response);
+                absorbedDepth.remove(session.sessionId());
+            }
+        }
+        return absorbBuildBasePath(session, path, query, fetch(session, path, query, ProxiedRequest.get()));
+    }
+
+    /** 선행 세그먼트 {@code count} 개를 벗긴다. 그만큼 벗길 수 없으면 null. */
+    private String stripLeadingSegments(String path, int count) {
+        String candidate = path;
+        for (int i = 0; i < count; i++) {
+            int slash = candidate.indexOf('/');
+            if (slash < 0 || slash == candidate.length() - 1) {
+                return null;
+            }
+            candidate = candidate.substring(slash + 1);
+        }
+        return candidate;
+    }
+
+    /**
+     * 세션은 TTL 로 사라지지만 이 맵은 그 소멸을 알지 못한다. 상한에 닿으면 통째로 비운다 — 잃는
+     * 것은 "다음 자산 한 번의 추가 왕복"뿐이고, 그 대가로 무한 성장을 막는다. base 를 쓰지 않는
+     * 프로젝트(대다수)는 애초에 여기 들어오지 않으므로 실제 크기는 훨씬 작다.
+     */
+    private void rememberAbsorbedDepth(PreviewSessionInfo session, int depth) {
+        if (absorbedDepth.size() >= ABSORB_MEMO_CAPACITY) {
+            absorbedDepth.clear();
+        }
+        absorbedDepth.put(session.sessionId(), depth);
+    }
+
+    /**
      * 앱이 배포용 base로 빌드된 경우의 경로 어긋남을 흡수한다 (Issue #111).
      *
      * <p>GitHub Pages는 {@code {owner}.github.io/{repo}/}에서 서빙하므로 앱이 base를
@@ -392,7 +457,8 @@ public class PreviewGatewayService {
             candidate = candidate.substring(slash + 1);
             HttpResponse<InputStream> retried = fetch(session, candidate, query, ProxiedRequest.get());
             if (!isHtml(retried)) {
-                log.info("[PreviewGateway] 빌드 base 흡수: {} -> {}", path, candidate);
+                log.info("[PreviewGateway] 빌드 base 흡수: {} -> {} (단수 {})", path, candidate, depth + 1);
+                rememberAbsorbedDepth(session, depth + 1);
                 closeQuietly(original);
                 return retried;
             }
