@@ -54,7 +54,20 @@ public class DomainBindingCommandService {
     private final S3CdnProvisioningPort s3CdnProvisioningPort;
     private final BackendAddressPort backendAddressPort;
 
-    @Transactional
+    /**
+     * 트랜잭션을 걸지 않는다 — 어느 경로든 Cloudflare · GitHub Pages · ACM 을 호출하고 그중
+     * {@code GithubPagesDomainHostingAdapter} 는 재시도 사이에 {@code Thread.sleep} 까지 한다.
+     * 그 내내 커넥션이 묶였고, {@code DomainVerificationWorker} 가 배치 20건을 순차로 태우면서
+     * 곱해졌다(#337).
+     *
+     * <p><b>실패 시 저장하지 않는 성질은 트랜잭션 롤백이 아니라 순서로 지킨다.</b> 예전에는
+     * 외부 호출이 던지면 롤백이 저장을 되돌려 줬다. 트랜잭션이 없는 지금은 세 하위 경로
+     * ({@link #bindManagedSubdomain} · {@link #bindCustomDomain} · {@link #bindS3Frontend}) 모두
+     * 외부 호출을 <b>유일한</b> {@code domainBindingRepository.save} 보다 앞에 두어, 외부가 4xx 를
+     * 주면 그 자리에서 던지고 저장 줄에 도달하지 못한다. 저장이 경로마다 한 건뿐이라 원자성도
+     * 줄지 않는다. 이 순서는 바꾸면 안 된다 — 바꾸는 순간 "외부 실패인데 행은 남는" 상태가
+     * 생긴다({@code DomainBindingCommandServiceTest} 가 이를 고정한다).</p>
+     */
     public DomainBindingResult bindDomain(Long ownerUserId, Long projectId, BindDomainCommand command) {
         Project project = resolveProject(ownerUserId, projectId);
         DomainBindingResult result;
@@ -98,7 +111,11 @@ public class DomainBindingCommandService {
         return result;
     }
 
-    @Transactional
+    /**
+     * 트랜잭션을 걸지 않는다 — {@link #verify} 가 호스팅 어댑터 · Cloudflare · DNS 조회를 잇달아
+     * 호출한다(#337). 저장은 {@code verify} 끝의 {@code save} 한 건이고 외부 호출이 전부 그보다
+     * 앞이라, 외부가 던지면 저장에 도달하지 않는 것은 이전과 같다.
+     */
     public DomainBindingResult checkVerification(Long ownerUserId, Long domainId) {
         DomainBinding domain = resolveDomainOwnedBy(domainId, ownerUserId);
         return verify(domain, resolveProject(ownerUserId, domain.getProjectId()), ownerUserId);
@@ -107,8 +124,10 @@ public class DomainBindingCommandService {
     /**
      * 검증 워커 경로. 요청한 사용자가 없으므로 도메인이 속한 프로젝트에서 소유자를 찾아
      * 같은 검증을 돌린다. 소유권을 확인하는 것이 아니라 검증에 쓸 토큰의 주인을 찾는 것이다.
+     *
+     * <p>워커가 배치로 태우는 입구라 {@link #checkVerification} 보다 트랜잭션 제거 효과가 크다 —
+     * 예전에는 20건을 순차 검증하는 동안 매 건이 외부 응답을 기다리며 커넥션을 붙들었다(#337).
      */
-    @Transactional
     public DomainBindingResult checkVerificationAsSystem(Long domainId) {
         DomainBinding domain = domainBindingRepository.findById(domainId)
                 .orElseThrow(() -> new NotFoundException("도메인을 찾을 수 없습니다. domainId=" + domainId));
@@ -158,7 +177,6 @@ public class DomainBindingCommandService {
     }
 
     /** HTTP path — no Agent task (see {@link #deleteDomain(Long, Long, String)}). */
-    @Transactional
     public void deleteDomain(Long ownerUserId, Long domainId) {
         deleteDomain(ownerUserId, domainId, null);
     }
@@ -167,8 +185,12 @@ public class DomainBindingCommandService {
      * @param taskId nullable — non-null only when the Agent-driven delete path (design H11,
      *               ADR-A8) called this; a direct HTTP call always passes null via the 2-arg
      *               overload above.
+     *
+     * <p>트랜잭션을 걸지 않는다(#337). 외부 정리(어댑터 unbind · Cloudflare 레코드 삭제 · S3
+     * teardown)가 전부 유일한 쓰기인 {@code deleteById} 보다 앞에 있어, 외부가 실패하면 행이
+     * 그대로 남는 기존 동작이 순서로 유지된다. 감사 기록은 원래부터 {@code AuditRecorder} 가
+     * 별도로 커밋하며 절대 던지지 않는다.</p>
      */
-    @Transactional
     public void deleteDomain(Long ownerUserId, Long domainId, String taskId) {
         DomainBinding domain = resolveDomainOwnedBy(domainId, ownerUserId);
         if (domain.getHostingTarget() == DomainHostingTarget.AWS_S3_FRONTEND) {
@@ -322,8 +344,11 @@ public class DomainBindingCommandService {
      * 프로젝트 삭제 시 그 프로젝트의 S3 프론트 도메인을 정리한다(Cloudflare 레코드·CloudFront·인증서).
      * 시스템 내부 호출이라 소유권 검사는 상위(프로젝트 삭제)가 이미 했다. 한 도메인 정리가 실패해도
      * 나머지는 계속한다(best-effort).
+     *
+     * <p>트랜잭션을 걷어냈다(#337). 예전에는 배치 전체가 트랜잭션 하나라, 건별 try/catch 가
+     * 있어도 뒤쪽 한 건의 삭제 실패가 앞서 성공한 삭제까지 되돌릴 수 있었다 — best-effort 라는
+     * 주석과 실제 동작이 어긋나 있었다. 이제 건별로 커밋된다.</p>
      */
-    @Transactional
     public void cleanupProjectS3Domains(Long projectId) {
         for (DomainBinding domain : domainBindingRepository.findByProjectIdOrderByCreatedAtDesc(projectId)) {
             if (domain.getHostingTarget() != DomainHostingTarget.AWS_S3_FRONTEND) {
@@ -387,8 +412,11 @@ public class DomainBindingCommandService {
      * 우리 서브도메인이 남의 서버를 가리키는 dangling DNS(서브도메인 탈취)가 된다 — 그래서 레코드를 반드시
      * 지운다. 시스템 내부 호출(종료 정리)이라 소유권 검사는 상위(terminate)가 이미 했다. 한 도메인 정리가
      * 실패해도 나머지·종료는 계속한다(best-effort).
+     *
+     * <p>{@link #cleanupProjectS3Domains} 와 같은 이유로 트랜잭션을 걷어냈다(#337). Cloudflare
+     * 삭제가 {@code deleteById} 보다 앞이라, 레코드가 안 지워지면 행도 남는 순서는 그대로다 —
+     * dangling DNS 를 남기느니 행을 남겨 다음 정리에 걸리게 하는 편이 안전하다.</p>
      */
-    @Transactional
     public void releaseServerDomains(Long projectId, String ipAddress) {
         if (ipAddress == null || ipAddress.isBlank()) {
             return;
