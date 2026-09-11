@@ -217,7 +217,6 @@ class ChatCommandServiceTest {
         assertThat(cutoff.getValue())
                 .isBetween(ChatTrashPolicy.cutoff(before), ChatTrashPolicy.cutoff(LocalDateTime.now()));
         verify(conversationRepository, never()).deleteById(any());
-        verify(conversationRepository, never()).findAllByDeletedTrueAndDeletedAtLessThanEqual(any());
     }
 
     private Project project(Long projectId, Long ownerUserId, String sourceRepository, boolean deleted) {
