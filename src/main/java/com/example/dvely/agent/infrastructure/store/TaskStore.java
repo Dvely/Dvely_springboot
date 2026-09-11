@@ -107,7 +107,7 @@ public class TaskStore {
                         conversationId, userId, TERMINAL_STATUSES,
                         org.springframework.data.domain.PageRequest.of(0, 1))
                 .stream().findFirst()
-                .map(run -> new ActiveTask(run.getTaskId(), TaskStatus.valueOf(run.getStatus())));
+                .map(view -> new ActiveTask(view.getTaskId(), TaskStatus.valueOf(view.getStatus())));
     }
 
     /** 대화의 현재 살아있는 태스크 포인터(id + 상태). */

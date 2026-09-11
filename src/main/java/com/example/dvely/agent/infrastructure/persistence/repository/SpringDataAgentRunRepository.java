@@ -21,15 +21,24 @@ public interface SpringDataAgentRunRepository extends JpaRepository<AgentRunEnti
     // 진행 중 상태를 복구할 포인터로 쓴다 — 메시지가 taskId 를 안 실어(과거 조회 시 null) 잃어버린
     // 태스크에 다시 닿는 유일한 길이었다. 소유자로 필터해 남의 태스크가 새지 않고, terminal(DONE/
     // FAILED/CANCELLED)은 제외해 이미 끝난 태스크의 낡은 상태는 돌려주지 않는다. 가장 최근 하나만 본다.
+    // U6(#341) 6-6: 엔티티가 아니라 (taskId, status) 두 컬럼만 읽는다. 호출부(TaskStore#findActiveTask)
+    // 가 쓰는 것이 그 둘뿐인데 엔티티로 읽으면 plan_json LONGTEXT 와 TEXT 7개(summary·error·question·
+    // clarification_json·answered_clarification_json·input_value·failure_log·suggested_fix)가 함께
+    // 실려 왔다. 대화를 열 때마다 도는 조회다.
+    interface ActiveRunView {
+        String getTaskId();
+        String getStatus();
+    }
+
     @Query("""
-            select run
+            select run.taskId as taskId, run.status as status
             from AgentRunEntity run
             where run.conversationId = :conversationId
               and run.ownerUserId = :ownerUserId
               and run.status not in :terminalStatuses
             order by run.createdAt desc
             """)
-    List<AgentRunEntity> findActiveRuns(
+    List<ActiveRunView> findActiveRuns(
             @Param("conversationId") Long conversationId,
             @Param("ownerUserId") Long ownerUserId,
             @Param("terminalStatuses") List<String> terminalStatuses,
