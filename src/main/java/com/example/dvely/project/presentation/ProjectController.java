@@ -124,13 +124,16 @@ public class ProjectController {
     @Operation(
             summary = "GitHub 저장소 목록 조회",
             description = "현재 유저가 GitHub App/OAuth 연동으로 접근할 수 있는 저장소 목록을 조회합니다. " +
-                          "기존 저장소를 프로젝트에 연결하는 화면에서 사용합니다."
+                          "기존 저장소를 프로젝트에 연결하는 화면에서 사용합니다. " +
+                          "응답은 60초간 유저별로 캐시되며, GitHub에서 방금 만든 저장소를 바로 보려면 refresh=true를 붙입니다."
     )
     @GetMapping("/github/repositories")
     public List<GithubRepositoryResponse> getGithubRepositories(
-            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId
+            @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+            @Parameter(description = "true면 캐시를 버리고 GitHub에서 다시 읽습니다")
+            @RequestParam(name = "refresh", defaultValue = "false") boolean refresh
     ) {
-        return projectFacade.getGithubRepositories(ownerUserId).stream()
+        return projectFacade.getGithubRepositories(ownerUserId, refresh).stream()
                 .map(projectMapper::toGithubRepositoryResponse)
                 .toList();
     }

@@ -29,7 +29,8 @@ public class TemplateCatalogConfig {
         factory.setConnectTimeout(timeout);
         factory.setReadTimeout(timeout);
 
-        // RestClient.Builder 빈은 이 앱 컨텍스트에 없다(저장소 전반이 RestClient.create() 를 쓴다).
+        // 공용 RestClient 빈(config/HttpClientConfig)을 쓰지 않는 이유는 상한이 다르기 때문이다 —
+        // 카탈로그는 곁다리라 5 초면 포기해야 하고, 그 값은 여기 properties 로 조절한다.
         return RestClient.builder().requestFactory(factory).build();
     }
 }

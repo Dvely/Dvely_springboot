@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.sun.net.httpserver.HttpServer;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
@@ -13,6 +15,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 
 /**
@@ -354,6 +357,40 @@ class PreviewGatewayServiceTest {
             exchange.getResponseBody().write(body);
             exchange.close();
         });
+    }
+
+    /**
+     * 버퍼링 프록시({@code fetch})에 건 요청 단위 상한이 SSE 경로로 새지 않는다는 것을 고정한다.
+     *
+     * <p>SSE 요청은 헤더만 받고 스트림을 오래 열어두는 것이 정상 동작이다. 여기에 요청 상한을
+     * 붙이면 살아 있는 실시간 스트림을 상한 시점에 끊는다 — 프리뷰 앱 쪽에서는 원인 없이
+     * 재연결이 반복되는 모습으로만 보인다.</p>
+     */
+    @Test
+    void 스트리밍_경로는_응답이_시작된_뒤_한참_있다_온_이벤트도_흘려보낸다() throws Exception {
+        container.createContext("/events", exchange -> {
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE);
+            exchange.sendResponseHeaders(200, 0);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write("data: first\n\n".getBytes(StandardCharsets.UTF_8));
+                out.flush();
+                // 연결 상한(2 초)보다 길게 쉰다 — 그 값이 스트림 수명으로 새어도 여기서 걸린다.
+                Thread.sleep(2500);
+                out.write("data: after-a-long-pause\n\n".getBytes(StandardCharsets.UTF_8));
+                out.flush();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> response =
+                service.proxyEventStream(session(), "events", null, null);
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        response.getBody().writeTo(sink);
+
+        assertThat(sink.toString(StandardCharsets.UTF_8))
+                .contains("data: first")
+                .contains("data: after-a-long-pause");
     }
 
     private PreviewSessionInfo session() {

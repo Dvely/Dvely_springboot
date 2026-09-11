@@ -5,6 +5,7 @@ import com.example.dvely.deployment.domain.value.PackageManager;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -27,6 +28,12 @@ public class GithubRepoClient implements GithubRepoPort {
 
     private static final String API_BASE = "https://api.github.com";
     private static final Pattern SEQUENTIAL_TAG = Pattern.compile("^v(\\d+)$");
+
+    private final RestClient githubRestClient;
+
+    public GithubRepoClient(@Qualifier("githubRestClient") RestClient githubRestClient) {
+        this.githubRestClient = githubRestClient;
+    }
 
     @Override
     public boolean hasNewCommits(String userToken, String repoFullName, String base, String head) {
@@ -68,8 +75,8 @@ public class GithubRepoClient implements GithubRepoPort {
     }
 
     /**
-     * 404 를 어떻게 읽을지 정하는 순수 판단부. 이 클래스가 RestClient 를 직접 만들어 쓰는 탓에
-     * HTTP 를 끼운 테스트가 어려워서, 실제로 틀리기 쉬운 판단만 떼어 두었다.
+     * 404 를 어떻게 읽을지 정하는 순수 판단부. 실제로 틀리기 쉬운 것은 왕복이 아니라 이 판단이라
+     * 떼어 두었다(이 클래스가 RestClient 를 주입받게 된 뒤로는 HTTP 를 끼운 테스트도 가능하다).
      */
     static boolean interpretCompareNotFound(String repoFullName, String base, String head,
                                             boolean headExists, boolean baseExists) {
@@ -524,8 +531,16 @@ public class GithubRepoClient implements GithubRepoPort {
         return prefix + " (status=" + e.getStatusCode().value() + ", body=" + e.getResponseBodyAsString() + ")";
     }
 
+    /**
+     * 사용자 토큰마다 파생시킨다.
+     *
+     * <p>{@code mutate()} 는 원본의 요청 팩토리를 <b>그대로 물려준다</b>(참조 복사). 그래서
+     * 커넥션 풀·셀렉터 스레드와 상한은 공용 빈 하나를 계속 공유하고, 인스턴스에 고정되는 것은
+     * 이 호출의 토큰뿐이다 — 토큰을 공용 빈의 기본 헤더로 박으면 다른 사용자의 요청에 남의
+     * 토큰이 실린다.</p>
+     */
     private RestClient restClient(String userToken) {
-        return RestClient.builder()
+        return githubRestClient.mutate()
                 .defaultHeader("Authorization", "Bearer " + userToken)
                 .defaultHeader("Accept", "application/vnd.github+json")
                 .defaultHeader("X-GitHub-Api-Version", "2022-11-28")

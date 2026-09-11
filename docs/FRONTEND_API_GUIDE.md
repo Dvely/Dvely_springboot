@@ -270,7 +270,7 @@ Accept: text/event-stream
 | POST | `/api/v1/projects` | 프로젝트 생성(DRAFT). **코드 생성은 시작하지 않음** — 대화로 첫 요청을 보낼 때 task가 제출된다 | `{ name, startMode(blank\|template), templateType?, draftMode(fast\|quality) }` | 202 `{ projectId, name, status }` | 400 |
 | POST | `/api/v1/projects/{id}/repository` | GitHub 저장소 연결(신규 생성 또는 기존 import) | `{ repositoryMode(create\|existing), repositoryName?, repositoryFullName?, repositoryVisibility? }` | `{ projectId, repositoryFullName, repositoryVisibility, bindingStatus, repositoryHealth }` | 409(이미 연결됨), 400(저장소 접근 불가) |
 | DELETE | `/api/v1/projects/{id}/repository` | 저장소 연결 해제(GitHub 저장소 자체는 삭제 안 함) | - | 204 | 404 |
-| GET | `/api/v1/projects/github/repositories` | GitHub App으로 접근 가능한 내 저장소 목록 | - | `[{ fullName, name, owner, visibility, defaultBranch, updatedAt }]` | - |
+| GET | `/api/v1/projects/github/repositories` | GitHub App으로 접근 가능한 내 저장소 목록. 응답은 **유저별로 60초 캐시**된다 | query: `refresh`(기본 `false`) — 사용자가 GitHub에서 저장소를 방금 만들고 돌아온 경우 `true`로 캐시를 버리고 다시 읽는다 | `[{ fullName, name, owner, visibility, defaultBranch, updatedAt }]` | - |
 | GET | `/api/v1/projects` | 내 프로젝트 목록(최신 수정순) | - | `[{ projectId, name, deployStatus, currentUrl, updatedAt, updatedAtRelativeText }]` | - |
 | GET | `/api/v1/projects/{id}` | 프로젝트 상세(메타데이터) | - | `{ projectId, name, status, startMode, templateType, draftMode, createdAt, updatedAt }` (`templateType`은 콘텐츠 템플릿 — 프레임워크가 아님, §5.1) | 404 |
 | PATCH | `/api/v1/projects/{id}` | 프로젝트명 수정(현재 name만 수정 가능) | `{ name }` | `ProjectDetailResponse` (위와 동일 shape) | 400, 404 |

@@ -3,6 +3,7 @@ package com.example.dvely.agent.infrastructure.llm;
 import java.time.Duration;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.web.client.RestClient;
 
 /**
  * LLM HTTP 호출의 연결·읽기 상한.
@@ -21,7 +22,25 @@ final class LlmHttp {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration READ_TIMEOUT = Duration.ofSeconds(180);
 
+    /**
+     * 세 LLM 클라이언트가 함께 쓰는 클라이언트. 호출마다 조립하면 요청 팩토리가 매번 새로 생겨
+     * 커넥션을 재사용할 수 없다 — CODE 한 태스크가 40 라운드면 TLS 핸드셰이크도 40 번이다.
+     *
+     * <p><b>API 키는 여기에 넣지 않는다.</b> {@code defaultHeader} 로 박으면 그 키가 인스턴스에
+     * 고정된다. 지금은 서버 설정값 하나라 티가 나지 않지만, 이 저장소는 사용자별 키(BYOK)를
+     * 이미 다루고 있어서 언젠가 이 경로로 들어온다 — 그때 A 의 키로 B 의 요청이 나가는 사고는
+     * 조용히 일어나고 로그에도 남지 않는다. 키는 호출마다 헤더로 싣는다.</p>
+     */
+    private static final RestClient SHARED = RestClient.builder()
+            .requestFactory(timeoutFactory())
+            .defaultHeader("content-type", "application/json")
+            .build();
+
     private LlmHttp() {
+    }
+
+    static RestClient client() {
+        return SHARED;
     }
 
     static ClientHttpRequestFactory timeoutFactory() {

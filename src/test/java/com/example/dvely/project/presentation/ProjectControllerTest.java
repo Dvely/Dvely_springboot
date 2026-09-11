@@ -176,14 +176,25 @@ class ProjectControllerTest {
                 now
         );
 
-        when(projectFacade.getGithubRepositories(1L)).thenReturn(List.of(result));
+        when(projectFacade.getGithubRepositories(1L, false)).thenReturn(List.of(result));
         when(projectMapper.toGithubRepositoryResponse(result)).thenReturn(response);
 
-        List<GithubRepositoryResponse> responses = projectController.getGithubRepositories(1L);
+        List<GithubRepositoryResponse> responses = projectController.getGithubRepositories(1L, false);
 
         assertThat(responses).hasSize(1);
         assertThat(responses.get(0).fullName()).isEqualTo("octo/repo");
-        verify(projectFacade).getGithubRepositories(1L);
+        verify(projectFacade).getGithubRepositories(1L, false);
+    }
+
+    @Test
+    void getGithubRepositories_passesRefreshThroughSoAFreshRepoIsVisibleImmediately() {
+        // 사용자가 GitHub 에서 저장소를 방금 만들고 넘어오는 경우가 있다. 이 플래그가 전달되지
+        // 않으면 캐시가 최대 60 초 동안 없는 목록을 보여준다.
+        when(projectFacade.getGithubRepositories(1L, true)).thenReturn(List.of());
+
+        projectController.getGithubRepositories(1L, true);
+
+        verify(projectFacade).getGithubRepositories(1L, true);
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.example.dvely.auth.infrastructure.external.github;
 
 import com.example.dvely.auth.application.port.out.GithubUserPort;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
@@ -9,6 +10,12 @@ import org.springframework.web.client.RestClient;
 public class GithubUserClient implements GithubUserPort {
 
     private static final String GITHUB_API_BASE_URL = "https://api.github.com";
+
+    private final RestClient githubRestClient;
+
+    public GithubUserClient(@Qualifier("githubRestClient") RestClient githubRestClient) {
+        this.githubRestClient = githubRestClient;
+    }
 
     /**
      * OAuth User Access Token으로 GitHub 유저 정보 조회
@@ -18,7 +25,7 @@ public class GithubUserClient implements GithubUserPort {
     public GithubUserInfo getUser(String accessToken) {
         GithubUserResponse response;
         try {
-            response = RestClient.create()
+            response = githubRestClient
                     .get()
                     .uri(GITHUB_API_BASE_URL + "/user")
                     .header("Authorization", "token " + accessToken)

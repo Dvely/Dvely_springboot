@@ -57,8 +57,28 @@ public class PreviewGatewayService {
     static final String SANDBOX_DIRECTIVES =
             "sandbox allow-scripts allow-forms allow-popups allow-modals";
 
+    /**
+     * 프리뷰 컨테이너는 같은 호스트의 루프백이다. 연결이 2 초 걸린다면 느린 게 아니라 컨테이너가
+     * 없는 것이다 — 이미 {@code isInnerAppUnreachable} 이 같은 2 초로 죽음을 판정하고 있다.
+     */
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(2);
+
+    /**
+     * 버퍼링 프록시({@code fetch}) 한 번의 상한.
+     *
+     * <p>안쪽 앱이 응답을 시작하지 않으면 Tomcat 요청 스레드가 그대로 묶인다. 앞단 nginx 는
+     * {@code proxy_read_timeout 3600s} 라 아무것도 끊어주지 않으므로, 여기서 끊지 않으면 정말로
+     * 한 시간을 붙잡고 있는다.</p>
+     *
+     * <p><b>SSE 경로({@code proxyEventStream})에는 붙이지 않는다.</b> 그 요청은 헤더만 받고
+     * 스트림을 내려보내는 것이 정상 동작이라, 요청 단위 상한을 걸면 살아 있는 스트림을 끊는다.
+     * 대신 연결 상한은 공유하므로 닿지 않는 컨테이너는 SSE 에서도 2 초에 판정된다.</p>
+     */
+    private static final Duration FETCH_TIMEOUT = Duration.ofSeconds(30);
+
     private final HttpClient httpClient = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NORMAL)
+            .connectTimeout(CONNECT_TIMEOUT)
             .build();
 
     private final String contentSecurityPolicy;
@@ -254,7 +274,9 @@ public class PreviewGatewayService {
         HttpRequest.BodyPublisher publisher = (body == null || body.length == 0)
                 ? HttpRequest.BodyPublishers.noBody()
                 : HttpRequest.BodyPublishers.ofByteArray(body);
-        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(target)).method(method, publisher);
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(target))
+                .timeout(FETCH_TIMEOUT)
+                .method(method, publisher);
         if (contentType != null && !contentType.isBlank() && body != null && body.length > 0) {
             builder.header(HttpHeaders.CONTENT_TYPE, contentType);
         }

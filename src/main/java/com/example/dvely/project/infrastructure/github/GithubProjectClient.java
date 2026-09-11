@@ -10,30 +10,19 @@ import com.example.dvely.project.application.port.out.GithubRepositoryPort;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import io.jsonwebtoken.Jwts;
-import java.io.IOException;
-import java.io.StringReader;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.PrivateKey;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
 import java.util.Optional;
-import lombok.RequiredArgsConstructor;
-import org.bouncycastle.openssl.PEMKeyPair;
-import org.bouncycastle.openssl.PEMParser;
-import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 
 @Component
-@RequiredArgsConstructor
 public class GithubProjectClient implements GithubRepositoryPort {
 
     private static final String GITHUB_API_BASE_URL = "https://api.github.com";
@@ -47,10 +36,36 @@ public class GithubProjectClient implements GithubRepositoryPort {
     // bad_refresh_token 이 난다(getGithubUserAccessToken 참고).
     private final AuthCommandService authCommandService;
     private final GithubProperties githubProperties;
-    private final RestClient restClient = RestClient.create();
+    private final RestClient restClient;
+
+    /** 목록 한 번이 GitHub 왕복 최대 10 번이다 — 사용자별로 아주 짧게만 들고 있는다. */
+    private final RepositoryListCache repositoryLists = new RepositoryListCache();
+
+    // 생성자를 직접 쓰는 이유: RestClient 빈이 여럿이라 타입만으로는 고를 수 없는데,
+    // Lombok 은 필드의 @Qualifier 를 생성자 파라미터로 옮겨주지 않는다.
+    public GithubProjectClient(UserRepository userRepository,
+                               GithubAppPort githubAppPort,
+                               AuthCommandService authCommandService,
+                               GithubProperties githubProperties,
+                               @Qualifier("githubRestClient") RestClient restClient) {
+        this.userRepository = userRepository;
+        this.githubAppPort = githubAppPort;
+        this.authCommandService = authCommandService;
+        this.githubProperties = githubProperties;
+        this.restClient = restClient;
+    }
 
     @Override
-    public List<GithubRepository> listRepositories(Long ownerUserId) {
+    public List<GithubRepository> listRepositories(Long ownerUserId, boolean refresh) {
+        Instant now = Instant.now();
+        if (refresh) {
+            repositoryLists.invalidate(ownerUserId);
+        } else {
+            Optional<List<GithubRepository>> cached = repositoryLists.find(ownerUserId, now);
+            if (cached.isPresent()) {
+                return cached.get();
+            }
+        }
         try {
             String token = getGithubInstallationAccessToken(ownerUserId);
             List<GithubRepository> repositories = new ArrayList<>();
@@ -90,6 +105,7 @@ public class GithubProjectClient implements GithubRepositoryPort {
                     break;
                 }
             }
+            repositoryLists.put(ownerUserId, repositories, now);
             return repositories;
         } catch (RestClientResponseException e) {
             throw githubResponseFailure("GitHub 저장소 목록 조회", e);
@@ -309,7 +325,9 @@ public class GithubProjectClient implements GithubRepositoryPort {
         }
 
         try {
-            return getInstallationToken(user.getGithubInstallationId());
+            // 발급을 GithubAppClient 하나에만 둔다. 여기 있던 두 번째 구현은 PEM 을 다시 파싱하고
+            // 토큰도 따로 받아서, 캐시를 어느 쪽에 달아도 다른 쪽이 그대로 새로 발급했다.
+            return githubAppPort.getInstallationToken(user.getGithubInstallationId());
         } catch (RestClientResponseException e) {
             throw githubResponseFailure("GitHub App installation token 발급", e);
         } catch (RestClientException e) {
@@ -357,55 +375,6 @@ public class GithubProjectClient implements GithubRepositoryPort {
                             + "GitHub App 권한을 다시 갱신한 뒤 재시도하세요. 원인: " + e.getMessage(),
                     e
             );
-        }
-    }
-
-    private String getInstallationToken(Long installationId) {
-        record TokenResponse(@JsonProperty("token") String token) {}
-        TokenResponse response = restClient.post()
-                .uri(GITHUB_API_BASE_URL + "/app/installations/" + installationId + "/access_tokens")
-                .header("Authorization", "Bearer " + generateAppJwt())
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2022-11-28")
-                .retrieve()
-                .body(TokenResponse.class);
-
-        if (response == null || response.token() == null || response.token().isBlank()) {
-            throw new IllegalStateException("Installation Access Token 발급 실패");
-        }
-        return response.token();
-    }
-
-    private String generateAppJwt() {
-        PrivateKey privateKey = loadPrivateKey();
-        Instant now = Instant.now();
-        return Jwts.builder()
-                .issuer(githubProperties.app().appId())
-                .issuedAt(Date.from(now.minusSeconds(60)))
-                .expiration(Date.from(now.plusSeconds(540)))
-                .signWith(privateKey, Jwts.SIG.RS256)
-                .compact();
-    }
-
-    private PrivateKey loadPrivateKey() {
-        try {
-            String pemContent = githubProperties.app().privateKey();
-            if (!pemContent.trim().startsWith("-----BEGIN")) {
-                pemContent = Files.readString(Path.of(pemContent.trim()));
-            }
-            try (PEMParser parser = new PEMParser(new StringReader(pemContent))) {
-                Object obj = parser.readObject();
-                JcaPEMKeyConverter converter = new JcaPEMKeyConverter();
-                if (obj instanceof PEMKeyPair keyPair) {
-                    return converter.getKeyPair(keyPair).getPrivate();
-                }
-                if (obj instanceof org.bouncycastle.asn1.pkcs.PrivateKeyInfo keyInfo) {
-                    return converter.getPrivateKey(keyInfo);
-                }
-                throw new IllegalStateException("지원하지 않는 PEM 키 형식입니다");
-            }
-        } catch (IOException e) {
-            throw new IllegalStateException("GitHub App Private Key 로드 실패", e);
         }
     }
 

@@ -65,9 +65,7 @@ final class OpenAiCompatibleChat {
 
         Map<String, Object> body = baseBody(endpoint, apiMessages, modelOptions);
 
-        String raw = LlmProviderErrors.translate(endpoint.providerName(), endpoint.retry(), () -> restClient(endpoint)
-                .post()
-                .uri(endpoint.url())
+        String raw = LlmProviderErrors.translate(endpoint.providerName(), endpoint.retry(), () -> post(endpoint)
                 .body(body)
                 .retrieve()
                 .body(String.class));
@@ -103,9 +101,7 @@ final class OpenAiCompatibleChat {
         Map<String, Object> body = baseBody(endpoint, apiMessages, modelOptions);
         body.put("tools", toolsPayload);
 
-        String raw = LlmProviderErrors.translate(endpoint.providerName(), endpoint.retry(), () -> restClient(endpoint)
-                .post()
-                .uri(endpoint.url())
+        String raw = LlmProviderErrors.translate(endpoint.providerName(), endpoint.retry(), () -> post(endpoint)
                 .body(body)
                 .retrieve()
                 .body(String.class));
@@ -200,12 +196,20 @@ final class OpenAiCompatibleChat {
         }
     }
 
-    private static RestClient restClient(Endpoint endpoint) {
-        RestClient.Builder builder = RestClient.builder()
-                .requestFactory(LlmHttp.timeoutFactory())
-                .defaultHeader("Authorization", "Bearer " + endpoint.config().getApiKey())
-                .defaultHeader("content-type",  "application/json");
-        endpoint.extraHeaders().forEach(builder::defaultHeader);
-        return builder.build();
+    /**
+     * 이 호출 하나짜리 요청.
+     *
+     * <p>클라이언트는 공용 하나를 계속 쓰고, 제공자마다 달라지는 것(키, 부가 헤더)만 요청에 싣는다.
+     * 키를 클라이언트의 기본 헤더로 박으면 그 인스턴스에 고정되는데, 여기는 제공자가 이미 여럿인
+     * 경로다 — 한 번 고정된 키가 다른 제공자·다른 사용자의 요청에 실려 나가는 사고는 조용히
+     * 일어나고 로그에도 남지 않는다.</p>
+     */
+    private static RestClient.RequestBodySpec post(Endpoint endpoint) {
+        RestClient.RequestBodySpec request = LlmHttp.client()
+                .post()
+                .uri(endpoint.url())
+                .header("Authorization", "Bearer " + endpoint.config().getApiKey());
+        endpoint.extraHeaders().forEach(request::header);
+        return request;
     }
 }

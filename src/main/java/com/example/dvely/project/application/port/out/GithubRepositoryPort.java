@@ -8,7 +8,15 @@ import java.util.Optional;
 
 public interface GithubRepositoryPort {
 
-    List<GithubRepository> listRepositories(Long ownerUserId);
+    /**
+     * @param refresh 캐시를 버리고 GitHub 에서 다시 읽는다. 사용자가 방금 GitHub 에서 저장소를
+     *                만들고 넘어온 경우가 있어, 짧은 캐시라도 우회할 길이 반드시 필요하다.
+     */
+    List<GithubRepository> listRepositories(Long ownerUserId, boolean refresh);
+
+    default List<GithubRepository> listRepositories(Long ownerUserId) {
+        return listRepositories(ownerUserId, false);
+    }
 
     Optional<GithubRepository> getRepository(Long ownerUserId, String repositoryFullName);
 
