@@ -2,11 +2,16 @@ package com.example.dvely.environment.infrastructure.persistence.repository;
 
 import com.example.dvely.environment.domain.model.EnvironmentVariable;
 import com.example.dvely.environment.domain.repository.EnvironmentVariableRepository;
+import com.example.dvely.environment.domain.repository.EnvironmentVariableSummaryView;
 import com.example.dvely.environment.domain.value.EnvironmentScope;
 import com.example.dvely.environment.infrastructure.persistence.entity.EnvironmentVariableEntity;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 
 @Repository
@@ -61,6 +66,27 @@ public class EnvironmentVariableRepositoryAdapter implements EnvironmentVariable
                 .stream()
                 .map(EnvironmentVariableEntity::toDomain)
                 .toList();
+    }
+
+    @Override
+    public List<EnvironmentVariableSummaryView> findSummaries(Long projectId, EnvironmentScope scope, int limit) {
+        return springDataRepository.findSummaries(
+                projectId, scope == null ? null : scope.name(), PageRequest.of(0, limit));
+    }
+
+    @Override
+    public Map<Long, String> findPlainValuesByIds(Collection<Long> ids) {
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, String> values = new LinkedHashMap<>();
+        for (Object[] row : springDataRepository.findPlainValuesByIds(ids)) {
+            // 값이 NULL 인 행은 스킵한다 — Map#put 은 null 을 담지만 "값이 없다" 와 구분이 안 된다.
+            if (row[1] != null) {
+                values.put((Long) row[0], (String) row[1]);
+            }
+        }
+        return values;
     }
 
     @Override

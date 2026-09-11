@@ -13,7 +13,20 @@ public interface DeploymentHistoryRepository {
 
     Optional<DeploymentHistory> findById(Long id);
 
-    List<DeploymentHistory> findByProjectIdOrderByTriggeredAtDesc(Long projectId);
+    /** U6 6-2: 이력 목록 응답에 실제로 나가는 컬럼만 읽는다. {@link DeploymentHistoryListView} 참고. */
+    List<DeploymentHistoryListView> findHistoryListViews(Long projectId);
+
+    /** U6 6-2: version_label 이 있는 이력만. 버전 목록 응답 전용. */
+    List<DeploymentVersionView> findLabeledVersionViews(Long projectId);
+
+    /** U6 6-2: version_label 이 있고 LIVE 인 이력만. 배포 후보 응답 전용. */
+    List<DeploymentVersionView> findLiveLabeledVersionViews(Long projectId);
+
+    /**
+     * U6 6-2: 가장 최근 LIVE 이력의 deployedUrl. 값이 null/공백일 수 있고, 그때 다음 LIVE 로 넘어가지
+     * 않는 것이 기존 동작이라 그대로 돌려준다(빈 Optional 과 "빈 값" 을 구분하지 않는다).
+     */
+    Optional<String> findLatestLiveDeployedUrl(Long projectId);
 
     Optional<DeploymentHistory> findLatestByProjectId(Long projectId);
 

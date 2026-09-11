@@ -1,7 +1,11 @@
 package com.example.dvely.agent.infrastructure.llm;
 
+import static org.mockito.Mockito.mock;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.dvely.agent.infrastructure.usage.LlmUsageRecorder;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageStore;
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
@@ -67,7 +71,7 @@ class LlmApiKeyIsolationTest {
     void 키를_바꾸면_다음_요청은_바뀐_키로_나간다() {
         AiProperties properties = new AiProperties();
         properties.getGlm().setBaseUrl(endpointUrl());
-        GlmClient client = new GlmClient(properties);
+        GlmClient client = new GlmClient(properties, new LlmUsageRecorder(mock(LlmUsageStore.class)));
 
         properties.getGlm().setApiKey("key-of-user-a");
         client.complete("system", List.of(new LlmMessage("user", "hi")), AiModelOptions.defaults());

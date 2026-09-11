@@ -437,10 +437,11 @@ class TaskStoreTest {
 
     @Test
     void findActiveTask_returnsLatestNonTerminalTask() {
-        AgentRunEntity run = mock(AgentRunEntity.class);
-        when(run.getTaskId()).thenReturn("task-live");
-        when(run.getStatus()).thenReturn("WAITING_INPUT");
-        when(runRepository.findActiveRuns(eq(21L), eq(7L), any(), any())).thenReturn(List.of(run));
+        // U6 6-6: 이 조회는 엔티티가 아니라 (taskId, status) 프로젝션을 돌려준다.
+        SpringDataAgentRunRepository.ActiveRunView view = mock(SpringDataAgentRunRepository.ActiveRunView.class);
+        when(view.getTaskId()).thenReturn("task-live");
+        when(view.getStatus()).thenReturn("WAITING_INPUT");
+        when(runRepository.findActiveRuns(eq(21L), eq(7L), any(), any())).thenReturn(List.of(view));
 
         Optional<TaskStore.ActiveTask> result = taskStore.findActiveTask(21L, 7L);
 

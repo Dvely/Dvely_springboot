@@ -14,6 +14,7 @@ import com.example.dvely.chat.application.result.ConversationResult;
 import com.example.dvely.chat.application.result.MessageResult;
 import com.example.dvely.chat.domain.model.ChatMessage;
 import com.example.dvely.chat.domain.model.Conversation;
+import com.example.dvely.chat.domain.policy.ChatTrashPolicy;
 import com.example.dvely.chat.domain.repository.ChatMessageRepository;
 import com.example.dvely.chat.domain.repository.ConversationRepository;
 import com.example.dvely.project.domain.model.Project;
@@ -27,6 +28,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -199,18 +201,21 @@ class ChatCommandServiceTest {
     }
 
     /**
-     * #340 5-9: 만료된 휴지통 대화를 벌크 DELETE 한 문장으로 지운다. 예전에는 엔티티를 전부
-     * 로드한 뒤 {@code deleteById} 를 N 번 불렀다 — 지우려고 읽고, 지우려고 또 왕복했다.
+     * #340 5-9 · #341 6-8: 만료된 휴지통 대화를 벌크 DELETE 한 문장으로 지운다. 예전에는 엔티티를
+     * 전부 로드한 뒤 {@code deleteById} 를 N 번 불렀다 — 지우려고 읽고, 지우려고 또 왕복했다.
      * 삭제 조건이 곧 SELECT 조건이었으므로 읽을 이유가 없다.
      */
     @Test
     void purgeExpiredConversationsDeletesInOneBulkStatement() {
+        LocalDateTime before = LocalDateTime.now();
         when(conversationRepository.deleteExpiredTrash(any())).thenReturn(2);
 
         assertThat(chatCommandService.purgeExpiredConversations()).isEqualTo(2);
 
-        verify(conversationRepository).deleteExpiredTrash(any());
-        verify(conversationRepository, never()).findAllByDeletedTrueAndDeletedAtLessThanEqual(any());
+        ArgumentCaptor<LocalDateTime> cutoff = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(conversationRepository).deleteExpiredTrash(cutoff.capture());
+        assertThat(cutoff.getValue())
+                .isBetween(ChatTrashPolicy.cutoff(before), ChatTrashPolicy.cutoff(LocalDateTime.now()));
         verify(conversationRepository, never()).deleteById(any());
     }
 

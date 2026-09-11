@@ -5,6 +5,7 @@ import com.example.dvely.chat.application.command.ChatCommandService;
 import com.example.dvely.chat.application.query.ChatQueryService;
 import com.example.dvely.chat.application.result.ConversationResult;
 import com.example.dvely.chat.application.result.MessageResult;
+import com.example.dvely.common.paging.CursorPage;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -48,7 +49,10 @@ public class ChatFacade {
         return chatCommandService.sendMessage(userId, conversationId, content, aiProvider);
     }
 
-    public List<MessageResult> getMessages(Long userId, Long conversationId) {
-        return chatQueryService.getMessages(userId, conversationId);
+    public CursorPage<MessageResult> getMessages(Long userId,
+                                                 Long conversationId,
+                                                 Integer limit,
+                                                 String after) {
+        return chatQueryService.getMessages(userId, conversationId, limit, after);
     }
 }

@@ -1,9 +1,11 @@
 package com.example.dvely.deployment.infrastructure.persistence.repository;
 
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
+import com.example.dvely.deployment.domain.repository.DeploymentHistoryListView;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import com.example.dvely.common.worker.WorkQueue;
 import com.example.dvely.common.worker.WorkQueuedEvent;
+import com.example.dvely.deployment.domain.repository.DeploymentVersionView;
 import com.example.dvely.deployment.infrastructure.persistence.entity.DeploymentHistoryEntity;
 import com.example.dvely.project.domain.value.DeployStatus;
 import java.util.Collection;
@@ -53,9 +55,28 @@ public class DeploymentHistoryRepositoryAdapter implements DeploymentHistoryRepo
     }
 
     @Override
-    public List<DeploymentHistory> findByProjectIdOrderByTriggeredAtDesc(Long projectId) {
-        return springDataRepository.findByProjectIdOrderByTriggeredAtDesc(projectId)
-                .stream().map(DeploymentHistoryEntity::toDomain).toList();
+    public List<DeploymentHistoryListView> findHistoryListViews(Long projectId) {
+        return springDataRepository.findHistoryListViews(projectId);
+    }
+
+    @Override
+    public List<DeploymentVersionView> findLabeledVersionViews(Long projectId) {
+        return springDataRepository.findLabeledVersionViews(projectId);
+    }
+
+    @Override
+    public List<DeploymentVersionView> findLiveLabeledVersionViews(Long projectId) {
+        return springDataRepository.findLiveLabeledVersionViews(projectId, DeployStatus.LIVE.name());
+    }
+
+    @Override
+    public Optional<String> findLatestLiveDeployedUrl(Long projectId) {
+        // deployed_url 은 NULL 일 수 있다. 리스트에 null 원소가 담기므로 Stream#findFirst 를 쓰면
+        // NPE 다 — 그래서 직접 꺼내 ofNullable 로 감싼다. "LIVE 가 없다" 와 "LIVE 인데 URL 이
+        // 비었다" 를 여기서 구분하지 않는 것은 의도다(호출부가 예전처럼 공백까지 판정한다).
+        List<String> urls = springDataRepository.findLiveDeployedUrls(
+                projectId, DeployStatus.LIVE.name(), PageRequest.of(0, 1));
+        return urls.isEmpty() ? Optional.empty() : Optional.ofNullable(urls.get(0));
     }
 
     @Override

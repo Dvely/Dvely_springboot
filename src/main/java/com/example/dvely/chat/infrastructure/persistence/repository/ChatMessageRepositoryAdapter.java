@@ -5,6 +5,7 @@ import com.example.dvely.chat.domain.repository.ChatMessageRepository;
 import com.example.dvely.chat.infrastructure.persistence.entity.ChatMessageEntity;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 
 @Repository
@@ -16,6 +17,15 @@ public class ChatMessageRepositoryAdapter implements ChatMessageRepository {
     @Override
     public List<ChatMessage> findAllByConversationIdOrderByCreatedAtAsc(Long conversationId) {
         return springDataChatMessageRepository.findByConversationIdOrderByIdAsc(conversationId).stream()
+                .map(ChatMessageEntity::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<ChatMessage> findPageByConversationId(Long conversationId, Long after, int limit) {
+        return springDataChatMessageRepository
+                .findPageByConversationId(conversationId, after, PageRequest.of(0, limit))
+                .stream()
                 .map(ChatMessageEntity::toDomain)
                 .toList();
     }

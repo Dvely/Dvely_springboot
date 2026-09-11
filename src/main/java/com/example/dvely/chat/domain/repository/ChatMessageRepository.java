@@ -12,6 +12,12 @@ public interface ChatMessageRepository {
      */
     List<ChatMessage> findAllByConversationIdOrderByCreatedAtAsc(Long conversationId);
 
+    /**
+     * U6(#341) 6-3: 위와 같은 순서로, 다만 {@code after}(message id, 배타적) 이후부터 최대
+     * {@code limit} 건. {@code after} 가 null 이면 처음부터다.
+     */
+    List<ChatMessage> findPageByConversationId(Long conversationId, Long after, int limit);
+
     // deleteAllByConversationId 는 없다(#338). chat_messages 의 FK 는 V19 부터
     // ON DELETE CASCADE 라, 대화 행을 지우면 메시지는 DB 가 지운다. 별도 삭제를 두면
     // 엔티티를 N 건 로드해 한 건씩 지운 뒤 CASCADE 가 같은 일을 또 하는 이중 삭제가 된다.

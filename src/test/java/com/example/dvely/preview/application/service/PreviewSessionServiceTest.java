@@ -596,4 +596,102 @@ class PreviewSessionServiceTest {
         assertThatThrownBy(() -> service.grantAccess("session-1", 8L, Duration.ofMinutes(30)))
                 .isInstanceOf(NotFoundException.class);
     }
+
+    // ── #337: 트랜잭션을 걷어낸 뒤에도 실패 시 동작이 같다 ──────────────────────────
+
+    /**
+     * 예전에는 컨테이너 제거가 실패하면 트랜잭션 롤백이 상태 변경을 되돌려 세션이 ACTIVE 로
+     * 남았다. 이제 제거를 저장보다 먼저 해서 같은 결과를 만든다 — 이 테스트가 그 순서를 고정한다.
+     */
+    @Test
+    void containerRemovalFailing_leavesTheSessionActiveAndSavesNothing() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository,
+                dockerService,
+                mock(TaskStore.class),
+                properties(),
+                gatewayUrlResolver(),
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
+        );
+        PreviewSessionEntity session = new PreviewSessionEntity(
+                "session-1", "token", 7L, 11L, 21L, "task-1", "container-1", 32768,
+                "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30));
+        when(repository.findByIdAndOwnerUserId("session-1", 7L)).thenReturn(Optional.of(session));
+        org.mockito.Mockito.doThrow(new IllegalStateException("docker daemon 무응답"))
+                .when(dockerService).removeContainer("container-1");
+
+        assertThatThrownBy(() -> service.closeOwned("session-1", 7L))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
+        verify(repository, never()).save(any(PreviewSessionEntity.class));
+    }
+
+    /**
+     * 예전에는 배치 전체가 트랜잭션 하나라 한 건의 Docker 실패가 나머지 정리까지 통째로
+     * 되돌렸다 — 컨테이너 하나가 고장나면 만료 정리가 영영 진행되지 않았다.
+     */
+    @Test
+    void oneBrokenContainerDoesNotStopTheRestOfTheCleanup() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository,
+                dockerService,
+                mock(TaskStore.class),
+                properties(),
+                gatewayUrlResolver(),
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
+        );
+        PreviewSessionEntity broken = new PreviewSessionEntity(
+                "session-broken", "token", 1L, 11L, 21L, "task-1", "container-broken", 32768,
+                "https://preview.qeploy.test/session-broken/", LocalDateTime.now().minusMinutes(1));
+        PreviewSessionEntity healthy = new PreviewSessionEntity(
+                "session-healthy", "token", 1L, 12L, 22L, "task-2", "container-healthy", 32769,
+                "https://preview.qeploy.test/session-healthy/", LocalDateTime.now().minusMinutes(1));
+        when(repository.findByStatusInAndExpiresAtBefore(any(), any(LocalDateTime.class)))
+                .thenReturn(List.of(broken, healthy));
+        when(repository.save(healthy)).thenReturn(healthy);
+        org.mockito.Mockito.doThrow(new IllegalStateException("docker daemon 무응답"))
+                .when(dockerService).removeContainer("container-broken");
+
+        service.cleanupExpired();
+
+        // 고장난 쪽은 그대로 남아 다음 주기에 다시 걸린다.
+        assertThat(broken.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
+        // 뒤에 있던 정상 세션은 영향을 받지 않는다.
+        assertThat(healthy.getStatus()).isEqualTo(PreviewSessionStatus.EXPIRED.name());
+        verify(dockerService).removeContainer("container-healthy");
+    }
+
+    /** 포트 조회·도달 확인이 실패하면 ACTIVE 로 올리지 않는다(예전 롤백과 같은 결과). */
+    @Test
+    void mappedPortLookupFailing_leavesTheSessionProvisioning() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        DockerContainerService dockerService = mock(DockerContainerService.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository,
+                dockerService,
+                mock(TaskStore.class),
+                properties(),
+                gatewayUrlResolver(),
+                accessCookies(), mock(PreviewRuntimeConfigService.class)
+        );
+        PreviewSessionEntity provisioning = new PreviewSessionEntity(
+                "session-1", "token", 1L, 11L, 21L, "task-1", "container-1", 32768,
+                "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30),
+                PreviewSessionStatus.PROVISIONING);
+        when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.PROVISIONING.name()))
+                .thenReturn(Optional.of(provisioning));
+        when(dockerService.getMappedPort("container-1"))
+                .thenThrow(new IllegalStateException("포트 조회 실패"));
+
+        assertThatThrownBy(() -> service.markServing("task-1"))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(provisioning.getStatus()).isEqualTo(PreviewSessionStatus.PROVISIONING.name());
+        verify(repository, never()).save(any(PreviewSessionEntity.class));
+    }
 }

@@ -12,7 +12,6 @@ import java.time.Duration;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Runs a coding agent for one user, on that user's own key.
@@ -21,6 +20,13 @@ import org.springframework.transaction.annotation.Transactional;
  * looked up by {@code (userId, vendor)} and there is no fallback to a deployment-wide key. A user
  * without a registered key gets a clear "register one" error instead of quietly spending the
  * operator's credit — which is the behaviour the providers' terms require, not merely a nicety.</p>
+ *
+ * <p>여기에 {@code @Transactional} 을 두지 않는 이유: 아래 {@code run()} 은 컨테이너 안의 CLI 가
+ * 끝날 때까지 최대 10분을 기다린다. 트랜잭션을 걸면 그 10분 내내 커넥션 하나가 묶이고, 동시
+ * CODE 태스크 수만큼 곱해져 풀이 마른다(2026-09-08 dev 고갈 사고와 같은 계열, #337). 이 메서드가
+ * DB 에서 하는 일은 자격증명 조회 한 건뿐이라 리포지토리 자신의 짧은 트랜잭션으로 충분하고,
+ * {@code AiProviderCredential} 은 JPA 엔티티가 아닌 도메인 모델이라 반환 뒤 세션이 필요 없다.
+ * {@code AgentPlanExecutor.execute()}·{@code InfraOpsAgentService} 와 같은 원칙이다.</p>
  */
 @Slf4j
 @Service
@@ -35,12 +41,10 @@ public class CodingAgentExecutionService {
      * @param provider      a coding-agent provider ({@code CLAUDE_CODE} / {@code CODEX})
      * @param workspaceDir  absolute host path of the checkout the agent may edit
      */
-    @Transactional(readOnly = true)
     public CodingAgentResult run(Long userId, AiProvider provider, String prompt, String workspaceDir) {
         return run(userId, provider, prompt, workspaceDir, properties.getTimeout());
     }
 
-    @Transactional(readOnly = true)
     public CodingAgentResult run(Long userId,
                                  AiProvider provider,
                                  String prompt,

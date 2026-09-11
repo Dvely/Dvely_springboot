@@ -106,23 +106,30 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
      * acquire 가 PROVISIONING 으로 만들어두기 때문에 이 호출이 없으면 프리뷰는 영영 안 열린다.
      * 반대로 서버가 뜨기 전에 부르면 예전처럼 502 를 보게 된다.
      */
-    @Transactional
     public void markServing(String taskId) {
-        repository.findByTaskIdAndStatus(taskId, PreviewSessionStatus.PROVISIONING.name())
-                .ifPresent(session -> {
-                    // 런타임 준비(서버형의 DB 자동 프로비저닝→세션 네트워크 연결)가 컨테이너의 :0 랜덤 발행
-                    // 포트를 재할당해, 생성 시점에 저장한 host_port 가 어긋날 수 있다. 게이트웨이가 이 포트로
-                    // 프록시하므로, ACTIVE 로 올리기 직전 지금의 실제 포트로 다시 맞춘다(어긋나면 502).
-                    session.rebindPort(dockerService.getMappedPort(session.getContainerId()));
-                    // ACTIVE 직전 게이트웨이 경유 도달 확인 — 첫 iframe 로드의 503(깨진 이미지) 레이스를 닫는다.
-                    if (readinessProbe != null) {
-                        readinessProbe.awaitReachable(session.getHostPort());
-                    }
-                    session.activate(nextExpiry());
-                    repository.save(session);
-                    log.info("[PreviewSession] 서빙 시작: sessionId={} taskId={} hostPort={}",
-                            session.getId(), taskId, session.getHostPort());
-                });
+        PreviewSessionEntity session = repository
+                .findByTaskIdAndStatus(taskId, PreviewSessionStatus.PROVISIONING.name())
+                .orElse(null);
+        if (session == null) {
+            return;
+        }
+        // 런타임 준비(서버형의 DB 자동 프로비저닝→세션 네트워크 연결)가 컨테이너의 :0 랜덤 발행
+        // 포트를 재할당해, 생성 시점에 저장한 host_port 가 어긋날 수 있다. 게이트웨이가 이 포트로
+        // 프록시하므로, ACTIVE 로 올리기 직전 지금의 실제 포트로 다시 맞춘다(어긋나면 502).
+        //
+        // Docker 조회와 도달 확인을 저장보다 먼저, 트랜잭션 밖에서 끝낸다 — 도달 확인은 앱이 뜰
+        // 때까지 기다리는 호출이라 트랜잭션 안에 두면 그 시간만큼 커넥션이 묶였다(#337). 둘 중
+        // 하나라도 던지면 아래 저장에 도달하지 않아 세션은 PROVISIONING 으로 남는다(예전 롤백과 같은 결과).
+        int hostPort = dockerService.getMappedPort(session.getContainerId());
+        // ACTIVE 직전 게이트웨이 경유 도달 확인 — 첫 iframe 로드의 503(깨진 이미지) 레이스를 닫는다.
+        if (readinessProbe != null) {
+            readinessProbe.awaitReachable(hostPort);
+        }
+        session.rebindPort(hostPort);
+        session.activate(nextExpiry());
+        repository.save(session);
+        log.info("[PreviewSession] 서빙 시작: sessionId={} taskId={} hostPort={}",
+                session.getId(), taskId, session.getHostPort());
     }
 
     /**
@@ -286,7 +293,6 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
      * (host-affine) 이 판정은 항상 로컬 컨테이너에 대한 것이다.</p>
      */
     @Override
-    @Transactional
     public boolean reclaimUnreachable(String sessionId) {
         PreviewSessionEntity session = repository.findById(sessionId).orElse(null);
         if (session == null || !PreviewSessionStatus.ACTIVE.name().equals(session.getStatus())) {
@@ -298,7 +304,6 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
         return true;
     }
 
-    @Transactional
     public boolean closeOwned(String sessionId, Long ownerUserId) {
         PreviewSessionEntity session = repository.findByIdAndOwnerUserId(sessionId, ownerUserId)
                 .orElse(null);
@@ -309,7 +314,6 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
         return true;
     }
 
-    @Transactional
     public int closeAllOwned(Long ownerUserId) {
         List<PreviewSessionEntity> sessions = repository.findByOwnerUserIdAndStatus(
                 ownerUserId,
@@ -329,22 +333,28 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
      * "왜 안 떴는지"를 FE 가 그대로 보여줄 수 있게 한다.</p>
      */
     @Scheduled(fixedDelayString = "${qeploy.preview.cleanup-interval-ms:60000}")
-    @Transactional
     public void cleanupExpired() {
-        repository.findByStatusInAndExpiresAtBefore(
-                        List.of(PreviewSessionStatus.ACTIVE.name(), PreviewSessionStatus.PROVISIONING.name()),
-                        LocalDateTime.now()
-                )
-                .forEach(session -> {
-                    if (PreviewSessionStatus.PROVISIONING.name().equals(session.getStatus())) {
-                        session.markFailed("프리뷰 준비가 제한 시간 안에 끝나지 않았습니다. 다시 시도해주세요.");
-                        repository.save(session);
-                        dockerService.removeContainer(session.getContainerId());
-                        log.warn("[PreviewSession] 준비 미완료로 정리: sessionId={}", session.getId());
-                        return;
-                    }
-                    expire(session, PreviewSessionStatus.EXPIRED);
-                });
+        for (PreviewSessionEntity session : repository.findByStatusInAndExpiresAtBefore(
+                List.of(PreviewSessionStatus.ACTIVE.name(), PreviewSessionStatus.PROVISIONING.name()),
+                LocalDateTime.now())) {
+            // 건별로 막는다. 예전에는 배치 전체가 트랜잭션 하나라 한 건의 Docker 실패가 나머지
+            // 세션의 정리까지 통째로 롤백시켰다(#337) — 컨테이너 하나가 고장나면 만료 정리가
+            // 영영 진행되지 않는 구조였다.
+            try {
+                if (PreviewSessionStatus.PROVISIONING.name().equals(session.getStatus())) {
+                    // 제거를 먼저 — expire() 와 같은 이유로, 실패하면 PROVISIONING 으로 남아 다음 주기에 다시 본다.
+                    dockerService.removeContainer(session.getContainerId());
+                    session.markFailed("프리뷰 준비가 제한 시간 안에 끝나지 않았습니다. 다시 시도해주세요.");
+                    repository.save(session);
+                    log.warn("[PreviewSession] 준비 미완료로 정리: sessionId={}", session.getId());
+                    continue;
+                }
+                expire(session, PreviewSessionStatus.EXPIRED);
+            } catch (RuntimeException exception) {
+                log.warn("[PreviewSession] 만료 정리 실패(다음 주기 재시도): sessionId={} 원인={}",
+                        session.getId(), exception.toString());
+            }
+        }
     }
 
     /**
@@ -388,10 +398,20 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
         return next.isAfter(session.getExpiresAt()) ? next : session.getExpiresAt();
     }
 
+    /**
+     * 컨테이너 제거를 저장보다 <b>먼저</b> 한다. 예전에는 저장이 먼저였고, 제거가 실패하면
+     * 트랜잭션 롤백이 상태 변경까지 되돌려 세션이 ACTIVE 로 남아 다음 기회에 다시 회수됐다.
+     * 호출부에서 트랜잭션을 걷어낸 지금(#337) 그 성질은 롤백이 아니라 순서로만 지킬 수 있다 —
+     * 제거가 던지면 저장에 도달하지 않으므로 결과가 이전과 같다.
+     *
+     * <p>제거와 저장 사이에는 "컨테이너는 없는데 행은 아직 ACTIVE" 인 짧은 창이 생기지만,
+     * 그 상태의 세션은 게이트웨이가 도달 실패로 보고 {@link #reclaimUnreachable} 이 다시
+     * 회수한다({@code removeContainer} 는 멱등).</p>
+     */
     private void expire(PreviewSessionEntity session, PreviewSessionStatus status) {
+        dockerService.removeContainer(session.getContainerId());
         session.close(status);
         repository.save(session);
-        dockerService.removeContainer(session.getContainerId());
         log.info("[PreviewSession] 종료: sessionId={} status={}", session.getId(), status);
     }
 

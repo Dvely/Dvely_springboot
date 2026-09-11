@@ -7,7 +7,10 @@ import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.change.application.result.ChangeResult;
 import com.example.dvely.change.infrastructure.persistence.entity.ChangeEntity;
 import com.example.dvely.change.infrastructure.persistence.repository.SpringDataChangeRepository;
+import com.example.dvely.change.infrastructure.persistence.repository.SpringDataChangeRepository.ChangeSummaryView;
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.common.paging.CursorPage;
+import com.example.dvely.common.paging.CursorPaging;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
@@ -29,7 +32,15 @@ public class ChangeService {
     private final DockerContainerService dockerService;
     private final ProjectRepository projectRepository;
 
-    @Transactional
+    /**
+     * 트랜잭션을 걸지 않는다 — {@link #captureDiff} 가 Docker exec 를 두 번 돌고 그중 하나는
+     * {@code apk add git} 이라 네트워크 설치까지 기다린다. 트랜잭션 안에 두면 그 내내 커넥션이
+     * 묶였다(#337).
+     *
+     * <p>실패 시 동작은 그대로다: diff 를 뜨다 예외가 나면 아래 저장에 도달하지 못하므로
+     * Change 행이 남지 않는다 — 예전에 롤백이 해주던 것과 같은 결과를, 외부 호출을 저장보다
+     * 먼저 두는 순서로 얻는다.</p>
+     */
     public void record(String taskId, String summary) {
         AgentTask task = taskStore.get(taskId);
         PreviewSessionInfo preview = previewSessionService.findByTaskId(taskId)
@@ -125,14 +136,50 @@ public class ChangeService {
         });
     }
 
+    /**
+     * limit 를 안 받는 호출(프로젝트 개요·활동로그)의 상한. 개요/활동로그는 최신순 목록을 그대로
+     * 합쳐 보여주는 화면이라 오래된 꼬리가 잘려도 화면이 달라지지 않는다 — 잘리는 쪽은 활동로그
+     * 맨 아래다. 변경 건은 사용자 요청 1회당 최대 1건씩 쌓이므로 200 이면 최근 200번의 작업을 덮는다.
+     */
+    private static final int DEFAULT_CHANGE_LIMIT = 200;
+    private static final int MAX_CHANGE_LIMIT = 500;
+
     @Transactional(readOnly = true)
     public List<ChangeResult> getProjectChanges(Long ownerUserId, Long projectId) {
+        return getProjectChanges(ownerUserId, projectId, null, null).items();
+    }
+
+    @Transactional(readOnly = true)
+    public CursorPage<ChangeResult> getProjectChanges(Long ownerUserId,
+                                                      Long projectId,
+                                                      Integer limit,
+                                                      String after) {
         projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, ownerUserId)
                 .orElseThrow(() -> new ProjectNotFoundException(projectId, ownerUserId));
-        return changeRepository.findByProjectIdAndOwnerUserIdOrderByCreatedAtDesc(projectId, ownerUserId)
-                .stream()
-                .map(ChangeEntity::toResult)
-                .toList();
+        int size = CursorPaging.clamp(limit, DEFAULT_CHANGE_LIMIT, MAX_CHANGE_LIMIT);
+        List<ChangeSummaryView> probed = changeRepository.findProjectChangeSummaries(
+                projectId, ownerUserId, CursorPaging.parseCursor(after), CursorPaging.probe(size));
+        return CursorPaging.slice(probed, size, view -> String.valueOf(view.getId()))
+                .map(ChangeService::toResult);
+    }
+
+    /** 프로젝션 → ChangeResult. 필드 순서·값은 {@code ChangeEntity#toResult} 와 1:1 이다. */
+    private static ChangeResult toResult(ChangeSummaryView view) {
+        return new ChangeResult(
+                view.getId(),
+                view.getProjectId(),
+                view.getConversationId(),
+                view.getTaskId(),
+                view.getPreviewSessionId(),
+                view.getStatus(),
+                view.getSummary(),
+                view.getApprovalId(),
+                view.getPrNumber(),
+                view.getMergeCommitSha(),
+                view.getMergedAt(),
+                view.getCreatedAt(),
+                view.getUpdatedAt()
+        );
     }
 
     @Transactional(readOnly = true)

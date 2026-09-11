@@ -16,6 +16,19 @@ public class AiProperties {
     private Glm glm = new Glm();
     private Retry retry = new Retry();
     private CodeAgent codeAgent = new CodeAgent();
+    private FailureAnalysis failureAnalysis = new FailureAnalysis();
+
+    /**
+     * 도구를 쓰지 않는 한 번짜리 완성 호출의 출력 상한(Anthropic {@code max_tokens}).
+     *
+     * <p>예전 값 1024 는 계획 수립에서 실제로 짧았다 — 다단계 계획 JSON 이 중간에서 잘리면
+     * {@code DecisionAgentService#retryOnce} 가 전체 컨텍스트에 실패 응답 에코(최대 2KB)까지
+     * 얹어 한 번 더 호출한다. 즉 짧은 상한이 아끼는 것은 출력 토큰 몇백이고, 치르는 것은
+     * 입력 전체를 한 번 더 보내는 비용이다.</p>
+     *
+     * <p>상한이지 할당량이 아니다 — 모델이 짧게 답하면 그만큼만 과금된다.</p>
+     */
+    private int completionMaxTokens = 4096;
 
     /**
      * 요청이 제공자를 지정하지 않을 때 쓰는 기본 제공자. 배포가 유효한 키를 가진 것으로 맞춘다 —
@@ -69,6 +82,17 @@ public class AiProperties {
     @Getter
     @Setter
     public static class Anthropic extends Provider {
+
+        /**
+         * Messages API 전체 URL(호스트 접두사가 아니다 — 클라이언트가 이 값에 그대로 POST 한다).
+         *
+         * <p>{@link Glm#getBaseUrl()} 와 같은 이유로 설정 가능하다: 사내 프록시나 게이트웨이를
+         * 거치도록 배포를 바꿀 수 있어야 하고, 무엇보다 <b>나가는 요청 본문을 실제로 검사하는
+         * 테스트</b>가 가능해진다. 캐시 브레이크포인트 위치처럼 조용히 틀려도 오류가 나지 않는
+         * 것(요청은 통과하고 캐시만 안 걸린다)은 본문을 직접 보는 것 말고 검증할 방법이 없다.</p>
+         */
+        private String baseUrl = "https://api.anthropic.com/v1/messages";
+
         public Anthropic() {
             super("claude-opus-4-5-20251101");
         }
@@ -169,5 +193,67 @@ public class AiProperties {
          * this value times the task's retry budget, not this value alone.</p>
          */
         private int maxIterations = 40;
+
+        /**
+         * 태스크 하나가 쓸 수 있는 누적 토큰 상한(입력 + 출력 + 캐시). 0 이면 상한 없음.
+         *
+         * <p>이 값이 없던 동안 곱셈이 그대로 열려 있었다 — 제공자 재시도({@code retry.maxAttempts}
+         * 3) × 라운드({@link #maxIterations} 40) × 태스크 재시도(3). 각 단계는 자기 한도를 지키지만
+         * 태스크 전체가 쓰는 양에는 아무 한도가 없었고, 한 번 헤매기 시작한 태스크가 얼마까지
+         * 쓸 수 있는지 아무도 답할 수 없었다.</p>
+         *
+         * <p>기본값은 정상 완주를 막지 않는 선이다. 라운드마다 트랜스크립트 전체가 다시 실리므로
+         * 성공하는 CODE 태스크도 누적 수십만 토큰을 쓴다 — 여유를 세 배쯤 둔 값이고, 걸리는 것은
+         * 끝나지 않고 도는 태스크다. 상한에 걸리면 태스크는 사유가 보이는 실패로 닫힌다
+         * ({@link com.example.dvely.agent.application.exception.AgentTokenBudgetExceededException}).</p>
+         */
+        private long maxTaskTokens = 1_000_000;
+    }
+
+    /**
+     * 배포 실패 로그 요약 전용 설정.
+     *
+     * <p>이 호출은 제공자가 {@code ANTHROPIC} 으로, 모델이 그 제공자의 기본값(최상위 모델)로
+     * 하드코딩돼 있었다. {@link #defaultProvider} 는 GLM 인데 이 한 경로만 그것을 무시했고,
+     * 12,000자 로그를 한 번 요약하는 데 최상위 모델을 쓸 근거도 없었다.</p>
+     *
+     * <p>다만 <b>품질이 떨어지면 실패 분석 자체가 쓸모없어진다.</b> 그래서 코드에 새 값을 박는
+     * 대신 설정으로 뺐다 — 분석이 나빠지면 {@code provider: ANTHROPIC} 과 그 모델명을 도로 적어
+     * 배포만으로 되돌릴 수 있다.</p>
+     */
+    @Getter
+    @Setter
+    public static class FailureAnalysis {
+
+        /** 비우면 {@link AiProperties#defaultProvider} 를 따른다. */
+        private AiProvider provider;
+
+        /** 비우면 제공자의 기본 모델을 쓴다. */
+        private String model = "";
+
+        public AiProvider providerOr(AiProvider fallback) {
+            return provider == null ? fallback : provider;
+        }
+
+        /** {@code AiModelOptions.model} 에 그대로 들어간다 — null 이면 제공자 기본 모델이 선택된다. */
+        public String modelOrNull() {
+            return model == null || model.isBlank() ? null : model.trim();
+        }
+    }
+
+    /** 실패 분석이 실제로 쓸 제공자. 전용 설정이 없으면 배포의 기본 제공자를 따른다. */
+    public AiProvider failureAnalysisProvider() {
+        return failureAnalysis.providerOr(defaultProvider);
+    }
+
+    /** 제공자별 설정 블록. 코딩 에이전트는 자체 설정이 없으므로 조용히 돌려주지 않고 던진다. */
+    public Provider providerConfig(AiProvider provider) {
+        return switch (provider) {
+            case ANTHROPIC -> anthropic;
+            case OPENAI -> openai;
+            case GLM -> glm;
+            case CLAUDE_CODE, CODEX -> throw new IllegalArgumentException(
+                    "코딩 에이전트 제공자는 qeploy.ai.* 설정을 갖지 않습니다: " + provider);
+        };
     }
 }

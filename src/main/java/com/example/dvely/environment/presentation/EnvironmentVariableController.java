@@ -1,5 +1,6 @@
 package com.example.dvely.environment.presentation;
 
+import com.example.dvely.common.paging.CursorResponse;
 import com.example.dvely.environment.application.facade.EnvironmentVariableFacade;
 import com.example.dvely.environment.application.result.EnvironmentVariableHistoryResult;
 import com.example.dvely.environment.application.result.EnvironmentVariableResult;
@@ -15,6 +16,7 @@ import jakarta.validation.Valid;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -36,18 +38,23 @@ public class EnvironmentVariableController {
     @Operation(
             summary = "환경변수 목록 조회",
             description = "scope 쿼리 파라미터로 필터링(생략 시 전체, scope asc → key asc 정렬). " +
-                          "secret 값은 응답에 포함되지 않습니다(value=null)."
+                          "secret 값은 응답에 포함되지 않습니다(value=null). " +
+                          "limit 기본 200, 최대 500(초과 시 500으로 보정). 상한에 걸리면 응답 헤더 " +
+                          "X-Qeploy-Next-Cursor 가 붙습니다 — 이 목록은 정렬 키가 (scope, key) 라 " +
+                          "커서로 이어 받는 경로는 아직 없고, 상한 도달 자체를 알리는 신호입니다."
     )
     @GetMapping("/api/v1/projects/{projectId}/environment-variables")
-    public List<EnvironmentVariableResponse> getVariables(
+    public ResponseEntity<List<EnvironmentVariableResponse>> getVariables(
             @AuthenticationPrincipal Long userId,
             @PathVariable Long projectId,
             @Parameter(description = "필터링할 스코프. 생략 시 전체 조회", schema = @Schema(allowableValues = {"PREVIEW", "PRODUCTION"}))
-            @RequestParam(required = false) String scope
+            @RequestParam(required = false) String scope,
+            @Parameter(description = "조회 개수. 기본 200, 최대 500(초과 시 500으로 보정)")
+            @RequestParam(required = false) Integer limit
     ) {
-        return environmentVariableFacade.getVariables(userId, projectId, scope).stream()
-                .map(this::toResponse)
-                .toList();
+        return CursorResponse.of(
+                environmentVariableFacade.getVariables(userId, projectId, scope, limit)
+                        .map(this::toResponse));
     }
 
     @Operation(

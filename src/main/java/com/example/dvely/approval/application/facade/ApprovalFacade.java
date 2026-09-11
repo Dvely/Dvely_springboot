@@ -3,6 +3,7 @@ package com.example.dvely.approval.application.facade;
 import com.example.dvely.approval.application.command.ApprovalCommandService;
 import com.example.dvely.approval.application.query.ApprovalQueryService;
 import com.example.dvely.approval.application.result.ApprovalResult;
+import com.example.dvely.common.paging.CursorPage;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -14,8 +15,11 @@ public class ApprovalFacade {
     private final ApprovalQueryService queryService;
     private final ApprovalCommandService commandService;
 
-    public List<ApprovalResult> getProjectApprovals(Long ownerUserId, Long projectId) {
-        return queryService.getProjectApprovals(ownerUserId, projectId);
+    public CursorPage<ApprovalResult> getProjectApprovals(Long ownerUserId,
+                                                         Long projectId,
+                                                         Integer limit,
+                                                         String after) {
+        return queryService.getProjectApprovals(ownerUserId, projectId, limit, after);
     }
 
     public ApprovalResult getApproval(Long ownerUserId, Long approvalId) {

@@ -5,6 +5,7 @@ import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
 import com.example.dvely.auth.application.port.out.TokenPort;
 import com.example.dvely.apitoken.application.service.ApiTokenAuthenticator;
 import com.example.dvely.auth.infrastructure.config.security.JwtAuthenticationFilter;
+import com.example.dvely.common.paging.CursorResponse;
 import com.example.dvely.common.response.ApiResponse;
 import com.example.dvely.common.response.ErrorCode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -115,6 +116,10 @@ public class SecurityConfig {
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
+        // U6(#341) 6-3·6-4: 커서 페이지네이션의 다음 커서. 브라우저는 노출 목록에 없는 응답 헤더를
+        // JS 에 아예 보여주지 않으므로(allowedHeaders 는 요청 헤더 쪽이다) 여기 없으면 FE 가 커서를
+        // 읽을 수 없다. 목록 응답 본문은 배열 그대로 두고 커서만 헤더로 내보내기 때문에 필요하다.
+        config.setExposedHeaders(List.of(CursorResponse.NEXT_CURSOR_HEADER));
 
         // 프리뷰 게이트웨이 전용 CORS (Issue #108). CSP sandbox(#102)로 불투명 오리진이 된
         // 프리뷰 문서의 module script 는 Origin: null 로 오는데, 위 FE 오리진 목록 기반

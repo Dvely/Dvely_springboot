@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 @RequiredArgsConstructor
@@ -23,22 +24,21 @@ public class ConversationRepositoryAdapter implements ConversationRepository {
     }
 
     @Override
-    public List<Conversation> findAllByUserIdAndProjectId(Long userId, Long projectId) {
-        return springDataConversationRepository.findByUserIdAndProjectId(userId, projectId).stream()
-                .map(ConversationEntity::toDomain)
-                .toList();
+    @Transactional
+    public int softDeleteAllByUserIdAndProjectId(Long userId, Long projectId, LocalDateTime deletedAt) {
+        return springDataConversationRepository.softDeleteByUserIdAndProjectId(userId, projectId, deletedAt);
     }
+
+    @Override
+    @Transactional
+    public int deleteAllByUserIdAndProjectId(Long userId, Long projectId) {
+        return springDataConversationRepository.deleteByUserIdAndProjectId(userId, projectId);
+    }
+
 
     @Override
     public List<Conversation> findAllByUserIdAndDeletedTrueOrderByUpdatedAtDesc(Long userId) {
         return springDataConversationRepository.findByUserIdAndDeletedTrueOrderByUpdatedAtDesc(userId).stream()
-                .map(ConversationEntity::toDomain)
-                .toList();
-    }
-
-    @Override
-    public List<Conversation> findAllByDeletedTrueAndDeletedAtLessThanEqual(LocalDateTime cutoff) {
-        return springDataConversationRepository.findByDeletedTrueAndDeletedAtLessThanEqual(cutoff).stream()
                 .map(ConversationEntity::toDomain)
                 .toList();
     }
