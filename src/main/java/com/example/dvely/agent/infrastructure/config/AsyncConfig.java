@@ -5,6 +5,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableAsync;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.Executor;
@@ -94,25 +95,42 @@ public class AsyncConfig {
         return executor;
     }
 
-    // 여기만 gracefulShutdown() 을 쓰지 않는다.
+    // 여기만 ThreadPoolTaskExecutor 가 아니다 — 그 타입으로는 이 풀이 원하는 것을 만들 수 없다.
     //
-    // 이 풀이 받는 것은 짧은 작업이 아니라 SSE 스트리밍 루프다 — 한 건이 최대 5분
-    // (AgentEventStreamService.STREAM_TIMEOUT_MS) 동안 Thread.sleep(1000) 을 돌며 살아 있다.
-    // 완료를 기다리도록(waitForTasksToCompleteOnShutdown) 두면 열려 있는 스트림 수명만큼 종료가
-    // 멈추고, 그 스레드는 데몬이 아니라 JVM 이 SIGKILL 까지 못 내려간다.
+    // 이 풀이 받는 것은 짧은 작업이 아니라 SSE 스트리밍 루프다. 한 건이 최대 5분
+    // (AgentEventStreamService.STREAM_TIMEOUT_MS) 동안 이벤트를 기다리며 살아 있고, 그 동안 쓰는
+    // CPU 는 없다. 그런데 ThreadPoolExecutor 는 <b>큐가 가득 차야</b> 코어를 넘겨 스레드를 늘리므로,
+    // 예전 설정(core2/max10/queue100)에서 실질 동시 스트림은 언제나 2 개였다 — 세 번째부터는 큐에
+    // 들어가 앞의 스트림이 5분을 채우고 끝날 때까지 아예 시작되지 않았고, FE 는 스트림이 안 열려
+    // 조용히 5초 폴링으로 강등됐다. 큐를 0 으로 줄여 max 를 도달 가능하게 만드는 길도 있지만,
+    // 그러면 이번엔 max 가 곧 동시 스트림 수의 하드 상한이 된다.
     //
-    // 반대로 그 루프는 InterruptedException 을 받으면 emitter.complete() 로 스스로 정리하도록
-    // 이미 짜여 있다(AgentEventStreamService.stream). 인터럽트가 곧 정상 종료 경로라는 뜻이라,
-    // shutdownNow 로 깨우고 그 정리가 끝날 2s 만 기다린다. 클라이언트는 EventSource 라 재연결한다.
+    // 스레드를 아낄 이유가 없는 작업이므로 가상 스레드로 "한 스트림 = 한 스레드"를 그냥 허용한다
+    // (Java 25 라 synchronized 로 인한 pinning 도 없다).
+    //
+    // <b>종료 동작은 예전과 같게 유지한다.</b> 이 루프는 InterruptedException 을 정상 종료 경로로
+    // 처리하도록 짜여 있다(emitter.complete()). 완료를 기다리게 두면 열려 있는 스트림 수명만큼
+    // 종료가 멈추므로, 인터럽트로 깨우고 그 정리가 끝날 2s 만 기다린다 — cancelRemainingTasksOnClose
+    // 가 활성 스레드를 인터럽트하고 taskTerminationTimeout 이 그 대기 상한이다(= 예전
+    // shutdownNow + awaitTermination(2s)). taskTerminationTimeout 이 0 이면 활성 스레드를 추적조차
+    // 하지 않아 인터럽트가 나가지 않는다 — 반드시 양수여야 한다. close() 는 SimpleAsyncTaskExecutor
+    // 가 AutoCloseable 이라 컨테이너가 소멸 단계에 알아서 부른다.
+    //
+    // 상한을 두는 이유: 가상 스레드는 싸도 그 뒤의 DB 커넥션 풀(20)은 싸지 않다. 상한에 닿으면
+    // 제출을 막지 않고 거부한다 — 기본 동작은 제출자를 대기시키는 것이라, 그대로 두면 톰캣 요청
+    // 스레드가 스트림 수명만큼 묶인다. 거부는 AgentEventStreamService 가 받아 스트림을 열지 않고,
+    // FE 는 예전과 같은 폴링 강등으로 떨어진다.
     @Bean("agentEventExecutor")
-    public Executor agentEventExecutor() {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(2);
-        executor.setMaxPoolSize(10);
-        executor.setQueueCapacity(100);
-        executor.setThreadNamePrefix("agent-event-");
-        executor.setAwaitTerminationSeconds(2);
-        executor.initialize();
+    public SimpleAsyncTaskExecutor agentEventExecutor(
+            @Value("${qeploy.agent.event-stream.max-concurrent:200}") int maxConcurrent
+    ) {
+        SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor("agent-event-");
+        executor.setVirtualThreads(true);
+        executor.setConcurrencyLimit(maxConcurrent);
+        executor.setRejectTasksWhenLimitReached(true);
+        executor.setTaskTerminationTimeout(2000);
+        executor.setCancelRemainingTasksOnClose(true);
+        log.info("[AsyncConfig] agentEventExecutor 가상 스레드, 동시 스트림 상한={}", maxConcurrent);
         return executor;
     }
 
