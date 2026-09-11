@@ -4,8 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -29,6 +31,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.test.util.ReflectionTestUtils;
 
 class PreviewSessionServiceTest {
 
@@ -419,21 +423,99 @@ class PreviewSessionServiceTest {
         // 유예를 걸어도 바로 뒤에 FE 가 프리뷰를 자동으로 띄우면 게이트웨이 접근이 일어난다.
         // touch 가 만료를 무조건 now+ttl 로 덮어쓰던 시절에는 그 한 번으로 유예가 통째로
         // 지워졌다 — 유예는 프리뷰를 한 번도 열지 않았을 때만 살아남았다(2026-08-18 운영 실측).
+        // 갱신이 단일 UPDATE 로 바뀐 뒤에도(7-1) 그 UPDATE 가 싣는 만료가 유예여야 한다.
         SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
-        PreviewSessionService service = new PreviewSessionService(
-                repository, mock(DockerContainerService.class), mock(TaskStore.class),
-                properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
-        );
+        PreviewSessionService service = gatewayService(repository);
         PreviewSessionEntity held = activeSessionExpiringIn(Duration.ofHours(6));
+        lastAccessedMinutesAgo(held, 5);   // 스로틀을 지나 실제로 갱신이 나가게 한다
         when(repository.findByIdAndAccessTokenAndStatus(
                 "session-1", "token-1", PreviewSessionStatus.ACTIVE.name()))
                 .thenReturn(Optional.of(held));
-        when(repository.save(any(PreviewSessionEntity.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
 
         service.resolveGateway("session-1", "token-1");
 
-        assertThat(held.getExpiresAt()).isAfter(LocalDateTime.now().plusHours(5));
+        ArgumentCaptor<LocalDateTime> expiresAt = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(repository).touchAccess(eq("session-1"), any(), expiresAt.capture(), any());
+        assertThat(expiresAt.getValue()).isAfter(LocalDateTime.now().plusHours(5));
+    }
+
+    // ── 게이트웨이 접근 갱신 스로틀 (Issue #342, 7-1) ──────────────────────────────────
+
+    /**
+     * 프리뷰 페이지 한 번의 로드는 문서 1 + 자산 N 개의 요청이고, 그 전부가 이 조회를 지난다.
+     * 예전에는 요청마다 엔티티를 고쳐 {@code save} 했으므로 같은 행에 UPDATE 가 N+1 번 나가고
+     * 그만큼 쓰기 락이 잡혔다. 스로틀 안에서는 <b>쓰기가 아예 없어야</b> 한다.
+     */
+    @Test
+    void assetRequestsWithinTheThrottleWindowWriteNothing() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = gatewayService(repository);
+        // 방금 만든 행 = lastAccessedAt 이 now — 스로틀 안이다.
+        PreviewSessionEntity session = activeSessionExpiringIn(Duration.ofMinutes(30));
+        when(repository.findByIdAndAccessTokenAndStatus(
+                "session-1", "token-1", PreviewSessionStatus.ACTIVE.name()))
+                .thenReturn(Optional.of(session));
+
+        for (int i = 0; i < 20; i++) {
+            assertThat(service.resolveGateway("session-1", "token-1")).isPresent();
+        }
+
+        verify(repository, never()).touchAccess(anyString(), any(), any(), any());
+        verify(repository, never()).save(any(PreviewSessionEntity.class));
+    }
+
+    /** 스로틀을 넘긴 접근은 엔티티 저장이 아니라 단일 UPDATE 한 번으로 갱신한다. */
+    @Test
+    void anAccessOlderThanTheThrottleWindowIsRefreshedWithOneUpdate() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = gatewayService(repository);
+        PreviewSessionEntity session = activeSessionExpiringIn(Duration.ofMinutes(30));
+        lastAccessedMinutesAgo(session, 5);
+        when(repository.findByIdAndAccessTokenAndStatus(
+                "session-1", "token-1", PreviewSessionStatus.ACTIVE.name()))
+                .thenReturn(Optional.of(session));
+
+        service.resolveGateway("session-1", "token-1");
+
+        ArgumentCaptor<LocalDateTime> expiresAt = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(repository).touchAccess(eq("session-1"), any(), expiresAt.capture(), any());
+        assertThat(expiresAt.getValue()).isAfter(LocalDateTime.now().plusMinutes(29));
+        verify(repository, never()).save(any(PreviewSessionEntity.class));
+    }
+
+    /**
+     * 스로틀은 <b>Sec-Fetch-Dest 를 보지 않는다.</b> "문서 탐색일 때만 갱신"으로 바꾸면 열어둔
+     * 프리뷰가 XHR/SSE 로만 쓰이는 동안 연장이 끊겨 사용 중인 세션이 만료되고, 게이트웨이의 인가
+     * 판정이 쓰는 헤더가 갱신 정책에도 얽힌다. 서브리소스 요청 하나만으로도 연장돼야 한다.
+     */
+    @Test
+    void aSubresourceRequestStillExtendsTheExpiryOnceTheWindowHasPassed() {
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = gatewayService(repository);
+        PreviewSessionEntity session = activeSessionExpiringIn(Duration.ofMinutes(2));
+        lastAccessedMinutesAgo(session, 5);
+        when(repository.findByIdAndAccessTokenAndStatus(
+                "session-1", "token-1", PreviewSessionStatus.ACTIVE.name()))
+                .thenReturn(Optional.of(session));
+
+        // resolveGateway 는 자산 요청과 문서 요청을 구분하지 않는다 — 같은 한 가지 경로다.
+        service.resolveGateway("session-1", "token-1");
+
+        ArgumentCaptor<LocalDateTime> expiresAt = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(repository).touchAccess(eq("session-1"), any(), expiresAt.capture(), any());
+        assertThat(expiresAt.getValue()).isAfter(LocalDateTime.now().plusMinutes(29));
+    }
+
+    private PreviewSessionService gatewayService(SpringDataPreviewSessionRepository repository) {
+        return new PreviewSessionService(
+                repository, mock(DockerContainerService.class), mock(TaskStore.class),
+                properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
+        );
+    }
+
+    /** 엔티티에 lastAccessedAt 세터가 없으므로(도메인 불변식) 테스트만 필드를 되돌린다. */
+    private void lastAccessedMinutesAgo(PreviewSessionEntity session, int minutes) {
+        ReflectionTestUtils.setField(session, "lastAccessedAt", LocalDateTime.now().minusMinutes(minutes));
     }
 
     private PreviewSessionEntity activeSessionExpiringIn(Duration remaining) {

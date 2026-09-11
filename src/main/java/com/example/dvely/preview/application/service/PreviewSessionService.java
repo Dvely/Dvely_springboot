@@ -30,6 +30,12 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class PreviewSessionService implements DeadPreviewSessionReclaimer {
 
+    /**
+     * 게이트웨이 접근의 만료 연장을 이 간격으로 묶는다 (Issue #342, 7-1). 프리뷰 페이지 한 번의
+     * 로드가 자산 수만큼 같은 행을 UPDATE 하던 것을 이 간격당 한 번으로 줄인다.
+     */
+    private static final Duration TOUCH_THROTTLE = Duration.ofSeconds(60);
+
     private final SpringDataPreviewSessionRepository repository;
     private final DockerContainerService dockerService;
     private final TaskStore taskStore;
@@ -239,6 +245,19 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
         );
     }
 
+    /**
+     * 게이트웨이가 요청마다 부르는 세션 조회.
+     *
+     * <p>여기서 엔티티를 <b>고치지 않는다</b>는 것이 7-1 의 핵심이다(Issue #342). 예전에는 조회한
+     * 엔티티를 {@code touch} 로 고쳐 {@code save} 했고, 그 결과 프리뷰 페이지가 끌어오는 자산
+     * 하나하나(JS/CSS/이미지)마다 이 행에 더티 체크 UPDATE 와 쓰기 락이 걸렸다 — 자산이 N 개인
+     * 페이지 한 번에 UPDATE N 번이다. 이제 갱신은 {@link #touchThrottled} 가 스로틀을 통과할 때만
+     * 단일 UPDATE 로 나간다.</p>
+     *
+     * <p>세션 조회 자체는 <b>캐시하지 않는다.</b> accessToken 은 소유자가 프리뷰를 다시 열 때마다
+     * 회전하고(이전 주소는 그 순간 404) 그 판정이 이 조회다. 캐시를 두면 회전이 다음 만료까지 미뤄져
+     * 유출된 주소의 수명을 늘리게 된다 — 줄일 수 있는 것은 쓰기뿐이다.</p>
+     */
     @Transactional
     public Optional<PreviewSessionInfo> resolveGateway(String sessionId, String accessToken) {
         return repository.findByIdAndAccessTokenAndStatus(
@@ -247,8 +266,13 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
                         PreviewSessionStatus.ACTIVE.name()
                 )
                 .filter(session -> session.getExpiresAt().isAfter(LocalDateTime.now()))
-                .map(this::touch)
-                .map(PreviewSessionEntity::toInfo);
+                .map(session -> {
+                    touchThrottled(session);
+                    // 갱신을 벌크 UPDATE 로 보냈으므로 이 엔티티의 expiresAt 은 갱신 전 값이다.
+                    // 게이트웨이는 sessionId·ownerUserId·hostPort 만 쓰므로 문제가 없고, 만료를
+                    // 응답에 싣는 경로(findCurrent·grantAccess)는 각자 따로 읽는다.
+                    return session.toInfo();
+                });
     }
 
     /**
@@ -334,9 +358,34 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
      * 12:43 — 30분 뒤였다).</p>
      */
     private PreviewSessionEntity touch(PreviewSessionEntity session) {
-        LocalDateTime next = nextExpiry();
-        session.touch(next.isAfter(session.getExpiresAt()) ? next : session.getExpiresAt());
+        session.touch(keepFurther(nextExpiry(), session));
         return repository.save(session);
+    }
+
+    /**
+     * 게이트웨이 접근의 만료 연장 — {@link #TOUCH_THROTTLE} 안에 이미 갱신됐으면 건너뛴다 (7-1).
+     *
+     * <p>"문서 탐색({@code Sec-Fetch-Dest})일 때만 갱신" 대신 시간 스로틀을 고른 이유는 두 가지다.
+     * 하나는 <b>동작 보존</b>이다 — 문서 탐색만 갱신하면, 열어둔 프리뷰가 XHR/SSE 로만 계속 쓰이는
+     * 동안에는 연장이 끊겨 사용 중인 세션이 만료된다. 다른 하나는 <b>보안 경계</b>다: {@code
+     * Sec-Fetch-Dest} 는 게이트웨이의 인가 판정(문서 탐색에만 소유권 쿠키 요구)이 쓰는 신호이므로,
+     * 세션 계층이 같은 헤더를 갱신 정책에 쓰기 시작하면 두 판정이 한 입력에 얽힌다.</p>
+     *
+     * <p>TTL 은 30 분이므로 60 초 스로틀이 실제로 깎는 연장은 최대 60 초다. 그 대가로 자산 N 개의
+     * UPDATE N 번이 60 초당 1 번이 된다.</p>
+     */
+    private void touchThrottled(PreviewSessionEntity session) {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime staleBefore = now.minus(TOUCH_THROTTLE);
+        if (!session.getLastAccessedAt().isBefore(staleBefore)) {
+            return;
+        }
+        repository.touchAccess(session.getId(), now, keepFurther(nextExpiry(), session), staleBefore);
+    }
+
+    /** 이미 걸려 있는 만료가 더 멀면 그것을 유지한다(유예 보존). */
+    private static LocalDateTime keepFurther(LocalDateTime next, PreviewSessionEntity session) {
+        return next.isAfter(session.getExpiresAt()) ? next : session.getExpiresAt();
     }
 
     private void expire(PreviewSessionEntity session, PreviewSessionStatus status) {
