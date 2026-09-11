@@ -1,6 +1,9 @@
 package com.example.dvely.change.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -148,6 +151,26 @@ class ChangeServiceTest {
         String diff = saved.getValue().getDiffText();
         assertThat(diff).hasSizeLessThan(1_100_000);
         assertThat(diff).endsWith("… (변경 내역이 너무 커서 이후는 생략했습니다)\n");
+    }
+
+    /**
+     * #337: Docker 가 통째로 실패하면 Change 행이 남지 않는다.
+     *
+     * <p>예전에는 {@code @Transactional} 롤백이 이 성질을 줬다. 트랜잭션을 걷어낸 뒤에는
+     * "diff 를 먼저 뜨고 그 다음에 저장한다" 는 순서가 유일한 보장이라 여기서 고정한다.
+     * (종료 코드가 0 이 아닌 경우는 {@code storesNothingRatherThanGarbage…} 가 다루는 별개의
+     * 경로다 — 그쪽은 빈 diff 로 <b>저장한다</b>.)</p>
+     */
+    @Test
+    void savesNothingWhenTheDockerExecItselfFails() {
+        Fixture f = fixture();
+        when(f.docker.exec("container-1", "[ -d /workspace/app/.git ] && echo yes || echo no"))
+                .thenThrow(new IllegalStateException("docker daemon 무응답"));
+
+        assertThatThrownBy(() -> f.service.record("task-1", "FAQ 추가"))
+                .isInstanceOf(IllegalStateException.class);
+
+        verify(f.repository, never()).save(any(ChangeEntity.class));
     }
 
     private record Fixture(ChangeService service,

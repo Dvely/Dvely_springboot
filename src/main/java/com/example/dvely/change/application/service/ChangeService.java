@@ -29,7 +29,15 @@ public class ChangeService {
     private final DockerContainerService dockerService;
     private final ProjectRepository projectRepository;
 
-    @Transactional
+    /**
+     * 트랜잭션을 걸지 않는다 — {@link #captureDiff} 가 Docker exec 를 두 번 돌고 그중 하나는
+     * {@code apk add git} 이라 네트워크 설치까지 기다린다. 트랜잭션 안에 두면 그 내내 커넥션이
+     * 묶였다(#337).
+     *
+     * <p>실패 시 동작은 그대로다: diff 를 뜨다 예외가 나면 아래 저장에 도달하지 못하므로
+     * Change 행이 남지 않는다 — 예전에 롤백이 해주던 것과 같은 결과를, 외부 호출을 저장보다
+     * 먼저 두는 순서로 얻는다.</p>
+     */
     public void record(String taskId, String summary) {
         AgentTask task = taskStore.get(taskId);
         PreviewSessionInfo preview = previewSessionService.findByTaskId(taskId)
