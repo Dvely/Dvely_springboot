@@ -7,6 +7,7 @@ import com.example.dvely.agent.application.dto.ClarificationRequest;
 import com.example.dvely.agent.application.dto.AgentTaskEvent;
 import com.example.dvely.agent.application.dto.AgentTaskFailure;
 import com.example.dvely.agent.application.dto.TaskStatus;
+import com.example.dvely.agent.application.stream.AgentEventAppendedEvent;
 import com.example.dvely.agent.infrastructure.persistence.entity.AgentRunEntity;
 import com.example.dvely.agent.infrastructure.persistence.entity.AgentRunEventEntity;
 import com.example.dvely.agent.infrastructure.persistence.repository.SpringDataAgentRunEventRepository;
@@ -68,6 +69,39 @@ public class TaskStore {
         return runRepository.findByTaskIdAndOwnerUserId(taskId, ownerUserId)
                 .map(AgentRunEntity::toTask)
                 .orElse(null);
+    }
+
+    /**
+     * 스트림 루프용 1쿼리 프로젝션(#339 4-1). 소유자가 아니거나 태스크가 없으면 {@code null}.
+     *
+     * <p>{@link #getOwned} 를 매초 부르던 자리다 — 그 호출은 루프가 쓰지도 않는
+     * {@code plan_json} LONGTEXT 까지 실어 왔다. 여기서는 상태와 마지막 이벤트 번호만 한
+     * 문장으로 읽는다. 소유권 조건은 그 문장 안에 그대로 남는다 — 같은 인덱스 조회라 공짜다.</p>
+     */
+    @Transactional(readOnly = true)
+    public StreamState getStreamState(String taskId, Long ownerUserId) {
+        return runRepository.findStreamState(taskId, ownerUserId)
+                .map(state -> new StreamState(
+                        TaskStatus.valueOf(state.status()),
+                        state.lastEventId() == null ? 0L : state.lastEventId()))
+                .orElse(null);
+    }
+
+    /** 스트림 한 틱이 알아야 할 전부 — 태스크 상태와 마지막 이벤트 번호. */
+    public record StreamState(TaskStatus status, long lastEventId) {}
+
+    /**
+     * 스트림 루프의 이벤트 조회. {@link #getEvents} 와 달리 소유권을 다시 묻지 않는다 —
+     * 같은 틱의 {@link #getStreamState} 가 이미 소유자 조건으로 걸러냈고, 그것을 여기서 한 번 더
+     * 확인하면 매 틱 쿼리가 하나 늘어난다.
+     */
+    @Transactional(readOnly = true)
+    public List<AgentTaskEvent> getEventsSince(String taskId, long afterEventId) {
+        return eventRepository
+                .findByTaskIdAndIdGreaterThanOrderByIdAsc(taskId, afterEventId)
+                .stream()
+                .map(AgentRunEventEntity::toResult)
+                .toList();
     }
 
     @Transactional(readOnly = true)
@@ -733,6 +767,13 @@ public class TaskStore {
 
     private void appendEvent(String taskId, String type, TaskStatus status, String message) {
         eventRepository.save(new AgentRunEventEntity(taskId, type, status, message));
+        signalEventAppended(taskId);
+    }
+
+    // 열려 있는 SSE 스트림을 깨운다(#339 4-2). 커밋된 뒤에 전달되므로(AFTER_COMMIT) 스트림이
+    // 깨어났을 때는 이 행이 이미 보인다.
+    private void signalEventAppended(String taskId) {
+        eventPublisher.publishEvent(new AgentEventAppendedEvent(taskId));
     }
 
     /**
@@ -757,6 +798,7 @@ public class TaskStore {
         try {
             eventRepository.save(new AgentRunEventEntity(
                     taskId, type, status, message, stepIndex, stepTotal, agentType));
+            signalEventAppended(taskId);
         } catch (RuntimeException e) {
             log.warn("스텝 진행 이벤트 적재 실패(작업은 계속): taskId={} type={} step={}/{}",
                     taskId, type, stepIndex, stepTotal, e);

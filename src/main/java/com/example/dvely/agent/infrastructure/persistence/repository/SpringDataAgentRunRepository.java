@@ -242,4 +242,27 @@ public interface SpringDataAgentRunRepository extends JpaRepository<AgentRunEnti
             @Param("status") String status,
             @Param("before") LocalDateTime before
     );
+
+    // #339 4-1: SSE 스트림 루프 전용 프로젝션. 루프는 "상태가 끝났나 / 새 이벤트가 있나"만 알면
+    // 되는데, 여태 그 둘을 엔티티 전체 조회(plan_json LONGTEXT 포함) + 이벤트 목록 조회로 매초
+    // 따로 물었다. 스칼라 서브쿼리로 한 문장에 묶는다 — max(event_id) 는
+    // idx_agent_run_events_task_id(task_id, event_id) 의 끝을 짚는 인덱스 조회다.
+    //
+    // ownerUserId 를 조건에 남겨 둔 이유: 소유권 재확인을 없애는 것이 목적이 아니라 "매초 run 행을
+    // 통째로 읽는 것"을 없애는 것이 목적이다. 이 조건은 같은 인덱스 조회 안에서 공짜라, 스트림이
+    // 열려 있는 동안 태스크가 사라지거나 소유자가 달라지면 다음 틱에 빈 결과로 드러난다.
+    @Query("""
+            select new com.example.dvely.agent.infrastructure.persistence.repository.AgentRunStreamState(
+                       run.status,
+                       (select max(event.id)
+                          from AgentRunEventEntity event
+                         where event.taskId = run.taskId))
+            from AgentRunEntity run
+            where run.taskId = :taskId
+              and run.ownerUserId = :ownerUserId
+            """)
+    Optional<AgentRunStreamState> findStreamState(
+            @Param("taskId") String taskId,
+            @Param("ownerUserId") Long ownerUserId
+    );
 }
