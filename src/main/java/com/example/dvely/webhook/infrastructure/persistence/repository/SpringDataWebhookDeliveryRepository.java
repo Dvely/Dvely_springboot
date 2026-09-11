@@ -46,4 +46,23 @@ public interface SpringDataWebhookDeliveryRepository
     );
 
     List<WebhookDeliveryEntity> findByStatusAndLeaseUntilBefore(String status, LocalDateTime now);
+
+    /**
+     * 보존 스윕(#338). JPQL 벌크 삭제는 LIMIT 을 표현할 수 없어 네이티브로 쓴다 —
+     * {@code SpringDataAuditLogRepository#deleteBatch} 와 같은 이유·같은 형태다.
+     *
+     * <p>{@code ORDER BY} 를 일부러 붙이지 않았다. status 값이 여러 개라
+     * {@code idx_webhook_deliveries_retention (status, received_at)} 위에서 received_at 으로
+     * 정렬하려면 filesort 가 붙는다(EXPLAIN 으로 확인). 배치를 끊는 데 순서는 필요 없다 —
+     * 조건에 맞는 아무 batchSize 건이면 되고, 호출자가 0 이 될 때까지 반복한다.</p>
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = "delete from webhook_deliveries"
+            + " where status in (:statuses) and received_at < :cutoff limit :batchSize",
+            nativeQuery = true)
+    int deleteTerminalBatch(
+            @Param("statuses") Collection<String> statuses,
+            @Param("cutoff") LocalDateTime cutoff,
+            @Param("batchSize") int batchSize
+    );
 }

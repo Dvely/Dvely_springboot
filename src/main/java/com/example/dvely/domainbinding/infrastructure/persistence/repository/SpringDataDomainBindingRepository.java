@@ -19,10 +19,14 @@ public interface SpringDataDomainBindingRepository extends JpaRepository<DomainB
     // CONNECTED 인데 httpsEnforced 가 아직 false 인 것 — 인증서 warming 후 뱃지를 채우려 재검증할 대상(#6).
     List<DomainBindingEntity> findByStatusAndHttpsEnforcedFalseOrderByCreatedAtAsc(String status, Pageable pageable);
 
-    boolean existsByHostnameIgnoreCase(String hostname);
+    // IgnoreCase 가 없는 것은 실수가 아니다(#338). IgnoreCase 는 upper(domain_name)=upper(?) 를
+    // 만들어 uk_domains_domain_name 을 통째로 무시하게 했다(EXPLAIN: type=index, 2만 행 스캔).
+    // domain_name 의 컬레이션이 utf8mb4_unicode_ci 라 대소문자 무시는 IgnoreCase 없이도 그대로다
+    // — IgnoreCase 는 동작을 더해주지 않으면서 UK 만 죽이고 있었다(같은 EXPLAIN: type=const, 1 행).
+    boolean existsByHostname(String hostname);
 
-    // hosting_target 는 String 컬럼.
-    boolean existsByHostnameIgnoreCaseAndHostingTarget(String hostname, String hostingTarget);
+    // hosting_target 는 String 컬럼. 위와 같은 이유로 IgnoreCase 를 쓰지 않는다.
+    boolean existsByHostnameAndHostingTarget(String hostname, String hostingTarget);
 
     /**
      * S3 CDN 프로비저닝 워커의 다중 인스턴스 리스 claim. PROVISIONING 이고 리스가 비었거나 만료됐거나 내가

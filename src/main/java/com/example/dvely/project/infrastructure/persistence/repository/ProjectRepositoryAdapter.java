@@ -41,7 +41,7 @@ public class ProjectRepositoryAdapter implements ProjectRepository {
             String sourceRepository
     ) {
         return springDataProjectRepository
-                .findFirstByOwnerUserIdAndSourceRepositoryIgnoreCaseAndDeletedFalseOrderByUpdatedAtDesc(ownerUserId, sourceRepository)
+                .findFirstByOwnerUserIdAndSourceRepositoryAndDeletedFalseOrderByUpdatedAtDesc(ownerUserId, sourceRepository)
                 .map(ProjectEntity::toDomain);
     }
 
@@ -52,13 +52,13 @@ public class ProjectRepositoryAdapter implements ProjectRepository {
 
     @Override
     public Optional<Project> findBySourceRepository(String sourceRepository) {
-        return springDataProjectRepository.findFirstBySourceRepositoryIgnoreCase(sourceRepository)
+        return springDataProjectRepository.findFirstBySourceRepository(sourceRepository)
                 .map(ProjectEntity::toDomain);
     }
 
     @Override
     public List<Project> findAllBySourceRepository(String sourceRepository) {
-        return springDataProjectRepository.findBySourceRepositoryIgnoreCaseAndDeletedFalse(sourceRepository)
+        return springDataProjectRepository.findBySourceRepositoryAndDeletedFalse(sourceRepository)
                 .stream()
                 .map(ProjectEntity::toDomain)
                 .toList();
