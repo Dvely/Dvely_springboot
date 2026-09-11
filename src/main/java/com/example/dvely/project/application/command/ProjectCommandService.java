@@ -5,7 +5,6 @@ import com.example.dvely.audit.application.AuditRecorder;
 import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.audit.domain.value.AuditActorType;
 import com.example.dvely.audit.domain.value.AuditOutcome;
-import com.example.dvely.chat.application.command.ChatCommandService;
 import com.example.dvely.project.application.command.dto.ConnectProjectRepositoryCommand;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
 import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
@@ -14,6 +13,7 @@ import com.example.dvely.project.application.port.out.GithubRepositoryPort;
 import com.example.dvely.project.application.port.out.UserProfilePort;
 import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectRepositoryResult;
+import com.example.dvely.project.application.service.ProjectDeletionService;
 import com.example.dvely.project.application.service.RepositoryProvisioningService;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
 import com.example.dvely.project.domain.model.Project;
@@ -34,12 +34,16 @@ public class ProjectCommandService {
     private final ProjectDomainService projectDomainService;
     private final GithubRepositoryPort githubRepositoryPort;
     private final UserProfilePort userProfilePort;
-    private final ChatCommandService chatCommandService;
     private final AuditRecorder auditRecorder;
     private final RepositoryProvisioningService repositoryProvisioningService;
     private final TemplateCatalogGuard templateCatalogGuard;
+    private final ProjectDeletionService projectDeletionService;
 
-    @Transactional
+    /**
+     * 트랜잭션을 걸지 않는다 — 아래 카탈로그 확인이 HTTP 호출이라 그 응답을 기다리는 동안
+     * 커넥션이 묶였다(#337). 저장은 {@code save} 한 건뿐이고 그 앞이 전부 검증이라, 카탈로그
+     * 확인이 실패하면 저장에 도달하지 않는 것은 그대로다(예전 롤백과 같은 결과).
+     */
     public ProjectDetailResult createProject(Long ownerUserId, CreateProjectCommand command) {
         Project project = projectDomainService.create(
                 ownerUserId,
@@ -56,7 +60,15 @@ public class ProjectCommandService {
         return toDetailResult(savedProject);
     }
 
-    @Transactional
+    /**
+     * 트랜잭션을 걸지 않는다 — GitHub 조회·생성과 {@code preparePreviewBranch} 까지 최대 네 번의
+     * 외부 호출이 트랜잭션 안에 있었다(#337).
+     *
+     * <p>실패 시 동작은 그대로다: 외부 호출이 전부 유일한 저장({@code bindToProject} 안의
+     * {@code projectRepository.save})보다 앞에 있어, 어느 하나가 던지면 저장에 도달하지 않는다.
+     * 저장이 한 건이라 원자성도 줄지 않는다. {@code create} 모드에서 저장소를 만든 뒤 뒷단계가
+     * 실패하면 GitHub 에 고아 저장소가 남는 것은 롤백으로도 되돌릴 수 없던 일이라 이전과 같다.</p>
+     */
     public ProjectRepositoryResult connectRepository(Long ownerUserId,
                                                      Long projectId,
                                                      ConnectProjectRepositoryCommand command) {
@@ -152,18 +164,21 @@ public class ProjectCommandService {
         return toDetailResult(savedProject);
     }
 
-    @Transactional
+    /**
+     * 트랜잭션을 걸지 않는다 — 저장소까지 지우는 모드가 GitHub 삭제를 기다리는 동안 커넥션을
+     * 붙들고 있었다(#337). 로컬 정리(대화 삭제 + 프로젝트 삭제)는 갈라지면 안 되므로
+     * {@link ProjectDeletionService} 의 짧은 트랜잭션 하나로 함께 커밋한다.
+     *
+     * <p>실패 시 동작은 그대로다: GitHub 삭제가 던지면 로컬 정리에 도달하지 않아 아무것도
+     * 지워지지 않는다(예전 롤백과 같은 결과). 반대로 GitHub 삭제가 성공한 뒤 로컬 정리가
+     * 실패하는 경우도 이전과 같다 — 되돌릴 수 없는 삭제라 롤백이 해결해 준 적이 없고, 그래서
+     * 감사 기록을 그 직후에 남기는 순서(H3)도 그대로 두었다.</p>
+     */
     public void deleteProject(Long ownerUserId, Long projectId, ProjectDeleteMode deleteMode) {
-        Project project = getProject(ownerUserId, projectId);
-
         if (deleteMode == ProjectDeleteMode.PROJECT_AND_REPOSITORY) {
-            deleteProjectAndRepository(ownerUserId, project);
-            return;
+            deleteRemoteRepository(ownerUserId, getProject(ownerUserId, projectId));
         }
-
-        chatCommandService.trashConversationsForProject(ownerUserId, projectId);
-        projectDomainService.delete(project);
-        projectRepository.save(project);
+        projectDeletionService.purge(ownerUserId, projectId, deleteMode);
     }
 
     private Project getProject(Long ownerUserId, Long projectId) {
@@ -171,7 +186,8 @@ public class ProjectCommandService {
                 .orElseThrow(() -> new ProjectNotFoundException(projectId, ownerUserId));
     }
 
-    private void deleteProjectAndRepository(Long ownerUserId, Project project) {
+    /** 되돌릴 수 없는 GitHub 삭제만 담당한다 — 트랜잭션 밖에서, 로컬 정리보다 먼저 끝낸다. */
+    private void deleteRemoteRepository(Long ownerUserId, Project project) {
         if (!project.hasSourceRepository()) {
             throw new IllegalStateException("프로젝트에 연결된 저장소가 없습니다.");
         }
@@ -196,9 +212,6 @@ public class ProjectCommandService {
                 null,
                 null
         ));
-        chatCommandService.deleteConversationsForProject(ownerUserId, project.getId());
-        projectDomainService.delete(project);
-        projectRepository.save(project);
     }
 
     private String normalizeRepositoryMode(String repositoryMode) {

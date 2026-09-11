@@ -36,7 +36,12 @@ public class DeploymentQueryService {
     private final UserRepository userRepository;
     private final GithubActionsPort githubActionsPort;
 
-    @Transactional(readOnly = true)
+    /**
+     * 트랜잭션을 걸지 않는다 — IN_PROGRESS 동안 FE 가 주기적으로 폴링하는 경로라, 아래 GitHub
+     * Actions 호출(최대 2회)이 끝날 때까지 커넥션을 붙들면 폴링하는 배포 수만큼 풀이 잠긴다(#337).
+     * DB 에서 하는 일은 읽기 세 건뿐이고 전부 도메인 모델로 나오므로 각 리포지토리의 짧은
+     * 트랜잭션으로 충분하다. 쓰기가 없어 롤백에 기대던 성질도 없다.
+     */
     public DeploymentStatusResult getDeploymentStatus(Long ownerUserId, Long historyId) {
         DeploymentHistory history = deploymentHistoryRepository.findById(historyId)
                 .orElseThrow(() -> new NotFoundException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));
@@ -203,7 +208,7 @@ public class DeploymentQueryService {
                 .toList();
     }
 
-    @Transactional(readOnly = true)
+    /** {@link #getDeploymentStatus} 와 같은 이유 — job 로그 다운로드까지 트랜잭션 안에 있었다. */
     public DeploymentLogsResult getDeploymentLogs(Long ownerUserId, Long historyId) {
         DeploymentHistory history = deploymentHistoryRepository.findById(historyId)
                 .orElseThrow(() -> new NotFoundException("배포 이력을 찾을 수 없습니다. historyId=" + historyId));

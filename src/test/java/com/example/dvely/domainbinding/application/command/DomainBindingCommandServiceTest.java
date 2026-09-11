@@ -3,6 +3,7 @@ package com.example.dvely.domainbinding.application.command;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -47,6 +48,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.client.HttpClientErrorException;
 
 @ExtendWith(MockitoExtension.class)
 class DomainBindingCommandServiceTest {
@@ -570,6 +574,121 @@ class DomainBindingCommandServiceTest {
                 com.example.dvely.domainbinding.domain.value.VerificationMethod.A,
                 ip, recordId, false, CertificateStatus.PENDING, null,
                 LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now());
+    }
+
+    // ── #337: 외부 호출이 실패하면 저장이 남지 않는다 ────────────────────────────────
+    // 예전에는 이 성질을 @Transactional 롤백이 공짜로 줬다. 트랜잭션을 걷어낸 뒤에는 "외부
+    // 호출을 유일한 save 보다 앞에 둔다" 는 순서가 유일한 보장이므로, 그 순서를 여기서 고정한다.
+    // 이 테스트들이 깨진다면 누군가 save 를 외부 호출 앞으로 옮겼다는 뜻이다.
+
+    @Test
+    void bindManagedSubdomain_cloudflare4xx_leavesNoRow() {
+        Project project = boundProject("https://octo.github.io/repo/");
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(domainBindingRepository.existsByHostnameIgnoreCase("my-project.qeploy.com")).thenReturn(false);
+        when(hostingAdapter.resolveDnsTarget(any())).thenReturn("octo.github.io");
+        when(cloudflareDnsPort.createCnameRecord("my-project.qeploy.com", "octo.github.io"))
+                .thenThrow(HttpClientErrorException.create(
+                        HttpStatus.BAD_REQUEST, "Bad Request", HttpHeaders.EMPTY, new byte[0], null));
+
+        assertThatThrownBy(() -> commandService.bindDomain(
+                1L, 11L, new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "my-project", null, null)))
+                .isInstanceOf(HttpClientErrorException.class);
+
+        verify(domainBindingRepository, never()).save(any(DomainBinding.class));
+        verifyNoInteractions(auditRecorder);
+    }
+
+    @Test
+    void bindManagedSubdomain_pagesBind4xx_leavesNoRowAndRollsBackTheDnsRecord() {
+        Project project = boundProject("https://octo.github.io/repo/");
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(domainBindingRepository.existsByHostnameIgnoreCase("my-project.qeploy.com")).thenReturn(false);
+        when(hostingAdapter.resolveDnsTarget(any())).thenReturn("octo.github.io");
+        when(cloudflareDnsPort.createCnameRecord("my-project.qeploy.com", "octo.github.io"))
+                .thenReturn("cf-record-1");
+        org.mockito.Mockito.doThrow(HttpClientErrorException.create(
+                        HttpStatus.UNPROCESSABLE_ENTITY, "Unprocessable", HttpHeaders.EMPTY, new byte[0], null))
+                .when(hostingAdapter).bind(any(), eq("my-project.qeploy.com"));
+
+        assertThatThrownBy(() -> commandService.bindDomain(
+                1L, 11L, new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "my-project", null, null)))
+                .isInstanceOf(HttpClientErrorException.class);
+
+        verify(domainBindingRepository, never()).save(any(DomainBinding.class));
+        // 이미 만든 DNS 레코드는 보상 삭제된다 — 트랜잭션이 해주던 일이 아니라 원래 명시적 코드였다.
+        verify(cloudflareDnsPort).deleteRecord("my-project.qeploy.com", "cf-record-1");
+        verifyNoInteractions(auditRecorder);
+    }
+
+    @Test
+    void bindCustomDomain_pagesBind4xx_leavesNoRow() {
+        Project project = boundProject("https://octo.github.io/repo/");
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(domainBindingRepository.existsByHostnameIgnoreCase("www.mysite.com")).thenReturn(false);
+        when(hostingAdapter.resolveDnsTarget(any())).thenReturn("octo.github.io");
+        org.mockito.Mockito.doThrow(HttpClientErrorException.create(
+                        HttpStatus.FORBIDDEN, "Forbidden", HttpHeaders.EMPTY, new byte[0], null))
+                .when(hostingAdapter).bind(any(), eq("www.mysite.com"));
+
+        assertThatThrownBy(() -> commandService.bindDomain(
+                1L, 11L, new BindDomainCommand(DomainType.CUSTOM_DOMAIN, null, "www.mysite.com", null)))
+                .isInstanceOf(HttpClientErrorException.class);
+
+        verify(domainBindingRepository, never()).save(any(DomainBinding.class));
+        verifyNoInteractions(auditRecorder);
+    }
+
+    @Test
+    void deleteDomain_unbind4xx_keepsTheRow() {
+        Project project = boundProject("https://octo.github.io/repo/");
+        DomainBinding domain = new DomainBinding(
+                31L, 11L, DomainType.MANAGED_SUBDOMAIN, DomainHostingTarget.GITHUB_PAGES,
+                "my-project.qeploy.com", DomainStatus.CONNECTED,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME,
+                "octo.github.io", "record-1", true, CertificateStatus.ACTIVE, null,
+                LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now()
+        );
+        when(domainBindingRepository.findById(31L)).thenReturn(Optional.of(domain));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        org.mockito.Mockito.doThrow(HttpClientErrorException.create(
+                        HttpStatus.NOT_FOUND, "Not Found", HttpHeaders.EMPTY, new byte[0], null))
+                .when(hostingAdapter).unbind(any(), eq("my-project.qeploy.com"));
+
+        assertThatThrownBy(() -> commandService.deleteDomain(1L, 31L))
+                .isInstanceOf(HttpClientErrorException.class);
+
+        verify(domainBindingRepository, never()).deleteById(any());
+        verifyNoInteractions(auditRecorder);
+    }
+
+    @Test
+    void checkVerification_hostingProbe4xx_leavesTheStoredStateUntouched() {
+        Project project = boundProject("https://octo.github.io/repo/");
+        LocalDateTime now = LocalDateTime.now();
+        DomainBinding domain = new DomainBinding(
+                31L, 11L, DomainType.MANAGED_SUBDOMAIN, DomainHostingTarget.GITHUB_PAGES,
+                "my-project.qeploy.com", DomainStatus.VERIFYING,
+                com.example.dvely.domainbinding.domain.value.VerificationMethod.CNAME,
+                "octo.github.io", "record-1", false, CertificateStatus.PROVISIONING, null,
+                now, now, now
+        );
+        when(domainBindingRepository.findById(31L)).thenReturn(Optional.of(domain));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(hostingAdapter.verify(any(), eq("my-project.qeploy.com")))
+                .thenThrow(HttpClientErrorException.create(
+                        HttpStatus.TOO_MANY_REQUESTS, "Too Many Requests", HttpHeaders.EMPTY, new byte[0], null));
+
+        assertThatThrownBy(() -> commandService.checkVerification(1L, 31L))
+                .isInstanceOf(HttpClientErrorException.class);
+
+        verify(domainBindingRepository, never()).save(any(DomainBinding.class));
+        assertThat(domain.getStatus()).isEqualTo(DomainStatus.VERIFYING);
     }
 
     private DomainBindingCommandService commandService(CloudflareProperties cloudflareProperties) {

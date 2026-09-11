@@ -37,6 +37,7 @@ import java.util.Comparator;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -54,6 +55,11 @@ public class ProjectQueryService {
     private final DomainBindingQueryService domainBindingQueryService;
     private final ProjectInfrastructureSettingsService infrastructureSettingsService;
 
+    // GitHub 을 호출하는 조회는 클래스 레벨 트랜잭션에서 빼낸다. 그대로 두면 GitHub 응답을
+    // 기다리는 내내 커넥션이 묶이는데, 이 넷이 바로 대시보드가 가장 자주 때리는 경로다(#337).
+    // 남은 메서드는 순수 DB 조회라 클래스 레벨 readOnly 트랜잭션을 그대로 쓴다.
+    // 모두 읽기라 롤백에 기대는 동작이 없다 — 쓰기는 한 건도 없다.
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public List<GithubRepositoryResult> getGithubRepositories(Long ownerUserId, boolean refresh) {
         return githubRepositoryPort.listRepositories(ownerUserId, refresh).stream()
                 .map(repository -> new GithubRepositoryResult(
@@ -79,6 +85,7 @@ public class ProjectQueryService {
         return toDetailResult(project);
     }
 
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public ProjectOverviewResult getOverview(Long ownerUserId, Long projectId) {
         Project project = findProject(ownerUserId, projectId);
         List<CommitResult> commits = getCommits(ownerUserId, projectId);
@@ -139,6 +146,7 @@ public class ProjectQueryService {
         );
     }
 
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public List<CommitResult> getCommits(Long ownerUserId, Long projectId) {
         Project project = findProject(ownerUserId, projectId);
         if (!project.hasSourceRepository()) {
@@ -175,6 +183,7 @@ public class ProjectQueryService {
         return synchronizedCommits.stream().limit(DEFAULT_COMMIT_LIMIT).toList();
     }
 
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public RepositoryHealthResult getRepositoryHealth(Long ownerUserId, Long projectId) {
         Project project = findProject(ownerUserId, projectId);
         if (!project.hasSourceRepository()) {
