@@ -14,6 +14,9 @@ import java.time.LocalDateTime;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -73,7 +76,7 @@ class PreviewGatewayServiceTest {
 
     @Test
     void sandboxesThePreviewDocumentSoItCannotReachTheParentOrigin() {
-        ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+        ResponseEntity<Resource> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
 
         String policy = response.getHeaders().getFirst(PreviewGatewayService.CONTENT_SECURITY_POLICY);
         assertThat(policy).isNotNull();
@@ -88,7 +91,7 @@ class PreviewGatewayServiceTest {
     /** 스크립트가 도는 미리보기가 목적이므로 격리가 실행 자체를 막아서는 안 된다. */
     @Test
     void stillAllowsTheScriptsAndFormsAPreviewNeeds() {
-        ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+        ResponseEntity<Resource> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
 
         String policy = response.getHeaders().getFirst(PreviewGatewayService.CONTENT_SECURITY_POLICY);
         assertThat(policy).contains("allow-scripts").contains("allow-forms").contains("allow-popups");
@@ -105,7 +108,7 @@ class PreviewGatewayServiceTest {
             exchange.close();
         });
 
-        ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "app.js", null);
+        ResponseEntity<Resource> response = service.proxy(session(), "/api/v1/previews/s/t/", "app.js", null);
 
         assertThat(response.getHeaders().getFirst(PreviewGatewayService.CONTENT_SECURITY_POLICY))
                 .contains("sandbox");
@@ -118,15 +121,15 @@ class PreviewGatewayServiceTest {
      * 백지가 됐다(Issue #111). 접두를 벗겨 다시 물어보는 것이 이 테스트가 지키는 계약이다.
      */
     @Test
-    void absorbsTheBuildBasePathSoAssetsResolveToTheServedRoot() {
+    void absorbsTheBuildBasePathSoAssetsResolveToTheServedRoot() throws IOException {
         serveAsset("/assets/app.js", "application/javascript", "console.log(1)");
 
-        ResponseEntity<byte[]> response =
+        ResponseEntity<Resource> response =
                 service.proxy(session(), "/api/v1/previews/s/t/", "my-todo-app/assets/app.js", null);
 
         assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE))
                 .contains("application/javascript");
-        assertThat(new String(response.getBody(), StandardCharsets.UTF_8)).isEqualTo("console.log(1)");
+        assertThat(bodyOf(response)).isEqualTo("console.log(1)");
     }
 
     /**
@@ -139,8 +142,8 @@ class PreviewGatewayServiceTest {
     void tellsTheCdnNotToInjectIntoThePreviewDocument() {
         serveAsset("/assets/app.js", "application/javascript", "console.log(1)");
 
-        ResponseEntity<byte[]> document = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
-        ResponseEntity<byte[]> asset =
+        ResponseEntity<Resource> document = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+        ResponseEntity<Resource> asset =
                 service.proxy(session(), "/api/v1/previews/s/t/", "assets/app.js", null);
 
         assertThat(document.getHeaders().getCacheControl()).contains("no-transform");
@@ -155,7 +158,7 @@ class PreviewGatewayServiceTest {
     void absorbsTheBasePathForRootLevelAssetsToo() {
         serveAsset("/favicon.svg", "image/svg+xml", "<svg/>");
 
-        ResponseEntity<byte[]> response =
+        ResponseEntity<Resource> response =
                 service.proxy(session(), "/api/v1/previews/s/t/", "my-todo-app/favicon.svg", null);
 
         assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE)).contains("image/svg+xml");
@@ -163,13 +166,13 @@ class PreviewGatewayServiceTest {
 
     /** base 가 없는 프로젝트(대다수)는 첫 요청에서 끝나야 한다 — 추가 왕복도, 경로 변형도 없다. */
     @Test
-    void leavesAssetsThatAlreadyResolveUntouched() {
+    void leavesAssetsThatAlreadyResolveUntouched() throws IOException {
         serveAsset("/assets/app.js", "application/javascript", "console.log(1)");
 
-        ResponseEntity<byte[]> response =
+        ResponseEntity<Resource> response =
                 service.proxy(session(), "/api/v1/previews/s/t/", "assets/app.js", null);
 
-        assertThat(new String(response.getBody(), StandardCharsets.UTF_8)).isEqualTo("console.log(1)");
+        assertThat(bodyOf(response)).isEqualTo("console.log(1)");
     }
 
     /**
@@ -178,7 +181,7 @@ class PreviewGatewayServiceTest {
      */
     @Test
     void keepsTheSpaFallbackForRoutesThatAreNotAssets() {
-        ResponseEntity<byte[]> response =
+        ResponseEntity<Resource> response =
                 service.proxy(session(), "/api/v1/previews/s/t/", "todos/42", null);
 
         assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE)).contains("text/html");
@@ -187,7 +190,7 @@ class PreviewGatewayServiceTest {
     /** 접두를 벗겨도 없는 자산은 원래 응답을 그대로 돌려준다 — 경로를 무한히 깎지 않는다. */
     @Test
     void fallsBackToTheOriginalResponseWhenStrippingDoesNotHelp() {
-        ResponseEntity<byte[]> response =
+        ResponseEntity<Resource> response =
                 service.proxy(session(), "/api/v1/previews/s/t/", "a/b/c/missing.js", null);
 
         assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE)).contains("text/html");
@@ -201,7 +204,7 @@ class PreviewGatewayServiceTest {
      */
     @Test
     void doesNotSetItsOwnCorsHeaderBecauseTheCorsFilterOwnsIt() {
-        ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+        ResponseEntity<Resource> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
 
         assertThat(response.getHeaders().getAccessControlAllowOrigin()).isNull();
     }
@@ -221,7 +224,7 @@ class PreviewGatewayServiceTest {
                 "session-dead", 1L, 11L, null, null, "container-dead", closedPort,
                 "https://qeploy.com/api/v1/previews/session-dead/token/", LocalDateTime.now().plusMinutes(30));
 
-        ResponseEntity<byte[]> response = service.proxy(dead, "/api/v1/previews/s/t/", "", null);
+        ResponseEntity<Resource> response = service.proxy(dead, "/api/v1/previews/s/t/", "", null);
 
         assertThat(response.getStatusCode().value()).isEqualTo(502);
         assertThat(reclaimed).containsExactly("session-dead");   // 안쪽 앱 死 → 세션 회수 요청
@@ -242,7 +245,7 @@ class PreviewGatewayServiceTest {
                 "session-dead", 1L, 11L, null, null, "container-dead", closedPort,
                 "https://qeploy.com/api/v1/previews/session-dead/token/", LocalDateTime.now().plusMinutes(30));
 
-        ResponseEntity<byte[]> response = disabled.proxy(dead, "/api/v1/previews/s/t/", "", null);
+        ResponseEntity<Resource> response = disabled.proxy(dead, "/api/v1/previews/s/t/", "", null);
 
         assertThat(response.getStatusCode().value()).isEqualTo(502);
         assertThat(reclaimed).isEmpty();   // 킬스위치 off — 회수 안 함
@@ -261,10 +264,10 @@ class PreviewGatewayServiceTest {
      * HTML 에 fetch/XHR 를 감싸 그 요청을 프리뷰 prefix 아래로 재작성하는 shim 이 주입돼야 데이터가 앱에 닿는다.
      */
     @Test
-    void injectsApiPathShimIntoHtmlSoRootAbsoluteApiCallsReachTheApp() {
-        ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+    void injectsApiPathShimIntoHtmlSoRootAbsoluteApiCallsReachTheApp() throws IOException {
+        ResponseEntity<Resource> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
 
-        String html = new String(response.getBody(), StandardCharsets.UTF_8);
+        String html = bodyOf(response);
         assertThat(html).contains("window.fetch");                       // fetch 래핑
         assertThat(html).contains("XMLHttpRequest.prototype.open");      // XHR 래핑(axios 등)
         assertThat(html).contains("/api/v1/previews/s/t");               // prefix(슬래시 뺀)가 shim 에 박힘
@@ -278,10 +281,10 @@ class PreviewGatewayServiceTest {
      * 문서에 주입된다는 계약을 회귀 가드로 고정한다.
      */
     @Test
-    void injectsNavigationShimSoRootAbsoluteLinksAndFormsStayInThePrefix() {
-        ResponseEntity<byte[]> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+    void injectsNavigationShimSoRootAbsoluteLinksAndFormsStayInThePrefix() throws IOException {
+        ResponseEntity<Resource> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
 
-        String html = new String(response.getBody(), StandardCharsets.UTF_8);
+        String html = bodyOf(response);
         assertThat(html).contains("addEventListener(\"click\",fixA,true)");    // 앵커 클릭 가로채기
         assertThat(html).contains("addEventListener(\"auxclick\",fixA,true)"); // 중클릭(새 탭)도
         assertThat(html).contains("addEventListener(\"submit\"");              // 폼 action 가로채기
@@ -294,7 +297,7 @@ class PreviewGatewayServiceTest {
      * 프리뷰에서 동작하려면 필요하다. 앱이 method 와 본문을 되돌려주는 엔드포인트로 왕복을 확인한다.
      */
     @Test
-    void proxiesWriteMethodsWithTheirBodyToTheApp() {
+    void proxiesWriteMethodsWithTheirBodyToTheApp() throws IOException {
         container.createContext("/api/entries", exchange -> {
             byte[] in = exchange.getRequestBody().readAllBytes();
             String out = "{\"method\":\"" + exchange.getRequestMethod() + "\",\"echo\":"
@@ -307,11 +310,12 @@ class PreviewGatewayServiceTest {
         });
         byte[] reqBody = "{\"name\":\"a\",\"message\":\"hi\"}".getBytes(StandardCharsets.UTF_8);
 
-        ResponseEntity<byte[]> response = service.proxy(
-                "POST", session(), "/api/v1/previews/s/t/", "api/entries", null, reqBody, "application/json");
+        ResponseEntity<Resource> response = service.proxy(
+                session(), "/api/v1/previews/s/t/", "api/entries", null,
+                new PreviewGatewayService.ProxiedRequest("POST", reqBody, "application/json"));
 
         assertThat(response.getStatusCode().value()).isEqualTo(201);   // 상태 그대로
-        String body = new String(response.getBody(), StandardCharsets.UTF_8);
+        String body = bodyOf(response);
         assertThat(body).contains("\"method\":\"POST\"");   // 메서드 그대로 전달
         assertThat(body).contains("\"name\":\"a\"");        // 본문 그대로 전달
     }
@@ -346,6 +350,64 @@ class PreviewGatewayServiceTest {
         response.getBody().writeTo(sink);   // 업스트림이 닫힐 때까지 청크를 흘려보낸다
         String streamed = sink.toString(StandardCharsets.UTF_8);
         assertThat(streamed).contains("data: one").contains("data: two");
+    }
+
+    /** 응답 본문을 문자열로 읽는다 — 스트리밍 봉투(Resource)로 바뀌어도 테스트가 같은 것을 본다. */
+    private String bodyOf(ResponseEntity<Resource> response) throws IOException {
+        try (var in = response.getBody().getInputStream()) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    /**
+     * 비-HTML 자산은 힙에 모으지 않고 스트림으로 넘어간다 (Issue #342, 7-3). 예전에는 모든 응답을
+     * {@code ofByteArray} 로 전량 버퍼링해, 큰 이미지·번들 하나가 요청마다 그 크기만큼 힙을 썼다.
+     * 봉투 타입이 회귀 가드다 — {@code ByteArrayResource} 로 돌아가면 버퍼링이 돌아온 것이다.
+     */
+    @Test
+    void streamsNonHtmlAssetsInsteadOfBufferingThemInHeap() {
+        serveAsset("/assets/app.js", "application/javascript", "console.log(1)");
+
+        ResponseEntity<Resource> asset =
+                service.proxy(session(), "/api/v1/previews/s/t/", "assets/app.js", null);
+
+        assertThat(asset.getBody()).isInstanceOf(InputStreamResource.class);
+    }
+
+    /** 큰 자산도 내용이 온전히 통과해야 한다 — 스트리밍으로 바꾼 뒤에도 바이트가 깎이지 않는다. */
+    @Test
+    void streamsALargeAssetWithoutLosingBytes() throws IOException {
+        byte[] large = new byte[3 * 1024 * 1024];
+        for (int i = 0; i < large.length; i++) {
+            large[i] = (byte) (i % 251);
+        }
+        container.createContext("/assets/big.bin", exchange -> {
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, "application/octet-stream");
+            exchange.sendResponseHeaders(200, large.length);
+            exchange.getResponseBody().write(large);
+            exchange.close();
+        });
+
+        ResponseEntity<Resource> response =
+                service.proxy(session(), "/api/v1/previews/s/t/", "assets/big.bin", null);
+
+        assertThat(response.getBody()).isInstanceOf(InputStreamResource.class);
+        // 업스트림이 길이를 알려줬으므로 그대로 넘긴다(본문을 변형하지 않으니 여전히 정확하다).
+        assertThat(response.getHeaders().getContentLength()).isEqualTo(large.length);
+        try (var in = response.getBody().getInputStream()) {
+            assertThat(in.readAllBytes()).isEqualTo(large);
+        }
+    }
+
+    /**
+     * HTML 은 여전히 버퍼링한다 — shim 주입·경로 재작성이 본문 전체를 봐야 하기 때문이다. 문서가
+     * 스트림으로 새면 그 격리·보정이 통째로 빠진다.
+     */
+    @Test
+    void stillBuffersTheDocumentBecauseItHasToBeRewritten() {
+        ResponseEntity<Resource> document = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+
+        assertThat(document.getBody()).isInstanceOf(ByteArrayResource.class);
     }
 
     /** 이 경로에만 실제 파일이 있는 상태를 만든다. 나머지 경로는 @BeforeEach 의 "/" 가 받아 index.html 을 돌려준다(serve -s 와 같은 동작). */

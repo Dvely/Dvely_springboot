@@ -2,7 +2,9 @@ package com.example.dvely.preview.application.service;
 
 import com.example.dvely.preview.application.port.out.DeadPreviewSessionReclaimer;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.io.SequenceInputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -11,6 +13,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -76,6 +81,12 @@ public class PreviewGatewayService {
      */
     private static final Duration FETCH_TIMEOUT = Duration.ofSeconds(30);
 
+    /**
+     * 재작성을 위해 문서를 메모리에 모을 상한 (Issue #342, 7-3). 정상 {@code index.html} 은 수십 KB 라
+     * 이 상한과 자릿수가 다르다 — 여기 걸리는 것은 사용자 코드가 끝없이 내보내는 문서 쪽이다.
+     */
+    private static final int HTML_REWRITE_LIMIT_BYTES = 8 * 1024 * 1024;
+
     private final HttpClient httpClient = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NORMAL)
             .connectTimeout(CONNECT_TIMEOUT)
@@ -106,59 +117,63 @@ public class PreviewGatewayService {
     }
 
     /** GET 편의 오버로드(본문 없음). 기존 호출부·테스트가 그대로 쓴다. */
-    public ResponseEntity<byte[]> proxy(PreviewSessionInfo session,
-                                        String gatewayPrefix,
-                                        String path,
-                                        String query) {
-        return proxy("GET", session, gatewayPrefix, path, query, null, null);
+    public ResponseEntity<Resource> proxy(PreviewSessionInfo session,
+                                          String gatewayPrefix,
+                                          String path,
+                                          String query) {
+        return proxy(session, gatewayPrefix, path, query, ProxiedRequest.get());
+    }
+
+    /**
+     * 게이트웨이가 컨테이너로 그대로 넘기는 요청 조각. 인자 수를 줄이려는 묶음이지 도메인 개념이 아니다.
+     */
+    public record ProxiedRequest(String method, byte[] body, String contentType) {
+
+        public static ProxiedRequest get() {
+            return new ProxiedRequest("GET", null, null);
+        }
+
+        boolean isGet() {
+            return "GET".equalsIgnoreCase(method);
+        }
     }
 
     /**
      * 프리뷰 컨테이너로 요청을 프록시한다. GET 뿐 아니라 쓰기(POST/PUT/DELETE/PATCH)도 method·본문을 그대로
      * 전달한다 — 에이전트가 만든 앱의 등록·폼이 동작하려면 필요하다. 응답의 HTML 재작성(base 흡수·경로 shim)은
      * GET 문서에만 적용되고, 쓰기 응답(대개 JSON)은 그대로 돌려준다.
+     *
+     * <p><b>본문은 HTML 만 메모리에 모은다</b>(Issue #342, 7-3). 예전에는 {@code ofByteArray} 로 모든
+     * 응답을 전량 버퍼링했다 — 큰 이미지·번들 하나가 요청마다 그 크기만큼 힙을 쓰고, HTML 은 String
+     * 변환으로 한 번 더 복사됐다. 이제 비-HTML 은 {@code ofInputStream} 으로 받아 그대로 흘려보낸다.
+     * HTML 만 버퍼링하는 이유는 shim 주입·경로 재작성이 본문 전체를 봐야 해서다.</p>
+     *
+     * <p>스트리밍 봉투를 {@code StreamingResponseBody} 가 아니라 {@code InputStreamResource} 로 두는
+     * 것이 중요하다. 전자는 Spring MVC 의 비동기 디스패치를 켜고, 이 앱에는 MVC 비동기 전용 executor 가
+     * 없어 {@code SimpleAsyncTaskExecutor} 가 <b>요청마다 플랫폼 스레드를 하나 새로 만든다</b> — 자산
+     * 수만큼 스레드가 생기는 셈이라 버퍼링보다 나쁘다(그래서 SSE 처럼 수가 적고 오래 사는 스트림에만
+     * 쓴다). {@code Resource} 는 {@code ResourceHttpMessageConverter} 가 <b>요청 스레드에서</b> 복사
+     * 버퍼로 흘려보내므로, 톰캣 스레드 풀 경계를 그대로 두고 버퍼링만 없앤다.</p>
      */
-    public ResponseEntity<byte[]> proxy(String method,
-                                        PreviewSessionInfo session,
-                                        String gatewayPrefix,
-                                        String path,
-                                        String query,
-                                        byte[] requestBody,
-                                        String requestContentType) {
+    public ResponseEntity<Resource> proxy(PreviewSessionInfo session,
+                                          String gatewayPrefix,
+                                          String path,
+                                          String query,
+                                          ProxiedRequest request) {
+        HttpResponse<InputStream> upstream = null;
         try {
             String safePath = sanitizePath(path);
-            HttpResponse<byte[]> response = fetch(method, session, safePath, query, requestBody, requestContentType);
-            if ("GET".equalsIgnoreCase(method)) {
-                response = absorbBuildBasePath(session, safePath, query, response);
+            upstream = fetch(session, safePath, query, request);
+            if (request.isGet()) {
+                upstream = absorbBuildBasePath(session, safePath, query, upstream);
             }
-
-            String contentType = response.headers()
-                    .firstValue(HttpHeaders.CONTENT_TYPE)
-                    .orElse(MediaType.APPLICATION_OCTET_STREAM_VALUE);
-            byte[] body = response.body();
-            boolean html = contentType.contains(MediaType.TEXT_HTML_VALUE);
-            if (html) {
-                body = rewriteHtml(body, gatewayPrefix);
-            }
-            return ResponseEntity.status(response.statusCode())
-                    .header(HttpHeaders.CONTENT_TYPE, contentType)
-                    // HTML의 no-transform은 CDN이 문서를 건드리지 못하게 한다 (Issue #113).
-                    // Cloudflare는 이 zone의 HTML 응답에 자기 RUM beacon을 주입하는데, 프리뷰
-                    // 문서는 아래 sandbox로 불투명 오리진이라 그 beacon의 POST가 cross-origin이
-                    // 되어 콘솔에 CORS 에러만 남긴다(수집도 되지 않는다). 주입은 HTML에만
-                    // 일어나므로 HTML에만 붙여, 자산 응답의 압축은 그대로 둔다.
-                    .header(HttpHeaders.CACHE_CONTROL, html ? "no-store, no-transform" : "no-store")
-                    // HTML뿐 아니라 모든 프록시 응답에 붙인다. 프리뷰 앱이 자기 JS/워커를 어떤
-                    // Content-Type으로 내보내든 실행 컨텍스트는 동일하게 격리돼야 한다.
-                    // 불투명 오리진의 CORS 로드(module script 등, Issue #108)는 여기서가 아니라
-                    // SecurityConfig 의 /api/v1/previews/** 전용 CORS 설정이 허용한다 — 여기서
-                    // ACAO 를 또 달면 CorsFilter 의 것과 중복되어 브라우저가 거절한다.
-                    .header(CONTENT_SECURITY_POLICY, contentSecurityPolicy)
-                    .body(body);
+            return relay(upstream, gatewayPrefix);
         } catch (InterruptedException exception) {
+            closeQuietly(upstream);
             Thread.currentThread().interrupt();
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
         } catch (Exception exception) {
+            closeQuietly(upstream);
             // 안쪽 앱에 아예 도달하지 못했다(연결 거부/리셋). 컨테이너는 살아있어도 그 안의 서버 프로세스가
             // 죽으면 이 자리에 온다 — attach·findCurrent 의 컨테이너-생존 확인으로는 못 걸러지는 사각이다.
             // 한 번 더 빠르게 확인해 일시적 실패가 아니면 세션을 회수한다(EXPIRED + 컨테이너 제거). 그러면
@@ -168,6 +183,65 @@ public class PreviewGatewayService {
                 reclaimer.reclaimUnreachable(session.sessionId());
             }
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
+        }
+    }
+
+    /**
+     * 업스트림 응답을 브라우저로 넘긴다 — HTML 은 재작성해 버퍼로, 나머지는 스트림으로.
+     */
+    private ResponseEntity<Resource> relay(HttpResponse<InputStream> upstream, String gatewayPrefix)
+            throws java.io.IOException {
+        String contentType = upstream.headers()
+                .firstValue(HttpHeaders.CONTENT_TYPE)
+                .orElse(MediaType.APPLICATION_OCTET_STREAM_VALUE);
+        boolean html = contentType.contains(MediaType.TEXT_HTML_VALUE);
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(upstream.statusCode())
+                .header(HttpHeaders.CONTENT_TYPE, contentType)
+                // HTML의 no-transform은 CDN이 문서를 건드리지 못하게 한다 (Issue #113).
+                // Cloudflare는 이 zone의 HTML 응답에 자기 RUM beacon을 주입하는데, 프리뷰
+                // 문서는 아래 sandbox로 불투명 오리진이라 그 beacon의 POST가 cross-origin이
+                // 되어 콘솔에 CORS 에러만 남긴다(수집도 되지 않는다). 주입은 HTML에만
+                // 일어나므로 HTML에만 붙여, 자산 응답의 압축은 그대로 둔다.
+                .header(HttpHeaders.CACHE_CONTROL, html ? "no-store, no-transform" : "no-store")
+                // HTML뿐 아니라 모든 프록시 응답에 붙인다. 프리뷰 앱이 자기 JS/워커를 어떤
+                // Content-Type으로 내보내든 실행 컨텍스트는 동일하게 격리돼야 한다.
+                // 불투명 오리진의 CORS 로드(module script 등, Issue #108)는 여기서가 아니라
+                // SecurityConfig 의 /api/v1/previews/** 전용 CORS 설정이 허용한다 — 여기서
+                // ACAO 를 또 달면 CorsFilter 의 것과 중복되어 브라우저가 거절한다.
+                .header(CONTENT_SECURITY_POLICY, contentSecurityPolicy);
+
+        if (!html) {
+            // 업스트림이 길이를 알려줬으면 그대로 넘긴다(본문을 변형하지 않으므로 여전히 정확하다).
+            // 없으면 청크로 나간다 — 어느 쪽이든 본문은 힙을 거치지 않는다.
+            upstream.headers().firstValue(HttpHeaders.CONTENT_LENGTH)
+                    .ifPresent(length -> response.header(HttpHeaders.CONTENT_LENGTH, length));
+            return response.body(new InputStreamResource(upstream.body()));
+        }
+
+        // 문서도 무제한으로 모으지는 않는다 — 이 본문을 만드는 것은 사용자 코드이고, 끝나지 않는
+        // 문서 하나가 힙을 통째로 먹을 수 있다. 상한을 넘으면 재작성을 포기하고 그대로 흘린다
+        // (shim 이 빠지는 것이 OOM 보다 낫고, 정상 index.html 은 이 상한과 자릿수가 다르다).
+        InputStream body = upstream.body();
+        byte[] document = body.readNBytes(HTML_REWRITE_LIMIT_BYTES + 1);
+        if (document.length > HTML_REWRITE_LIMIT_BYTES) {
+            log.warn("[PreviewGateway] 문서가 재작성 상한({} bytes)을 넘어 원본을 그대로 흘린다", HTML_REWRITE_LIMIT_BYTES);
+            return response.body(new InputStreamResource(
+                    new SequenceInputStream(new ByteArrayInputStream(document), body)));
+        }
+        body.close();
+        byte[] rewritten = rewriteHtml(document, gatewayPrefix);
+        return response.contentLength(rewritten.length).body(new ByteArrayResource(rewritten));
+    }
+
+    /** 버려지는 업스트림 응답의 본문을 닫는다 — 안 닫으면 커넥션이 반납되지 않는다. */
+    private void closeQuietly(HttpResponse<InputStream> response) {
+        if (response == null) {
+            return;
+        }
+        try {
+            response.body().close();
+        } catch (Exception ignored) {
+            // 이미 끊긴 스트림 — 닫기 실패는 알릴 것이 없다.
         }
     }
 
@@ -258,29 +332,25 @@ public class PreviewGatewayService {
         }
     }
 
-    /** GET 편의 오버로드(base 흡수의 내부 재시도용 — 본문 없음). */
-    private HttpResponse<byte[]> fetch(PreviewSessionInfo session, String path, String query)
-            throws java.io.IOException, InterruptedException {
-        return fetch("GET", session, path, query, null, null);
-    }
-
-    private HttpResponse<byte[]> fetch(String method, PreviewSessionInfo session, String path, String query,
-                                       byte[] body, String contentType)
+    private HttpResponse<InputStream> fetch(PreviewSessionInfo session, String path, String query,
+                                            ProxiedRequest request)
             throws java.io.IOException, InterruptedException {
         String target = "http://127.0.0.1:" + session.hostPort() + "/" + path;
         if (query != null && !query.isBlank()) {
             target += "?" + query;
         }
+        byte[] body = request.body();
         HttpRequest.BodyPublisher publisher = (body == null || body.length == 0)
                 ? HttpRequest.BodyPublishers.noBody()
                 : HttpRequest.BodyPublishers.ofByteArray(body);
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(target))
                 .timeout(FETCH_TIMEOUT)
-                .method(method, publisher);
+                .method(request.method(), publisher);
+        String contentType = request.contentType();
         if (contentType != null && !contentType.isBlank() && body != null && body.length > 0) {
             builder.header(HttpHeaders.CONTENT_TYPE, contentType);
         }
-        return httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+        return httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
     }
 
     /**
@@ -303,10 +373,10 @@ public class PreviewGatewayService {
      * <p>재시도가 실패하면 원래 응답을 그대로 돌려준다. 앱이 의도적으로 확장자 경로에서 HTML을
      * 내보내는 경우(SPA가 처리하는 가짜 경로 등)에도 동작이 달라지지 않는다.</p>
      */
-    private HttpResponse<byte[]> absorbBuildBasePath(PreviewSessionInfo session,
-                                                     String path,
-                                                     String query,
-                                                     HttpResponse<byte[]> original)
+    private HttpResponse<InputStream> absorbBuildBasePath(PreviewSessionInfo session,
+                                                         String path,
+                                                         String query,
+                                                         HttpResponse<InputStream> original)
             throws java.io.IOException, InterruptedException {
         if (!looksLikeStaticAsset(path) || !isHtml(original)) {
             return original;
@@ -320,11 +390,13 @@ public class PreviewGatewayService {
                 return original;
             }
             candidate = candidate.substring(slash + 1);
-            HttpResponse<byte[]> retried = fetch(session, candidate, query);
+            HttpResponse<InputStream> retried = fetch(session, candidate, query, ProxiedRequest.get());
             if (!isHtml(retried)) {
                 log.info("[PreviewGateway] 빌드 base 흡수: {} -> {}", path, candidate);
+                closeQuietly(original);
                 return retried;
             }
+            closeQuietly(retried);
         }
         return original;
     }
@@ -344,7 +416,7 @@ public class PreviewGatewayService {
         return !extension.equals("html") && !extension.equals("htm");
     }
 
-    private boolean isHtml(HttpResponse<byte[]> response) {
+    private boolean isHtml(HttpResponse<?> response) {
         return response.headers()
                 .firstValue(HttpHeaders.CONTENT_TYPE)
                 .filter(type -> type.contains(MediaType.TEXT_HTML_VALUE))
