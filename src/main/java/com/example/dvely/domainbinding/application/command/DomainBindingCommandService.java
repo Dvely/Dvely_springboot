@@ -503,11 +503,10 @@ public class DomainBindingCommandService {
         if (project.getCurrentUrl() != null && !project.getCurrentUrl().isBlank()) {
             return project.getCurrentUrl();
         }
-        return deploymentHistoryRepository.findByProjectIdOrderByTriggeredAtDesc(project.getId()).stream()
-                .filter(history -> history.getStatus() == DeployStatus.LIVE)
-                .findFirst()
-                .map(history -> history.getDeployedUrl())
-                .filter(url -> url != null && !url.isBlank())
+        // U6 6-2: 전체 이력을 엔티티로 읽어 첫 LIVE 하나만 꺼내던 자리. 전용 쿼리로 바꿨다.
+        // 공백 판정은 여기 남는다 — 첫 LIVE 의 URL 이 비면 다음 LIVE 로 넘어가지 않는 기존 동작이다.
+        return deploymentHistoryRepository.findLatestLiveDeployedUrl(project.getId())
+                .filter(url -> !url.isBlank())
                 .orElse(null);
     }
 

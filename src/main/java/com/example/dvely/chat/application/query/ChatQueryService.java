@@ -1,6 +1,8 @@
 package com.example.dvely.chat.application.query;
 
 import com.example.dvely.chat.application.result.ConversationResult;
+import com.example.dvely.common.paging.CursorPage;
+import com.example.dvely.common.paging.CursorPaging;
 import com.example.dvely.chat.application.result.MessageResult;
 import com.example.dvely.chat.domain.exception.ConversationNotFoundException;
 import com.example.dvely.chat.domain.model.ChatMessage;
@@ -11,8 +13,10 @@ import com.example.dvely.chat.domain.repository.ConversationRepository;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Optional;
+import java.util.Locale;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,23 +50,53 @@ public class ChatQueryService {
         );
     }
 
+    /**
+     * U6(#341) 6-7: 표시할 프로젝트를 대화마다 개별 조회하던 N+1 을 걷어냈다. 휴지통 대화 N 건이면
+     * 예전에는 프로젝트 조회가 최대 3N 번 돌았다(활성 조회 → 원본 조회 → 대체 프로젝트 조회).
+     * 이제 프로젝트 id 를 모아 한 번, 대체 프로젝트가 필요한 저장소를 모아 한 번, 총 2번이다.
+     */
     public List<ConversationResult> getTrashConversations(Long userId) {
         LocalDateTime now = LocalDateTime.now();
-        return conversationRepository.findAllByUserIdAndDeletedTrueOrderByUpdatedAtDesc(userId)
+        List<Conversation> conversations = conversationRepository
+            .findAllByUserIdAndDeletedTrueOrderByUpdatedAtDesc(userId)
             .stream()
             .filter(conversation -> !ChatTrashPolicy.isExpired(conversation.getDeletedAt(), now))
-            .map(conversation -> toResult(conversation, resolveTrashProject(userId, conversation), now))
+            .toList();
+        Map<Long, ProjectDisplay> displays = resolveTrashProjects(userId, conversations);
+        return conversations.stream()
+            .map(conversation -> toResult(conversation, displays.get(conversation.getProjectId()), now))
             .toList();
     }
 
+    /**
+     * 메시지 목록의 상한. 사용자 발화 1건마다 어시스턴트 메시지가 함께 쌓이는 구조라(계획 시작·승인
+     * 안내·스텝 진행·결과·배포 결과 등 appendAssistant 호출 지점이 20곳 넘는다) 한 번의 요청이
+     * 대략 5~9행을 만든다. 500 이면 한 대화에서 사용자 턴 55~100회를 덮는다 — 프로젝트 하나의
+     * 작업 세션으로는 넉넉하고, content 가 TEXT 라 한 페이지의 크기도 여기서 묶인다.
+     */
+    private static final int DEFAULT_MESSAGE_LIMIT = 500;
+    private static final int MAX_MESSAGE_LIMIT = 1000;
+
     public List<MessageResult> getMessages(Long userId, Long conversationId) {
+        return getMessages(userId, conversationId, null, null).items();
+    }
+
+    /**
+     * U6(#341) 6-3: 상한 + 커서. 오름차순(오래된 것부터)이라는 기존 순서를 그대로 두고 상한만 얹었다.
+     * {@code after} 는 직전 페이지의 마지막 message id 로, 그보다 뒤의 메시지를 준다.
+     */
+    public CursorPage<MessageResult> getMessages(Long userId,
+                                                 Long conversationId,
+                                                 Integer limit,
+                                                 String after) {
         conversationRepository.findByIdAndUserIdAndDeletedFalse(conversationId, userId)
             .orElseThrow(() -> new ConversationNotFoundException(conversationId, userId));
 
-        return chatMessageRepository.findAllByConversationIdOrderByCreatedAtAsc(conversationId)
-            .stream()
-            .map(this::toMessageResult)
-            .toList();
+        int size = CursorPaging.clamp(limit, DEFAULT_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT);
+        List<ChatMessage> probed = chatMessageRepository.findPageByConversationId(
+            conversationId, CursorPaging.parseCursor(after), size + 1);
+        return CursorPaging.slice(probed, size, message -> String.valueOf(message.getId()))
+            .map(this::toMessageResult);
     }
 
     private Project resolveActiveProject(Long userId, Long projectId) {
@@ -102,27 +136,73 @@ public class ChatQueryService {
         );
     }
 
-    private ProjectDisplay resolveTrashProject(Long userId, Conversation conversation) {
-        Long projectId = conversation.getProjectId();
-        Optional<Project> activeProject = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, userId);
-        if (activeProject.isPresent()) {
-            Project project = activeProject.get();
-            return new ProjectDisplay(project.getId(), project.getName());
+    /**
+     * 대화들이 가리키는 프로젝트를 한꺼번에 풀어 projectId → 표시값 으로 만든다. 판정 순서는
+     * 예전 대화별 로직과 같다: 원본이 살아 있으면 그것, 삭제됐으면 같은 저장소의 활성 프로젝트,
+     * 그것도 없으면 삭제된 원본, 아예 없으면 "삭제된 프로젝트".
+     */
+    private Map<Long, ProjectDisplay> resolveTrashProjects(Long userId, List<Conversation> conversations) {
+        List<Long> projectIds = conversations.stream()
+                .map(Conversation::getProjectId)
+                .distinct()
+                .toList();
+        if (projectIds.isEmpty()) {
+            return Map.of();
         }
 
-        Optional<Project> originalProject = projectRepository.findByIdAndOwnerUserId(projectId, userId);
-        Optional<Project> replacementProject = originalProject
+        // ① 해당 프로젝트들 — 삭제 여부를 가리지 않는다. 예전의 "활성 조회 → 원본 조회" 두 번을
+        //    한 번으로 합친다(isDeleted 로 갈라 쓴다).
+        Map<Long, Project> byId = new HashMap<>();
+        for (Project project : projectRepository.findAllByIdInAndOwnerUserId(projectIds, userId)) {
+            byId.put(project.getId(), project);
+        }
+
+        // ② 대체 프로젝트가 필요한 저장소들 — 원본이 삭제됐고 저장소를 갖고 있는 경우만.
+        List<String> repositories = projectIds.stream()
+                .map(byId::get)
+                .filter(project -> project != null && project.isDeleted())
                 .map(Project::getSourceRepository)
-                .filter(sourceRepository -> sourceRepository != null && !sourceRepository.isBlank())
-                .flatMap(sourceRepository -> projectRepository
-                        .findFirstByOwnerUserIdAndSourceRepositoryIgnoreCaseAndDeletedFalseOrderByUpdatedAtDesc(
-                                userId,
-                                sourceRepository
-                        ));
-        Project displayProject = replacementProject.orElseGet(() -> originalProject.orElse(null));
-        return displayProject == null
-                ? new ProjectDisplay(projectId, "삭제된 프로젝트")
-                : new ProjectDisplay(displayProject.getId(), displayProject.getName());
+                .filter(repository -> repository != null && !repository.isBlank())
+                .distinct()
+                .toList();
+        // 보정이 필요한 저장소가 없으면 두 번째 조회는 아예 돌지 않는다 — 휴지통 대화의 원본
+        // 프로젝트가 전부 살아 있는 흔한 경우가 여기다.
+        Map<String, Project> replacementByRepository = new HashMap<>();
+        for (Project candidate : repositories.isEmpty()
+                ? List.<Project>of()
+                : projectRepository.findAllActiveByOwnerUserIdAndSourceRepositoryIn(userId, repositories)) {
+            // 최신순으로 들어오므로 저장소별 첫 건만 남긴다 — 예전 findFirst...OrderByUpdatedAtDesc
+            // 가 돌려주던 것과 같다. 키를 소문자로 맞추는 것은 컬럼 컬레이션이 대소문자를 구분하지
+            // 않아 DB 가 대소문자 다른 값끼리 매칭해 주기 때문이다.
+            replacementByRepository.putIfAbsent(normalizeRepository(candidate.getSourceRepository()), candidate);
+        }
+
+        Map<Long, ProjectDisplay> displays = new HashMap<>();
+        for (Long projectId : projectIds) {
+            displays.put(projectId, resolveDisplay(projectId, byId.get(projectId), replacementByRepository));
+        }
+        return displays;
+    }
+
+    private ProjectDisplay resolveDisplay(Long projectId,
+                                          Project project,
+                                          Map<String, Project> replacementByRepository) {
+        if (project == null) {
+            return new ProjectDisplay(projectId, "삭제된 프로젝트");
+        }
+        if (!project.isDeleted()) {
+            return new ProjectDisplay(project.getId(), project.getName());
+        }
+        String repository = project.getSourceRepository();
+        Project replacement = repository == null || repository.isBlank()
+                ? null
+                : replacementByRepository.get(normalizeRepository(repository));
+        Project displayProject = replacement == null ? project : replacement;
+        return new ProjectDisplay(displayProject.getId(), displayProject.getName());
+    }
+
+    private static String normalizeRepository(String repository) {
+        return repository.toLowerCase(Locale.ROOT);
     }
 
     private record ProjectDisplay(Long projectId, String projectName) {

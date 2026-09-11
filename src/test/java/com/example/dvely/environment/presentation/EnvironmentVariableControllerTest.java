@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.common.paging.CursorPage;
 import com.example.dvely.environment.application.facade.EnvironmentVariableFacade;
 import com.example.dvely.environment.application.result.EnvironmentVariableHistoryResult;
 import com.example.dvely.environment.application.result.EnvironmentVariableResult;
@@ -33,13 +34,13 @@ class EnvironmentVariableControllerTest {
         EnvironmentVariableResult result = new EnvironmentVariableResult(
                 1L, "PREVIEW", "API_BASE_URL", "https://api.example.com", false, LocalDateTime.now(), LocalDateTime.now()
         );
-        when(facade.getVariables(1L, 11L, "PREVIEW")).thenReturn(List.of(result));
+        when(facade.getVariables(1L, 11L, "PREVIEW", null)).thenReturn(CursorPage.of(List.of(result)));
 
-        List<EnvironmentVariableResponse> responses = controller.getVariables(1L, 11L, "PREVIEW");
+        List<EnvironmentVariableResponse> responses = controller.getVariables(1L, 11L, "PREVIEW", null).getBody();
 
         assertThat(responses).hasSize(1);
         assertThat(responses.get(0).key()).isEqualTo("API_BASE_URL");
-        verify(facade).getVariables(1L, 11L, "PREVIEW");
+        verify(facade).getVariables(1L, 11L, "PREVIEW", null);
     }
 
     @Test
@@ -47,9 +48,9 @@ class EnvironmentVariableControllerTest {
         EnvironmentVariableResult result = new EnvironmentVariableResult(
                 2L, "PRODUCTION", "STRIPE_SECRET_KEY", null, true, LocalDateTime.now(), LocalDateTime.now()
         );
-        when(facade.getVariables(1L, 11L, null)).thenReturn(List.of(result));
+        when(facade.getVariables(1L, 11L, null, null)).thenReturn(CursorPage.of(List.of(result)));
 
-        List<EnvironmentVariableResponse> responses = controller.getVariables(1L, 11L, null);
+        List<EnvironmentVariableResponse> responses = controller.getVariables(1L, 11L, null, null).getBody();
 
         assertThat(responses.get(0).secret()).isTrue();
         assertThat(responses.get(0).value()).isNull();

@@ -11,7 +11,9 @@ import com.example.dvely.deployment.application.result.DeploymentStatusResult;
 import com.example.dvely.deployment.application.result.VersionDetailResult;
 import com.example.dvely.deployment.application.result.VersionResult;
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
+import com.example.dvely.deployment.domain.repository.DeploymentHistoryListView;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
+import com.example.dvely.deployment.domain.repository.DeploymentVersionView;
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
@@ -112,54 +114,60 @@ public class DeploymentQueryService {
     @Transactional(readOnly = true)
     public List<DeploymentHistoryResult> getDeploymentHistories(Long ownerUserId, Long projectId) {
         findOwnedProject(ownerUserId, projectId);
-        return deploymentHistoryRepository.findByProjectIdOrderByTriggeredAtDesc(projectId)
+        return deploymentHistoryRepository.findHistoryListViews(projectId)
                 .stream()
-                .map(this::toResult)
+                .map(DeploymentQueryService::toResult)
                 .toList();
     }
 
-    private DeploymentHistoryResult toResult(DeploymentHistory h) {
+    /**
+     * 읽기 모델 → 응답. 상태·타깃·실패코드는 DB 에 문자열로 들어 있고 응답에도 문자열로 나가므로
+     * 중간에 enum 으로 되돌리지 않는다 — 값은 예전과 같고 변환 한 왕복이 사라진다.
+     */
+    private static DeploymentHistoryResult toResult(DeploymentHistoryListView h) {
         return new DeploymentHistoryResult(
-                h.getId(),
-                h.getProjectId(),
-                h.getDeployTargetType().name(),
-                h.getVersionLabel(),
-                h.getDeployedUrl(),
-                h.getStatus().name(),
-                h.getFailureCode() == null ? null : h.getFailureCode().name(),
-                h.getErrorMessage(),
-                h.getTriggeredAt(),
-                h.getUpdatedAt(),
-                h.getRetriedFromHistoryId()
+                h.id(),
+                h.projectId(),
+                h.deployTargetType(),
+                h.versionLabel(),
+                h.deployedUrl(),
+                h.status(),
+                h.failureCode(),
+                h.errorMessage(),
+                h.triggeredAt(),
+                h.updatedAt(),
+                h.retriedFromHistoryId()
         );
     }
 
     @Transactional(readOnly = true)
     public List<VersionResult> getVersions(Long ownerUserId, Long projectId) {
         findOwnedProject(ownerUserId, projectId);
-        List<DeploymentHistory> histories = deploymentHistoryRepository
-                .findByProjectIdOrderByTriggeredAtDesc(projectId);
-
-        // versionLabel 기준으로 그룹화 후 각 버전의 최신 이력만 추출 (null 제외)
-        Map<String, DeploymentHistory> latestByVersion = histories.stream()
-                .filter(h -> h.getVersionLabel() != null && !h.getVersionLabel().isBlank())
-                .collect(Collectors.toMap(
-                        DeploymentHistory::getVersionLabel,
-                        h -> h,
-                        (existing, replacement) -> existing  // 이미 최신순 정렬이므로 첫 번째 유지
-                ));
-
-        return latestByVersion.values().stream()
-                .sorted(Comparator.comparing(DeploymentHistory::getTriggeredAt).reversed())
+        // "versionLabel 이 있는 것만" 은 이제 SQL 이 거른다. 버전별 최신 1건 추리기는 그대로 메모리에
+        // 남긴다 — 이미 좁아진 행 위의 Map 한 번이고, SQL 로 옮기면 동작이 미묘하게 달라질 수 있다.
+        return latestPerVersionLabel(deploymentHistoryRepository.findLabeledVersionViews(projectId))
                 .map(h -> new VersionResult(
-                        h.getId(),
-                        h.getVersionLabel(),
-                        h.getCommitSha(),
-                        h.getTitle(),
-                        h.getStatus().name(),
-                        h.getMergedAt() == null ? h.getTriggeredAt() : h.getMergedAt()
+                        h.id(),
+                        h.versionLabel(),
+                        h.commitSha(),
+                        h.title(),
+                        h.status(),
+                        h.mergedAt() == null ? h.triggeredAt() : h.mergedAt()
                 ))
                 .toList();
+    }
+
+    /** 최신순으로 들어온 목록에서 version_label 별 첫 건만 남기고 다시 최신순으로 돌려준다. */
+    private static java.util.stream.Stream<DeploymentVersionView> latestPerVersionLabel(
+            List<DeploymentVersionView> views) {
+        Map<String, DeploymentVersionView> latestByVersion = views.stream()
+                .collect(Collectors.toMap(
+                        DeploymentVersionView::versionLabel,
+                        view -> view,
+                        (existing, replacement) -> existing  // 이미 최신순 정렬이므로 첫 번째 유지
+                ));
+        return latestByVersion.values().stream()
+                .sorted(Comparator.comparing(DeploymentVersionView::triggeredAt).reversed());
     }
 
     @Transactional(readOnly = true)
@@ -186,24 +194,17 @@ public class DeploymentQueryService {
     @Transactional(readOnly = true)
     public List<DeploymentCandidateResult> getDeploymentCandidates(Long ownerUserId, Long projectId) {
         findOwnedProject(ownerUserId, projectId);
-        return deploymentHistoryRepository.findByProjectIdOrderByTriggeredAtDesc(projectId).stream()
-                .filter(h -> h.getVersionLabel() != null && !h.getVersionLabel().isBlank())
-                .filter(h -> h.getStatus() == DeployStatus.LIVE)
-                .collect(Collectors.toMap(
-                        DeploymentHistory::getVersionLabel,
-                        h -> h,
-                        (existing, replacement) -> existing
-                ))
-                .values().stream()
-                .sorted(Comparator.comparing(DeploymentHistory::getTriggeredAt).reversed())
+        // LIVE + versionLabel 두 조건 모두 SQL 로 내렸다. 예전에는 프로젝트의 전체 이력을 엔티티로
+        // 읽어와 둘 다 메모리에서 걸렀다.
+        return latestPerVersionLabel(deploymentHistoryRepository.findLiveLabeledVersionViews(projectId))
                 .map(h -> new DeploymentCandidateResult(
-                        h.getId(),
-                        h.getVersionLabel(),
-                        h.getCommitSha(),
-                        h.getTitle(),
-                        h.getStatus().name(),
-                        h.getDeployedUrl(),
-                        h.getUpdatedAt()
+                        h.id(),
+                        h.versionLabel(),
+                        h.commitSha(),
+                        h.title(),
+                        h.status(),
+                        h.deployedUrl(),
+                        h.updatedAt()
                 ))
                 .toList();
     }

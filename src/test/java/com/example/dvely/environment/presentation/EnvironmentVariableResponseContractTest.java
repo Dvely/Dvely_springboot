@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.example.dvely.common.response.ApiResponseAdvice;
+import com.example.dvely.common.paging.CursorPage;
 import com.example.dvely.environment.application.facade.EnvironmentVariableFacade;
 import com.example.dvely.environment.application.result.EnvironmentVariableResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -82,7 +83,7 @@ class EnvironmentVariableResponseContractTest {
         EnvironmentVariableResult secretResult = new EnvironmentVariableResult(
                 2L, "PRODUCTION", "STRIPE_SECRET_KEY", null, true, LocalDateTime.now(), LocalDateTime.now()
         );
-        when(facade.getVariables(1L, 11L, null)).thenReturn(List.of(secretResult));
+        when(facade.getVariables(1L, 11L, null, null)).thenReturn(CursorPage.of(List.of(secretResult)));
 
         mockMvc.perform(get("/api/v1/projects/11/environment-variables"))
                 .andExpect(status().isOk())
@@ -99,7 +100,7 @@ class EnvironmentVariableResponseContractTest {
         EnvironmentVariableResult plainResult = new EnvironmentVariableResult(
                 1L, "PREVIEW", "API_BASE_URL", "https://api.example.com", false, LocalDateTime.now(), LocalDateTime.now()
         );
-        when(facade.getVariables(1L, 11L, null)).thenReturn(List.of(plainResult));
+        when(facade.getVariables(1L, 11L, null, null)).thenReturn(CursorPage.of(List.of(plainResult)));
 
         mockMvc.perform(get("/api/v1/projects/11/environment-variables"))
                 .andExpect(status().isOk())

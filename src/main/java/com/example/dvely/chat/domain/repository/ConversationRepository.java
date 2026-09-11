@@ -9,11 +9,17 @@ public interface ConversationRepository {
 
     List<Conversation> findAllByUserIdAndProjectIdAndDeletedFalseOrderByUpdatedAtDesc(Long userId, Long projectId);
 
-    List<Conversation> findAllByUserIdAndProjectId(Long userId, Long projectId);
-
     List<Conversation> findAllByUserIdAndDeletedTrueOrderByUpdatedAtDesc(Long userId);
 
-    List<Conversation> findAllByDeletedTrueAndDeletedAtLessThanEqual(LocalDateTime cutoff);
+    /**
+     * U6(#341) 6-8: 프로젝트의 활성 대화를 전부 휴지통으로. 예전에는 N 건을 읽어 한 건씩 save 했다.
+     * 돌려주는 값은 옮긴 행 수다.
+     */
+    int softDeleteAllByUserIdAndProjectId(Long userId, Long projectId, LocalDateTime deletedAt);
+
+    /** U6 6-8: 프로젝트의 대화를 전부 삭제. 메시지는 FK ON DELETE CASCADE 가 함께 지운다. */
+    int deleteAllByUserIdAndProjectId(Long userId, Long projectId);
+
 
     Optional<Conversation> findByIdAndUserIdAndDeletedFalse(Long conversationId, Long userId);
 

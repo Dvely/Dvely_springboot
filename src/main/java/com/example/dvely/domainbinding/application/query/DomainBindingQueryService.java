@@ -1,6 +1,8 @@
 package com.example.dvely.domainbinding.application.query;
 
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.common.paging.CursorPage;
+import com.example.dvely.common.paging.CursorPaging;
 import com.example.dvely.domainbinding.application.result.DomainBindingResult;
 import com.example.dvely.domainbinding.application.result.DomainSearchCandidateResult;
 import com.example.dvely.domainbinding.application.result.DomainSearchResult;
@@ -63,11 +65,29 @@ public class DomainBindingQueryService {
         return new DomainSearchResult(label, results);
     }
 
+    /**
+     * limit 를 안 받는 호출(프로젝트 개요·활동로그)의 상한. 한 프로젝트의 도메인은 사람이 직접
+     * 연결하는 것이라 수십 개면 이미 비정상이고, 200 은 그 훨씬 위다 — 개요의 "현재 도메인" 선택
+     * 로직이 최신순 목록에서 고르므로 상한에 걸려도 고르는 결과는 같다.
+     */
+    private static final int DEFAULT_DOMAIN_LIMIT = 200;
+    private static final int MAX_DOMAIN_LIMIT = 500;
+
     public List<DomainBindingResult> getProjectDomains(Long ownerUserId, Long projectId) {
+        return getProjectDomains(ownerUserId, projectId, null, null).items();
+    }
+
+    /** U6(#341) 6-4: 상한 + 커서. 최신순이라 {@code after} 는 "그 도메인보다 오래된 것" 을 뜻한다. */
+    public CursorPage<DomainBindingResult> getProjectDomains(Long ownerUserId,
+                                                            Long projectId,
+                                                            Integer limit,
+                                                            String after) {
         resolveProject(ownerUserId, projectId);
-        return domainBindingRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
-                .map(this::toResult)
-                .toList();
+        int size = CursorPaging.clamp(limit, DEFAULT_DOMAIN_LIMIT, MAX_DOMAIN_LIMIT);
+        List<DomainBinding> probed = domainBindingRepository.findProjectDomainsPage(
+                projectId, CursorPaging.parseCursor(after), size + 1);
+        return CursorPaging.slice(probed, size, domain -> String.valueOf(domain.getId()))
+                .map(this::toResult);
     }
 
     public DomainBindingResult getDomain(Long ownerUserId, Long domainId) {

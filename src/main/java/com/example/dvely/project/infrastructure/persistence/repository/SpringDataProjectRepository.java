@@ -1,6 +1,7 @@
 package com.example.dvely.project.infrastructure.persistence.repository;
 
 import com.example.dvely.project.infrastructure.persistence.entity.ProjectEntity;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -33,4 +34,13 @@ public interface SpringDataProjectRepository extends JpaRepository<ProjectEntity
     Optional<ProjectEntity> findFirstBySourceRepository(String sourceRepository);
 
     List<ProjectEntity> findBySourceRepositoryAndDeletedFalse(String sourceRepository);
+
+    // U6(#341) 6-7: 휴지통 목록의 N+1 을 걷어내기 위한 배치 조회 2개. 위 javadoc 과 같은 이유로
+    // IgnoreCase 를 붙이지 않는다 — source_repository 컬레이션이 이미 대소문자를 구분하지 않는다.
+    List<ProjectEntity> findByIdInAndOwnerUserId(Collection<Long> projectIds, Long ownerUserId);
+
+    List<ProjectEntity> findByOwnerUserIdAndDeletedFalseAndSourceRepositoryInOrderByUpdatedAtDescIdDesc(
+            Long ownerUserId,
+            Collection<String> sourceRepositories
+    );
 }

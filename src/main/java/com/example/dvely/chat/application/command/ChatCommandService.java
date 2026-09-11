@@ -69,38 +69,31 @@ public class ChatCommandService {
         return toResult(conversationRepository.save(conversation), restoreProject, LocalDateTime.now());
     }
 
+    /**
+     * U6(#341) 6-8: 한 문장으로 옮긴다. 예전에는 대화 N 건을 엔티티로 읽어 한 건씩 save 했다 —
+     * 프로젝트 삭제 한 번에 SELECT 1 + UPDATE N 이었다. softDelete 의 "이미 삭제됐으면 무시" 가드는
+     * 쿼리의 {@code deleted = false} 조건이 그대로 대신한다.
+     */
     @Transactional
     public void trashConversationsForProject(Long userId, Long projectId) {
-        List<Conversation> conversations = conversationRepository
-                .findAllByUserIdAndProjectIdAndDeletedFalseOrderByUpdatedAtDesc(userId, projectId);
-        LocalDateTime deletedAt = LocalDateTime.now();
-        for (Conversation conversation : conversations) {
-            conversation.softDelete(deletedAt);
-            conversationRepository.save(conversation);
-        }
+        conversationRepository.softDeleteAllByUserIdAndProjectId(userId, projectId, LocalDateTime.now());
     }
 
+    /**
+     * U6 6-8: 한 문장으로 지운다. 메시지는 따로 지우지 않는다(#338) — chat_messages 의 FK 가 V19
+     * 부터 ON DELETE CASCADE 라 DB 가 함께 지운다. 벌크 DELETE 도 실제 SQL DELETE 이므로 그 CASCADE
+     * 와 다른 테이블의 SET NULL(approvals·agent_runs 등 이력 보존)이 예전과 똑같이 돈다.
+     */
     @Transactional
     public void deleteConversationsForProject(Long userId, Long projectId) {
-        List<Conversation> conversations = conversationRepository.findAllByUserIdAndProjectId(userId, projectId);
-        for (Conversation conversation : conversations) {
-            if (conversation.getId() == null) {
-                continue;
-            }
-            // 메시지는 따로 지우지 않는다(#338). chat_messages 의 FK 는 V19 부터
-            // ON DELETE CASCADE 라 아래 한 줄이 메시지까지 지운다. 앞서 있던
-            // deleteAllByConversationId 는 엔티티를 N 건 로드해 한 건씩 지운 뒤 CASCADE 가
-            // 같은 일을 또 하는 이중 삭제였다. 바로 아래 purgeExpiredConversations 도
-            // 예전부터 deleteById 하나로만 지우고 있었다 — 그쪽이 맞는 쪽이었다.
-            conversationRepository.deleteById(conversation.getId());
-        }
+        conversationRepository.deleteAllByUserIdAndProjectId(userId, projectId);
     }
 
     /**
      * 만료된 휴지통 대화를 영구 삭제한다.
      *
-     * <p>#340 5-9: 엔티티를 전부 로드한 뒤 {@code deleteById} 를 N 번 부르던 것을 벌크 DELETE
-     * 한 문장으로 바꿨다. 지우려고 읽을 이유가 없다 — 삭제 조건이 곧 SELECT 조건이었다.</p>
+     * <p>#340 5-9 · #341 6-8: 엔티티를 전부 로드한 뒤 {@code deleteById} 를 N 번 부르던 것을 벌크
+     * DELETE 한 문장으로 바꿨다. 지우려고 읽을 이유가 없다 — 삭제 조건이 곧 SELECT 조건이었다.</p>
      */
     @Transactional
     public int purgeExpiredConversations() {
