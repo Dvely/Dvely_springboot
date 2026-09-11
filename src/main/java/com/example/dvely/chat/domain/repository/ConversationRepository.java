@@ -21,5 +21,12 @@ public interface ConversationRepository {
 
     void deleteById(Long conversationId);
 
+    /**
+     * 만료된 휴지통 대화를 한 문장으로 지운다(#340 5-9).
+     *
+     * @return 지워진 대화 수
+     */
+    int deleteExpiredTrash(LocalDateTime cutoff);
+
     Conversation save(Conversation conversation);
 }

@@ -70,7 +70,7 @@ class TaskStoreTest {
         // repository query being exercised against a real DB elsewhere).
         when(runRepository.findByTaskIdForUpdate(any(String.class)))
                 .thenAnswer(invocation -> Optional.ofNullable(runs.get(invocation.getArgument(0))));
-        taskStore = new TaskStore(runRepository, eventRepository, new ObjectMapper());
+        taskStore = new TaskStore(runRepository, eventRepository, new ObjectMapper(), event -> { });
     }
 
     @Test
@@ -279,7 +279,7 @@ class TaskStoreTest {
         );
         taskStore.savePlan("task-1", plan);
 
-        TaskStore restartedStore = new TaskStore(runRepository, eventRepository, new ObjectMapper());
+        TaskStore restartedStore = new TaskStore(runRepository, eventRepository, new ObjectMapper(), event -> { });
 
         assertThat(restartedStore.getPlan("task-1")).isEqualTo(plan);
     }

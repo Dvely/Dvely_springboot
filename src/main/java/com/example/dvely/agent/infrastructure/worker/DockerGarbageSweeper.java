@@ -2,8 +2,9 @@ package com.example.dvely.agent.infrastructure.worker;
 
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import java.time.Duration;
-import lombok.RequiredArgsConstructor;
+import java.util.concurrent.Executor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -30,10 +31,16 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class DockerGarbageSweeper {
 
     private final DockerContainerService dockerService;
+    private final Executor maintenanceExecutor;
+
+    public DockerGarbageSweeper(DockerContainerService dockerService,
+                                @Qualifier("maintenanceExecutor") Executor maintenanceExecutor) {
+        this.dockerService = dockerService;
+        this.maintenanceExecutor = maintenanceExecutor;
+    }
 
     /** 이 시간 안에 쓰인 빌드 캐시는 남긴다. */
     @Value("${qeploy.docker.sweep.build-cache-keep-hours:48}")
@@ -53,6 +60,12 @@ public class DockerGarbageSweeper {
         if (!enabled) {
             return;
         }
+        // #340 5-10: prune 3회는 도커 데몬을 잠시 붙잡는다. 그 시간을 스케줄러 스레드로 때우면
+        // 같은 풀을 쓰는 다른 잡이 그만큼 밀린다 — 6시간에 한 번이라도 전용 스레드로 넘긴다.
+        maintenanceExecutor.execute(this::pruneGarbage);
+    }
+
+    private void pruneGarbage() {
         long freed = dockerService.pruneGarbage(Duration.ofHours(buildCacheKeepHours));
         if (freed < 0) {
             return;   // 도커에 못 닿음 — pruneGarbage 가 이미 경고를 남겼다

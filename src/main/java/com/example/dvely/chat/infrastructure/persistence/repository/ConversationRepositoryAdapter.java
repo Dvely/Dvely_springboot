@@ -61,6 +61,11 @@ public class ConversationRepositoryAdapter implements ConversationRepository {
     }
 
     @Override
+    public int deleteExpiredTrash(LocalDateTime cutoff) {
+        return springDataConversationRepository.deleteExpiredTrash(cutoff);
+    }
+
+    @Override
     public Conversation save(Conversation conversation) {
         ConversationEntity entity;
         if (conversation.getId() == null) {

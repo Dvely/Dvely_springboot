@@ -45,6 +45,30 @@ public interface SpringDataWebhookDeliveryRepository
             @Param("processingStatus") String processingStatus
     );
 
+    // #340 5-3: claim 한 배달을 executor 에 넘기지 못했을 때 되돌린다. claim 이 올린 attempt 를
+    // 그대로 되돌리는 이유는 실행기 포화가 이 배달의 실패가 아니기 때문이다 — 재시도 예산을
+    // 여기서 쓰면 GitHub 이 다시 보내주지 않는 배달을 우리가 스스로 버리게 된다. WHERE 는 claim 과
+    // 같은 조건부 UPDATE 모양이라 이 claim 을 실제로 쥔 워커만 되돌린다.
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update WebhookDeliveryEntity delivery
+               set delivery.status = :pendingStatus,
+                   delivery.attempt = delivery.attempt - 1,
+                   delivery.nextAttemptAt = :nextAttemptAt,
+                   delivery.leaseOwner = null,
+                   delivery.leaseUntil = null
+             where delivery.id = :deliveryId
+               and delivery.status = :processingStatus
+               and delivery.leaseOwner = :workerId
+            """)
+    int releaseClaim(
+            @Param("deliveryId") String deliveryId,
+            @Param("workerId") String workerId,
+            @Param("nextAttemptAt") LocalDateTime nextAttemptAt,
+            @Param("processingStatus") String processingStatus,
+            @Param("pendingStatus") String pendingStatus
+    );
+
     List<WebhookDeliveryEntity> findByStatusAndLeaseUntilBefore(String status, LocalDateTime now);
 
     /**

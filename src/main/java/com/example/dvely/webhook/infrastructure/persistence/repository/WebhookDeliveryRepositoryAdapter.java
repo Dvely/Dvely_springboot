@@ -1,13 +1,17 @@
 package com.example.dvely.webhook.infrastructure.persistence.repository;
 
+import com.example.dvely.common.worker.WorkQueue;
+import com.example.dvely.common.worker.WorkQueuedEvent;
 import com.example.dvely.webhook.domain.model.WebhookDelivery;
 import com.example.dvely.webhook.domain.repository.WebhookDeliveryRepository;
 import com.example.dvely.webhook.domain.value.WebhookDeliveryStatus;
 import com.example.dvely.webhook.infrastructure.persistence.entity.WebhookDeliveryEntity;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
@@ -38,6 +42,7 @@ public class WebhookDeliveryRepositoryAdapter implements WebhookDeliveryReposito
     );
 
     private final SpringDataWebhookDeliveryRepository springDataRepository;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Override
     public boolean enqueue(WebhookDelivery delivery) {
@@ -46,6 +51,9 @@ public class WebhookDeliveryRepositoryAdapter implements WebhookDeliveryReposito
         }
         try {
             springDataRepository.saveAndFlush(WebhookDeliveryEntity.from(delivery));
+            // #340 5-1: 새 배달이 큐에 들어갔다 — 커밋 뒤에 워커를 깨운다. GitHub 은 응답이 늦으면
+            // 재전송하므로, 유휴 백오프가 늘어난 상태에서 배달이 상한만큼 방치되면 안 된다.
+            eventPublisher.publishEvent(new WorkQueuedEvent(WorkQueue.WEBHOOK_DELIVERY));
             return true;
         } catch (DataIntegrityViolationException exception) {
             return false;
@@ -85,6 +93,25 @@ public class WebhookDeliveryRepositoryAdapter implements WebhookDeliveryReposito
                         WebhookDeliveryStatus.PROCESSING.name()
                 ) == 1)
                 .toList();
+    }
+
+    @Override
+    @Transactional
+    public boolean releaseClaim(String deliveryId, String workerId, long backoffMillis) {
+        return springDataRepository.releaseClaim(
+                deliveryId,
+                workerId,
+                LocalDateTime.now().plus(Duration.ofMillis(backoffMillis)),
+                WebhookDeliveryStatus.PROCESSING.name(),
+                WebhookDeliveryStatus.PENDING.name()
+        ) == 1;
+    }
+
+    @Override
+    @Transactional
+    public List<String> recoverAndClaimPending(String workerId, int limit) {
+        recoverExpiredLeases();
+        return claimPending(workerId, limit);
     }
 
     @Override

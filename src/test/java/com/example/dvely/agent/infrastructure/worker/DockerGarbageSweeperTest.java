@@ -17,7 +17,11 @@ class DockerGarbageSweeperTest {
     private final DockerContainerService dockerService = mock(DockerContainerService.class);
 
     private DockerGarbageSweeper sweeper(boolean enabled, long keepHours) {
-        DockerGarbageSweeper sweeper = new DockerGarbageSweeper(dockerService);
+        return sweeper(enabled, keepHours, Runnable::run);
+    }
+
+    private DockerGarbageSweeper sweeper(boolean enabled, long keepHours, java.util.concurrent.Executor executor) {
+        DockerGarbageSweeper sweeper = new DockerGarbageSweeper(dockerService, executor);
         ReflectionTestUtils.setField(sweeper, "enabled", enabled);
         ReflectionTestUtils.setField(sweeper, "buildCacheKeepHours", keepHours);
         return sweeper;
@@ -50,5 +54,22 @@ class DockerGarbageSweeperTest {
         when(dockerService.pruneGarbage(any())).thenReturn(-1L);
 
         Assertions.assertThatCode(() -> sweeper(true, 48).sweep()).doesNotThrowAnyException();
+    }
+
+    /**
+     * #340 5-10 — prune 은 스케줄러 스레드에서 돌지 않는다. prune 3회가 도커 데몬을 잠시
+     * 붙잡는 동안 스케줄러를 점유하면 같은 풀을 쓰는 다른 잡이 그만큼 밀린다.
+     */
+    @Test
+    void pruningRunsOnTheMaintenanceExecutorNotTheSchedulerThread() {
+        java.util.List<Runnable> submitted = new java.util.ArrayList<>();
+
+        sweeper(true, 48, submitted::add).sweep();
+
+        Assertions.assertThat(submitted).hasSize(1);
+        verify(dockerService, never()).pruneGarbage(any());
+
+        submitted.get(0).run();
+        verify(dockerService).pruneGarbage(Duration.ofHours(48));
     }
 }

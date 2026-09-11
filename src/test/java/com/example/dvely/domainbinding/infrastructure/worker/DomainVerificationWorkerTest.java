@@ -35,7 +35,10 @@ class DomainVerificationWorkerTest {
         worker = new DomainVerificationWorker(
                 domainBindingRepository,
                 commandService,
-                new DomainVerificationProperties(60000L, 20, 30, 1440)
+                new DomainVerificationProperties(60000L, 20, 30, 1440),
+                // 검증을 호출 스레드에서 그대로 돌린다 — 이 파일이 보는 것은 "무엇을 검증했는가"이지
+                // 어느 스레드에서 돌았는가가 아니다(#340 5-5 로 실서비스는 전용 executor 를 쓴다).
+                Runnable::run
         );
     }
 
@@ -52,6 +55,23 @@ class DomainVerificationWorkerTest {
 
         verify(commandService).checkVerificationAsSystem(1L);
         verify(commandService).checkVerificationAsSystem(2L);
+    }
+
+    /**
+     * #340 5-5 — 갓 만든 도메인이라도 매 주기(60초) 다시 검증하지는 않는다. 커스텀 도메인은
+     * TTL 이 1440분이라 예전에는 한 건당 최대 1,440회, 그것도 Cloudflare + GitHub + HTTPS 프로브
+     * 세 묶음이 나갔다. 기다리는 대상이 DNS 전파와 호스팅 반영이라 그렇게 촘촘히 볼 이유가 없다.
+     */
+    @Test
+    void aDomainCheckedJustNowIsNotRecheckedOnTheVeryNextSweep() {
+        givenVerifyingDomains(managedSubdomain(1L, "a.qeploy.com", LocalDateTime.now()));
+        when(commandService.checkVerificationAsSystem(anyLong())).thenReturn(result(DomainStatus.VERIFYING));
+
+        worker.verifyPendingDomains();
+        worker.verifyPendingDomains();
+        worker.verifyPendingDomains();
+
+        verify(commandService, org.mockito.Mockito.times(1)).checkVerificationAsSystem(1L);
     }
 
     @Test

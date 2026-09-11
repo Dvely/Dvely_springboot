@@ -2,13 +2,17 @@ package com.example.dvely.deployment.infrastructure.persistence.repository;
 
 import com.example.dvely.deployment.domain.model.DeploymentHistory;
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
+import com.example.dvely.common.worker.WorkQueue;
+import com.example.dvely.common.worker.WorkQueuedEvent;
 import com.example.dvely.deployment.infrastructure.persistence.entity.DeploymentHistoryEntity;
 import com.example.dvely.project.domain.value.DeployStatus;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,9 +22,21 @@ import org.springframework.transaction.annotation.Transactional;
 public class DeploymentHistoryRepositoryAdapter implements DeploymentHistoryRepository {
 
     private final SpringDataDeploymentHistoryRepository springDataRepository;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Override
     public DeploymentHistory save(DeploymentHistory history) {
+        DeploymentHistory saved = doSave(history);
+        if (saved.getStatus() == DeployStatus.PENDING) {
+            // #340 5-1: 워커가 집을 수 있는 상태로 저장됐다 — 커밋 뒤에 워커를 깨운다. 이 신호가
+            // 없으면 유휴가 길어져 폴링 간격이 상한까지 늘어난 뒤 배포 버튼을 누른 사용자가 그
+            // 상한만큼 기다린다.
+            eventPublisher.publishEvent(new WorkQueuedEvent(WorkQueue.DEPLOYMENT_RUN));
+        }
+        return saved;
+    }
+
+    private DeploymentHistory doSave(DeploymentHistory history) {
         if (history.getId() == null) {
             DeploymentHistoryEntity entity = springDataRepository.save(DeploymentHistoryEntity.from(history));
             return entity.toDomain();
@@ -101,6 +117,13 @@ public class DeploymentHistoryRepositoryAdapter implements DeploymentHistoryRepo
 
     @Override
     @Transactional
+    public List<Long> recoverAndClaimPending(String workerId, int limit) {
+        recoverExpiredLeases();
+        return claimPending(workerId, limit);
+    }
+
+    @Override
+    @Transactional
     public void recoverExpiredLeases() {
         springDataRepository.findByStatusAndLeaseUntilBefore(
                         DeployStatus.IN_PROGRESS.name(),
@@ -118,11 +141,27 @@ public class DeploymentHistoryRepositoryAdapter implements DeploymentHistoryRepo
 
     @Override
     @Transactional
-    public void renewLeases(String workerId) {
+    public boolean releaseClaim(Long historyId, String workerId, long backoffMillis) {
+        return springDataRepository.releaseClaim(
+                historyId,
+                workerId,
+                LocalDateTime.now().plus(Duration.ofMillis(backoffMillis)),
+                DeployStatus.IN_PROGRESS.name(),
+                DeployStatus.PENDING.name()
+        ) == 1;
+    }
+
+    @Override
+    @Transactional
+    public void renewLeases(String workerId, Collection<Long> historyIds) {
+        if (historyIds.isEmpty()) {
+            return;
+        }
         springDataRepository.renewLeases(
                 workerId,
                 LocalDateTime.now().plusMinutes(2),
-                DeployStatus.IN_PROGRESS.name()
+                DeployStatus.IN_PROGRESS.name(),
+                historyIds
         );
     }
 }

@@ -79,6 +79,7 @@ class DeploymentCommandServiceTest {
                 githubActionsPort,
                 githubRepoPort,
                 deploymentHistoryRepository,
+                new com.example.dvely.deployment.infrastructure.worker.DeploymentExecutionRegistry(),
                 policyRepository,
                 resultApprovalService,
                 auditRecorder,

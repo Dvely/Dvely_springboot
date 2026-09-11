@@ -1,6 +1,7 @@
 package com.example.dvely.deployment.infrastructure.worker;
 
 import com.example.dvely.auth.application.command.AuthCommandService;
+import com.example.dvely.common.worker.NextCheckSchedule;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.deployment.application.port.out.GithubActionsPort;
@@ -12,6 +13,7 @@ import com.example.dvely.deployment.infrastructure.config.StuckDeploymentRecover
 import com.example.dvely.deployment.infrastructure.workflow.DeployWorkflowTemplate;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -44,16 +46,35 @@ public class StuckDeploymentRecoveryWorker {
     private final DeploymentOutcomeService deploymentOutcomeService;
     private final StuckDeploymentRecoveryProperties properties;
 
+    /**
+     * 판정을 못 얻은 이력별 재조회 간격(#340 5-4). 예전에는 멈춘 배포 한 건이 포기 시각(기본
+     * 120분)에 닿을 때까지 <b>매분</b> GitHub 을 쳤다 — 한 건당 최대 120회다. runId 가 없는
+     * 이력은 그때마다 목록 조회(per_page=30)까지 돌았다.
+     *
+     * <p>GitHub Actions 실행 상태는 초 단위로 바뀌지 않는다. 첫 몇 번은 촘촘히 보되(방금 끝났을
+     * 수 있다) 계속 결론이 없으면 물러난다 — 1 → 2 → 5 → 10분. 판정이 나면 장부에서 지운다.</p>
+     */
+    private final NextCheckSchedule<Long> recheckSchedule = new NextCheckSchedule<>();
+
+    /** 결론 없는 재조회의 간격 단계(분). 마지막 값에 닿으면 그 값을 유지한다. */
+    private static final long[] RECHECK_BACKOFF_MINUTES = {1L, 2L, 5L, 10L};
+
     @Scheduled(fixedDelayString = "${qeploy.deployment.recovery.poll-interval-ms:60000}")
     public void recoverStuckDeployments() {
         LocalDateTime graceCutoff = LocalDateTime.now().minusMinutes(properties.graceMinutesOrDefault());
         for (DeploymentHistory history : deploymentHistoryRepository.findDispatchedAwaitingOutcome(
                 graceCutoff, properties.batchSizeOrDefault())) {
+            if (!recheckSchedule.due(history.getId())) {
+                continue;   // #340 5-4: 아직 다시 물을 때가 아니다 — GitHub 호출을 아끼는 유일한 지점
+            }
             try {
                 recover(history);
             } catch (RuntimeException exception) {
                 // 한 이력의 실패가 나머지를 막지 않는다. GitHub 호출은 레이트 리밋·토큰 만료로
-                // 언제든 실패할 수 있고 다음 주기에 다시 물으면 되는 성격이다.
+                // 언제든 실패할 수 있고 다음 주기에 다시 물으면 되는 성격이다. 실패도 "판정을 못
+                // 얻은 것"이므로 같은 백오프를 태운다 — 레이트 리밋에 걸린 상태로 매분 다시 치는
+                // 것이 가장 나쁘다.
+                backOffRecheck(history.getId());
                 log.warn("멈춘 배포 회수 실패 — 다음 주기에 재시도: historyId={} 원인={}",
                         history.getId(), exception.toString());
             }
@@ -65,6 +86,8 @@ public class StuckDeploymentRecoveryWorker {
         if (project == null) {
             log.warn("멈춘 배포의 프로젝트가 없음: historyId={} projectId={}",
                     history.getId(), history.getProjectId());
+            // 프로젝트가 없으면 다음 주기에도 없다 — 매분 다시 확인할 이유가 없다.
+            backOffRecheck(history.getId());
             return;
         }
 
@@ -80,12 +103,24 @@ public class StuckDeploymentRecoveryWorker {
         if ("success".equals(run.conclusion())) {
             log.info("멈춘 배포 회수 — 성공으로 확정: historyId={} runId={}", history.getId(), run.runId());
             deploymentOutcomeService.applySuccess(history, project);
+            recheckSchedule.clear(history.getId());
             return;
         }
         log.info("멈춘 배포 회수 — 실패로 확정: historyId={} runId={} conclusion={}",
                 history.getId(), run.runId(), run.conclusion());
         deploymentOutcomeService.applyFailure(history, project,
                 DeployFailureCode.WORKFLOW_FAILED, "GitHub Actions workflow conclusion: " + run.conclusion());
+        recheckSchedule.clear(history.getId());
+    }
+
+    /**
+     * 이 이력을 다음에 언제 다시 물을지 미룬다(#340 5-4). 결론 없는 조회가 이어질수록 간격이
+     * 1 → 2 → 5 → 10분으로 늘어난다.
+     */
+    private void backOffRecheck(Long historyId) {
+        int checks = recheckSchedule.inconclusiveChecks(historyId);
+        long minutes = RECHECK_BACKOFF_MINUTES[Math.min(checks, RECHECK_BACKOFF_MINUTES.length - 1)];
+        recheckSchedule.scheduleAfter(historyId, Duration.ofMinutes(minutes).toMillis());
     }
 
     /**
@@ -124,12 +159,15 @@ public class StuckDeploymentRecoveryWorker {
     private void abandonIfHopeless(DeploymentHistory history, Project project, String reason) {
         LocalDateTime abandonCutoff = LocalDateTime.now().minusMinutes(properties.abandonMinutesOrDefault());
         if (history.getUpdatedAt() == null || history.getUpdatedAt().isAfter(abandonCutoff)) {
+            // 아직 포기할 때가 아니다 = 이번 조회는 판정을 못 얻었다. 다음 조회를 미룬다.
+            backOffRecheck(history.getId());
             return;
         }
         log.warn("멈춘 배포 회수 포기 — 결과 미확인으로 닫는다: historyId={} runId={} 사유={}",
                 history.getId(), history.getWorkflowRunId(), reason);
         deploymentOutcomeService.applyFailure(history, project,
                 DeployFailureCode.RESULT_UNKNOWN, "배포 결과를 확인할 수 없습니다. " + reason);
+        recheckSchedule.clear(history.getId());
     }
 
     private String resolveUserToken(Long ownerUserId) {

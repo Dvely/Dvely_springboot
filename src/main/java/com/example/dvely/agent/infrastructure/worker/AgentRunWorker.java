@@ -6,6 +6,8 @@ import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.orchestrator.AgentPlanExecutor;
 import com.example.dvely.agent.application.service.AgentMessageService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.common.worker.WorkQueue;
+import com.example.dvely.common.worker.WorkerPollGate;
 import java.lang.management.ManagementFactory;
 import java.util.List;
 import java.util.Set;
@@ -37,6 +39,7 @@ public class AgentRunWorker {
     private final AgentMessageService agentMessageService;
     private final AgentExecutionRegistry executionRegistry;
     private final ThreadPoolTaskExecutor agentExecutor;
+    private final WorkerPollGate pollGate;
     private final long dispatchRejectBackoffMs;
     private final String workerId = ManagementFactory.getRuntimeMXBean().getName();
 
@@ -45,6 +48,7 @@ public class AgentRunWorker {
                           AgentMessageService agentMessageService,
                           AgentExecutionRegistry executionRegistry,
                           @Qualifier("agentExecutor") ThreadPoolTaskExecutor agentExecutor,
+                          WorkerPollGate pollGate,
                           @Value("${qeploy.agent.worker.dispatch-reject-backoff-ms:5000}")
                           long dispatchRejectBackoffMs) {
         this.taskStore = taskStore;
@@ -52,12 +56,17 @@ public class AgentRunWorker {
         this.agentMessageService = agentMessageService;
         this.executionRegistry = executionRegistry;
         this.agentExecutor = agentExecutor;
+        this.pollGate = pollGate;
         this.dispatchRejectBackoffMs = dispatchRejectBackoffMs;
     }
 
     @Scheduled(fixedDelayString = "${qeploy.agent.worker.poll-interval-ms:1000}")
     public void dispatchQueuedRuns() {
-        notifyLeaseExhausted(taskStore.recoverExpiredLeases());
+        // #340 5-1: 틱은 여전히 1초마다 오지만, 일이 없는 동안에는 DB 를 치지 않는다. 게이트가
+        // 닫혀 있으면 여기서 끝이고 쿼리는 한 건도 나가지 않는다.
+        if (!pollGate.shouldPoll(WorkQueue.AGENT_RUN)) {
+            return;
+        }
 
         // ADR-Y3 SHOULD: best-effort capacity check before claiming at all. Deliberately racy (the
         // pool's real state can change the instant after this read) — it only needs to be
@@ -66,13 +75,32 @@ public class AgentRunWorker {
         // window where a claimed task shows as RUNNING while merely queued inside the executor
         // (audit §4.1's "상태 의미 왜곡" note).
         int freeSlots = estimateFreeExecutorSlots();
-        if (freeSlots <= 0) {
+        boolean saturated = freeSlots <= 0;
+        if (saturated) {
             log.debug("[AgentRunWorker] agentExecutor 포화로 이번 폴링은 claim을 생략합니다. workerId={}", workerId);
-            return;
         }
 
-        List<String> taskIds = taskStore.claimRunnableTasks(workerId, Math.min(CLAIM_BATCH_SIZE, freeSlots));
-        for (String taskId : taskIds) {
+        TaskStore.PollBatch batch;
+        try {
+            // 포화여도 회수는 돌린다(claimLimit=0). 포화를 이유로 폴링을 통째로 건너뛰면 좀비
+            // 리스가 그만큼 오래 남는다.
+            batch = taskStore.recoverAndClaim(workerId, saturated ? 0 : Math.min(CLAIM_BATCH_SIZE, freeSlots));
+        } catch (RuntimeException exception) {
+            // DB 가 흔들리는 동안 매초 같은 쿼리를 다시 던져봐야 소용이 없다 — 물러나며 재시도한다.
+            pollGate.recordIdle(WorkQueue.AGENT_RUN);
+            throw exception;
+        }
+
+        // 포화로 claim 을 생략한 것은 "일이 없다"가 아니다. 자리가 나는 것을 알려줄 신호는 없으므로
+        // 여기서 물러나면 큐에 쌓인 태스크가 백오프 상한만큼 늦게 출발한다.
+        if (saturated || batch.touchedWork()) {
+            pollGate.recordBusy(WorkQueue.AGENT_RUN);
+        } else {
+            pollGate.recordIdle(WorkQueue.AGENT_RUN);
+        }
+
+        notifyLeaseExhausted(batch.leaseExhausted());
+        for (String taskId : batch.claimed()) {
             dispatchOne(taskId);
         }
     }

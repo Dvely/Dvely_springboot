@@ -96,16 +96,15 @@ public class ChatCommandService {
         }
     }
 
+    /**
+     * 만료된 휴지통 대화를 영구 삭제한다.
+     *
+     * <p>#340 5-9: 엔티티를 전부 로드한 뒤 {@code deleteById} 를 N 번 부르던 것을 벌크 DELETE
+     * 한 문장으로 바꿨다. 지우려고 읽을 이유가 없다 — 삭제 조건이 곧 SELECT 조건이었다.</p>
+     */
     @Transactional
     public int purgeExpiredConversations() {
-        List<Conversation> expired = conversationRepository.findAllByDeletedTrueAndDeletedAtLessThanEqual(
-                ChatTrashPolicy.cutoff(LocalDateTime.now())
-        );
-        expired.stream()
-                .map(Conversation::getId)
-                .filter(java.util.Objects::nonNull)
-                .forEach(conversationRepository::deleteById);
-        return expired.size();
+        return conversationRepository.deleteExpiredTrash(ChatTrashPolicy.cutoff(LocalDateTime.now()));
     }
 
     @Transactional
