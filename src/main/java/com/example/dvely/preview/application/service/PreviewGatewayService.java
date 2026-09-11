@@ -82,6 +82,24 @@ public class PreviewGatewayService {
     private static final Duration FETCH_TIMEOUT = Duration.ofSeconds(30);
 
     /**
+     * 내용 해시가 박힌 불변 자산의 캐시 정책 (Issue #342, 7-2). {@code private} 는 협상 대상이 아니다 —
+     * 이유는 {@link #cacheControlFor} 참고.
+     */
+    private static final String IMMUTABLE_ASSET_CACHE = "private, max-age=3600, immutable";
+
+    /**
+     * 그 밖의 자산: 브라우저가 담아둘 수는 있으나 <b>매번 원본에 물어봐야</b> 한다. 그래서 세션 조회·
+     * 인가·토큰 회전 판정이 예전과 똑같이 요청마다 돌고, 바뀌지 않았으면 본문만 안 흐른다(304).
+     */
+    private static final String REVALIDATED_ASSET_CACHE = "private, no-cache";
+
+    /** 장기 캐시를 허용할 확장자 — 번들러가 내용 해시를 붙이는 산출물만. */
+    private static final java.util.Set<String> IMMUTABLE_ASSET_EXTENSIONS = java.util.Set.of(
+            "js", "mjs", "cjs", "css", "map",
+            "woff", "woff2", "ttf", "otf", "eot",
+            "png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "ico");
+
+    /**
      * 재작성을 위해 문서를 메모리에 모을 상한 (Issue #342, 7-3). 정상 {@code index.html} 은 수십 KB 라
      * 이 상한과 자릿수가 다르다 — 여기 걸리는 것은 사용자 코드가 끝없이 내보내는 문서 쪽이다.
      */
@@ -139,14 +157,20 @@ public class PreviewGatewayService {
     /**
      * 게이트웨이가 컨테이너로 그대로 넘기는 요청 조각. 인자 수를 줄이려는 묶음이지 도메인 개념이 아니다.
      */
-    public record ProxiedRequest(String method, byte[] body, String contentType) {
+    public record ProxiedRequest(String method, byte[] body, String contentType,
+                                String ifNoneMatch, String ifModifiedSince) {
 
         public static ProxiedRequest get() {
-            return new ProxiedRequest("GET", null, null);
+            return new ProxiedRequest("GET", null, null, null, null);
         }
 
         boolean isGet() {
             return "GET".equalsIgnoreCase(method);
+        }
+
+        /** 조건부 헤더를 떼어낸 사본 — 문서·SPA 경로에는 넘기지 않기 위한 것(7-2). */
+        ProxiedRequest withoutConditions() {
+            return new ProxiedRequest(method, body, contentType, null, null);
         }
     }
 
@@ -176,9 +200,9 @@ public class PreviewGatewayService {
         try {
             String safePath = sanitizePath(path);
             upstream = request.isGet()
-                    ? fetchForGet(session, safePath, query)
+                    ? fetchForGet(session, safePath, query, request)
                     : fetch(session, safePath, query, request);
-            return relay(upstream, gatewayPrefix);
+            return relay(upstream, safePath, gatewayPrefix);
         } catch (InterruptedException exception) {
             closeQuietly(upstream);
             Thread.currentThread().interrupt();
@@ -200,35 +224,53 @@ public class PreviewGatewayService {
     /**
      * 업스트림 응답을 브라우저로 넘긴다 — HTML 은 재작성해 버퍼로, 나머지는 스트림으로.
      */
-    private ResponseEntity<Resource> relay(HttpResponse<InputStream> upstream, String gatewayPrefix)
+    private ResponseEntity<Resource> relay(HttpResponse<InputStream> upstream, String path, String gatewayPrefix)
             throws java.io.IOException {
         String contentType = upstream.headers()
                 .firstValue(HttpHeaders.CONTENT_TYPE)
                 .orElse(MediaType.APPLICATION_OCTET_STREAM_VALUE);
         boolean html = contentType.contains(MediaType.TEXT_HTML_VALUE);
         ResponseEntity.BodyBuilder response = ResponseEntity.status(upstream.statusCode())
-                .header(HttpHeaders.CONTENT_TYPE, contentType)
                 // HTML의 no-transform은 CDN이 문서를 건드리지 못하게 한다 (Issue #113).
                 // Cloudflare는 이 zone의 HTML 응답에 자기 RUM beacon을 주입하는데, 프리뷰
                 // 문서는 아래 sandbox로 불투명 오리진이라 그 beacon의 POST가 cross-origin이
                 // 되어 콘솔에 CORS 에러만 남긴다(수집도 되지 않는다). 주입은 HTML에만
                 // 일어나므로 HTML에만 붙여, 자산 응답의 압축은 그대로 둔다.
-                .header(HttpHeaders.CACHE_CONTROL, html ? "no-store, no-transform" : "no-store")
+                //
+                // 문서는 캐시하지 않는다(7-2): prefix(회전 토큰이 들어 있다)를 본문에 박아 내보내므로
+                // 담아두면 회전 뒤에 죽은 주소를 가리키는 문서가 되살아난다.
+                .header(HttpHeaders.CACHE_CONTROL,
+                        html ? "no-store, no-transform" : cacheControlFor(upstream.statusCode(), path))
                 // HTML뿐 아니라 모든 프록시 응답에 붙인다. 프리뷰 앱이 자기 JS/워커를 어떤
                 // Content-Type으로 내보내든 실행 컨텍스트는 동일하게 격리돼야 한다.
                 // 불투명 오리진의 CORS 로드(module script 등, Issue #108)는 여기서가 아니라
                 // SecurityConfig 의 /api/v1/previews/** 전용 CORS 설정이 허용한다 — 여기서
                 // ACAO 를 또 달면 CorsFilter 의 것과 중복되어 브라우저가 거절한다.
                 .header(CONTENT_SECURITY_POLICY, contentSecurityPolicy);
+        if (!html) {
+            // 업스트림의 검증자를 그대로 넘겨 다음 요청이 조건부가 되게 한다. 재작성하는 문서에는
+            // 붙이지 않는다 — 그 검증자는 우리가 내보낸 본문의 것이 아니다(7-2).
+            forwardHeader(upstream, response, HttpHeaders.ETAG);
+            forwardHeader(upstream, response, HttpHeaders.LAST_MODIFIED);
+        }
+
+        if (upstream.statusCode() == HttpStatus.NOT_MODIFIED.value()) {
+            // 304 는 본문이 없다. 스트림을 닫아 커넥션만 반납하고 그대로 흘려보낸다 — 신선도 판정은
+            // 안쪽 앱이 했고, 게이트웨이는 인가를 거친 뒤 그 판정을 전달할 뿐이다.
+            closeQuietly(upstream);
+            return response.build();
+        }
 
         if (!html) {
             // 업스트림이 길이를 알려줬으면 그대로 넘긴다(본문을 변형하지 않으므로 여전히 정확하다).
             // 없으면 청크로 나간다 — 어느 쪽이든 본문은 힙을 거치지 않는다.
+            response.header(HttpHeaders.CONTENT_TYPE, contentType);
             upstream.headers().firstValue(HttpHeaders.CONTENT_LENGTH)
                     .ifPresent(length -> response.header(HttpHeaders.CONTENT_LENGTH, length));
             return response.body(new InputStreamResource(upstream.body()));
         }
 
+        response.header(HttpHeaders.CONTENT_TYPE, contentType);
         // 문서도 무제한으로 모으지는 않는다 — 이 본문을 만드는 것은 사용자 코드이고, 끝나지 않는
         // 문서 하나가 힙을 통째로 먹을 수 있다. 상한을 넘으면 재작성을 포기하고 그대로 흘린다
         // (shim 이 빠지는 것이 OOM 보다 낫고, 정상 index.html 은 이 상한과 자릿수가 다르다).
@@ -242,6 +284,12 @@ public class PreviewGatewayService {
         body.close();
         byte[] rewritten = rewriteHtml(document, gatewayPrefix);
         return response.contentLength(rewritten.length).body(new ByteArrayResource(rewritten));
+    }
+
+    private void forwardHeader(HttpResponse<InputStream> upstream,
+                               ResponseEntity.BodyBuilder response,
+                               String header) {
+        upstream.headers().firstValue(header).ifPresent(value -> response.header(header, value));
     }
 
     /** 버려지는 업스트림 응답의 본문을 닫는다 — 안 닫으면 커넥션이 반납되지 않는다. */
@@ -361,7 +409,19 @@ public class PreviewGatewayService {
         if (contentType != null && !contentType.isBlank() && body != null && body.length > 0) {
             builder.header(HttpHeaders.CONTENT_TYPE, contentType);
         }
+        if (request.isGet()) {
+            // 브라우저의 조건부 요청을 안쪽 앱에 그대로 물어본다 — 바뀌지 않았으면 앱이 304 로 답하고
+            // 본문이 흐르지 않는다. 판정은 앱이 하므로 게이트웨이가 신선도를 추측하지 않는다(7-2).
+            forwardIfPresent(builder, HttpHeaders.IF_NONE_MATCH, request.ifNoneMatch());
+            forwardIfPresent(builder, HttpHeaders.IF_MODIFIED_SINCE, request.ifModifiedSince());
+        }
         return httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+    }
+
+    private void forwardIfPresent(HttpRequest.Builder builder, String header, String value) {
+        if (value != null && !value.isBlank()) {
+            builder.header(header, value);
+        }
     }
 
     /**
@@ -376,13 +436,17 @@ public class PreviewGatewayService {
      * <p>기억이 틀렸으면(같은 세션에 base 가 다른 자산이 섞인 경우) 기억을 버리고 원래 경로로 돌아가
      * 예전 탐색을 그대로 한다 — 최적화가 자산을 깨뜨리지 않는다는 것이 이 되돌림의 목적이다.</p>
      */
-    private HttpResponse<InputStream> fetchForGet(PreviewSessionInfo session, String path, String query)
+    private HttpResponse<InputStream> fetchForGet(PreviewSessionInfo session, String path, String query,
+                                                 ProxiedRequest request)
             throws java.io.IOException, InterruptedException {
+        // 조건부 헤더(If-None-Match 등)는 자산 경로에만 넘긴다 — 문서는 재작성해서 내보내므로 업스트림의
+        // 검증자와 우리가 준 본문이 같은 것을 가리키지 않고, 애초에 문서는 no-store 라 캐시가 없다(7-2).
+        ProxiedRequest asset = looksLikeStaticAsset(path) ? request : request.withoutConditions();
         Integer remembered = absorbedDepth.get(session.sessionId());
         if (remembered != null && looksLikeStaticAsset(path)) {
             String shortcut = stripLeadingSegments(path, remembered);
             if (shortcut != null) {
-                HttpResponse<InputStream> response = fetch(session, shortcut, query, ProxiedRequest.get());
+                HttpResponse<InputStream> response = fetch(session, shortcut, query, asset);
                 if (!isHtml(response)) {
                     return response;   // 기억한 단수로 한 번에 맞았다 — 왕복 1 회
                 }
@@ -390,7 +454,7 @@ public class PreviewGatewayService {
                 absorbedDepth.remove(session.sessionId());
             }
         }
-        return absorbBuildBasePath(session, path, query, fetch(session, path, query, ProxiedRequest.get()));
+        return absorbBuildBasePath(session, path, query, fetch(session, path, query, asset));
     }
 
     /** 선행 세그먼트 {@code count} 개를 벗긴다. 그만큼 벗길 수 없으면 null. */
@@ -468,12 +532,79 @@ public class PreviewGatewayService {
     }
 
     /**
+     * 자산 응답의 캐시 정책 (Issue #342, 7-2).
+     *
+     * <p><b>{@code private} 가 이 기능의 안전 조건이다.</b> 프리뷰 주소의 accessToken 은 소유자가
+     * 프리뷰를 다시 열 때마다 회전하고, 회전의 목적은 "흘러나간 주소가 곧 죽는 것"이다. 응답이
+     * {@code public} 이면 앞단 CDN 같은 공유 캐시가 그 응답을 담아 <b>원본을 거치지 않고</b> 남에게
+     * 내주게 되고, 그러면 회전해도 캐시가 만료될 때까지 예전 주소가 계속 열린다 — 회전이 무력화되는
+     * 유일한 경로가 그것이라, 여기서는 어떤 분기에서도 {@code public} 을 쓰지 않는다.</p>
+     *
+     * <p>브라우저 캐시만 남는 것은 회전을 약화시키지 않는다. 캐시 키가 토큰이 든 전체 URL 이므로
+     * 회전 후의 문서는 새 토큰 주소를 참조해 캐시 미스가 되고(다시 인가를 받는다), 예전 주소의
+     * 캐시는 그 브라우저가 <b>이미 유효한 토큰으로 받아간 바이트</b>일 뿐 새로 읽을 수 있는 것이
+     * 늘지 않는다.</p>
+     *
+     * <p>200·304 가 아니면 캐시하지 않는다 — 404·502 를 캐시에 남기면 컨테이너가 되살아난 뒤에도
+     * 깨진 화면이 유지된다.</p>
+     */
+    private String cacheControlFor(int status, String path) {
+        if (status != HttpStatus.OK.value() && status != HttpStatus.NOT_MODIFIED.value()) {
+            return "no-store";
+        }
+        return isContentHashedAsset(path) ? IMMUTABLE_ASSET_CACHE : REVALIDATED_ASSET_CACHE;
+    }
+
+    /**
+     * 내용 해시가 파일명에 박힌 자산인지 — 이때만 장기 캐시한다.
+     *
+     * <p>판별을 좁게 잡는다. 확장자가 번들러 산출물의 것이어야 하고, 구분자({@code -} 또는 {@code .})
+     * 뒤 확장자까지가 16 진수 8 자 이상이어야 하며, 그 안에 <b>a~f 글자가 하나라도</b> 있어야 한다.
+     * 마지막 조건이 날짜를 걸러낸다 — {@code photo-20260911.jpg} 의 "20260911" 도 16 진수 8 자라,
+     * 이 조건이 없으면 사람이 붙인 이름이 불변으로 취급돼 파일을 갈아끼워도 한 시간 동안 예전 것이
+     * 보인다. 진짜 내용 해시가 8 자 모두 숫자일 확률은 2% 남짓이고, 걸러져도 아래 재검증 경로로
+     * 가므로 손해가 없다 — 애매하면 캐시하지 않는 쪽이 이 판별의 기본값이다.</p>
+     */
+    private boolean isContentHashedAsset(String path) {
+        String segment = lastSegment(path);
+        int dot = segment.lastIndexOf('.');
+        if (dot <= 0) {
+            return false;
+        }
+        if (!IMMUTABLE_ASSET_EXTENSIONS.contains(
+                segment.substring(dot + 1).toLowerCase(java.util.Locale.ROOT))) {
+            return false;
+        }
+        int separator = Math.max(segment.lastIndexOf('-', dot), segment.lastIndexOf('.', dot - 1));
+        if (separator <= 0) {
+            return false;
+        }
+        String hash = segment.substring(separator + 1, dot);
+        if (hash.length() < 8) {
+            return false;
+        }
+        boolean hasHexLetter = false;
+        for (int i = 0; i < hash.length(); i++) {
+            int digit = Character.digit(hash.charAt(i), 16);
+            if (digit < 0) {
+                return false;
+            }
+            hasHexLetter |= digit > 9;
+        }
+        return hasHexLetter;
+    }
+
+    private String lastSegment(String path) {
+        int lastSlash = path.lastIndexOf('/');
+        return lastSlash < 0 ? path : path.substring(lastSlash + 1);
+    }
+
+    /**
      * 마지막 세그먼트에 확장자가 있고 그것이 HTML이 아니면 정적 자산 요청으로 본다.
      * SPA 라우트({@code /todos/42})는 확장자가 없어 걸리지 않으므로 fallback 동작을 건드리지 않는다.
      */
     private boolean looksLikeStaticAsset(String path) {
-        int lastSlash = path.lastIndexOf('/');
-        String lastSegment = lastSlash < 0 ? path : path.substring(lastSlash + 1);
+        String lastSegment = lastSegment(path);
         int dot = lastSegment.lastIndexOf('.');
         if (dot <= 0 || dot == lastSegment.length() - 1) {
             return false;

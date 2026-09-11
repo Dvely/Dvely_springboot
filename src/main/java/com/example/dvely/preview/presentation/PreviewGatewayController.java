@@ -14,6 +14,7 @@ import java.util.Locale;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -93,7 +94,12 @@ public class PreviewGatewayController {
                 prefix,
                 path,
                 request.getQueryString(),
-                new PreviewGatewayService.ProxiedRequest(request.getMethod(), body, request.getContentType())
+                new PreviewGatewayService.ProxiedRequest(
+                        request.getMethod(), body, request.getContentType(),
+                        // 브라우저의 조건부 요청을 안쪽 앱까지 전달한다 — 자산이 안 바뀌었으면 304 로
+                        // 끝나 본문이 흐르지 않는다(Issue #342, 7-2). 인가는 예전과 똑같이 매 요청 돈다.
+                        request.getHeader(HttpHeaders.IF_NONE_MATCH),
+                        request.getHeader(HttpHeaders.IF_MODIFIED_SINCE))
         );
     }
 

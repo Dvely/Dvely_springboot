@@ -152,9 +152,8 @@ class PreviewGatewayServiceTest {
 
         assertThat(document.getHeaders().getCacheControl()).contains("no-transform");
         assertThat(asset.getHeaders().getCacheControl()).doesNotContain("no-transform");
-        // 캐시 금지는 두 경우 모두 유지된다.
+        // 문서는 여전히 아예 담지 않는다(7-2 가 자산만 캐시 가능하게 했다).
         assertThat(document.getHeaders().getCacheControl()).contains("no-store");
-        assertThat(asset.getHeaders().getCacheControl()).contains("no-store");
     }
 
     /** 루트 자산(favicon 등)도 같은 경로로 살아난다. */
@@ -316,7 +315,7 @@ class PreviewGatewayServiceTest {
 
         ResponseEntity<Resource> response = service.proxy(
                 session(), "/api/v1/previews/s/t/", "api/entries", null,
-                new PreviewGatewayService.ProxiedRequest("POST", reqBody, "application/json"));
+                new PreviewGatewayService.ProxiedRequest("POST", reqBody, "application/json", null, null));
 
         assertThat(response.getStatusCode().value()).isEqualTo(201);   // 상태 그대로
         String body = bodyOf(response);
@@ -393,6 +392,140 @@ class PreviewGatewayServiceTest {
                 service.proxy(session(), "/api/v1/previews/s/t/", "assets/first.js", null);
 
         assertThat(bodyOf(direct)).isEqualTo("console.log(1)");
+    }
+
+    // ── 자산 캐시 정책 (Issue #342, 7-2) ─────────────────────────────────────────────
+
+    /**
+     * <b>이 프로젝트에서 캐시의 유일한 위험은 {@code public} 이다.</b> 프리뷰 주소의 accessToken 은
+     * 소유자가 다시 열 때마다 회전하고, 회전의 목적은 흘러나간 주소가 곧 죽는 것이다. 공유 캐시가
+     * 응답을 담으면 원본을 거치지 않고 남에게 내주게 되어 그 회전이 무력화된다 — 어떤 분기에서도
+     * {@code private} 여야 한다는 것이 이 테스트가 지키는 계약이다.
+     */
+    @Test
+    void neverLetsAnySharedCacheStoreAPreviewResponse() {
+        serveAsset("/assets/index-a1b2c3d4.js", "application/javascript", "console.log(1)");
+        serveAsset("/assets/app.js", "application/javascript", "console.log(2)");
+
+        String hashed = cacheControlOf("assets/index-a1b2c3d4.js");
+        String plain = cacheControlOf("assets/app.js");
+        String document = cacheControlOf("");
+
+        assertThat(hashed).contains("private").doesNotContain("public");
+        assertThat(plain).contains("private").doesNotContain("public");
+        // 문서는 아예 담지 않는다 — 회전 토큰이 든 prefix 를 본문에 박아 내보내기 때문이다.
+        assertThat(document).contains("no-store").doesNotContain("public");
+    }
+
+    /** 내용 해시가 박힌 자산만 장기 캐시한다. */
+    @Test
+    void cachesContentHashedAssetsForALongTime() {
+        serveAsset("/assets/index-a1b2c3d4.js", "application/javascript", "console.log(1)");
+
+        assertThat(cacheControlOf("assets/index-a1b2c3d4.js"))
+                .isEqualTo("private, max-age=3600, immutable");
+    }
+
+    /**
+     * 해시로 보이지 않는 이름은 매번 원본에 물어본다 — 세션 조회·인가·토큰 회전 판정이 예전과
+     * 똑같이 요청마다 돌고, 절약되는 것은 본문 전송뿐이다.
+     */
+    @Test
+    void makesEverythingElseRevalidateOnEveryRequest() {
+        serveAsset("/assets/app.js", "application/javascript", "console.log(1)");
+
+        assertThat(cacheControlOf("assets/app.js")).isEqualTo("private, no-cache");
+    }
+
+    /**
+     * 날짜가 붙은 사람이 지은 이름을 해시로 오인하면 안 된다 — {@code 20260911} 도 16 진수 8 자라,
+     * 글자 조건이 없으면 파일을 갈아끼워도 한 시간 동안 예전 것이 보인다.
+     */
+    @Test
+    void doesNotMistakeAHumanNamedFileForAContentHash() {
+        serveAsset("/img/photo-20260911.jpg", "image/jpeg", "x");
+        serveAsset("/img/logo-v2.png", "image/png", "y");
+
+        assertThat(cacheControlOf("img/photo-20260911.jpg")).isEqualTo("private, no-cache");
+        assertThat(cacheControlOf("img/logo-v2.png")).isEqualTo("private, no-cache");
+    }
+
+    /** 오류 응답은 캐시하지 않는다 — 404 를 담아두면 컨테이너가 되살아나도 깨진 화면이 유지된다. */
+    @Test
+    void neverCachesAnErrorResponse() {
+        container.createContext("/assets/gone-a1b2c3d4.js", exchange -> {
+            upstreamRequests.incrementAndGet();
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, "application/javascript");
+            exchange.sendResponseHeaders(404, -1);
+            exchange.close();
+        });
+
+        assertThat(cacheControlOf("assets/gone-a1b2c3d4.js")).isEqualTo("no-store");
+    }
+
+    /**
+     * 업스트림의 검증자를 넘겨주고, 브라우저가 그것을 되돌려주면 그대로 안쪽 앱에 물어본다. 신선도
+     * 판정은 앱이 하고 게이트웨이는 추측하지 않는다 — 바뀌지 않았으면 304 로 본문이 흐르지 않는다.
+     */
+    @Test
+    void passesValidatorsThroughSoAReloadTransfersNothing() {
+        container.createContext("/assets/app.js", exchange -> {
+            upstreamRequests.incrementAndGet();
+            String inm = exchange.getRequestHeaders().getFirst(HttpHeaders.IF_NONE_MATCH);
+            exchange.getResponseHeaders().add(HttpHeaders.ETAG, "\"v1\"");
+            if ("\"v1\"".equals(inm)) {
+                exchange.sendResponseHeaders(304, -1);
+                exchange.close();
+                return;
+            }
+            byte[] body = "console.log(1)".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, "application/javascript");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+
+        ResponseEntity<Resource> first =
+                service.proxy(session(), "/api/v1/previews/s/t/", "assets/app.js", null);
+        ResponseEntity<Resource> revalidated = service.proxy(
+                session(), "/api/v1/previews/s/t/", "assets/app.js", null,
+                new PreviewGatewayService.ProxiedRequest("GET", null, null, "\"v1\"", null));
+
+        assertThat(first.getHeaders().getETag()).isEqualTo("\"v1\"");
+        assertThat(revalidated.getStatusCode().value()).isEqualTo(304);
+        assertThat(revalidated.getBody()).isNull();                 // 본문이 흐르지 않는다
+        assertThat(revalidated.getHeaders().getETag()).isEqualTo("\"v1\"");
+        // 304 여도 격리는 그대로 붙는다.
+        assertThat(revalidated.getHeaders().getFirst(PreviewGatewayService.CONTENT_SECURITY_POLICY))
+                .contains("sandbox");
+    }
+
+    /**
+     * 문서에는 업스트림 검증자를 넘기지 않는다 — 우리가 내보내는 본문은 shim 을 주입해 재작성한
+     * 것이라, 앱의 ETag 는 그 본문의 것이 아니다. 넘기면 브라우저가 shim 없는 원본을 되살린다.
+     */
+    @Test
+    void neverPassesTheDocumentValidatorThroughBecauseTheDocumentIsRewritten() {
+        container.createContext("/doc.html", exchange -> {
+            upstreamRequests.incrementAndGet();
+            byte[] body = "<html><head></head><body>doc</body></html>".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, "text/html");
+            exchange.getResponseHeaders().add(HttpHeaders.ETAG, "\"doc-v1\"");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+
+        ResponseEntity<Resource> document =
+                service.proxy(session(), "/api/v1/previews/s/t/", "doc.html", null);
+
+        assertThat(document.getHeaders().getETag()).isNull();
+        assertThat(document.getHeaders().getCacheControl()).contains("no-store");
+    }
+
+    private String cacheControlOf(String path) {
+        return service.proxy(session(), "/api/v1/previews/s/t/", path, null)
+                .getHeaders().getCacheControl();
     }
 
     /** 응답 본문을 문자열로 읽는다 — 스트리밍 봉투(Resource)로 바뀌어도 테스트가 같은 것을 본다. */
