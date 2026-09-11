@@ -1,6 +1,8 @@
 package com.example.dvely.chat.application.query;
 
 import com.example.dvely.chat.application.result.ConversationResult;
+import com.example.dvely.common.paging.CursorPage;
+import com.example.dvely.common.paging.CursorPaging;
 import com.example.dvely.chat.application.result.MessageResult;
 import com.example.dvely.chat.domain.exception.ConversationNotFoundException;
 import com.example.dvely.chat.domain.model.ChatMessage;
@@ -66,14 +68,35 @@ public class ChatQueryService {
             .toList();
     }
 
+    /**
+     * 메시지 목록의 상한. 사용자 발화 1건마다 어시스턴트 메시지가 함께 쌓이는 구조라(계획 시작·승인
+     * 안내·스텝 진행·결과·배포 결과 등 appendAssistant 호출 지점이 20곳 넘는다) 한 번의 요청이
+     * 대략 5~9행을 만든다. 500 이면 한 대화에서 사용자 턴 55~100회를 덮는다 — 프로젝트 하나의
+     * 작업 세션으로는 넉넉하고, content 가 TEXT 라 한 페이지의 크기도 여기서 묶인다.
+     */
+    private static final int DEFAULT_MESSAGE_LIMIT = 500;
+    private static final int MAX_MESSAGE_LIMIT = 1000;
+
     public List<MessageResult> getMessages(Long userId, Long conversationId) {
+        return getMessages(userId, conversationId, null, null).items();
+    }
+
+    /**
+     * U6(#341) 6-3: 상한 + 커서. 오름차순(오래된 것부터)이라는 기존 순서를 그대로 두고 상한만 얹었다.
+     * {@code after} 는 직전 페이지의 마지막 message id 로, 그보다 뒤의 메시지를 준다.
+     */
+    public CursorPage<MessageResult> getMessages(Long userId,
+                                                 Long conversationId,
+                                                 Integer limit,
+                                                 String after) {
         conversationRepository.findByIdAndUserIdAndDeletedFalse(conversationId, userId)
             .orElseThrow(() -> new ConversationNotFoundException(conversationId, userId));
 
-        return chatMessageRepository.findAllByConversationIdOrderByCreatedAtAsc(conversationId)
-            .stream()
-            .map(this::toMessageResult)
-            .toList();
+        int size = CursorPaging.clamp(limit, DEFAULT_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT);
+        List<ChatMessage> probed = chatMessageRepository.findPageByConversationId(
+            conversationId, CursorPaging.parseCursor(after), size + 1);
+        return CursorPaging.slice(probed, size, message -> String.valueOf(message.getId()))
+            .map(this::toMessageResult);
     }
 
     private Project resolveActiveProject(Long userId, Long projectId) {

@@ -5,6 +5,7 @@ import com.example.dvely.chat.infrastructure.mapper.ChatMapper;
 import com.example.dvely.chat.presentation.dto.ConversationResponse;
 import com.example.dvely.chat.presentation.dto.MessageResponse;
 import com.example.dvely.chat.presentation.dto.SendMessageRequest;
+import com.example.dvely.common.paging.CursorResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -12,12 +13,14 @@ import jakarta.validation.Valid;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -126,17 +129,24 @@ public class ChatController {
 
     @Operation(
             summary = "대화 메시지 목록 조회",
-            description = "대화 세션에 저장된 메시지를 생성순으로 조회합니다. " +
-                          "삭제되지 않은 현재 유저 소유 대화에 대해서만 메시지를 반환합니다."
+            description = "대화 세션에 저장된 메시지를 생성순(오래된 것부터)으로 조회합니다. " +
+                          "삭제되지 않은 현재 유저 소유 대화에 대해서만 메시지를 반환합니다. " +
+                          "limit 기본 500, 최대 1000(초과 시 1000으로 보정). 더 남아 있으면 응답 헤더 " +
+                          "X-Qeploy-Next-Cursor 에 다음 커서가 실리며, after 로 넘겨 이어 받습니다. " +
+                          "헤더가 없으면 마지막 페이지입니다."
     )
     @GetMapping("/api/v1/conversations/{conversationId}/messages")
-    public List<MessageResponse> getMessages(
+    public ResponseEntity<List<MessageResponse>> getMessages(
             @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
-            @Parameter(description = "메시지 목록을 조회할 대화 ID") @PathVariable Long conversationId
+            @Parameter(description = "메시지 목록을 조회할 대화 ID") @PathVariable Long conversationId,
+            @Parameter(description = "한 번에 받을 최대 건수(1~1000). 없으면 500")
+            @RequestParam(required = false) Integer limit,
+            @Parameter(description = "이전 페이지의 X-Qeploy-Next-Cursor 값. 그 메시지보다 뒤의 것만 반환")
+            @RequestParam(required = false) String after
     ) {
-        return chatFacade.getMessages(userId, conversationId).stream()
-                .map(chatMapper::toMessageResponse)
-                .toList();
+        return CursorResponse.of(
+                chatFacade.getMessages(userId, conversationId, limit, after)
+                        .map(chatMapper::toMessageResponse));
     }
 
     @Operation(

@@ -2,7 +2,10 @@ package com.example.dvely.chat.infrastructure.persistence.repository;
 
 import com.example.dvely.chat.infrastructure.persistence.entity.ChatMessageEntity;
 import java.util.List;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface SpringDataChatMessageRepository extends JpaRepository<ChatMessageEntity, Long> {
 
@@ -17,4 +20,24 @@ public interface SpringDataChatMessageRepository extends JpaRepository<ChatMessa
      * InnoDB 보조 인덱스는 PK 를 뒤에 달고 있어 filesort 도 사라진다.</p>
      */
     List<ChatMessageEntity> findByConversationIdOrderByIdAsc(Long conversationId);
+
+    /**
+     * U6(#341) 6-3: 위와 같은 정렬(message_id asc — 그 근거는 위 javadoc)에 상한과 커서를 더한 것.
+     * {@code after} 가 null 이면 처음부터다.
+     *
+     * <p>커서를 message_id 로 잡은 이유도 같다: created_at 은 DATETIME(0) 이라 같은 초의 행 순서가
+     * 비결정적인데, 커서 페이지네이션에서 그건 행을 건너뛰거나 두 번 주는 버그가 된다.</p>
+     */
+    @Query("""
+            select m
+            from ChatMessageEntity m
+            where m.conversationId = :conversationId
+              and (:after is null or m.id > :after)
+            order by m.id asc
+            """)
+    List<ChatMessageEntity> findPageByConversationId(
+            @Param("conversationId") Long conversationId,
+            @Param("after") Long after,
+            Pageable pageable
+    );
 }
