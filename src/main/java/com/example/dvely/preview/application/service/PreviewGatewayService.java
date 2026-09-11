@@ -261,16 +261,16 @@ public class PreviewGatewayService {
             return response.build();
         }
 
+        // 304 가 아닌 응답에는 본문이 따라가므로 타입을 단다(304 는 본문이 없어 의미가 없다).
+        response.header(HttpHeaders.CONTENT_TYPE, contentType);
         if (!html) {
             // 업스트림이 길이를 알려줬으면 그대로 넘긴다(본문을 변형하지 않으므로 여전히 정확하다).
             // 없으면 청크로 나간다 — 어느 쪽이든 본문은 힙을 거치지 않는다.
-            response.header(HttpHeaders.CONTENT_TYPE, contentType);
             upstream.headers().firstValue(HttpHeaders.CONTENT_LENGTH)
                     .ifPresent(length -> response.header(HttpHeaders.CONTENT_LENGTH, length));
             return response.body(new InputStreamResource(upstream.body()));
         }
 
-        response.header(HttpHeaders.CONTENT_TYPE, contentType);
         // 문서도 무제한으로 모으지는 않는다 — 이 본문을 만드는 것은 사용자 코드이고, 끝나지 않는
         // 문서 하나가 힙을 통째로 먹을 수 있다. 상한을 넘으면 재작성을 포기하고 그대로 흘린다
         // (shim 이 빠지는 것이 OOM 보다 낫고, 정상 index.html 은 이 상한과 자릿수가 다르다).

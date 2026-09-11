@@ -191,6 +191,50 @@ class PreviewGatewayControllerTest {
         verify(gatewayService).proxy(any(), anyString(), anyString(), any(), any());
     }
 
+    /**
+     * 본문 상한이 인가보다 <b>앞에 오면 안 된다.</b> 소유권을 증명하지 못한 요청에 413 을 주면
+     * "이 프리뷰는 존재하고 본문만 컸다"를 알려주는 셈이고, 무엇보다 인가 전에 본문을 만지기
+     * 시작한다는 뜻이다. 순서는 세션 조회 → 쿠키/Sec-Fetch-Dest → 본문이어야 한다.
+     */
+    @Test
+    void checksOwnershipBeforeTheBodyLimit() {
+        HttpServletRequest request = request();   // Sec-Fetch-Dest 없음 → 탐색으로 간주, 쿠키 필요
+        when(request.getMethod()).thenReturn("POST");
+        when(request.getContentLengthLong()).thenReturn(11L * 1024 * 1024);
+
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    /** 세션이 없으면 본문 크기와 무관하게 404 다 — 존재 여부를 413 으로 흘리지 않는다. */
+    @Test
+    void keepsReturningNotFoundForAnUnknownSessionEvenWithAnOversizedBody() {
+        when(sessionService.resolveGateway(SESSION_ID, "wrong")).thenReturn(Optional.empty());
+        HttpServletRequest request = request("empty");
+        when(request.getMethod()).thenReturn("POST");
+        when(request.getContentLengthLong()).thenReturn(11L * 1024 * 1024);
+
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, "wrong", null, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    /**
+     * 조건부 요청(브라우저 재검증)도 인가를 먼저 받는다 — 쿠키 없는 문서 탐색은 If-None-Match 를
+     * 들고 와도 401 이고, 304 로 새 나가지 않는다.
+     */
+    @Test
+    void stillRequiresTheCookieForAConditionalDocumentRequest() {
+        HttpServletRequest request = request("document");
+        when(request.getHeader(org.springframework.http.HttpHeaders.IF_NONE_MATCH)).thenReturn("\"v1\"");
+
+        ResponseEntity<Resource> response = controller.proxy(SESSION_ID, ACCESS_TOKEN, null, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        verify(gatewayService, never()).proxy(any(), anyString(), anyString(), any(), any());
+    }
+
     /** 지정한 바이트 수를 게으르게 내보내는 본문. 테스트가 10 MiB 배열을 미리 만들지 않게 한다. */
     private void stubBodyOf(HttpServletRequest request, int bytes) {
         ServletInputStream stream = new ServletInputStream() {

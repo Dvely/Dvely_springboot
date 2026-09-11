@@ -117,17 +117,13 @@ public class PreviewGatewayController {
      */
     private byte[] readBoundedBody(HttpServletRequest request) throws java.io.IOException {
         if (request.getContentLengthLong() > MAX_REQUEST_BODY_BYTES) {
-            return tooLarge();
+            throw new RequestBodyTooLargeException();
         }
         byte[] body = request.getInputStream().readNBytes(MAX_REQUEST_BODY_BYTES + 1);
         if (body.length > MAX_REQUEST_BODY_BYTES) {
-            return tooLarge();
+            throw new RequestBodyTooLargeException();
         }
         return body;
-    }
-
-    private byte[] tooLarge() {
-        throw new RequestBodyTooLargeException();
     }
 
     /** 413 으로 갈라 나가기 위한 내부 신호. 밖으로 나가지 않으므로 스택트레이스를 만들지 않는다. */
