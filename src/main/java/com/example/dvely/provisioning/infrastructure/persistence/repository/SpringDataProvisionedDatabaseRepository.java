@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.infrastructure.persistence.repository;
 
+import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseListView;
 import com.example.dvely.provisioning.infrastructure.persistence.entity.ProvisionedDatabaseEntity;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -18,6 +19,24 @@ public interface SpringDataProvisionedDatabaseRepository
     // 목록에서 EXPIRED 는 DB 단에서 제외한다(전 행 로드 후 메모리 필터를 피한다).
     List<ProvisionedDatabaseEntity> findByProjectIdAndStatusNotOrderByCreatedAtDesc(
             Long projectId, String status);
+
+    // U6 6-5: 목록은 password 를 읽지 않는다. @Convert(AesEncryptor) 가 붙은 MEDIUMTEXT 라 엔티티로
+    // 읽으면 행마다 복호화가 도는데, 조회 응답에는 비밀번호가 계약상 실리지 않는다.
+    // EXPIRED 제외는 그대로 DB 단에서 한다(프리뷰 30분 TTL 이라 하루면 수십 개가 쌓인다).
+    @Query("""
+            select new com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseListView(
+                       e.id, e.projectId, e.method, e.engine, e.origin, e.status, e.host, e.port,
+                       e.databaseName, e.username, e.expiresAt, e.failureCode, e.errorMessage,
+                       e.createdAt, e.updatedAt)
+            from ProvisionedDatabaseEntity e
+            where e.projectId = :projectId
+              and e.status <> :excludedStatus
+            order by e.createdAt desc, e.id desc
+            """)
+    List<ProvisionedDatabaseListView> findActiveListViews(
+            @org.springframework.data.repository.query.Param("projectId") Long projectId,
+            @org.springframework.data.repository.query.Param("excludedStatus") String excludedStatus);
+
 
     // 만료 회수의 원자적 클레임. READY 인 행만 EXPIRED 로 넘긴다 — 진 워커/인스턴스 하나만 1을
     // 돌려받아 실제 리소스 정리로 진행한다. 이래서 같은 DB 를 두 번 deprovision 하지 않는다.
