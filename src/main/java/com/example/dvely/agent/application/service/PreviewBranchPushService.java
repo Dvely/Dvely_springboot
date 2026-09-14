@@ -37,7 +37,7 @@ public class PreviewBranchPushService {
                      String taskId) {
         // apk 는 이미 git 이 있거나 이미지가 alpine 이 아닐 수 있어 실패를 허용한다. 정말 git 이
         // 없으면 아래 strict 명령들이 대신 드러낸다.
-        dockerService.exec(containerId, "apk add --no-cache git");
+        dockerService.installPackages(containerId, "git");
         writeGitCredentials(containerId, username, userToken);
         dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
         dockerService.exec(containerId, "git config --global user.email 'agent@qeploy.com'");
