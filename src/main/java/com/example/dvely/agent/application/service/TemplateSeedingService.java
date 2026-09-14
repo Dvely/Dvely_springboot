@@ -122,10 +122,13 @@ public class TemplateSeedingService {
         String git = ContainerPaths.diffGit();
         String identity = "-c user.email=noreply@qeploy.dev -c user.name=Qeploy ";
 
+        // 설치는 root, 커밋은 기본 사용자(프리뷰는 node)로 나눈다. 한 체인에 묶으면 전체가 root 가
+        // 되어 일회용 저장소가 root 소유로 생기고, 뒤에 node 로 도는 diff 가 거기에 쓰지 못한다.
+        dockerService.installPackages(containerId, "git");
+
         DockerContainerService.ExecResult result = dockerService.execWithExitCode(
                 containerId,
-                ContainerPaths.inApp("(apk add --no-cache git >/dev/null 2>&1 || true) && "
-                        + "rm -rf " + ContainerPaths.DIFF_GIT_DIR + " && "
+                ContainerPaths.inApp("rm -rf " + ContainerPaths.DIFF_GIT_DIR + " && "
                         + git + "init -q && "
                         + git + "add -A && "
                         + git + identity + "commit -q -m 'template: " + templateId + "'"));

@@ -116,8 +116,10 @@ class PreviewBranchPushServiceTest {
 
         assertThatCode(this::push).doesNotThrowAnyException();
 
-        verify(dockerService).exec(eq(CONTAINER_ID), contains("apk add"));
-        verify(dockerService, never()).execWithExitCode(eq(CONTAINER_ID), contains("apk add"));
+        // 설치는 installPackages 로만 간다 — 그래야 root 로 도는 것이 보장된다(#332).
+        // 프리뷰 컨테이너의 기본 사용자는 node 라, 평범한 exec 으로 apk 를 부르면 거부된다.
+        verify(dockerService).installPackages(CONTAINER_ID, "git");
+        verify(dockerService, never()).exec(eq(CONTAINER_ID), contains("apk add"));
     }
 
     private void push() {

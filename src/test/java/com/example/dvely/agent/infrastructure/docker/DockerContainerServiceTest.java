@@ -18,6 +18,11 @@ import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.CreateNetworkCmd;
+import com.github.dockerjava.api.command.ExecCreateCmd;
+import com.github.dockerjava.api.command.ExecCreateCmdResponse;
+import com.github.dockerjava.api.command.ExecStartCmd;
+import com.github.dockerjava.api.command.InspectExecCmd;
+import com.github.dockerjava.api.command.InspectExecResponse;
 import com.github.dockerjava.api.command.InspectContainerCmd;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.dockerjava.api.command.InspectImageCmd;
@@ -154,12 +159,7 @@ class DockerContainerServiceTest {
     @Test
     void createAndStartContainerAppliesIsolationHostConfig() {
         mockNetworkAlreadyExists(true);
-        CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
-        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
-        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
-        when(createCommand.exec()).thenReturn(createResponse);
-        when(createResponse.getId()).thenReturn("container-1");
-        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+        mockContainerCreation();
 
         service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
@@ -187,12 +187,7 @@ class DockerContainerServiceTest {
     @Test
     void buildContainerPublishesNoPortAndIsLabelledAsBuild() {
         mockNetworkAlreadyExists(true);
-        CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
-        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
-        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
-        when(createCommand.exec()).thenReturn(createResponse);
-        when(createResponse.getId()).thenReturn("container-1");
-        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+        mockContainerCreation();
 
         service.createAndStartContainer(ContainerRole.BUILD, 1L, "session-1", 11L, null, null);
 
@@ -209,15 +204,45 @@ class DockerContainerServiceTest {
         assertThat(hostConfigCaptor.getValue().getSecurityOpts()).containsExactly("no-new-privileges");
     }
 
+    /**
+     * 프리뷰 컨테이너에서 도는 것은 <b>사용자가 연결한 저장소의 코드</b>다 — npm postinstall 과
+     * 빌드 스크립트는 저장소가 정한다. 그것이 root 로 돌면 안 된다(#332).
+     *
+     * <p>HOME 이 함께 가야 한다. 없으면 npm 캐시와 git config --global 이 root 홈을 쓰려다 죽고,
+     * 빌드가 아니라 설정 파일 때문에 실패해 원인이 로그에 안 남는다.</p>
+     */
+    @Test
+    void previewContainerRunsAsNodeWithItsOwnHome() {
+        mockNetworkAlreadyExists(true);
+        mockContainerCreation();
+
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
+
+        verify(createCommand).withUser("node");
+        ArgumentCaptor<List<String>> envCaptor = ArgumentCaptor.captor();
+        verify(createCommand).withEnv(envCaptor.capture());
+        assertThat(envCaptor.getValue()).contains("HOME=/home/node");
+    }
+
+    /**
+     * 빌드 컨테이너는 그대로 root 다. 역할을 가른 이유가 이것이고, 이 값이 흔들리면 배포
+     * 파이프라인 전체를 다시 검증해야 한다.
+     */
+    @Test
+    void buildContainerStaysRoot() {
+        mockNetworkAlreadyExists(true);
+        mockContainerCreation();
+
+        service.createAndStartContainer(ContainerRole.BUILD, 1L, "session-1", 11L, null, null);
+
+        verify(createCommand).withUser(null);
+        verify(dockerClient, never()).execCreateCmd(anyString());   // 소유자 준비도 하지 않는다
+    }
+
     @Test
     void previewContainerKeepsItsLoopbackPortAndIsLabelledAsPreview() {
         mockNetworkAlreadyExists(true);
-        CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
-        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
-        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
-        when(createCommand.exec()).thenReturn(createResponse);
-        when(createResponse.getId()).thenReturn("container-1");
-        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+        mockContainerCreation();
 
         service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
@@ -239,12 +264,7 @@ class DockerContainerServiceTest {
     @Test
     void createAndStartContainerBindsHostPortToLoopbackOnly() {
         mockNetworkAlreadyExists(true);
-        CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
-        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
-        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
-        when(createCommand.exec()).thenReturn(createResponse);
-        when(createResponse.getId()).thenReturn("container-1");
-        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+        mockContainerCreation();
 
         service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
@@ -262,12 +282,7 @@ class DockerContainerServiceTest {
     @Test
     void createAndStartContainerSkipsNetworkCreationWhenNetworkAlreadyExists() {
         mockNetworkAlreadyExists(true);
-        CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
-        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
-        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
-        when(createCommand.exec()).thenReturn(createResponse);
-        when(createResponse.getId()).thenReturn("container-1");
-        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+        mockContainerCreation();
 
         service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
@@ -280,6 +295,7 @@ class DockerContainerServiceTest {
     @Test
     void createAndStartContainerWarnsButProceedsWhenExistingNetworkIccMismatched() {
         mockNetworkAlreadyExists(false);
+        mockSuccessfulExec();
         CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
         CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
         when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
@@ -306,6 +322,7 @@ class DockerContainerServiceTest {
         when(listCommand.exec()).thenReturn(List.of(superstringMatch));
         CreateNetworkCmd createNetworkCommand = mock(CreateNetworkCmd.class, RETURNS_SELF);
         when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCommand);
+        mockSuccessfulExec();
         CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
         CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
         when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
@@ -328,6 +345,7 @@ class DockerContainerServiceTest {
         when(listCommand.exec()).thenReturn(List.of());
         CreateNetworkCmd createNetworkCommand = mock(CreateNetworkCmd.class, RETURNS_SELF);
         when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCommand);
+        mockSuccessfulExec();
         CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
         CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
         when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
@@ -353,6 +371,7 @@ class DockerContainerServiceTest {
         CreateNetworkCmd createNetworkCommand = mock(CreateNetworkCmd.class, RETURNS_SELF);
         when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCommand);
         when(createNetworkCommand.exec()).thenThrow(new ConflictException("network already exists"));
+        mockSuccessfulExec();
         CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
         CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
         when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
@@ -433,6 +452,37 @@ class DockerContainerServiceTest {
         when(createCommand.exec()).thenReturn(createResponse);
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+        // 프리뷰 생성은 시작 직후 워크스페이스 소유자를 root exec 으로 넘긴다(#332).
+        mockSuccessfulExec();
+    }
+
+    /**
+     * exec 한 번이 성공(exit=0)하도록 최소한으로 엮는다.
+     *
+     * <p>lenient 인 이유: 빌드 컨테이너는 소유자 준비를 하지 않아 exec 이 한 번도 불리지 않는다.
+     * 역할에 따라 쓰이기도 안 쓰이기도 하는 스텁이라, 안 쓰였다고 테스트를 깨뜨릴 일이 아니다.</p>
+     */
+    @SuppressWarnings("unchecked")
+    private void mockSuccessfulExec() {
+        ExecCreateCmd execCreate = mock(ExecCreateCmd.class, RETURNS_SELF);
+        ExecCreateCmdResponse execCreateResponse = mock(ExecCreateCmdResponse.class);
+        lenient().when(dockerClient.execCreateCmd(anyString())).thenReturn(execCreate);
+        lenient().when(execCreate.exec()).thenReturn(execCreateResponse);
+        lenient().when(execCreateResponse.getId()).thenReturn("exec-1");
+
+        ExecStartCmd execStart = mock(ExecStartCmd.class, RETURNS_SELF);
+        lenient().when(dockerClient.execStartCmd("exec-1")).thenReturn(execStart);
+        lenient().when(execStart.exec(any(ResultCallback.Adapter.class))).thenAnswer(invocation -> {
+            ResultCallback.Adapter<Frame> callback = invocation.getArgument(0);
+            callback.onComplete();
+            return callback;
+        });
+
+        InspectExecCmd inspectExec = mock(InspectExecCmd.class, RETURNS_SELF);
+        InspectExecResponse inspectExecResponse = mock(InspectExecResponse.class);
+        lenient().when(dockerClient.inspectExecCmd("exec-1")).thenReturn(inspectExec);
+        lenient().when(inspectExec.exec()).thenReturn(inspectExecResponse);
+        lenient().when(inspectExecResponse.getExitCodeLong()).thenReturn(0L);
     }
 
     /**

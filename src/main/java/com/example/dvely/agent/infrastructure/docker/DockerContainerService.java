@@ -71,6 +71,24 @@ public class DockerContainerService {
     private static final String CONVERSATION_ID_LABEL = "qeploy.conversationId";
     private static final String TASK_ID_LABEL = "qeploy.taskId";
     private static final String ROLE_LABEL = "qeploy.role";
+
+    /**
+     * 프리뷰 컨테이너가 도는 사용자. {@code node:20-alpine} 에 이미 있는 uid 1000 이라 전용 이미지가
+     * 필요 없다.
+     *
+     * <p>여기서 도는 것은 <b>사용자가 연결한 저장소의 코드</b>다 — {@code npm install} 의 postinstall
+     * 스크립트와 빌드 스크립트는 저장소가 정한다. 그것이 root 로 도는 것을 막는다.</p>
+     */
+    private static final String PREVIEW_USER = "node";
+
+    /** exec 을 root 로 올릴 때 쓰는 값. 컨테이너 기본 사용자와 무관하게 root 가 된다. */
+    private static final String ROOT_USER = "root";
+
+    /**
+     * {@code HOME} 을 함께 준다. 없으면 npm 캐시와 {@code git config --global} 이 root 홈을 쓰려다
+     * 죽는다 — 빌드가 아니라 설정 파일 때문에 실패하고, 원인이 로그에 안 남는다.
+     */
+    private static final String PREVIEW_HOME = "/home/" + PREVIEW_USER;
     private static final String LEGACY_AGENT_LABEL = "dvely.agent";
 
     // --- Preview container isolation policy (BI-194). Kept as plain constants rather than
@@ -205,10 +223,17 @@ public class DockerContainerService {
                         .withLogConfig(BOUNDED_LOG_CONFIG)
                         .withNetworkMode(PREVIEW_NETWORK_NAME))
                 .withLabels(labels)
+                // 프리뷰만 node 로 돌린다. 빌드는 그대로 root 다 — 역할을 가른 이유가 이것이고,
+                // 배포 파이프라인은 이 변경의 영향을 받지 않는다.
+                .withUser(role == ContainerRole.PREVIEW ? PREVIEW_USER : null)
+                .withEnv(role == ContainerRole.PREVIEW ? List.of("HOME=" + PREVIEW_HOME) : List.<String>of())
                 .withCmd("tail", "-f", "/dev/null")
                 .exec();
 
         dockerClient.startContainerCmd(container.getId()).exec();
+        if (role == ContainerRole.PREVIEW) {
+            prepareWorkspaceOwnership(container.getId());
+        }
         log.info("Docker 컨테이너 시작: id={} userId={}", container.getId(), userId);
         return container.getId();
     }
@@ -563,6 +588,66 @@ public class DockerContainerService {
         return Integer.parseInt(bindings[0].getHostPortSpec());
     }
 
+    /**
+     * 워크스페이스를 처음부터 {@link #PREVIEW_USER} 소유로 만든다.
+     *
+     * <p><b>중간에 넘기지 않는다.</b> {@code cap-drop ALL} 이 {@code DAC_OVERRIDE} 를 떼기 때문에
+     * 이 컨테이너의 root 는 남의 디렉터리에 쓰지 못한다. 그래서 주인이 하나여야 하고, 절반만 옮기는
+     * 설계는 없다 — 중간에 node 로 넘기면 그 뒤의 root 명령이 전부 막히고, 반대로 두면 node 가
+     * 아무것도 못 쓴다.</p>
+     *
+     * <p>{@code /} 가 root 소유라 node 스스로는 {@code /workspace} 를 만들지 못한다. 그래서 root 가
+     * 만들어 넘긴다.</p>
+     */
+    private void prepareWorkspaceOwnership(String containerId) {
+        ExecResult result = execWithExitCodeAsUser(
+                containerId,
+                "mkdir -p " + ContainerPaths.APP_DIR
+                        + " && chown -R " + PREVIEW_USER + ":" + PREVIEW_USER + " /workspace",
+                ROOT_USER,
+                List.of());
+        if (!result.succeeded()) {
+            // 여기서 실패하면 뒤의 모든 쓰기가 막힌다. 컨테이너를 살려 두면 "왜 아무것도 안 써지지"
+            // 로 한참 헤매게 되므로, 만든 쪽에서 원인과 함께 끊는다.
+            throw new IllegalStateException(
+                    "프리뷰 워크스페이스 소유자를 준비하지 못했습니다 (exit=" + result.exitCode() + "): "
+                            + result.output());
+        }
+    }
+
+    /**
+     * 플랫폼이 필요로 하는 패키지를 깐다. <b>언제나 root 로 돈다.</b>
+     *
+     * <p>프리뷰 컨테이너의 기본 사용자는 {@code node} 라 {@code apk} 가 거부된다. 호출부마다
+     * "여긴 root 여야 하나" 를 다시 판단하게 두면 한 곳만 빠뜨려도 그 경로가 조용히 깨지므로,
+     * 설치라는 행위 자체를 root 로 고정한다.</p>
+     *
+     * <p>실패를 허용한다 — 이미 깔려 있거나 이미지가 alpine 이 아닐 수 있고, 그때는 뒤따르는
+     * 명령이 알아서 동작하거나 자기 사유로 실패한다.</p>
+     */
+    public void installPackages(String containerId, String... packages) {
+        if (packages == null || packages.length == 0) {
+            return;
+        }
+        execWithExitCodeAsUser(
+                containerId,
+                "apk add --no-cache " + String.join(" ", packages) + " >/dev/null 2>&1 || true",
+                ROOT_USER,
+                List.of());
+    }
+
+    /**
+     * root 로 실행한다. 프리뷰 컨테이너에서 플랫폼이 해야 하는 일(패키지 설치·nginx 기동)에만 쓴다.
+     * 빌드 컨테이너는 기본이 root 라 결과가 같다.
+     */
+    public String execAsRoot(String containerId, String command) {
+        return execWithExitCodeAsUser(containerId, command, ROOT_USER, List.of()).output();
+    }
+
+    public ExecResult execWithExitCodeAsRoot(String containerId, String command) {
+        return execWithExitCodeAsUser(containerId, command, ROOT_USER, List.of());
+    }
+
     public String exec(String containerId, String command) {
         return execWithExitCode(containerId, command).output();
     }
@@ -595,10 +680,24 @@ public class DockerContainerService {
      * (프리뷰 백엔드 런타임에 사용자 env + DB 커넥션을 주입하는 경로가 이걸 쓴다.)
      */
     public ExecResult execWithExitCode(String containerId, String command, List<String> env) {
-        log.debug("Docker exec: {}", command);
+        // user=null 이면 컨테이너에 설정된 사용자로 돈다 — 프리뷰는 node, 빌드는 root.
+        return execWithExitCodeAsUser(containerId, command, null, env);
+    }
+
+    /**
+     * @param user {@code null} 이면 컨테이너의 기본 사용자. {@link #ROOT_USER} 면 root 로 올려 실행한다.
+     *             {@code no-new-privileges} 는 exec 사용자 지정을 막지 않는다(데몬이 정하는 값이라
+     *             setuid 경로가 아니다) — dev 에서 실측 확인했다.
+     */
+    private ExecResult execWithExitCodeAsUser(String containerId,
+                                              String command,
+                                              String user,
+                                              List<String> env) {
+        log.debug("Docker exec{}: {}", user == null ? "" : "(" + user + ")", command);
         ExecCreateCmdResponse execCreate = dockerClient.execCreateCmd(containerId)
                 .withAttachStdout(true)
                 .withAttachStderr(true)
+                .withUser(user)
                 .withEnv(env == null || env.isEmpty() ? null : List.copyOf(env))
                 .withCmd("sh", "-c", command)
                 .exec();
