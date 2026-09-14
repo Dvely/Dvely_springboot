@@ -161,7 +161,7 @@ class DockerContainerServiceTest {
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
         verify(createCommand).withHostConfig(hostConfigCaptor.capture());
@@ -175,6 +175,59 @@ class DockerContainerServiceTest {
                 .containsExactlyInAnyOrder(Capability.CHOWN, Capability.SETUID, Capability.SETGID);
         assertThat(hostConfig.getSecurityOpts()).containsExactly("no-new-privileges");
         assertThat(hostConfig.getNetworkMode()).isEqualTo("qeploy-preview");
+    }
+
+    /**
+     * 빌드 컨테이너는 아무것도 서빙하지 않는다 — 저장소를 받아 산출물만 꺼내고 버린다.
+     * 포트를 게시하면 연결하는 쪽도 없이 면만 늘어난다(getMappedPort 는 프리뷰 경로만 부른다).
+     *
+     * <p>역할 라벨은 운영자가 `docker ps` 에서 둘을 갈라 보기 위한 것이고, 그보다 중요하게는
+     * 뒤따르는 격리 작업(#332)이 프리뷰만 골라 바꿀 수 있게 하는 기준이다.</p>
+     */
+    @Test
+    void buildContainerPublishesNoPortAndIsLabelledAsBuild() {
+        mockNetworkAlreadyExists(true);
+        CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
+        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
+        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
+        when(createCommand.exec()).thenReturn(createResponse);
+        when(createResponse.getId()).thenReturn("container-1");
+        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+
+        service.createAndStartContainer(ContainerRole.BUILD, 1L, "session-1", 11L, null, null);
+
+        ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
+        verify(createCommand).withHostConfig(hostConfigCaptor.capture());
+        assertThat(hostConfigCaptor.getValue().getPortBindings().getBindings()).isEmpty();
+
+        ArgumentCaptor<Map<String, String>> labelCaptor = ArgumentCaptor.captor();
+        verify(createCommand).withLabels(labelCaptor.capture());
+        assertThat(labelCaptor.getValue()).containsEntry("qeploy.role", "build");
+
+        // 격리 정책은 역할과 무관하게 그대로다 — 빌드도 사용자 저장소의 코드를 돌린다.
+        assertThat(hostConfigCaptor.getValue().getCapDrop()).containsExactly(Capability.ALL);
+        assertThat(hostConfigCaptor.getValue().getSecurityOpts()).containsExactly("no-new-privileges");
+    }
+
+    @Test
+    void previewContainerKeepsItsLoopbackPortAndIsLabelledAsPreview() {
+        mockNetworkAlreadyExists(true);
+        CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
+        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
+        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
+        when(createCommand.exec()).thenReturn(createResponse);
+        when(createResponse.getId()).thenReturn("container-1");
+        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
+
+        ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
+        verify(createCommand).withHostConfig(hostConfigCaptor.capture());
+        assertThat(hostConfigCaptor.getValue().getPortBindings().getBindings()).isNotEmpty();
+
+        ArgumentCaptor<Map<String, String>> labelCaptor = ArgumentCaptor.captor();
+        verify(createCommand).withLabels(labelCaptor.capture());
+        assertThat(labelCaptor.getValue()).containsEntry("qeploy.role", "preview");
     }
 
     // Issue #76 (BI-081/G1): the host port binding itself must carry HostIp=127.0.0.1, not just
@@ -193,7 +246,7 @@ class DockerContainerServiceTest {
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
         verify(createCommand).withHostConfig(hostConfigCaptor.capture());
@@ -216,7 +269,7 @@ class DockerContainerServiceTest {
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         verify(dockerClient, never()).createNetworkCmd();
     }
@@ -234,7 +287,7 @@ class DockerContainerServiceTest {
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
 
-        assertThatCode(() -> service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1"))
+        assertThatCode(() -> service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1"))
                 .doesNotThrowAnyException();
 
         verify(dockerClient).inspectNetworkCmd();
@@ -260,7 +313,7 @@ class DockerContainerServiceTest {
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         verify(dockerClient).createNetworkCmd();
         verify(dockerClient, never()).inspectNetworkCmd();
@@ -282,7 +335,7 @@ class DockerContainerServiceTest {
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, String>> optionsCaptor = ArgumentCaptor.forClass(Map.class);
@@ -307,7 +360,7 @@ class DockerContainerServiceTest {
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
 
-        String containerId = service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        String containerId = service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         assertThat(containerId).isEqualTo("container-1");
         verify(dockerClient).startContainerCmd("container-1");
@@ -326,7 +379,7 @@ class DockerContainerServiceTest {
         when(dockerClient.inspectImageCmd(anyString())).thenReturn(mock(InspectImageCmd.class));
         mockContainerCreation();
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         verify(dockerClient, never()).pullImageCmd(anyString());
     }
@@ -343,7 +396,7 @@ class DockerContainerServiceTest {
         when(inspect.exec()).thenThrow(new NotFoundException("no such image"));
         mockContainerCreation();
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         verify(dockerClient).pullImageCmd(anyString());
     }
@@ -360,7 +413,7 @@ class DockerContainerServiceTest {
         mockNetworkAlreadyExists(true);
         mockContainerCreation();
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
         verify(createCommand).withHostConfig(hostConfigCaptor.capture());

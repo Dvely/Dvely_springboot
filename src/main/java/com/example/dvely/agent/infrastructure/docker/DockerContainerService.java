@@ -46,6 +46,7 @@ import java.util.LinkedHashMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -69,6 +70,7 @@ public class DockerContainerService {
     private static final String PROJECT_ID_LABEL = "qeploy.projectId";
     private static final String CONVERSATION_ID_LABEL = "qeploy.conversationId";
     private static final String TASK_ID_LABEL = "qeploy.taskId";
+    private static final String ROLE_LABEL = "qeploy.role";
     private static final String LEGACY_AGENT_LABEL = "dvely.agent";
 
     // --- Preview container isolation policy (BI-194). Kept as plain constants rather than
@@ -123,12 +125,13 @@ public class DockerContainerService {
         this.dockerClient = dockerClient;
     }
 
-    public String createAndStartContainer(Long userId,
+    public String createAndStartContainer(ContainerRole role,
+                                          Long userId,
                                           String previewSessionId,
                                           Long projectId,
                                           Long conversationId,
                                           String taskId) {
-        return createAndStartContainer(userId, previewSessionId, projectId,
+        return createAndStartContainer(role, userId, previewSessionId, projectId,
                 conversationId, taskId, MEMORY_LIMIT_BYTES);
     }
 
@@ -137,12 +140,14 @@ public class DockerContainerService {
      * {@link #JAVA_MEMORY_LIMIT_BYTES} 를 넘긴다. swap 은 메모리와 같게 둬(추가 swap 없음) OOM 이
      * 느린 디스크 뒤로 숨지 않고 깨끗하게 kill 되도록 한다.
      */
-    public String createAndStartContainer(Long userId,
+    public String createAndStartContainer(ContainerRole role,
+                                          Long userId,
                                           String previewSessionId,
                                           Long projectId,
                                           Long conversationId,
                                           String taskId,
                                           long memoryBytes) {
+        Objects.requireNonNull(role, "role");
         pullImageIfNeeded();
         ensurePreviewNetwork();
 
@@ -164,10 +169,16 @@ public class DockerContainerService {
         // same host". If preview containers ever move to a remote/multi-host Docker daemon, this
         // loopback bind must be revisited together with the gateway's proxy target — otherwise
         // the gateway simply can't reach the container at all.
-        portBindings.bind(exposedPort, Ports.Binding.bindIpAndPort(HOST_BIND_IP, 0));
+        // 빌드 컨테이너는 아무것도 서빙하지 않는다 — 저장소를 받아 산출물만 꺼내고 버린다.
+        // 게시해 봐야 연결하는 쪽이 없고(getMappedPort 는 프리뷰 경로만 부른다), 루프백이라도
+        // 열려 있는 면은 없는 편이 낫다.
+        if (role.publishesPort()) {
+            portBindings.bind(exposedPort, Ports.Binding.bindIpAndPort(HOST_BIND_IP, 0));
+        }
 
         Map<String, String> labels = new HashMap<>();
         labels.put(AGENT_LABEL, "true");
+        labels.put(ROLE_LABEL, role.label());
         labels.put(USER_ID_LABEL, String.valueOf(userId));
         putLabel(labels, PREVIEW_SESSION_ID_LABEL, previewSessionId);
         putLabel(labels, PROJECT_ID_LABEL, projectId);
@@ -181,7 +192,7 @@ public class DockerContainerService {
         // disabled. Rootfs stays read-write (the agent writes project files into the container)
         // and no restart policy is set (a dead container surfaces via the status API instead).
         CreateContainerResponse container = dockerClient.createContainerCmd(IMAGE)
-                .withExposedPorts(exposedPort)
+                .withExposedPorts(role.publishesPort() ? List.of(exposedPort) : List.<ExposedPort>of())
                 .withHostConfig(HostConfig.newHostConfig()
                         .withPortBindings(portBindings)
                         .withMemory(memoryBytes)

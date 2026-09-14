@@ -25,6 +25,7 @@ import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessio
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
 import com.example.dvely.preview.infrastructure.security.PreviewAccessCookies;
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.agent.infrastructure.docker.ContainerRole;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -51,7 +52,7 @@ class PreviewSessionServiceTest {
         when(taskStore.get("task-1")).thenReturn(task());
         when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.ACTIVE.name()))
                 .thenReturn(Optional.empty());
-        when(dockerService.createAndStartContainer(eq(1L), any(String.class), eq(11L), eq(21L), eq("task-1"), anyLong()))
+        when(dockerService.createAndStartContainer(eq(ContainerRole.PREVIEW), eq(1L), any(String.class), eq(11L), eq(21L), eq("task-1"), anyLong()))
                 .thenReturn("container-1");
         when(dockerService.getMappedPort("container-1")).thenReturn(32768);
         when(repository.save(any(PreviewSessionEntity.class)))
@@ -144,6 +145,7 @@ class PreviewSessionServiceTest {
         when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.ACTIVE.name()))
                 .thenReturn(Optional.empty());
         when(dockerService.createAndStartContainer(
+                eq(ContainerRole.PREVIEW),
                 eq(1L),
                 any(String.class),
                 eq(11L),

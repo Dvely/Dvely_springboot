@@ -71,7 +71,7 @@ class DockerContainerServicePortBindingIntegrationTest {
 
     @Test
     void createAndStartContainerPublishesHostPortOnLoopbackOnly() {
-        containerId = service.createAndStartContainer(
+        containerId = service.createAndStartContainer(ContainerRole.PREVIEW, 
                 999_000L, "it-session-" + System.nanoTime(), 1L, 1L, "it-task-" + System.nanoTime());
 
         Ports.Binding[] bindings = inspectPortBindings(containerId);
@@ -101,7 +101,7 @@ class DockerContainerServicePortBindingIntegrationTest {
     // is HostIp.
     @Test
     void restartContainerKeepsHostPortOnLoopbackAfterReallocation() {
-        containerId = service.createAndStartContainer(
+        containerId = service.createAndStartContainer(ContainerRole.PREVIEW, 
                 999_001L, "it-session-restart-" + System.nanoTime(), 1L, 1L,
                 "it-task-restart-" + System.nanoTime());
         int portBeforeRestart = service.getMappedPort(containerId);
