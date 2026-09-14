@@ -5,6 +5,7 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService.Exec
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.provisioning.infrastructure.EcrImageRegistry.EcrAuth;
+import com.example.dvely.agent.infrastructure.docker.ContainerRole;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -73,6 +74,7 @@ public class DockerImageBuildService {
         }
         String sessionId = "img-" + projectId + "-" + System.currentTimeMillis();
         String containerId = dockerService.createAndStartContainer(
+                ContainerRole.BUILD,
                 ownerUserId, sessionId, projectId, null, null);
         try {
             sourceClone.cloneInto(containerId, ownerUserId, sourceRepo);

@@ -9,6 +9,7 @@ import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.deployment.application.port.out.FrontendStaticHostingPort;
 import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
 import com.example.dvely.provisioning.infrastructure.S3StaticSiteStore;
+import com.example.dvely.agent.infrastructure.docker.ContainerRole;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,6 +46,7 @@ public class FrontendStaticHostingAdapter implements FrontendStaticHostingPort {
         String sessionId = "site-build-" + request.projectId() + "-" + System.currentTimeMillis();
         // 프론트 번들러(vite/webpack)는 메모리를 꽤 쓴다 — 1GiB 기본으로는 큰 앱이 OOM 날 수 있어 2GiB.
         String containerId = dockerService.createAndStartContainer(
+                ContainerRole.BUILD,
                 request.ownerUserId(), sessionId, request.projectId(), null, null,
                 DockerContainerService.JAVA_MEMORY_LIMIT_BYTES);
         try {

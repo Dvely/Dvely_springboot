@@ -11,6 +11,7 @@ import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessio
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.agent.infrastructure.docker.ContainerRole;
 import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.List;
@@ -131,6 +132,7 @@ public class ProjectPreviewService {
         try {
             long memoryBytes = runtimeConfigService.previewContainerMemoryBytes(projectId);
             containerId = dockerService.createAndStartContainer(
+                ContainerRole.PREVIEW,
                     ownerUserId, sessionId, projectId, null, null, memoryBytes);
             hostPort = dockerService.getMappedPort(containerId);
         } catch (RuntimeException exception) {

@@ -24,6 +24,7 @@ import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessio
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.agent.infrastructure.docker.ContainerRole;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -144,7 +145,7 @@ class ProjectPreviewServiceTest {
 
         assertThat(outcome.started()).isFalse();
         assertThat(outcome.session().previewUrl()).isNotNull();
-        verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any(), anyLong());
+        verify(dockerService, never()).createAndStartContainer(any(), any(), anyString(), any(), any(), any(), anyLong());
         verify(provisioner, never()).provision(anyString());
     }
 
@@ -168,7 +169,7 @@ class ProjectPreviewServiceTest {
                             .filter(s -> PreviewSessionStatus.PROVISIONING.name().equals(s.getStatus()))
                             .toList();            // resolveConcurrentProvisioning — 새로 만든 세션
                 });
-        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
+        when(dockerService.createAndStartContainer(eq(ContainerRole.PREVIEW), eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
                 .thenReturn("container-new");
         when(dockerService.getMappedPort("container-new")).thenReturn(32772);
 
@@ -179,7 +180,7 @@ class ProjectPreviewServiceTest {
         verify(dockerService).removeContainer("container-old");
         // 붙지 않고(attach 의 컨테이너 생존 확인조차 안 함) 새로 띄운다.
         verify(dockerService, never()).isContainerRunning(anyString());
-        verify(dockerService).createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong());
+        verify(dockerService).createAndStartContainer(eq(ContainerRole.PREVIEW), eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong());
         verify(provisioner).provision(anyString());
         assertThat(outcome.started()).isTrue();
     }
@@ -193,7 +194,7 @@ class ProjectPreviewServiceTest {
         ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID, false);
 
         assertThat(outcome.started()).isTrue();
-        verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any(), anyLong());
+        verify(dockerService, never()).createAndStartContainer(any(), any(), anyString(), any(), any(), any(), anyLong());
         verify(provisioner, never()).provision(anyString());
     }
 
@@ -201,7 +202,7 @@ class ProjectPreviewServiceTest {
     void startsAProjectScopedSessionWithNoTaskAndHandsItToTheProvisioner() {
         when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusInOrderByLastAccessedAtDesc(
                 eq(PROJECT_ID), eq(USER_ID), any())).thenReturn(Optional.empty());
-        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
+        when(dockerService.createAndStartContainer(eq(ContainerRole.PREVIEW), eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
                 .thenReturn("container-new");
         when(dockerService.getMappedPort("container-new")).thenReturn(32770);
         when(repository.findByProjectIdAndOwnerUserIdAndStatusIn(eq(PROJECT_ID), eq(USER_ID), any()))
@@ -225,7 +226,7 @@ class ProjectPreviewServiceTest {
     void aDockerFailureIsReportedAsAnUnavailableEnvironmentInsteadOfAnOpaqueError() {
         when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusInOrderByLastAccessedAtDesc(
                 eq(PROJECT_ID), eq(USER_ID), any())).thenReturn(Optional.empty());
-        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
+        when(dockerService.createAndStartContainer(eq(ContainerRole.PREVIEW), eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
                 .thenThrow(new RuntimeException("Cannot connect to the Docker daemon at unix:///var/run/docker.sock"));
 
         assertThatThrownBy(() -> service.provision(PROJECT_ID, USER_ID, false))
@@ -244,7 +245,7 @@ class ProjectPreviewServiceTest {
         assertThatThrownBy(() -> service.provision(PROJECT_ID, USER_ID, false))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("저장소");
-        verify(dockerService, never()).createAndStartContainer(any(), anyString(), any(), any(), any(), anyLong());
+        verify(dockerService, never()).createAndStartContainer(any(), any(), anyString(), any(), any(), any(), anyLong());
     }
 
     /**
@@ -255,7 +256,7 @@ class ProjectPreviewServiceTest {
     void aLosingConcurrentRequestCancelsItselfAndReleasesItsContainer() {
         when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusInOrderByLastAccessedAtDesc(
                 eq(PROJECT_ID), eq(USER_ID), any())).thenReturn(Optional.empty());
-        when(dockerService.createAndStartContainer(eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
+        when(dockerService.createAndStartContainer(eq(ContainerRole.PREVIEW), eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
                 .thenReturn("container-late");
         when(dockerService.getMappedPort("container-late")).thenReturn(32771);
         PreviewSessionEntity earlier = session(PreviewSessionStatus.PROVISIONING, "container-early", null);

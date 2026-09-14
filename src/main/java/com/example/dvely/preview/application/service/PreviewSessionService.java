@@ -13,6 +13,7 @@ import com.example.dvely.preview.infrastructure.config.PreviewProperties;
 import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity;
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
 import com.example.dvely.preview.infrastructure.security.PreviewAccessCookies;
+import com.example.dvely.agent.infrastructure.docker.ContainerRole;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -67,6 +68,7 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
         String accessToken = UUID.randomUUID().toString().replace("-", "");
         long memoryBytes = runtimeConfigService.previewContainerMemoryBytes(task.projectId());
         String containerId = dockerService.createAndStartContainer(
+                ContainerRole.PREVIEW,
                 task.ownerUserId(),
                 sessionId,
                 task.projectId(),
