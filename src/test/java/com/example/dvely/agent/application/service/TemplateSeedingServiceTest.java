@@ -69,6 +69,11 @@ class TemplateSeedingServiceTest {
         Optional<Template> seeded = service().seedIfNeeded(CONTAINER, PROJECT_ID);
 
         assertThat(seeded).isPresent();
+        // busybox wget 은 프록시 CONNECT 를 하지 않는다 — egress 를 켜면(#332 4단계) 요청도 못
+        // 보내고 소켓을 닫아, tinyproxy 로그에만 흔적이 남는다. 모드에 따라 도구를 가르지 않는다.
+        verify(dockerService).installPackages(CONTAINER, "curl");
+        verify(dockerService).execWithExitCode(eq(CONTAINER), contains("curl -fsSL"));
+        verify(dockerService, never()).execWithExitCode(eq(CONTAINER), contains("wget"));
         // 기준 커밋이 없으면 변경 내역이 템플릿 전체를 "새 파일" 로 잡아, 요청한 3줄 수정이
         // 1만 자에 묻힌다(dev project 53 에서 실제로 그랬다).
         verify(dockerService).execWithExitCode(eq(CONTAINER), contains("commit -q -m 'template: landing-minimal'"));

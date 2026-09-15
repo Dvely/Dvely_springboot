@@ -192,6 +192,37 @@ qeploy:
     # 안에만 있어서, 기본 TTL 안에 답하지 못하면 승인해도 올릴 것이 남지 않는다.
     binding-approval-hold: ${QEPLOY_PREVIEW_BINDING_APPROVAL_HOLD:6h}
     cleanup-interval-ms: ${QEPLOY_PREVIEW_CLEANUP_INTERVAL_MS:60000}
+    # 프리뷰 컨테이너의 바깥 통신을 허용목록으로 좁힌다 (#332 4단계).
+    #
+    # 기본은 꺼짐이다. 허용목록이 좁으면 빌드가 깨지는데 그 실패는 사용자 프로젝트마다 다르게
+    # 나타나 원인을 가리기 어렵다 — 실제 프로젝트(정적·Node·JAVA_FULLSTACK)로 태워 목록을 확인한
+    # 뒤에 켠다.
+    #
+    # 켜면 프리뷰마다 전용 --internal 네트워크를 만들고, 프록시 하나가 그 전부와 bridge 에 붙는다.
+    # 공유 네트워크 하나로는 안 된다 — enable_icc=false 를 켜면 프리뷰가 프록시에도 닿지 못하고,
+    # 끄면 프리뷰끼리 서로 닿는다(2026-09-15 실측).
+    egress:
+      enabled: ${QEPLOY_PREVIEW_EGRESS_ENABLED:false}
+      proxy-image: ${QEPLOY_PREVIEW_EGRESS_PROXY_IMAGE:alpine:3.20}
+      proxy-name: ${QEPLOY_PREVIEW_EGRESS_PROXY_NAME:qeploy-preview-egress}
+      proxy-alias: ${QEPLOY_PREVIEW_EGRESS_PROXY_ALIAS:qeploy-egress}
+      proxy-port: ${QEPLOY_PREVIEW_EGRESS_PROXY_PORT:8888}
+      network-prefix: ${QEPLOY_PREVIEW_EGRESS_NETWORK_PREFIX:qeploy-preview-}
+      # 통째로 일치해야 한다 — github.com 이 github.com.evil.test 까지 열지 않는다.
+      # 여기서 빠진 호스트는 "설치가 안 된다" 로만 드러나므로 실제 빌드로 확인하고 좁힌다.
+      allowed-hosts: >-
+        ${QEPLOY_PREVIEW_EGRESS_ALLOWED_HOSTS:
+        dl-cdn.alpinelinux.org,
+        registry.npmjs.org,
+        registry.yarnpkg.com,
+        github.com,
+        codeload.github.com,
+        raw.githubusercontent.com,
+        objects.githubusercontent.com,
+        repo.maven.apache.org,
+        plugins.gradle.org,
+        services.gradle.org,
+        dvely.github.io}
   # 퍼블리싱 템플릿 카탈로그. 정본은 이 서버가 아니라 템플릿 저장소(qeploy-templates)가 Pages 로
   # 발행하는 catalog.json 이다 — 템플릿 변경 주기와 서버 배포 주기를 묶지 않기 위해서다.
   # 갱신에 실패하면 직전에 읽어둔 목록을 계속 쓴다. 한 번도 읽지 못한 경우에만 503 이다.

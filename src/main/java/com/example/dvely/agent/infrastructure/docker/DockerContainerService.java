@@ -1,5 +1,6 @@
 package com.example.dvely.agent.infrastructure.docker;
 
+import com.example.dvely.preview.infrastructure.egress.PreviewNetworkPolicy;
 import java.time.Duration;
 import com.github.dockerjava.api.model.PruneType;
 import com.github.dockerjava.api.DockerClient;
@@ -131,18 +132,23 @@ public class DockerContainerService {
 
     private final DockerClient dockerClient;
 
+    /**
+     * 프리뷰가 붙을 네트워크와 환경변수를 정한다. 기본은 공유 브리지이고, egress 를 켜면 프리뷰마다
+     * 전용 internal 네트워크 + 프록시로 바뀐다(#332 4단계). <b>빌드 컨테이너는 이 정책을 타지
+     * 않는다</b> — 역할을 가른 이유가 그것이다.
+     *
+     * <p>세터 주입인 이유는 이 클래스가 무인자 생성자로도 만들어지기 때문이다(테스트가 직접
+     * 인스턴스를 만든다). 그때는 null 이고 공유 브리지로 떨어진다.</p>
+     */
+    private PreviewNetworkPolicy previewNetworkPolicy;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setPreviewNetworkPolicy(PreviewNetworkPolicy previewNetworkPolicy) {
+        this.previewNetworkPolicy = previewNetworkPolicy;
+    }
+
     public DockerContainerService() {
-        String dockerHost = System.getProperty("os.name").toLowerCase().contains("win")
-                ? "npipe:////./pipe/docker_engine"
-                : "unix:///var/run/docker.sock";
-        var config = DefaultDockerClientConfig.createDefaultConfigBuilder()
-                .withDockerHost(dockerHost)
-                .build();
-        var httpClient = new OkDockerHttpClient.Builder()
-                .dockerHost(config.getDockerHost())
-                .sslConfig(config.getSSLConfig())
-                .build();
-        this.dockerClient = DockerClientImpl.getInstance(config, httpClient);
+        this.dockerClient = DockerClients.createLocal();
     }
 
     DockerContainerService(DockerClient dockerClient) {
@@ -173,7 +179,13 @@ public class DockerContainerService {
                                           long memoryBytes) {
         Objects.requireNonNull(role, "role");
         pullImageIfNeeded();
-        ensurePreviewNetwork();
+        // 빌드는 언제나 공유 브리지다. 프리뷰만 정책을 탄다 — egress 를 켜도 배포 파이프라인이
+        // 흔들리지 않게 하는 것이 역할 구분(#332 1단계)의 목적이다.
+        boolean contained = role == ContainerRole.PREVIEW && previewNetworkPolicy != null;
+        String previewNetwork = contained
+                ? previewNetworkPolicy.attachNetwork(previewSessionId)
+                : ensureSharedPreviewNetwork();
+        List<String> egressEnv = contained ? previewNetworkPolicy.environment() : List.<String>of();
 
         // 호스트 포트를 발행하지 않는다. 게이트웨이는 컨테이너 IP 로 직접 붙고(PreviewGatewayService),
         // 컨테이너 IP 는 호스트에서만 라우팅된다 — 브리지 대역(172.x)은 호스트 밖에서 도달 경로가
@@ -209,12 +221,15 @@ public class DockerContainerService {
                         .withCapAdd(Capability.CHOWN, Capability.SETUID, Capability.SETGID)
                         .withSecurityOpts(List.of("no-new-privileges"))
                         .withLogConfig(BOUNDED_LOG_CONFIG)
-                        .withNetworkMode(PREVIEW_NETWORK_NAME))
+                        .withNetworkMode(previewNetwork))
                 .withLabels(labels)
                 // 프리뷰만 node 로 돌린다. 빌드는 그대로 root 다 — 역할을 가른 이유가 이것이고,
                 // 배포 파이프라인은 이 변경의 영향을 받지 않는다.
                 .withUser(role == ContainerRole.PREVIEW ? PREVIEW_USER : null)
-                .withEnv(role == ContainerRole.PREVIEW ? List.of("HOME=" + PREVIEW_HOME) : List.<String>of())
+                .withEnv(role == ContainerRole.PREVIEW
+                        ? java.util.stream.Stream.concat(
+                                java.util.stream.Stream.of("HOME=" + PREVIEW_HOME), egressEnv.stream()).toList()
+                        : List.<String>of())
                 .withCmd("tail", "-f", "/dev/null")
                 .exec();
 
@@ -233,6 +248,12 @@ public class DockerContainerService {
      * (Conflict) from Docker on create — that's caught and ignored since the network exists
      * either way by the time we observe it.
      */
+    /** 정책이 없는 경로(테스트가 직접 만든 인스턴스)와 빌드 컨테이너가 쓰는 공유 네트워크. */
+    private String ensureSharedPreviewNetwork() {
+        ensurePreviewNetwork();
+        return PREVIEW_NETWORK_NAME;
+    }
+
     private void ensurePreviewNetwork() {
         // Docker's network list "name" filter matches by substring, not exact name — filtering
         // the returned candidates down to an exact name match avoids a superstring collision
@@ -1019,6 +1040,9 @@ public class DockerContainerService {
     }
 
     public void removeContainer(String containerId) {
+        // 컨테이너를 지우기 전에 세션 몫의 네트워크를 되돌린다. 지운 뒤에는 라벨을 읽을 수 없어
+        // 어느 세션의 것인지 알 방법이 사라진다.
+        releasePreviewNetwork(containerId);
         try {
             dockerClient.stopContainerCmd(containerId).withTimeout(5).exec();
         } catch (NotFoundException e) {
@@ -1034,6 +1058,27 @@ public class DockerContainerService {
             return;
         }
         log.info("Docker 컨테이너 제거: id={}", containerId);
+    }
+
+    /**
+     * 프리뷰 세션 전용 자원(egress 네트워크)을 되돌린다. 기본 정책에서는 아무 일도 하지 않는다.
+     *
+     * <p>실패를 삼킨다 — 여기서 던지면 정작 컨테이너 회수가 멈춘다. 회수되지 못한 네트워크는
+     * 정책 쪽 로그로 드러난다.</p>
+     */
+    private void releasePreviewNetwork(String containerId) {
+        if (previewNetworkPolicy == null) {
+            return;
+        }
+        try {
+            var labels = dockerClient.inspectContainerCmd(containerId).exec().getConfig().getLabels();
+            String sessionId = labels == null ? null : labels.get(PREVIEW_SESSION_ID_LABEL);
+            if (sessionId != null && !sessionId.isBlank()) {
+                previewNetworkPolicy.release(sessionId);
+            }
+        } catch (RuntimeException e) {
+            log.debug("프리뷰 네트워크 회수 생략: containerId={} 사유={}", containerId, e.toString());
+        }
     }
 
     /**

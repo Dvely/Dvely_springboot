@@ -432,6 +432,10 @@ GET /preview-sessions/{sessionId}/logs
   - 이전에는 `bindIpAndPort("127.0.0.1", 0)` 으로 루프백에만 퍼블리시했다(BI-081/G1, Issue #76/PR #78). 발행 자체를 없앤 것은 그보다 강한 상태이고, `--internal` 네트워크에서 포트 발행이 동작하지 않는다는 제약(#332 4단계 egress)도 함께 푼다
   - 게이트웨이와 Docker 데몬이 **동일 호스트**라는 전제는 그대로다 — 오히려 더 강하게 의존하므로, 멀티호스트/원격 Docker 로 옮기면 프록시 타깃과 함께 반드시 재검토해야 한다
   - 주소는 컨테이너를 다시 만들거나 재시작하면 바뀔 수 있어 그때 다시 읽는다(`rebindContainerIp`). 예전에 발행 포트가 재할당되던 것과 같은 성질이다(#71·#278)
+- **바깥으로 나가는 방향**은 `qeploy.preview.egress.enabled` 가 가른다(기본 꺼짐, #332 4단계)
+  - 꺼짐: 공유 브리지 `qeploy-preview`(`enable_icc=false`)에 붙고 바깥이 열려 있다
+  - 켜짐: 프리뷰마다 전용 `--internal` 네트워크 + 프록시 하나(`qeploy-egress` 별칭)가 허용목록만 통과시킨다. 공유 네트워크로는 안 된다 — `icc=false` 를 켜면 프리뷰가 프록시에도 닿지 못하고, 끄면 프리뷰끼리 서로 닿는다(실측)
+  - 컨테이너에는 `HTTP(S)_PROXY` 와 함께 `JAVA_TOOL_OPTIONS` 로 JVM 프록시가 들어간다 — JVM 은 환경변수 프록시를 스스로 읽지 않아 gradle 이 여기 걸린다
 
 남은 항목: 게이트웨이 인가 강화(소유권·JWT 미검증 + `permitAll` — Issue #77, 무헤더 accessToken이 iframe 임베딩을 위한 의도된 설계라 FE 조율 후 착수), dependency/build/image cache.
 
