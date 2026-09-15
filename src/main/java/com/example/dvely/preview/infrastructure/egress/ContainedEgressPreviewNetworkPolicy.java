@@ -187,10 +187,14 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
                 .exec();
         dockerClient.startContainerCmd(proxy.getId()).exec();
 
-        exec(proxy.getId(), "apk add --no-cache tinyproxy >/dev/null 2>&1 && mkdir -p " + CONF_DIR);
+        // 설치와 디렉터리 생성은 반드시 기다린다. 비동기로 두면 아래 복사가 앞질러
+        // "Could not find the file /etc/tinyproxy" 로 죽는다 — dev 에서 실제로 그랬다.
+        awaitExec(proxy.getId(), "apk add --no-cache tinyproxy >/dev/null 2>&1; mkdir -p " + CONF_DIR);
         copyIn(proxy.getId(), CONF_DIR, ALLOW_ENTRY, allowList());
         copyIn(proxy.getId(), CONF_DIR, CONF_ENTRY, tinyproxyConf());
-        exec(proxy.getId(), "tinyproxy -d -c " + CONF_PATH + " >/dev/null 2>&1 &");
+        // 기동은 기다리지 않는다 — tinyproxy 는 포그라운드로 도는 프로세스다.
+        detachExec(proxy.getId(), "tinyproxy -d -c " + CONF_PATH + " >/dev/null 2>&1");
+        awaitProxyListening(proxy.getId());
         log.info("[PreviewEgress] 프록시 기동: name={} 허용 호스트 {}개",
                 properties.proxyName(), properties.allowedHosts().size());
     }
@@ -223,13 +227,64 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
                 .collect(Collectors.joining("\n")) + "\n";
     }
 
-    private void exec(String containerId, String command) {
+    /** 끝날 때까지 기다린다. 뒤따르는 단계가 이 결과에 기대는 경우에 쓴다. */
+    private void awaitExec(String containerId, String command) {
+        var created = dockerClient.execCreateCmd(containerId)
+                .withCmd("sh", "-c", command)
+                .withAttachStdout(true)
+                .withAttachStderr(true)
+                .exec();
+        try {
+            dockerClient.execStartCmd(created.getId())
+                    .withDetach(false)
+                    .exec(new com.github.dockerjava.api.async.ResultCallback.Adapter<>())
+                    .awaitCompletion(60, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("egress 프록시 준비가 중단됐습니다.", e);
+        }
+    }
+
+    private void detachExec(String containerId, String command) {
         var created = dockerClient.execCreateCmd(containerId)
                 .withCmd("sh", "-c", command)
                 .withAttachStdout(false)
                 .withAttachStderr(false)
                 .exec();
-        dockerClient.execStartCmd(created.getId()).withDetach(true).exec(new com.github.dockerjava.api.async.ResultCallback.Adapter<>());
+        dockerClient.execStartCmd(created.getId()).withDetach(true)
+                .exec(new com.github.dockerjava.api.async.ResultCallback.Adapter<>());
+    }
+
+    /**
+     * tinyproxy 가 실제로 받을 준비가 될 때까지 기다린다.
+     *
+     * <p>기다리지 않으면 첫 프리뷰의 {@code apk}·{@code npm} 이 아직 없는 프록시를 쳐서 실패한다 —
+     * 그 실패는 "설치가 안 된다" 로만 보여 프록시가 원인이라는 것이 드러나지 않는다.</p>
+     *
+     * <p>뜨지 않으면 던진다. 프록시 없이 프리뷰를 올리면 그 컨테이너는 바깥과 완전히 단절돼
+     * 있어(internal 네트워크) 어차피 아무것도 설치하지 못한다.</p>
+     */
+    private void awaitProxyListening(String containerId) {
+        for (int attempt = 0; attempt < 30; attempt++) {
+            var created = dockerClient.execCreateCmd(containerId)
+                    .withCmd("sh", "-c", "netstat -tln 2>/dev/null | grep -q ':" + properties.proxyPort() + " '")
+                    .exec();
+            try {
+                dockerClient.execStartCmd(created.getId()).withDetach(false)
+                        .exec(new com.github.dockerjava.api.async.ResultCallback.Adapter<>())
+                        .awaitCompletion(5, java.util.concurrent.TimeUnit.SECONDS);
+                Long exit = dockerClient.inspectExecCmd(created.getId()).exec().getExitCodeLong();
+                if (exit != null && exit == 0L) {
+                    return;
+                }
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("egress 프록시 대기가 중단됐습니다.", e);
+            }
+        }
+        throw new IllegalStateException(
+                "egress 프록시가 " + properties.proxyPort() + " 에서 응답하지 않습니다. 프리뷰가 바깥에 닿을 수 없습니다.");
     }
 
     /** tinyproxy 는 부팅 때 설정을 한 번만 읽고 잘못된 파일이면 종료한다 — 그래서 기동 전에 넣는다. */
