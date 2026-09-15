@@ -37,6 +37,7 @@ import com.github.dockerjava.api.command.StopContainerCmd;
 import com.github.dockerjava.api.exception.ConflictException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.Capability;
+import com.github.dockerjava.api.model.ContainerNetwork;
 import com.github.dockerjava.api.model.CpuStatsConfig;
 import com.github.dockerjava.api.model.CpuUsageConfig;
 import com.github.dockerjava.api.model.ExposedPort;
@@ -76,28 +77,33 @@ class DockerContainerServiceTest {
     }
 
     @Test
-    void getMappedPortRejectsMissingBinding() {
-        mockInspectWithBindings(null);
+    void getContainerIpRejectsMissingNetworkSettings() {
+        mockInspectWithNetworks(null);
 
-        assertThatThrownBy(() -> service.getMappedPort("container-1"))
+        assertThatThrownBy(() -> service.getContainerIp("container-1"))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("포트 바인딩");
+                .hasMessageContaining("컨테이너 IP");
     }
 
     @Test
-    void getMappedPortRejectsEmptyBinding() {
-        mockInspectWithBindings(new Ports.Binding[0]);
+    void getContainerIpRejectsBlankAddress() {
+        mockInspectWithNetworks(Map.of("qeploy-preview", networkWithIp("")));
 
-        assertThatThrownBy(() -> service.getMappedPort("container-1"))
+        assertThatThrownBy(() -> service.getContainerIp("container-1"))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("포트 바인딩");
+                .hasMessageContaining("컨테이너 IP");
     }
 
+    /**
+     * 게이트웨이가 프록시할 유일한 주소다(#358 이후 호스트 포트를 발행하지 않는다). 여기서 빈 값을
+     * 조용히 돌려주면 게이트웨이가 빈 주소로 프록시해 502 만 남고, 사용자에게는 "깨진 이미지" 로만
+     * 보인다 — 원인이 어디에도 안 남는 형태라 실패로 끊는다.
+     */
     @Test
-    void getMappedPortReturnsHostPort() {
-        mockInspectWithBindings(new Ports.Binding[]{Ports.Binding.bindPort(32768)});
+    void getContainerIpReturnsTheAddress() {
+        mockInspectWithNetworks(Map.of("qeploy-preview", networkWithIp("172.18.0.2")));
 
-        assertThat(service.getMappedPort("container-1")).isEqualTo(32768);
+        assertThat(service.getContainerIp("container-1")).isEqualTo("172.18.0.2");
     }
 
     @Test
@@ -185,19 +191,18 @@ class DockerContainerServiceTest {
      * 뒤따르는 격리 작업(#332)이 프리뷰만 골라 바꿀 수 있게 하는 기준이다.</p>
      */
     @Test
-    void buildContainerPublishesNoPortAndIsLabelledAsBuild() {
+    void buildContainerIsLabelledAsBuild() {
         mockNetworkAlreadyExists(true);
         mockContainerCreation();
 
         service.createAndStartContainer(ContainerRole.BUILD, 1L, "session-1", 11L, null, null);
 
-        ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
-        verify(createCommand).withHostConfig(hostConfigCaptor.capture());
-        assertThat(hostConfigCaptor.getValue().getPortBindings().getBindings()).isEmpty();
-
         ArgumentCaptor<Map<String, String>> labelCaptor = ArgumentCaptor.captor();
         verify(createCommand).withLabels(labelCaptor.capture());
         assertThat(labelCaptor.getValue()).containsEntry("qeploy.role", "build");
+
+        ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
+        verify(createCommand).withHostConfig(hostConfigCaptor.capture());
 
         // 격리 정책은 역할과 무관하게 그대로다 — 빌드도 사용자 저장소의 코드를 돌린다.
         assertThat(hostConfigCaptor.getValue().getCapDrop()).containsExactly(Capability.ALL);
@@ -240,29 +245,27 @@ class DockerContainerServiceTest {
     }
 
     @Test
-    void previewContainerKeepsItsLoopbackPortAndIsLabelledAsPreview() {
+    void previewContainerIsLabelledAsPreview() {
         mockNetworkAlreadyExists(true);
         mockContainerCreation();
 
         service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
-
-        ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
-        verify(createCommand).withHostConfig(hostConfigCaptor.capture());
-        assertThat(hostConfigCaptor.getValue().getPortBindings().getBindings()).isNotEmpty();
 
         ArgumentCaptor<Map<String, String>> labelCaptor = ArgumentCaptor.captor();
         verify(createCommand).withLabels(labelCaptor.capture());
         assertThat(labelCaptor.getValue()).containsEntry("qeploy.role", "preview");
     }
 
-    // Issue #76 (BI-081/G1): the host port binding itself must carry HostIp=127.0.0.1, not just
-    // "some port binding exists" — an unset HostIp (the pre-fix Ports.Binding.bindPort(0)) is
-    // exactly the bug this guards against, and would pass a looser "a binding was added" check.
-    // A real-Docker assertion that the *daemon* actually enforces this loopback bind lives in
-    // DockerContainerServicePortBindingIntegrationTest; this test only proves the request we send
-    // asks for it.
+    /**
+     * Issue #76(BI-081/G1)의 후신. 원래는 발행 포트의 HostIp 가 루프백인지를 봤다 — 미설정이면
+     * 데몬이 0.0.0.0(모든 인터페이스)으로 해석해 게이트웨이의 토큰 검사를 통째로 우회할 수 있었다.
+     *
+     * <p>#358 에서 발행 자체를 없앴으므로 지켜야 할 성질이 더 강해졌다: <b>호스트 포트가 하나도
+     * 없어야 한다.</b> 게이트웨이는 컨테이너 IP 로만 닿고, 브리지 대역은 호스트 밖에서 라우팅되지
+     * 않는다.</p>
+     */
     @Test
-    void createAndStartContainerBindsHostPortToLoopbackOnly() {
+    void createAndStartContainerPublishesNoHostPort() {
         mockNetworkAlreadyExists(true);
         mockContainerCreation();
 
@@ -270,13 +273,8 @@ class DockerContainerServiceTest {
 
         ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
         verify(createCommand).withHostConfig(hostConfigCaptor.capture());
-        Ports.Binding[] bindings = hostConfigCaptor.getValue().getPortBindings()
-                .getBindings()
-                .get(ExposedPort.tcp(3000));
-        assertThat(bindings).hasSize(1);
-        assertThat(bindings[0].getHostIp()).isEqualTo("127.0.0.1");
-        // Port stays dynamic (daemon-assigned) — only HostIp changed, not the "which port" policy.
-        assertThat(bindings[0].getHostPortSpec()).isEqualTo("0");
+        assertThat(hostConfigCaptor.getValue().getPortBindings()).isNull();
+        verify(createCommand, never()).withExposedPorts(any(ExposedPort[].class));
     }
 
     @Test
@@ -836,19 +834,20 @@ class DockerContainerServiceTest {
         return stats;
     }
 
-    private void mockInspectWithBindings(Ports.Binding[] bindings) {
+    private ContainerNetwork networkWithIp(String ip) {
+        ContainerNetwork network = mock(ContainerNetwork.class);
+        when(network.getIpAddress()).thenReturn(ip);
+        return network;
+    }
+
+    private void mockInspectWithNetworks(Map<String, ContainerNetwork> networks) {
         InspectContainerCmd command = mock(InspectContainerCmd.class);
         InspectContainerResponse response = mock(InspectContainerResponse.class);
         NetworkSettings networkSettings = mock(NetworkSettings.class);
-        Ports ports = mock(Ports.class);
 
         when(dockerClient.inspectContainerCmd(anyString())).thenReturn(command);
         when(command.exec()).thenReturn(response);
         when(response.getNetworkSettings()).thenReturn(networkSettings);
-        when(networkSettings.getPorts()).thenReturn(ports);
-
-        Map<ExposedPort, Ports.Binding[]> bindingMap = new HashMap<>();
-        bindingMap.put(ExposedPort.tcp(3000), bindings);
-        when(ports.getBindings()).thenReturn(bindingMap);
+        when(networkSettings.getNetworks()).thenReturn(networks);
     }
 }

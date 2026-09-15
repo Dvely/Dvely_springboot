@@ -263,7 +263,7 @@ class PreviewGatewayControllerTest {
 
     private PreviewSessionInfo session() {
         return new PreviewSessionInfo(
-                SESSION_ID, OWNER, 11L, null, null, "container-1", 32768,
+                SESSION_ID, OWNER, 11L, null, null, "container-1", "172.18.0.2",
                 "https://qeploy.com/api/v1/previews/session-1/token-1/",
                 LocalDateTime.now().plusMinutes(30));
     }

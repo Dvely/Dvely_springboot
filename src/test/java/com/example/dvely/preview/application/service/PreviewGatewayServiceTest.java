@@ -224,7 +224,7 @@ class PreviewGatewayServiceTest {
             closedPort = probe.getLocalPort();
         }   // 닫힘 — 이 포트에는 아무도 리슨하지 않는다
         PreviewSessionInfo dead = new PreviewSessionInfo(
-                "session-dead", 1L, 11L, null, null, "container-dead", closedPort,
+                "session-dead", 1L, 11L, null, null, "container-dead", "127.0.0.1:" + closedPort,
                 "https://qeploy.com/api/v1/previews/session-dead/token/", LocalDateTime.now().plusMinutes(30));
 
         ResponseEntity<Resource> response = service.proxy(dead, "/api/v1/previews/s/t/", "", null);
@@ -245,7 +245,7 @@ class PreviewGatewayServiceTest {
         }
         PreviewGatewayService disabled = new PreviewGatewayService("'self'", false, reclaimed::add);
         PreviewSessionInfo dead = new PreviewSessionInfo(
-                "session-dead", 1L, 11L, null, null, "container-dead", closedPort,
+                "session-dead", 1L, 11L, null, null, "container-dead", "127.0.0.1:" + closedPort,
                 "https://qeploy.com/api/v1/previews/session-dead/token/", LocalDateTime.now().plusMinutes(30));
 
         ResponseEntity<Resource> response = disabled.proxy(dead, "/api/v1/previews/s/t/", "", null);
@@ -635,7 +635,7 @@ class PreviewGatewayServiceTest {
     private PreviewSessionInfo session() {
         return new PreviewSessionInfo(
                 "session-1", 1L, 11L, null, null, "container-1",
-                container.getAddress().getPort(),
+                "127.0.0.1:" + container.getAddress().getPort(),
                 "https://qeploy.com/api/v1/previews/session-1/token/",
                 LocalDateTime.now().plusMinutes(30)
         );

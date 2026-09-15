@@ -108,7 +108,7 @@ class ProjectPreviewProvisionerTest {
 
     private PreviewSessionEntity provisioningSession() {
         return new PreviewSessionEntity(
-                SESSION_ID, "token", 1L, PROJECT_ID, null, null, CONTAINER_ID, 32768,
+                SESSION_ID, "token", 1L, PROJECT_ID, null, null, CONTAINER_ID, "172.18.0.2",
                 "https://preview.qeploy.test/api/v1/previews/session-1/token/",
                 LocalDateTime.now().plusMinutes(30), PreviewSessionStatus.PROVISIONING);
     }

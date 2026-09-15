@@ -171,7 +171,7 @@ class ProjectPreviewServiceTest {
                 });
         when(dockerService.createAndStartContainer(eq(ContainerRole.PREVIEW), eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
                 .thenReturn("container-new");
-        when(dockerService.getMappedPort("container-new")).thenReturn(32772);
+        when(dockerService.getContainerIp("container-new")).thenReturn("172.18.0.6");
 
         ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID, true);
 
@@ -204,7 +204,7 @@ class ProjectPreviewServiceTest {
                 eq(PROJECT_ID), eq(USER_ID), any())).thenReturn(Optional.empty());
         when(dockerService.createAndStartContainer(eq(ContainerRole.PREVIEW), eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
                 .thenReturn("container-new");
-        when(dockerService.getMappedPort("container-new")).thenReturn(32770);
+        when(dockerService.getContainerIp("container-new")).thenReturn("172.18.0.4");
         when(repository.findByProjectIdAndOwnerUserIdAndStatusIn(eq(PROJECT_ID), eq(USER_ID), any()))
                 .thenAnswer(invocation -> List.of(savedSession()));
 
@@ -258,7 +258,7 @@ class ProjectPreviewServiceTest {
                 eq(PROJECT_ID), eq(USER_ID), any())).thenReturn(Optional.empty());
         when(dockerService.createAndStartContainer(eq(ContainerRole.PREVIEW), eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
                 .thenReturn("container-late");
-        when(dockerService.getMappedPort("container-late")).thenReturn(32771);
+        when(dockerService.getContainerIp("container-late")).thenReturn("172.18.0.5");
         PreviewSessionEntity earlier = session(PreviewSessionStatus.PROVISIONING, "container-early", null);
         when(repository.findByProjectIdAndOwnerUserIdAndStatusIn(eq(PROJECT_ID), eq(USER_ID), any()))
                 .thenAnswer(invocation -> List.of(earlier, savedSession()));
@@ -285,7 +285,7 @@ class ProjectPreviewServiceTest {
                 null,
                 taskId,
                 containerId,
-                32768,
+                "172.18.0.2",
                 "https://preview.qeploy.test/api/v1/previews/session-" + containerId + "/token/",
                 LocalDateTime.now().plusMinutes(30),
                 status

@@ -47,8 +47,8 @@ public class PreviewReadinessProbe {
      * @return 예산 안에 도달 가능해지면 true. false 여도 호출자는 ACTIVE 를 진행할 수 있다(best-effort —
      *         이 게이트는 흔한 레이스를 닫을 뿐, 활성화를 하드하게 막지 않아 기존 동작을 퇴행시키지 않는다).
      */
-    public boolean awaitReachable(int hostPort) {
-        String target = "http://127.0.0.1:" + hostPort + "/";
+    public boolean awaitReachable(String containerIp) {
+        String target = PreviewTarget.baseUrl(containerIp);
         for (int attempt = 0; attempt < maxAttempts; attempt++) {
             try {
                 httpClient.send(
@@ -62,7 +62,7 @@ public class PreviewReadinessProbe {
                 sleep(intervalMs);   // 아직 못 닿음 — 잠깐 뒤 재시도
             }
         }
-        log.warn("[PreviewReadiness] 게이트웨이 경유 도달 확인 예산 초과(hostPort={}) — best-effort 로 진행", hostPort);
+        log.warn("[PreviewReadiness] 게이트웨이 경유 도달 확인 예산 초과(containerIp={}) — best-effort 로 진행", containerIp);
         return false;
     }
 

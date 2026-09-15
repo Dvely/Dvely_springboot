@@ -428,7 +428,10 @@ GET /preview-sessions/{sessionId}/logs
 - `no-new-privileges` 보안 옵션
 - 전용 브리지 네트워크 `qeploy-preview`(`enable_icc=false`)로 프리뷰 컨테이너 간 통신을 차단(기존 네트워크가 이 옵션 없이 존재하면 경고만 남기고 계속 진행)
 - `docker-java` 3.3.6 → 3.7.1: 최신 Docker Engine의 capability 응답 역직렬화 결함 대응, 버전 하한을 회귀 테스트로 고정
-- 호스트 포트 바인딩은 `bindIpAndPort("127.0.0.1", 0)`(BI-081/G1, Issue #76/PR #78) — 컨테이너 3000 포트를 loopback에만 퍼블리시해 게이트웨이·accessToken·Spring Security를 우회하는 호스트 직접 접근을 차단한다. 게이트웨이(`PreviewGatewayService`)가 이미 `127.0.0.1:hostPort`로만 프록시하므로 정상 경로는 무영향이며, 이 바인딩은 게이트웨이와 Docker 데몬이 동일 호스트라는 기존 전제를 코드로 강제한다(멀티호스트/원격 Docker 전환 시 재검토 필요)
+- **호스트 포트를 발행하지 않는다**(#358). 게이트웨이(`PreviewGatewayService`)는 `preview_sessions.container_ip` 를 읽어 `http://{container_ip}:3000` 으로 프록시한다. 브리지 대역(172.x)은 호스트에서만 라우팅되고 컨테이너 사이는 `enable_icc=false` 가 막으므로, 게이트웨이·accessToken·Spring Security 를 우회하는 경로가 없다
+  - 이전에는 `bindIpAndPort("127.0.0.1", 0)` 으로 루프백에만 퍼블리시했다(BI-081/G1, Issue #76/PR #78). 발행 자체를 없앤 것은 그보다 강한 상태이고, `--internal` 네트워크에서 포트 발행이 동작하지 않는다는 제약(#332 4단계 egress)도 함께 푼다
+  - 게이트웨이와 Docker 데몬이 **동일 호스트**라는 전제는 그대로다 — 오히려 더 강하게 의존하므로, 멀티호스트/원격 Docker 로 옮기면 프록시 타깃과 함께 반드시 재검토해야 한다
+  - 주소는 컨테이너를 다시 만들거나 재시작하면 바뀔 수 있어 그때 다시 읽는다(`rebindContainerIp`). 예전에 발행 포트가 재할당되던 것과 같은 성질이다(#71·#278)
 
 남은 항목: 게이트웨이 인가 강화(소유권·JWT 미검증 + `permitAll` — Issue #77, 무헤더 accessToken이 iframe 임베딩을 위한 의도된 설계라 FE 조율 후 착수), dependency/build/image cache.
 
