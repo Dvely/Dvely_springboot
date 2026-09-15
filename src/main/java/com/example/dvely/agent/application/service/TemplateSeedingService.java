@@ -74,15 +74,22 @@ public class TemplateSeedingService {
             throw new IllegalStateException("템플릿 소스 주소를 신뢰할 수 없습니다: " + templateId);
         }
 
+        // 내려받기는 curl 로 한다. busybox wget 은 프록시 CONNECT 터널링을 하지 않아, egress 를
+        // 허용목록으로 좁히면(#332 4단계) 요청을 보내지도 않고 소켓을 닫는다 — tinyproxy 로그에
+        // "Client closed socket before read" 로만 남아 원인을 찾기 어렵다. 모드에 따라 도구를
+        // 가르지 않고 양쪽 다 curl 을 쓴다. 조용히 갈라지는 경로를 만들지 않는 편이 낫다.
+        //
         // --no-same-owner 가 없으면 안 된다. 씨앗 tarball 은 CI 러너(uid 1001)가 묶어서 소유자가
         // 그대로 기록돼 있고, root 로 푸는 tar 는 그 기록대로 대상 디렉터리를 1001 로 chown 한다.
         // 컨테이너는 CapDrop=ALL 에 CHOWN 만 되살린 상태라 chown 은 성공하지만, 그 직후 root 가
         // 남의 디렉터리에 쓰려다 막힌다(CAP_DAC_OVERRIDE 가 없다). 첫 파일에서 Permission denied 로
         // 죽는다 — dev 에서 실제로 이렇게 실패했다.
+        dockerService.installPackages(containerId, "curl");
+
         DockerContainerService.ExecResult result = dockerService.execWithExitCode(
                 containerId,
                 "mkdir -p " + ContainerPaths.APP_DIR
-                        + " && wget -qO- '" + sourceUrl + "' | tar -xz --no-same-owner -C "
+                        + " && curl -fsSL '" + sourceUrl + "' | tar -xz --no-same-owner -C "
                         + ContainerPaths.APP_DIR);
 
         if (!result.succeeded()) {
