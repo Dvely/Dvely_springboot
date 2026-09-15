@@ -12,6 +12,7 @@ import com.github.dockerjava.api.exception.ConflictException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.exception.NotModifiedException;
 import com.github.dockerjava.api.model.Capability;
+import com.github.dockerjava.api.model.ContainerNetwork;
 import com.github.dockerjava.api.model.CpuStatsConfig;
 import com.github.dockerjava.api.model.CpuUsageConfig;
 import com.github.dockerjava.api.model.ExposedPort;
@@ -56,7 +57,12 @@ import java.util.concurrent.TimeUnit;
 public class DockerContainerService {
 
     private static final String IMAGE          = "node:20-alpine";
-    private static final int    CONTAINER_PORT = 3000;
+    /**
+     * 컨테이너 안에서 프리뷰가 서빙하는 포트. 호스트 포트를 발행하지 않게 된 뒤(#358) 게이트웨이와
+     * 레디니스 프로브가 컨테이너 IP 와 함께 이 값을 쓰므로 공개한다 — 각자 3000 을 적어 두면
+     * 한쪽만 바뀌었을 때 502 로만 드러난다.
+     */
+    public static final int CONTAINER_PORT = 3000;
     private static final long   EXEC_TIMEOUT_MIN = 10L;
     // Host-side bind address for the preview container's published port (Issue #76, BI-081/G1).
     // Kept as a plain constant rather than a configuration property, matching the
@@ -169,30 +175,14 @@ public class DockerContainerService {
         pullImageIfNeeded();
         ensurePreviewNetwork();
 
-        ExposedPort exposedPort = ExposedPort.tcp(CONTAINER_PORT);
-        Ports portBindings = new Ports();
-        // Bind to loopback only, with a dynamic (0 = daemon-assigned) host port (Issue #76,
-        // BI-081/G1 — see audit .agent-team/01-reverse/preview-exposure-audit.md §2.1 F1-F4).
-        // `Ports.Binding.bindPort(int)` leaves HostIp unset, which Docker resolves to 0.0.0.0 —
-        // i.e. every network interface, reachable from outside the host. The container behind
-        // this port runs an unauthenticated static file server (`npx serve`, no session/token
-        // check of its own), so an unset HostIp was a full bypass of the gateway's accessToken
-        // check (PreviewGatewayService) and Spring Security entirely. `PreviewGatewayService`
-        // already only ever proxies to `127.0.0.1:hostPort`, so it never needed the port reachable
-        // from any other interface — this binding just stops promising more than that.
-        // PRD §14.2's "internal-network-only access" principle is what this enforces at the
-        // Docker layer instead of leaving it to host-firewall configuration (which the repo has
-        // no way to guarantee, per the audit's G5).
-        // NOTE for future readers: this hard-codes "the gateway and the Docker daemon are on the
-        // same host". If preview containers ever move to a remote/multi-host Docker daemon, this
-        // loopback bind must be revisited together with the gateway's proxy target — otherwise
-        // the gateway simply can't reach the container at all.
-        // 빌드 컨테이너는 아무것도 서빙하지 않는다 — 저장소를 받아 산출물만 꺼내고 버린다.
-        // 게시해 봐야 연결하는 쪽이 없고(getMappedPort 는 프리뷰 경로만 부른다), 루프백이라도
-        // 열려 있는 면은 없는 편이 낫다.
-        if (role.publishesPort()) {
-            portBindings.bind(exposedPort, Ports.Binding.bindIpAndPort(HOST_BIND_IP, 0));
-        }
+        // 호스트 포트를 발행하지 않는다. 게이트웨이는 컨테이너 IP 로 직접 붙고(PreviewGatewayService),
+        // 컨테이너 IP 는 호스트에서만 라우팅된다 — 브리지 대역(172.x)은 호스트 밖에서 도달 경로가
+        // 없다. 발행을 없애면 루프백이라도 열려 있던 면이 사라지고, internal 네트워크로 옮길 때
+        // (#332 4단계) 발행이 아예 동작하지 않는 제약에도 걸리지 않는다.
+        //
+        // 이전 구조(127.0.0.1 에 랜덤 포트 발행)에서 남은 교훈은 유지된다: 게이트웨이와 Docker
+        // 데몬이 같은 호스트라는 전제다. 오히려 더 강하게 의존하므로, 프리뷰가 원격/다중 호스트
+        // 데몬으로 옮겨가면 게이트웨이의 프록시 타깃과 함께 반드시 재검토해야 한다.
 
         Map<String, String> labels = new HashMap<>();
         labels.put(AGENT_LABEL, "true");
@@ -210,9 +200,7 @@ public class DockerContainerService {
         // disabled. Rootfs stays read-write (the agent writes project files into the container)
         // and no restart policy is set (a dead container surfaces via the status API instead).
         CreateContainerResponse container = dockerClient.createContainerCmd(IMAGE)
-                .withExposedPorts(role.publishesPort() ? List.of(exposedPort) : List.<ExposedPort>of())
                 .withHostConfig(HostConfig.newHostConfig()
-                        .withPortBindings(portBindings)
                         .withMemory(memoryBytes)
                         .withMemorySwap(memoryBytes)
                         .withNanoCPUs(NANO_CPUS)
@@ -569,23 +557,30 @@ public class DockerContainerService {
      * getter's (verified against a real container in
      * DockerContainerServicePortBindingIntegrationTest).
      */
-    public int getMappedPort(String containerId) {
+    /**
+     * 게이트웨이가 프록시할 컨테이너 주소.
+     *
+     * <p>호스트 포트를 발행하지 않으므로 이 값이 유일한 도달 경로다. 브리지 대역이라 호스트에서만
+     * 라우팅되고, 컨테이너 사이는 {@code enable_icc=false} 가 막는다.</p>
+     *
+     * <p>컨테이너를 다시 만들거나 재시작하면 바뀔 수 있다 — 발행 포트가 재할당되던 것과 같은
+     * 성질이라, 그때 다시 읽어 세션에 반영해야 한다({@code PreviewSessionEntity#rebindContainerIp}).</p>
+     */
+    public String getContainerIp(String containerId) {
         InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
-        Ports.Binding[] bindings = inspect.getNetworkSettings() == null
-                || inspect.getNetworkSettings().getPorts() == null
-                || inspect.getNetworkSettings().getPorts().getBindings() == null
+        String ip = inspect.getNetworkSettings() == null || inspect.getNetworkSettings().getNetworks() == null
                 ? null
-                : inspect.getNetworkSettings().getPorts()
-                .getBindings()
-                .get(ExposedPort.tcp(CONTAINER_PORT));
-        if (bindings == null
-                || bindings.length == 0
-                || bindings[0] == null
-                || bindings[0].getHostPortSpec() == null
-                || bindings[0].getHostPortSpec().isBlank()) {
-            throw new IllegalStateException("컨테이너 포트 바인딩이 없습니다. containerId=" + containerId);
+                : inspect.getNetworkSettings().getNetworks().values().stream()
+                        .map(ContainerNetwork::getIpAddress)
+                        .filter(value -> value != null && !value.isBlank())
+                        .findFirst()
+                        .orElse(null);
+        if (ip == null) {
+            // 여기서 조용히 넘어가면 게이트웨이가 빈 주소로 프록시해 502 만 남는다 —
+            // "깨진 이미지" 로만 보이고 원인이 어디에도 안 남는 형태다.
+            throw new IllegalStateException("컨테이너 IP 를 확인할 수 없습니다. containerId=" + containerId);
         }
-        return Integer.parseInt(bindings[0].getHostPortSpec());
+        return ip;
     }
 
     /**

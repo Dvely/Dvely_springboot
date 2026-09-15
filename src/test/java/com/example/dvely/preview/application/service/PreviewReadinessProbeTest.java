@@ -22,7 +22,7 @@ class PreviewReadinessProbeTest {
         });
         server.start();
         try {
-            assertThat(new PreviewReadinessProbe(5, 20).awaitReachable(server.getAddress().getPort())).isTrue();
+            assertThat(new PreviewReadinessProbe(5, 20).awaitReachable("127.0.0.1:" + server.getAddress().getPort())).isTrue();
         } finally {
             server.stop(0);
         }
@@ -35,6 +35,6 @@ class PreviewReadinessProbeTest {
             closedPort = s.getLocalPort();
         }   // 닫힘 — 아무도 리슨하지 않는다
         // 작은 예산(3회×10ms)으로 빠르게 도달 불가 확인. best-effort 이므로 false 를 돌려주고 호출자가 진행한다.
-        assertThat(new PreviewReadinessProbe(3, 10).awaitReachable(closedPort)).isFalse();
+        assertThat(new PreviewReadinessProbe(3, 10).awaitReachable("127.0.0.1:" + closedPort)).isFalse();
     }
 }

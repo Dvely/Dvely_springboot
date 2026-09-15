@@ -128,13 +128,13 @@ public class ProjectPreviewService {
         // conversationId/taskId 가 없는 것이 이 세션의 정의다 — 대화나 작업이 아니라 프로젝트에
         // 매달린 세션이다.
         String containerId;
-        int hostPort;
+        String containerIp;
         try {
             long memoryBytes = runtimeConfigService.previewContainerMemoryBytes(projectId);
             containerId = dockerService.createAndStartContainer(
                 ContainerRole.PREVIEW,
                     ownerUserId, sessionId, projectId, null, null, memoryBytes);
-            hostPort = dockerService.getMappedPort(containerId);
+            containerIp = dockerService.getContainerIp(containerId);
         } catch (RuntimeException exception) {
             // Docker 가 없거나 앱 계정이 소켓에 접근하지 못하는 서버에서는 이 첫 호출이 처음으로
             // 실패한다(그 전까지는 연결을 만들지 않으므로 기동 로그는 깨끗하다). 그대로 흘리면
@@ -152,7 +152,7 @@ public class ProjectPreviewService {
                 null,
                 null,
                 containerId,
-                hostPort,
+                containerIp,
                 gatewayUrlResolver.publicUrl(sessionId, accessToken),
                 nextExpiry(),
                 PreviewSessionStatus.PROVISIONING

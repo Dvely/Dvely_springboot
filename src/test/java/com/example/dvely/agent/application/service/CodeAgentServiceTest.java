@@ -430,7 +430,7 @@ class CodeAgentServiceTest {
 
     private PreviewSessionInfo previewSession() {
         return new PreviewSessionInfo(
-                "session-1", 1L, null, 21L, TASK_ID, CONTAINER_ID, 30001,
+                "session-1", 1L, null, 21L, TASK_ID, CONTAINER_ID, "172.18.0.2",
                 "http://localhost:8080/api/v1/previews/session-1/token/", LocalDateTime.now().plusMinutes(30)
         );
     }

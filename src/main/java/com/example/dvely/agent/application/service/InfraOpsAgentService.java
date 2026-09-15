@@ -337,19 +337,17 @@ public class InfraOpsAgentService {
                 log.info("[InfraOpsAgent] preview 컨테이너 재시작 완료 | containerId={} projectId={}", containerId, projectId);
                 // Issue #71 (High, QA v2 §5): Docker reassigns a fresh ephemeral host port on every
                 // container start — including the stop+start restartContainer() just did — when the
-                // port was bound dynamically (Ports.Binding.bindPort(0), see
-                // DockerContainerService#createAndStartContainer). The preview session row's
-                // hostPort was captured at creation time and is now stale; PreviewGatewayService
-                // resolves its proxy target from that column on every request, so leaving it
-                // unrefreshed here is exactly what turned a "재시작했습니다 / 정상 실행 중" response into a
-                // 502 on the next gateway hit. Deliberately left uncaught (unlike the status re-check
-                // below): if we can't learn or persist the real port, this restart is not actually
-                // usable, and reporting "정상 실행 중" against a container whose reachable port we don't
-                // know would repeat the exact bug this fixes — task FAILED is the honest outcome.
-                int newHostPort = dockerService.getMappedPort(containerId);
-                refreshed = previewSessionService.updateHostPort(sessionId, newHostPort);
-                log.info("[InfraOpsAgent] preview 포트 재바인딩 완료 | containerId={} projectId={} newHostPort={}",
-                        containerId, projectId, newHostPort);
+                // 재시작은 내부적으로 stop+start 라 Docker 가 새 IP 를 줄 수 있다(#358 이전에는 같은
+                // 문제가 :0 발행 포트 재할당으로 나타났다). 세션 행의 주소는 생성 시점 값이라 지금
+                // 낡았고, PreviewGatewayService 는 매 요청에 그 컬럼으로 프록시 타깃을 정한다 —
+                // 여기서 갱신하지 않는 것이 "재시작했습니다 / 정상 실행 중" 응답을 다음 요청의 502 로
+                // 바꾸던 지점이다. 아래 상태 재확인과 달리 일부러 잡지 않는다: 도달 주소를 모르거나
+                // 저장하지 못하면 이 재시작은 실제로 쓸 수 없고, 그 상태로 "정상 실행 중" 이라고
+                // 보고하는 것이 지금 고치는 바로 그 버그다 — task FAILED 가 정직한 결과다.
+                String newContainerIp = dockerService.getContainerIp(containerId);
+                refreshed = previewSessionService.updateContainerIp(sessionId, newContainerIp);
+                log.info("[InfraOpsAgent] preview 주소 재바인딩 완료 | containerId={} projectId={} newContainerIp={}",
+                        containerId, projectId, newContainerIp);
             } catch (RuntimeException exception) {
                 // H12 (design §4): the one hook in this unit that also records failure — Docker
                 // restart is inherently a two-phase operation (container restarted + port rebound),

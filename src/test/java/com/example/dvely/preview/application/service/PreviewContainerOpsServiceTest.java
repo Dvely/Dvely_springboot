@@ -193,7 +193,7 @@ class PreviewContainerOpsServiceTest {
                 21L,
                 "task-1",
                 "container-1",
-                32768,
+                "172.18.0.2",
                 "https://preview.qeploy.test/session-1/",
                 LocalDateTime.now().plusMinutes(30)
         );

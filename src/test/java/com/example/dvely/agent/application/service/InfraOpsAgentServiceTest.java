@@ -3,6 +3,7 @@ package com.example.dvely.agent.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -326,10 +327,10 @@ class InfraOpsAgentServiceTest {
     void restartsActivePreviewSessionAndReportsUrl() {
         stubOwnedProject();
         PreviewSessionInfo session = previewSession();
-        PreviewSessionInfo refreshed = previewSessionWithPort(40001);
+        PreviewSessionInfo refreshed = previewSessionWithIp("172.18.0.9");
         when(previewSessionService.findActiveByProject(PROJECT_ID, USER_ID)).thenReturn(Optional.of(session));
-        when(dockerService.getMappedPort("container-1")).thenReturn(40001);
-        when(previewSessionService.updateHostPort("session-1", 40001)).thenReturn(refreshed);
+        when(dockerService.getContainerIp("container-1")).thenReturn("172.18.0.9");
+        when(previewSessionService.updateContainerIp("session-1", "172.18.0.9")).thenReturn(refreshed);
         when(dockerService.getContainerStatus("container-1"))
                 .thenReturn(new ContainerRuntimeStatus(true, false, null, LocalDateTime.now()));
         when(policyRepository.findByProjectId(PROJECT_ID))
@@ -361,10 +362,10 @@ class InfraOpsAgentServiceTest {
     void restartRebindsPreviewSessionToNewlyAssignedHostPortAfterRestart() {
         stubOwnedProject();
         PreviewSessionInfo session = previewSession(); // pre-restart hostPort=3000 (stale)
-        PreviewSessionInfo refreshed = previewSessionWithPort(40001);
+        PreviewSessionInfo refreshed = previewSessionWithIp("172.18.0.9");
         when(previewSessionService.findActiveByProject(PROJECT_ID, USER_ID)).thenReturn(Optional.of(session));
-        when(dockerService.getMappedPort("container-1")).thenReturn(40001);
-        when(previewSessionService.updateHostPort("session-1", 40001)).thenReturn(refreshed);
+        when(dockerService.getContainerIp("container-1")).thenReturn("172.18.0.9");
+        when(previewSessionService.updateContainerIp("session-1", "172.18.0.9")).thenReturn(refreshed);
         when(dockerService.getContainerStatus("container-1"))
                 .thenReturn(new ContainerRuntimeStatus(true, false, null, LocalDateTime.now()));
         when(policyRepository.findByProjectId(PROJECT_ID))
@@ -375,11 +376,11 @@ class InfraOpsAgentServiceTest {
 
         InOrder order = inOrder(dockerService, previewSessionService);
         order.verify(dockerService).restartContainer("container-1");
-        order.verify(dockerService).getMappedPort("container-1");
-        order.verify(previewSessionService).updateHostPort("session-1", 40001);
-        ArgumentCaptor<Integer> portCaptor = ArgumentCaptor.forClass(Integer.class);
-        verify(previewSessionService).updateHostPort(eq("session-1"), portCaptor.capture());
-        assertThat(portCaptor.getValue()).isEqualTo(40001).isNotEqualTo(session.hostPort());
+        order.verify(dockerService).getContainerIp("container-1");
+        order.verify(previewSessionService).updateContainerIp("session-1", "172.18.0.9");
+        ArgumentCaptor<String> ipCaptor = ArgumentCaptor.forClass(String.class);
+        verify(previewSessionService).updateContainerIp(eq("session-1"), ipCaptor.capture());
+        assertThat(ipCaptor.getValue()).isEqualTo("172.18.0.9").isNotEqualTo(session.containerIp());
     }
 
     // A port-rebind failure right after a successful restartContainer() means the restart is not
@@ -392,7 +393,7 @@ class InfraOpsAgentServiceTest {
         stubOwnedProject();
         PreviewSessionInfo session = previewSession();
         when(previewSessionService.findActiveByProject(PROJECT_ID, USER_ID)).thenReturn(Optional.of(session));
-        when(dockerService.getMappedPort("container-1"))
+        when(dockerService.getContainerIp("container-1"))
                 .thenThrow(new IllegalStateException("컨테이너 포트 바인딩이 없습니다. containerId=container-1"));
         when(policyRepository.findByProjectId(PROJECT_ID))
                 .thenReturn(Optional.of(new ProjectApprovalPolicy(PROJECT_ID, true, true, true, true)));
@@ -403,7 +404,7 @@ class InfraOpsAgentServiceTest {
                 .hasMessageContaining("포트 바인딩");
 
         verify(dockerService).restartContainer("container-1");
-        verify(previewSessionService, never()).updateHostPort(any(), anyInt());
+        verify(previewSessionService, never()).updateContainerIp(any(), anyString());
         verify(dockerService, never()).getContainerStatus(any());
         // H12 (design §4): the one hook that also records failure — a partial restart (container
         // restarted, port rebind failed) is exactly the issue #71 shape.
@@ -422,10 +423,10 @@ class InfraOpsAgentServiceTest {
         // hiccup on that re-check alone must not turn a completed restart into a task FAILED.
         stubOwnedProject();
         PreviewSessionInfo session = previewSession();
-        PreviewSessionInfo refreshed = previewSessionWithPort(40001);
+        PreviewSessionInfo refreshed = previewSessionWithIp("172.18.0.9");
         when(previewSessionService.findActiveByProject(PROJECT_ID, USER_ID)).thenReturn(Optional.of(session));
-        when(dockerService.getMappedPort("container-1")).thenReturn(40001);
-        when(previewSessionService.updateHostPort("session-1", 40001)).thenReturn(refreshed);
+        when(dockerService.getContainerIp("container-1")).thenReturn("172.18.0.9");
+        when(previewSessionService.updateContainerIp("session-1", "172.18.0.9")).thenReturn(refreshed);
         when(dockerService.getContainerStatus("container-1"))
                 .thenThrow(new RuntimeException("Docker 데몬 일시 응답 없음"));
         when(policyRepository.findByProjectId(PROJECT_ID))
@@ -466,10 +467,10 @@ class InfraOpsAgentServiceTest {
     void restartWarnsWhenApprovalPolicyIsOff() {
         stubOwnedProject();
         PreviewSessionInfo session = previewSession();
-        PreviewSessionInfo refreshed = previewSessionWithPort(40001);
+        PreviewSessionInfo refreshed = previewSessionWithIp("172.18.0.9");
         when(previewSessionService.findActiveByProject(PROJECT_ID, USER_ID)).thenReturn(Optional.of(session));
-        when(dockerService.getMappedPort("container-1")).thenReturn(40001);
-        when(previewSessionService.updateHostPort("session-1", 40001)).thenReturn(refreshed);
+        when(dockerService.getContainerIp("container-1")).thenReturn("172.18.0.9");
+        when(previewSessionService.updateContainerIp("session-1", "172.18.0.9")).thenReturn(refreshed);
         when(dockerService.getContainerStatus("container-1"))
                 .thenReturn(new ContainerRuntimeStatus(true, false, null, LocalDateTime.now()));
         // Policy explicitly OFF for INFRA_OPERATION — AgentOrchestrator would have skipped
@@ -540,19 +541,19 @@ class InfraOpsAgentServiceTest {
     private PreviewSessionInfo previewSession() {
         return new PreviewSessionInfo(
                 "session-1", USER_ID, PROJECT_ID, 21L, TASK_ID,
-                "container-1", 3000, "https://preview.qeploy.com/session-1/",
+                "container-1", "172.18.0.8", "https://preview.qeploy.com/session-1/",
                 LocalDateTime.now().plusMinutes(30)
         );
     }
 
     // Same session identity/publicUrl as previewSession() but with the hostPort a post-restart
-    // getMappedPort()+updateHostPort() round trip would produce — publicUrl is unchanged (it
+    // getContainerIp()+updateContainerIp() round trip would produce — publicUrl is unchanged (it
     // never encodes the port; see PreviewSessionService#acquire) precisely because only hostPort
     // is meant to change across a restart.
-    private PreviewSessionInfo previewSessionWithPort(int hostPort) {
+    private PreviewSessionInfo previewSessionWithIp(String containerIp) {
         return new PreviewSessionInfo(
                 "session-1", USER_ID, PROJECT_ID, 21L, TASK_ID,
-                "container-1", hostPort, "https://preview.qeploy.com/session-1/",
+                "container-1", containerIp, "https://preview.qeploy.com/session-1/",
                 LocalDateTime.now().plusMinutes(30)
         );
     }

@@ -86,7 +86,7 @@ class DeployAgentServiceTest {
                         21L,
                         "task123",
                         "container-1",
-                        3000,
+                        "172.18.0.2",
                         "https://preview.qeploy.com/session-1/",
                         LocalDateTime.now().plusMinutes(30)
                 )));
@@ -166,7 +166,7 @@ class DeployAgentServiceTest {
         );
         when(previewSessionService.findByTaskId("task123"))
                 .thenReturn(Optional.of(new PreviewSessionInfo(
-                        "session-1", 1L, null, 21L, "task123", "container-1", 3000,
+                        "session-1", 1L, null, 21L, "task123", "container-1", "172.18.0.2",
                         "https://preview.qeploy.com/session-1/", LocalDateTime.now().plusMinutes(30)
                 )));
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));

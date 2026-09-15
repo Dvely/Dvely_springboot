@@ -54,7 +54,7 @@ class PreviewSessionServiceTest {
                 .thenReturn(Optional.empty());
         when(dockerService.createAndStartContainer(eq(ContainerRole.PREVIEW), eq(1L), any(String.class), eq(11L), eq(21L), eq("task-1"), anyLong()))
                 .thenReturn("container-1");
-        when(dockerService.getMappedPort("container-1")).thenReturn(32768);
+        when(dockerService.getContainerIp("container-1")).thenReturn("172.18.0.2");
         when(repository.save(any(PreviewSessionEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -120,7 +120,7 @@ class PreviewSessionServiceTest {
 
     private PreviewSessionEntity provisioningSession() {
         return new PreviewSessionEntity(
-                "session-1", "token-1", 1L, 11L, 21L, "task-1", "container-1", 32768,
+                "session-1", "token-1", 1L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
                 "https://preview.qeploy.test/api/v1/previews/session-1/token-1/",
                 java.time.LocalDateTime.now().plusMinutes(30),
                 PreviewSessionStatus.PROVISIONING
@@ -152,7 +152,7 @@ class PreviewSessionServiceTest {
                 eq(21L),
                 eq("task-1")
         )).thenReturn("container-1");
-        when(dockerService.getMappedPort("container-1")).thenReturn(32768);
+        when(dockerService.getContainerIp("container-1")).thenReturn("172.18.0.2");
         when(repository.save(any(PreviewSessionEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -185,7 +185,7 @@ class PreviewSessionServiceTest {
                 21L,
                 "task-1",
                 "container-1",
-                32768,
+                "172.18.0.2",
                 "https://preview.qeploy.test/session-1/",
                 LocalDateTime.now().minusMinutes(1)
         );
@@ -214,7 +214,7 @@ class PreviewSessionServiceTest {
                 properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity active = new PreviewSessionEntity(
-                "session-1", "token", 1L, 11L, 21L, "task-1", "container-1", 32768,
+                "session-1", "token", 1L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
                 "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30)
         );   // 10-arg 생성자 → status 기본 ACTIVE
         when(repository.findById("session-1")).thenReturn(Optional.of(active));
@@ -237,7 +237,7 @@ class PreviewSessionServiceTest {
                 properties(), gatewayUrlResolver(), accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity alreadyClosed = new PreviewSessionEntity(
-                "session-1", "token", 1L, 11L, 21L, "task-1", "container-1", 32768,
+                "session-1", "token", 1L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
                 "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30),
                 PreviewSessionStatus.EXPIRED
         );
@@ -276,7 +276,7 @@ class PreviewSessionServiceTest {
                 null,
                 null,
                 "container-2",
-                32769,
+                "172.18.0.3",
                 "https://preview.qeploy.test/session-2/",
                 LocalDateTime.now().minusMinutes(1),
                 PreviewSessionStatus.PROVISIONING
@@ -298,7 +298,7 @@ class PreviewSessionServiceTest {
     // pre-restart one — that's the actual fix; this pins the persistence half of it in isolation
     // from InfraOpsAgentService's own (mocked) regression test.
     @Test
-    void updateHostPortPersistsNewPortAndReturnsRefreshedInfo() {
+    void updateContainerIpPersistsNewAddressAndReturnsRefreshedInfo() {
         SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
         PreviewSessionService service = new PreviewSessionService(
                 repository,
@@ -310,18 +310,18 @@ class PreviewSessionServiceTest {
         );
         PreviewSessionEntity session = new PreviewSessionEntity(
                 "session-1", "token", 1L, 11L, 21L, "task-1",
-                "container-1", 32768, "https://preview.qeploy.test/session-1/",
+                "container-1", "172.18.0.2", "https://preview.qeploy.test/session-1/",
                 LocalDateTime.now().plusMinutes(30)
         );
         when(repository.findById("session-1")).thenReturn(Optional.of(session));
         when(repository.save(session)).thenReturn(session);
 
-        PreviewSessionInfo result = service.updateHostPort("session-1", 40001);
+        PreviewSessionInfo result = service.updateContainerIp("session-1", "172.18.0.9");
 
         // The row mutates in place (rebindPort), and the returned info reflects the new port —
         // publicUrl is untouched (it never encoded the old port to begin with).
-        assertThat(session.getHostPort()).isEqualTo(40001);
-        assertThat(result.hostPort()).isEqualTo(40001);
+        assertThat(session.getContainerIp()).isEqualTo("172.18.0.9");
+        assertThat(result.containerIp()).isEqualTo("172.18.0.9");
         assertThat(result.publicUrl()).isEqualTo("https://preview.qeploy.test/session-1/");
         verify(repository).save(session);
     }
@@ -339,7 +339,7 @@ class PreviewSessionServiceTest {
         );
         when(repository.findById("missing")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.updateHostPort("missing", 40001))
+        assertThatThrownBy(() -> service.updateContainerIp("missing", "172.18.0.9"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("missing");
     }
@@ -357,7 +357,7 @@ class PreviewSessionServiceTest {
         );
         PreviewSessionEntity active = new PreviewSessionEntity(
                 "session-1", "token", 1L, 11L, 21L, "task-1",
-                "container-1", 32768, "https://preview.qeploy.test/session-1/",
+                "container-1", "172.18.0.2", "https://preview.qeploy.test/session-1/",
                 LocalDateTime.now().plusMinutes(30)
         );
         when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusOrderByLastAccessedAtDesc(
@@ -522,7 +522,7 @@ class PreviewSessionServiceTest {
 
     private PreviewSessionEntity activeSessionExpiringIn(Duration remaining) {
         return new PreviewSessionEntity(
-                "session-1", "token-1", 1L, 11L, 21L, "task-1", "container-1", 32768,
+                "session-1", "token-1", 1L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
                 "https://preview.qeploy.test/api/v1/previews/session-1/token-1/",
                 LocalDateTime.now().plus(remaining),
                 PreviewSessionStatus.ACTIVE
@@ -567,7 +567,7 @@ class PreviewSessionServiceTest {
                 accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity session = new PreviewSessionEntity(
-                "session-1", "old-token", 7L, 11L, null, null, "container-1", 32768,
+                "session-1", "old-token", 7L, 11L, null, null, "container-1", "172.18.0.2",
                 "https://preview.qeploy.test/api/v1/previews/session-1/old-token/",
                 LocalDateTime.now().plusMinutes(30));
         when(repository.findByIdAndOwnerUserId("session-1", 7L)).thenReturn(Optional.of(session));
@@ -618,7 +618,7 @@ class PreviewSessionServiceTest {
                 accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity session = new PreviewSessionEntity(
-                "session-1", "token", 7L, 11L, 21L, "task-1", "container-1", 32768,
+                "session-1", "token", 7L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
                 "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30));
         when(repository.findByIdAndOwnerUserId("session-1", 7L)).thenReturn(Optional.of(session));
         org.mockito.Mockito.doThrow(new IllegalStateException("docker daemon 무응답"))
@@ -648,10 +648,10 @@ class PreviewSessionServiceTest {
                 accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity broken = new PreviewSessionEntity(
-                "session-broken", "token", 1L, 11L, 21L, "task-1", "container-broken", 32768,
+                "session-broken", "token", 1L, 11L, 21L, "task-1", "container-broken", "172.18.0.2",
                 "https://preview.qeploy.test/session-broken/", LocalDateTime.now().minusMinutes(1));
         PreviewSessionEntity healthy = new PreviewSessionEntity(
-                "session-healthy", "token", 1L, 12L, 22L, "task-2", "container-healthy", 32769,
+                "session-healthy", "token", 1L, 12L, 22L, "task-2", "container-healthy", "172.18.0.3",
                 "https://preview.qeploy.test/session-healthy/", LocalDateTime.now().minusMinutes(1));
         when(repository.findByStatusInAndExpiresAtBefore(any(), any(LocalDateTime.class)))
                 .thenReturn(List.of(broken, healthy));
@@ -682,12 +682,12 @@ class PreviewSessionServiceTest {
                 accessCookies(), mock(PreviewRuntimeConfigService.class)
         );
         PreviewSessionEntity provisioning = new PreviewSessionEntity(
-                "session-1", "token", 1L, 11L, 21L, "task-1", "container-1", 32768,
+                "session-1", "token", 1L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
                 "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30),
                 PreviewSessionStatus.PROVISIONING);
         when(repository.findByTaskIdAndStatus("task-1", PreviewSessionStatus.PROVISIONING.name()))
                 .thenReturn(Optional.of(provisioning));
-        when(dockerService.getMappedPort("container-1"))
+        when(dockerService.getContainerIp("container-1"))
                 .thenThrow(new IllegalStateException("포트 조회 실패"));
 
         assertThatThrownBy(() -> service.markServing("task-1"))

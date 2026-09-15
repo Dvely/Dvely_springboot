@@ -46,8 +46,22 @@ public class PreviewSessionEntity {
     @Column(name = "container_id", nullable = false, length = 128)
     private String containerId;
 
-    @Column(name = "host_port", nullable = false)
-    private int hostPort;
+    /**
+     * 게이트웨이가 프록시할 컨테이너 주소 (#358).
+     *
+     * <p>배포 이전에 만들어진 행은 비어 있다 — 그때는 호스트 포트로 프록시했다. 게이트웨이가 첫
+     * 요청에서 컨테이너를 조회해 채운다(지연 해석). 세션은 수명이 짧아 곧 사라지지만, 배포 순간에
+     * 열려 있던 프리뷰를 끊지 않기 위한 것이다.</p>
+     */
+    @Column(name = "container_ip", length = 45)
+    private String containerIp;
+
+    /**
+     * 더는 쓰지 않는다. #358 에서 호스트 포트 발행을 없앴다 — 새 세션은 넣을 값이 없어 NULL 이다.
+     * 컬럼을 드롭하지 않은 것은 롤링 배포 중 이 값을 읽던 인스턴스가 함께 돌 수 있어서다.
+     */
+    @Column(name = "host_port")
+    private Integer hostPort;
 
     @Column(name = "status", nullable = false, length = 20)
     private String status;
@@ -79,11 +93,11 @@ public class PreviewSessionEntity {
                                 Long conversationId,
                                 String taskId,
                                 String containerId,
-                                int hostPort,
+                                String containerIp,
                                 String publicUrl,
                                 LocalDateTime expiresAt) {
         this(id, accessToken, ownerUserId, projectId, conversationId, taskId, containerId,
-                hostPort, publicUrl, expiresAt, PreviewSessionStatus.ACTIVE);
+                containerIp, publicUrl, expiresAt, PreviewSessionStatus.ACTIVE);
     }
 
     /**
@@ -98,7 +112,7 @@ public class PreviewSessionEntity {
                                 Long conversationId,
                                 String taskId,
                                 String containerId,
-                                int hostPort,
+                                String containerIp,
                                 String publicUrl,
                                 LocalDateTime expiresAt,
                                 PreviewSessionStatus status) {
@@ -109,7 +123,7 @@ public class PreviewSessionEntity {
         this.conversationId = conversationId;
         this.taskId = taskId;
         this.containerId = containerId;
-        this.hostPort = hostPort;
+        this.containerIp = containerIp;
         this.status = status.name();
         this.publicUrl = publicUrl;
         this.expiresAt = expiresAt;
@@ -122,19 +136,18 @@ public class PreviewSessionEntity {
     }
 
     /**
-     * Rebinds the tracked host port after a container restart (issue #71 — CloudOps RESTART).
-     * Docker reassigns a fresh ephemeral host port on every container start when the original
-     * binding was requested as `Ports.Binding.bindPort(0)` (see
-     * {@code DockerContainerService#createAndStartContainer}), and {@code restartContainer} is a
-     * stop+start under the hood — so the port captured at session-creation time goes stale the
-     * moment a restart completes. {@code publicUrl} itself is untouched by this: it only encodes
-     * {@code id}/{@code accessToken} (see the constructor below), never the port. It's this
-     * {@code hostPort} column that {@code PreviewGatewayService} reads on every proxied request,
-     * so leaving it stale here is exactly what turns a "restart succeeded" response into a 502 on
-     * the next gateway hit.
+     * 컨테이너를 다시 만들거나 재시작한 뒤 프록시 타깃을 갱신한다 (issue #71 — CloudOps RESTART).
+     *
+     * <p>Docker 는 컨테이너를 다시 시작할 때마다 새 IP 를 줄 수 있고 {@code restartContainer} 는
+     * 내부적으로 stop+start 다. 세션 생성 시점에 잡아둔 주소는 재시작이 끝나는 순간 낡는다.
+     * {@code publicUrl} 은 {@code id}/{@code accessToken} 만 담으므로 영향이 없다 — 게이트웨이가
+     * 매 요청에 읽는 것은 이 {@code containerIp} 이고, 낡은 채 두는 것이 "재시작 성공" 응답을
+     * 다음 요청의 502 로 바꾸는 지점이다.</p>
+     *
+     * <p>#358 이전에는 같은 문제가 발행 포트 재할당으로 나타났다. 원인은 바뀌었지만 성질은 같다.</p>
      */
-    public void rebindPort(int hostPort) {
-        this.hostPort = hostPort;
+    public void rebindContainerIp(String containerIp) {
+        this.containerIp = containerIp;
     }
 
     /**
@@ -184,7 +197,7 @@ public class PreviewSessionEntity {
                 conversationId,
                 taskId,
                 containerId,
-                hostPort,
+                containerIp,
                 publicUrl,
                 expiresAt
         );

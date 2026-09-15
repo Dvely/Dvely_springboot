@@ -323,7 +323,7 @@ public class PreviewGatewayService {
                                                                   String path,
                                                                   String query,
                                                                   String lastEventId) {
-        String target = "http://127.0.0.1:" + session.hostPort() + "/" + sanitizePath(path);
+        String target = PreviewTarget.baseUrl(session.containerIp()) + sanitizePath(path);
         if (query != null && !query.isBlank()) {
             target += "?" + query;
         }
@@ -379,7 +379,7 @@ public class PreviewGatewayService {
     private boolean isInnerAppUnreachable(PreviewSessionInfo session) {
         try {
             httpClient.send(
-                    HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + session.hostPort() + "/"))
+                    HttpRequest.newBuilder(URI.create(PreviewTarget.baseUrl(session.containerIp())))
                             .timeout(Duration.ofSeconds(2)).GET().build(),
                     HttpResponse.BodyHandlers.ofByteArray());
             return false;   // 응답이 왔다 — 프로세스는 살아있다(일시적 실패였음)
@@ -394,7 +394,7 @@ public class PreviewGatewayService {
     private HttpResponse<InputStream> fetch(PreviewSessionInfo session, String path, String query,
                                             ProxiedRequest request)
             throws java.io.IOException, InterruptedException {
-        String target = "http://127.0.0.1:" + session.hostPort() + "/" + path;
+        String target = PreviewTarget.baseUrl(session.containerIp()) + path;
         if (query != null && !query.isBlank()) {
             target += "?" + query;
         }

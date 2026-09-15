@@ -60,7 +60,7 @@ class ChangeServiceTest {
                         21L,
                         "task-1",
                         "container-1",
-                        32768,
+                        "172.18.0.2",
                         "https://preview.qeploy.test/preview-1/",
                         LocalDateTime.now().plusMinutes(30)
                 )
@@ -185,7 +185,7 @@ class ChangeServiceTest {
         when(taskStore.get("task-1")).thenReturn(new AgentTask(
                 "task-1", 1L, 11L, 21L, TaskStatus.RUNNING, null, null, null, null, Instant.now()));
         when(previewSessionService.findByTaskId("task-1")).thenReturn(Optional.of(
-                new PreviewSessionInfo("preview-1", 1L, 11L, 21L, "task-1", "container-1", 32768,
+                new PreviewSessionInfo("preview-1", 1L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
                         "https://preview.qeploy.test/preview-1/", LocalDateTime.now().plusMinutes(30))));
         when(repository.findByTaskId("task-1")).thenReturn(Optional.empty());
         return new Fixture(service, repository, docker);

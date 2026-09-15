@@ -87,7 +87,7 @@ class PreviewGatewaySseRoutingTest {
 
     private PreviewSessionInfo session() {
         return new PreviewSessionInfo(
-                SID, 7L, 11L, null, null, "container-1", 32768,
+                SID, 7L, 11L, null, null, "container-1", "172.18.0.2",
                 "https://qeploy.com/api/v1/previews/" + SID + "/" + TOKEN + "/",
                 LocalDateTime.now().plusMinutes(30));
     }

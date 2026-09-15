@@ -108,7 +108,7 @@ class PreviewGatewayStreamingEnvelopeTest {
 
     private PreviewSessionInfo session() {
         return new PreviewSessionInfo(
-                SID, 7L, 11L, null, null, "container-1", container.getAddress().getPort(),
+                SID, 7L, 11L, null, null, "container-1", "127.0.0.1:" + container.getAddress().getPort(),
                 "https://qeploy.com/api/v1/previews/" + SID + "/" + TOKEN + "/",
                 LocalDateTime.now().plusMinutes(30));
     }

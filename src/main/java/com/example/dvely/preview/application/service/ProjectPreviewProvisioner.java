@@ -54,17 +54,18 @@ public class ProjectPreviewProvisioner {
             runtimeLauncher.launch(session.getProjectId(), containerId);
 
             // 런타임 준비(특히 서버형의 DB 자동 프로비저닝)가 컨테이너를 세션 네트워크에 연결하는데,
-            // 그 과정에서 :0(랜덤) 발행 포트가 재할당돼 생성 시점에 저장한 host_port 와 어긋난다. 게이트웨이는
-            // 이 host_port 로 프록시하므로, 어긋난 채 ACTIVE 로 올리면 빈 포트를 쳐 502 만 나온다(정적 프리뷰는
-            // DB·네트워크 연결이 없어 안 어긋났다). 서빙이 시작된 지금의 실제 포트로 다시 맞춘 뒤 ACTIVE 로 올린다.
-            session.rebindPort(dockerService.getMappedPort(containerId));
+            // 그 과정에서 컨테이너 주소가 생성 시점에 저장한 값과 어긋날 수 있다. 게이트웨이는 그 주소로
+            // 프록시하므로, 어긋난 채 ACTIVE 로 올리면 빈 곳을 쳐 502 만 나온다. 서빙이 시작된 지금의
+            // 실제 주소로 다시 맞춘 뒤 ACTIVE 로 올린다.
+            // (#358 이전에는 같은 문제가 :0 발행 포트 재할당으로 나타났다.)
+            session.rebindContainerIp(dockerService.getContainerIp(containerId));
 
             // ACTIVE 로 올리기 직전, 게이트웨이 경유 경로가 실제로 프록시되는지 확인한다. 컨테이너 내부는
-            // 준비돼도(serve_ready) 호스트→매핑 포트가 뜨기까지 짧은 공백이 있어, 그 사이 FE 가 붙인 첫
+            // 준비돼도(serve_ready) 호스트→컨테이너 경로가 뜨기까지 짧은 공백이 있어, 그 사이 FE 가 붙인 첫
             // iframe 로드가 503 을 맞고 크롬이 깨진 이미지로 그린다 — 사용자가 본 원래 증상. 도달 확인 뒤
             // 올리면 첫 로드부터 200 이다(best-effort: 예산 초과 시에도 기존처럼 활성화는 진행).
             if (readinessProbe != null) {
-                readinessProbe.awaitReachable(session.getHostPort());
+                readinessProbe.awaitReachable(session.getContainerIp());
             }
 
             // 만료는 여기서부터 다시 센다 — install/build 에 쓴 시간까지 TTL 에서 깎으면 오래 걸린
