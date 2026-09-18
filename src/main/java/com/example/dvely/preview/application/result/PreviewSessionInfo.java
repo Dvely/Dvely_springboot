@@ -9,7 +9,7 @@ public record PreviewSessionInfo(
         Long conversationId,
         String taskId,
         String containerId,
-        int hostPort,
+        String containerIp,
         String publicUrl,
         LocalDateTime expiresAt
 ) {

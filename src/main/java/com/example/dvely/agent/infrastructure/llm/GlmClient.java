@@ -3,7 +3,9 @@ package com.example.dvely.agent.infrastructure.llm;
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.port.out.LlmPort;
 import com.example.dvely.agent.domain.value.AiModelOptions;
+import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageRecorder;
 import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -28,10 +30,14 @@ public class GlmClient implements LlmPort {
     static final String PROVIDER_NAME = "GLM";
 
     private final AiProperties aiProperties;
+    private final LlmUsageRecorder llmUsageRecorder;
 
     @Override
     public String complete(String systemPrompt, List<LlmMessage> messages, AiModelOptions modelOptions) {
-        return OpenAiCompatibleChat.complete(endpoint(aiProperties), systemPrompt, messages, modelOptions);
+        OpenAiCompatibleChat.Completion completion =
+                OpenAiCompatibleChat.complete(endpoint(aiProperties), systemPrompt, messages, modelOptions);
+        llmUsageRecorder.record(AiProvider.GLM, completion.model(), completion.usage());
+        return completion.content();
     }
 
     /**

@@ -5,6 +5,8 @@ import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
 import com.example.dvely.agent.domain.value.AiModelOptions;
+import com.example.dvely.agent.domain.value.AiProvider;
+import com.example.dvely.agent.domain.value.LlmUsage;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
@@ -52,11 +54,23 @@ final class OpenAiCompatibleChat {
             AiProperties.Retry retry
     ) {}
 
+    /**
+     * 한 번의 완성 호출 결과.
+     *
+     * <p>본문만 돌려주던 예전 모양으로는 응답의 {@code usage} 가 파싱되자마자 버려졌다 — 그래서
+     * 토큰을 얼마나 쓰는지 아무도 몰랐다. 기록은 제공자 빈이 하고(어느 {@link AiProvider} 로
+     * 집계할지는 이 정적 클래스가 알 수 없다), 이 record 가 그 사이를 잇는다.</p>
+     *
+     * @param model 제공자가 실제로 답한 모델명. 요청이 슬러그를 생략했거나 게이트웨이가 다른
+     *              모델로 라우팅했을 수 있으므로 요청값이 아니라 응답값을 남긴다
+     */
+    record Completion(String content, String model, LlmUsage usage) {}
+
     /** One-shot completion: a system prompt and a transcript in, the assistant's text out. */
-    static String complete(Endpoint endpoint,
-                           String systemPrompt,
-                           List<LlmMessage> messages,
-                           AiModelOptions modelOptions) {
+    static Completion complete(Endpoint endpoint,
+                               String systemPrompt,
+                               List<LlmMessage> messages,
+                               AiModelOptions modelOptions) {
         LlmProviderErrors.requireApiKey(endpoint.providerName(), endpoint.config().getApiKey());
 
         List<Map<String, String>> apiMessages = new ArrayList<>();
@@ -65,16 +79,17 @@ final class OpenAiCompatibleChat {
 
         Map<String, Object> body = baseBody(endpoint, apiMessages, modelOptions);
 
-        String raw = LlmProviderErrors.translate(endpoint.providerName(), endpoint.retry(), () -> restClient(endpoint)
-                .post()
-                .uri(endpoint.url())
+        String raw = LlmProviderErrors.translate(endpoint.providerName(), endpoint.retry(), () -> post(endpoint)
                 .body(body)
                 .retrieve()
                 .body(String.class));
 
         String content = firstMessageContent(endpoint, raw);
         log.debug("{} 응답 수신: model={}", endpoint.providerName(), body.get("model"));
-        return content;
+        return new Completion(
+                content,
+                answeredModel(endpoint, raw, String.valueOf(body.get("model"))),
+                readUsage(endpoint, raw));
     }
 
     /** Tool-calling completion: the calls the model wants run, plus its raw assistant message. */
@@ -103,15 +118,13 @@ final class OpenAiCompatibleChat {
         Map<String, Object> body = baseBody(endpoint, apiMessages, modelOptions);
         body.put("tools", toolsPayload);
 
-        String raw = LlmProviderErrors.translate(endpoint.providerName(), endpoint.retry(), () -> restClient(endpoint)
-                .post()
-                .uri(endpoint.url())
+        String raw = LlmProviderErrors.translate(endpoint.providerName(), endpoint.retry(), () -> post(endpoint)
                 .body(body)
                 .retrieve()
                 .body(String.class));
 
         log.debug("{} Tool API 응답 수신", endpoint.providerName());
-        return parseToolResponse(endpoint, raw);
+        return parseToolResponse(endpoint, raw, readUsage(endpoint, raw));
     }
 
     private static Map<String, Object> baseBody(Endpoint endpoint,
@@ -141,13 +154,13 @@ final class OpenAiCompatibleChat {
         } catch (IllegalStateException e) {
             throw e;
         } catch (Exception e) {
-            log.error("{} 응답 파싱 실패: {}", endpoint.providerName(), raw, e);
+            log.error("{} 응답 파싱 실패: {}", endpoint.providerName(), LlmLogPreview.of(raw), e);
             throw new IllegalStateException(endpoint.providerName() + " API 응답 파싱 실패", e);
         }
     }
 
     @SuppressWarnings("unchecked")
-    private static LlmToolResponse parseToolResponse(Endpoint endpoint, String raw) {
+    private static LlmToolResponse parseToolResponse(Endpoint endpoint, String raw, LlmUsage usage) {
         try {
             Map<String, Object> response = OBJECT_MAPPER.readValue(raw, Map.class);
             List<Map<String, Object>> choices = (List<Map<String, Object>>) response.get("choices");
@@ -170,10 +183,10 @@ final class OpenAiCompatibleChat {
             }
 
             // contentBlocks = [assistantMessage] — 호출 측 루프에서 그대로 messages에 추가
-            return new LlmToolResponse(toolCalls, List.of(message), finishReason);
+            return new LlmToolResponse(toolCalls, List.of(message), finishReason, usage);
 
         } catch (Exception e) {
-            log.error("{} Tool 응답 파싱 실패: {}", endpoint.providerName(), raw, e);
+            log.error("{} Tool 응답 파싱 실패: {}", endpoint.providerName(), LlmLogPreview.of(raw), e);
             throw new RuntimeException(endpoint.providerName() + " Tool API 응답 파싱 실패", e);
         }
     }
@@ -200,12 +213,49 @@ final class OpenAiCompatibleChat {
         }
     }
 
-    private static RestClient restClient(Endpoint endpoint) {
-        RestClient.Builder builder = RestClient.builder()
-                .requestFactory(LlmHttp.timeoutFactory())
-                .defaultHeader("Authorization", "Bearer " + endpoint.config().getApiKey())
-                .defaultHeader("content-type",  "application/json");
-        endpoint.extraHeaders().forEach(builder::defaultHeader);
-        return builder.build();
+    /**
+     * 이 호출 하나짜리 요청.
+     *
+     * <p>클라이언트는 공용 하나를 계속 쓰고, 제공자마다 달라지는 것(키, 부가 헤더)만 요청에 싣는다.
+     * 키를 클라이언트의 기본 헤더로 박으면 그 인스턴스에 고정되는데, 여기는 제공자가 이미 여럿인
+     * 경로다 — 한 번 고정된 키가 다른 제공자·다른 사용자의 요청에 실려 나가는 사고는 조용히
+     * 일어나고 로그에도 남지 않는다.</p>
+     */
+    private static RestClient.RequestBodySpec post(Endpoint endpoint) {
+        RestClient.RequestBodySpec request = LlmHttp.client()
+                .post()
+                .uri(endpoint.url())
+                .header("Authorization", "Bearer " + endpoint.config().getApiKey());
+        endpoint.extraHeaders().forEach(request::header);
+        return request;
+    }
+
+    /**
+     * 응답의 {@code usage}.
+     *
+     * <p>파싱이 어긋나도 던지지 않는다. 이 시점의 호출은 이미 성공했고, 계측 하나를 잃는 것이
+     * 성공한 호출을 실패로 만드는 것보다 낫다.</p>
+     */
+    @SuppressWarnings("unchecked")
+    private static LlmUsage readUsage(Endpoint endpoint, String raw) {
+        try {
+            return LlmUsageParser.openAiCompatible(OBJECT_MAPPER.readValue(raw, Map.class));
+        } catch (Exception exception) {
+            log.debug("{} 사용량 파싱 실패 — 계측만 건너뜁니다: {}",
+                    endpoint.providerName(), exception.getClass().getSimpleName());
+            return LlmUsage.NONE;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String answeredModel(Endpoint endpoint, String raw, String requestedModel) {
+        try {
+            Map<String, Object> response = OBJECT_MAPPER.readValue(raw, Map.class);
+            return response.get("model") instanceof String named && !named.isBlank()
+                    ? named
+                    : requestedModel;
+        } catch (Exception exception) {
+            return requestedModel;
+        }
     }
 }

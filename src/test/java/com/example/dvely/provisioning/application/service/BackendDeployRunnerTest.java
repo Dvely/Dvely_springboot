@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -16,9 +17,12 @@ import com.example.dvely.cloudconnection.domain.repository.CloudConnectionReposi
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.cloudconnection.domain.value.CloudProvider;
 import com.example.dvely.environment.domain.repository.EnvironmentVariableRepository;
+import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepository;
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
+import com.example.dvely.provisioning.domain.value.DatabaseEngine;
+import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import com.example.dvely.provisioning.infrastructure.Ec2InstanceRoleProvisioner;
 import com.example.dvely.provisioning.application.port.out.FrontendOriginPort;
@@ -32,6 +36,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -95,6 +100,41 @@ class BackendDeployRunnerTest {
         assertThat(saved.getValue().getInstanceId()).isEqualTo("i-123");
         assertThat(saved.getValue().getElasticIpAllocationId()).isEqualTo("eipalloc-1");   // 안정 주소 연결
         assertThat(Files.exists(jar)).isFalse();   // 임시 jar 는 정리된다
+    }
+
+    /**
+     * RDS 접속정보는 Spring 관례(SPRING_DATASOURCE_*)뿐 아니라 Node/일반 관례(DB_HOST 등)로도 심겨야 한다.
+     * 안 그러면 Node 앱이 DB_HOST 부재 시 기본값 localhost 로 붙어 RDS 에 못 닿는다(ECONNREFUSED 127.0.0.1:3306).
+     * EC2 배포 e2e 에서 실제로 터진 회귀를 고정한다 — 포트를 SERVER_PORT/PORT 로 이중 제공하듯 DB 도 이중 제공.
+     */
+    @Test
+    void injectsRdsConnectionAsBothSpringAndNodeEnvVars() throws IOException {
+        Path jar = Files.createTempFile("test-app", ".jar");
+        stubHappyPath(jar);
+        when(ec2.launch(any(), any())).thenReturn("i-db");
+        ProvisionedDatabase db = mock(ProvisionedDatabase.class);
+        when(db.getStatus()).thenReturn(ProvisionStatus.READY);
+        when(db.getEngine()).thenReturn(DatabaseEngine.MYSQL);
+        when(db.getHost()).thenReturn("rds.example.com");
+        when(db.getPort()).thenReturn(3306);
+        when(db.getDatabaseName()).thenReturn("appdb");
+        when(db.getUsername()).thenReturn("admin");
+        when(db.getPassword()).thenReturn("secretpw");
+        when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of(db));
+
+        runner.deploy(building());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, String>> envCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(ssm).putAll(any(), eq(PROJECT), envCaptor.capture());
+        Map<String, String> env = envCaptor.getValue();
+        assertThat(env).containsEntry("SPRING_DATASOURCE_USERNAME", "admin");   // 기존 Spring 관례 유지
+        assertThat(env)                                                          // Node/일반 관례(회귀 가드)
+                .containsEntry("DB_HOST", "rds.example.com")
+                .containsEntry("DB_PORT", "3306")
+                .containsEntry("DB_NAME", "appdb")
+                .containsEntry("DB_USER", "admin")
+                .containsEntry("DB_PASSWORD", "secretpw");
     }
 
     @Test

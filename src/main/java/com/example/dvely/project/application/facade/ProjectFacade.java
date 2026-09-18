@@ -59,8 +59,8 @@ public class ProjectFacade {
         projectCdnCleanupPort.cleanupFrontendCdnDomains(projectId);
     }
 
-    public List<GithubRepositoryResult> getGithubRepositories(Long ownerUserId) {
-        return projectQueryService.getGithubRepositories(ownerUserId);
+    public List<GithubRepositoryResult> getGithubRepositories(Long ownerUserId, boolean refresh) {
+        return projectQueryService.getGithubRepositories(ownerUserId, refresh);
     }
 
     public List<ProjectSummaryResult> getProjects(Long ownerUserId) {

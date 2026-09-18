@@ -2,7 +2,8 @@
 
 이 문서는 프론트엔드 개발자가 Swagger UI와 함께 참고하는 통합 작업 문서입니다. 컨트롤러·DTO·설계서(`.agent-team/04-architecture/`)의 실제 계약만을 근거로 작성했으며, 추측/날조된 필드나 동작은 없습니다. 필드 하나하나의 상세 스키마(타입, `nullable`, `example`)는 Swagger UI(`/swagger-ui/index.html`)가 항상 최신 소스이므로, 이 문서는 **"무엇을 언제 왜 호출하는가"**에 집중하고 세부 스키마는 Swagger로 위임합니다.
 
-- **컨트롤러 수**: 16개 · **공개 엔드포인트 수**: 94개 (Swagger 그룹 11개 + 프로젝트 그룹에 포함된 Approval/Change 하위 리소스)
+- **컨트롤러 수**: 22개 · **엔드포인트 매핑 수**: 112개 (2026-09-08 실측)
+- 아래 §4 카탈로그는 아직 전수가 아니다. `AuditLog` · `DatabaseProvisioning` · `DomainTls` · `PreviewRuntimeConfig` · `ServerProvisioning` 컨트롤러는 절이 없으므로, 그 영역은 Swagger UI 를 정본으로 본다.
 - **작성 기준 커밋**: main `eb0ec2d` (U0~U7 · I45 · Cost(#58) · CloudOps(#59) · 결과 승인 2단계(#56) · pendingApprovalId/retryable 재정의(#57) · retry TOCTOU 제거(#64) · 결과 게이트 이력 판정 보강(#62) 머지 완료)
 
 ---
@@ -238,7 +239,7 @@ Accept: text/event-stream
 
 ---
 
-## 4. 도메인별 엔드포인트 카탈로그 (전수 94개)
+## 4. 도메인별 엔드포인트 카탈로그 (§1 의 미수록 컨트롤러 참고)
 
 각 표의 "요청"·"응답" 열은 핵심 필드만 나열합니다. 전체 필드/타입/예시 값은 Swagger UI에서 확인하세요.
 
@@ -269,7 +270,7 @@ Accept: text/event-stream
 | POST | `/api/v1/projects` | 프로젝트 생성(DRAFT). **코드 생성은 시작하지 않음** — 대화로 첫 요청을 보낼 때 task가 제출된다 | `{ name, startMode(blank\|template), templateType?, draftMode(fast\|quality) }` | 202 `{ projectId, name, status }` | 400 |
 | POST | `/api/v1/projects/{id}/repository` | GitHub 저장소 연결(신규 생성 또는 기존 import) | `{ repositoryMode(create\|existing), repositoryName?, repositoryFullName?, repositoryVisibility? }` | `{ projectId, repositoryFullName, repositoryVisibility, bindingStatus, repositoryHealth }` | 409(이미 연결됨), 400(저장소 접근 불가) |
 | DELETE | `/api/v1/projects/{id}/repository` | 저장소 연결 해제(GitHub 저장소 자체는 삭제 안 함) | - | 204 | 404 |
-| GET | `/api/v1/projects/github/repositories` | GitHub App으로 접근 가능한 내 저장소 목록 | - | `[{ fullName, name, owner, visibility, defaultBranch, updatedAt }]` | - |
+| GET | `/api/v1/projects/github/repositories` | GitHub App으로 접근 가능한 내 저장소 목록. 응답은 **유저별로 60초 캐시**된다 | query: `refresh`(기본 `false`) — 사용자가 GitHub에서 저장소를 방금 만들고 돌아온 경우 `true`로 캐시를 버리고 다시 읽는다 | `[{ fullName, name, owner, visibility, defaultBranch, updatedAt }]` | - |
 | GET | `/api/v1/projects` | 내 프로젝트 목록(최신 수정순) | - | `[{ projectId, name, deployStatus, currentUrl, updatedAt, updatedAtRelativeText }]` | - |
 | GET | `/api/v1/projects/{id}` | 프로젝트 상세(메타데이터) | - | `{ projectId, name, status, startMode, templateType, draftMode, createdAt, updatedAt }` (`templateType`은 콘텐츠 템플릿 — 프레임워크가 아님, §5.1) | 404 |
 | PATCH | `/api/v1/projects/{id}` | 프로젝트명 수정(현재 name만 수정 가능) | `{ name }` | `ProjectDetailResponse` (위와 동일 shape) | 400, 404 |
@@ -360,6 +361,15 @@ Accept: text/event-stream
 
 
 #### GLM 제공자
+
+`aiProvider` 에 **코딩 에이전트**(`CLAUDE_CODE`·`CODEX`)도 지정할 수 있습니다(2026-09-11).
+
+여기에는 다른 제공자와 두 가지가 다릅니다.
+
+- **본인이 등록한 키로만 나타납니다.** `GET /agent/ai-providers` 는 서버 키가 설정된 제공자에 더해, **호출한 사용자가 등록한** AI 크리덴셜(`/api/v1/ai-credentials`)에 해당하는 코딩 에이전트를 함께 돌려줍니다. BYOK 이므로 사용량이 사용자에게 청구되고, 대신 켜 줄 서버 키가 존재할 수 없습니다. 키 없는 사용자에게 노출하면 고르는 순간 실패하는 선택지가 됩니다.
+- **`model`·`thinking` 을 지정할 수 없습니다.** 벤더 CLI 가 정하므로 목록이 비어 오고(`models: []`, `defaultModel: null`), 지정해 보내면 **400** 입니다. 무시하지 않고 거절하는 이유는, 조용히 무시하면 사용자가 고르지 않은 모델을 골랐다고 믿게 되기 때문입니다.
+
+키 미등록 상태로 코딩 에이전트를 지정하면 `AI_CREDENTIAL_NOT_REGISTERED` 로 떨어지므로, 키 등록 화면으로 유도하면 됩니다.
 
 `aiProvider: "GLM"` 은 OpenRouter 를 거쳐 GLM 을 호출합니다. FE 관점에서는 기존 두 제공자와 계약이 완전히 같습니다 — 요청/응답 형태, `model`·`thinking` 규칙, 아래의 AI 제공자 오류 코드가 모두 그대로입니다.
 
@@ -512,6 +522,62 @@ setIframeSrc(previewUrl);   // ← 반드시 이 응답의 previewUrl 을 사용
 | 메서드 | 경로 | 용도 |
 |---|---|---|
 | POST | `/api/v1/webhook/github` | GitHub App webhook 수신 전용(**FE에서 호출하지 않음**). `X-Hub-Signature-256` HMAC 서명 검증 후 push/pull_request/installation 이벤트 처리 |
+
+### 4.13 ApiToken — `com.example.dvely.apitoken.presentation` (3)
+
+에이전트·CLI 용 개인 액세스 토큰(PAT). 브라우저 JWT 는 1시간이라 헤드리스 클라이언트가 쓸 수 없어 이 토큰을 쓴다. `Authorization: Bearer qp_...` 형태로 기존 API 를 그대로 호출한다.
+
+| 메서드 | 경로 | 용도 |
+|---|---|---|
+| GET | `/api/v1/api-tokens` | 본인이 발급한 토큰 목록(평문 없음) |
+| POST | `/api/v1/api-tokens` | 발급. **평문은 이 응답에서만 한 번** |
+| DELETE | `/api/v1/api-tokens/{apiTokenId}` | 폐기. 미발급 ID 면 404 |
+
+```
+POST /api/v1/api-tokens
+{ "scope": "READ", "label": "내 노트북 Claude Code", "expiresInDays": 90 }
+  → 201 { "token": "qp_...", "info": { "apiTokenId": 1, "tokenPrefix": "qp_a1b2c3d4", ... } }
+```
+
+**평문은 발급 응답에서만 볼 수 있다.** 서버는 해시만 보관하므로 재조회가 불가능하고, 잃어버리면 새로 발급해야 한다. 목록에는 `tokenPrefix`(앞 11자)만 나온다 — 어느 토큰인지 알아보기 위한 것이지 재노출이 아니다.
+
+**스코프는 HTTP 메서드로 강제된다.** `READ` 토큰은 GET 만 가능하고 POST·PUT·PATCH·DELETE 는 **403**(`FORBIDDEN`)이다. 401 이 아닌 이유는 인증 자체는 성공했기 때문이며, 재인증하러 보낼 일이 아니다.
+
+만료·폐기·미상 토큰은 전부 **401** 로 동일하게 응답한다(어느 쪽인지 구분해 알려주지 않는다).
+
+**만료 한도는 스코프마다 다르다.**
+
+| 스코프 | 기본 | 최대 |
+|---|---|---|
+| `READ` | 90일 | 365일 |
+| `WRITE` | 30일 | 90일 |
+
+`WRITE` 가 짧은 이유는 유출됐을 때 할 수 있는 일이 다르기 때문이다 — 배포하고 환경변수를 바꾸고 도메인을 붙인다. 범위를 벗어나면 **400** 이고 메시지에 스코프가 들어 있으니 그대로 보여주면 된다. 발급 UI 의 만료일 입력은 선택한 스코프에 따라 상한을 바꿔야 한다.
+
+### 4.12 AiCredential — `com.example.dvely.aiaccount.presentation` (3)
+
+사용자 본인 AI API 키(BYOK) 관리. 등록한 키로 `CLAUDE_CODE` · `CODEX` 코딩 에이전트가 실행되고, 사용량은 사용자 계정으로 직접 청구된다.
+
+| 메서드 | 경로 | 용도 |
+|---|---|---|
+| GET | `/api/v1/ai-credentials` | 본인이 등록한 키 목록. 소유자는 토큰에서만 오므로 남의 키를 조회할 경로가 없다 |
+| PUT | `/api/v1/ai-credentials/{provider}` | 등록/교체. 벤더당 키 하나라 등록과 교체가 같은 동작이다 |
+| DELETE | `/api/v1/ai-credentials/{provider}` | 삭제. 미등록이면 404 |
+
+**`{provider}` 는 벤더만 받는다** — `ANTHROPIC` · `OPENAI` · `GLM`. `CLAUDE_CODE` 는 Anthropic 키를, `CODEX` 는 OpenAI 키를 쓰므로 실행 모드로는 등록할 수 없고 400 이 온다. 사용자는 벤더당 키를 한 번만 넣으면 된다.
+
+**평문 키는 어떤 응답에도 없다.** `maskedApiKey` 는 앞 6자만 남긴다(`sk-ant****`) — 어느 키를 넣었는지 알아보되 꼬리(실제 엔트로피)는 노출하지 않는다.
+
+```
+PUT /api/v1/ai-credentials/ANTHROPIC
+{ "apiKey": "sk-ant-api03-...", "label": "개인 계정" }
+  → 200 { "aiProviderCredentialId": 1, "provider": "ANTHROPIC",
+          "maskedApiKey": "sk-ant****", "label": "개인 계정", ... }
+```
+
+키를 등록하지 않은 채 코딩 에이전트를 요청하면 `400 AI_CREDENTIAL_NOT_REGISTERED` 가 온다. 서버가 운영자 키로 대신 채워주지 않는다(제공사 약관상 사용자를 대신한 결제·중개가 금지된다). FE 는 이 코드를 받으면 키 등록 화면으로 보내면 된다.
+
+키에 공백·제어문자가 있으면 400 이다. 컨테이너 환경변수로 그대로 주입되는 값이라, 개행이 섞여 붙여넣어진 키를 조용히 받지 않는다.
 
 ---
 

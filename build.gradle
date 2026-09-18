@@ -43,6 +43,11 @@ dependencies {
     runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
     runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
 
+    // 폐기 토큰 인메모리 캐시. 직접 만들면 만료·크기 제한·동시성 제거를 손으로 쥐어야 하는데,
+    // 이건 인증 경계라 그 자리에서 나는 버그의 대가가 크다. 버전은 Spring Boot BOM 이 관리하고
+    // 전이 의존성이 없다.
+    implementation 'com.github.ben-manes.caffeine:caffeine'
+
     // PEM 키 파싱 (GitHub App PKCS1 private key)
     implementation 'org.bouncycastle:bcpkix-jdk18on:1.78.1'
 

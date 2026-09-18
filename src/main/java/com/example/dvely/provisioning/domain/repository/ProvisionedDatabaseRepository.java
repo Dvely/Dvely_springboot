@@ -17,8 +17,11 @@ public interface ProvisionedDatabaseRepository {
 
     List<ProvisionedDatabase> findByProjectIdOrderByCreatedAtDesc(Long projectId);
 
-    /** 목록용 — EXPIRED 를 뺀 활성 자원만. DB 단에서 거른다. */
-    List<ProvisionedDatabase> findActiveByProjectIdOrderByCreatedAtDesc(Long projectId);
+    /**
+     * 목록용 — EXPIRED 를 뺀 활성 자원만. DB 단에서 거른다. U6 6-5 로 password 를 읽지 않는
+     * 읽기 모델을 돌려준다({@link ProvisionedDatabaseListView}).
+     */
+    List<ProvisionedDatabaseListView> findActiveListViewsByProjectId(Long projectId);
 
     /**
      * 만료 회수의 원자적 클레임. READY 인 행만 EXPIRED 로 넘기고, 성공하면 true.

@@ -4,6 +4,10 @@ public enum ApprovalType {
     CHANGE,
     DEPLOYMENT,
     DOMAIN_BINDING,
+    // 도메인 "해제" 승인. bind 와 별개 유형으로 둔다 — 되돌리기 어려운 삭제라, 화면이 신호를 놓쳐도
+    // (모르는 유형엔 원시 라벨을 그대로 보여주므로) "연결"이라 거짓으로 읽히지 않게 하기 위함이다.
+    // operation=DELETE 인 DOMAIN_BIND 스텝에만 매겨진다(AgentOrchestrator.toApprovalType). 배포 e2e 발견 #8.
+    DOMAIN_UNBIND,
     INFRA_OPERATION,
     // Track Z (#56): "결과 승인" — approves reflecting an already-EXECUTED task's preview state
     // into main (git 반영), as opposed to the other four types which all gate EXECUTION of a

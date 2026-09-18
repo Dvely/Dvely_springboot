@@ -86,6 +86,9 @@ class GithubPagesDomainHostingAdapterTest {
      * 프레임워크 감지가 실패해도 프로젝트의 콘텐츠 템플릿 값으로 폴백하지 않는다. Context 가
      * templateType 을 아예 담지 않게 바꾼 것이 그 보장이고, 이 테스트는 그때의 동작을 고정한다 —
      * 감지 실패는 기본값(./dist)으로 떨어진다.
+     *
+     * <p>발행 경로는 러너에서 확정되므로(#330) {@code publish_dir} 은 어느 경우든 같은 표현식이다.
+     * 무엇으로 확정되는지는 Resolve 스텝이 정하고, 여기서 봐야 할 것도 그쪽이다.</p>
      */
     @Test
     void undetectedFrameworkFallsBackToDefaultPublishDirNotAContentTemplate() {
@@ -100,7 +103,7 @@ class GithubPagesDomainHostingAdapterTest {
                 org.mockito.ArgumentMatchers.eq("user-token"),
                 org.mockito.ArgumentMatchers.eq("octo/repo"),
                 org.mockito.ArgumentMatchers.eq(DeployWorkflowTemplate.fileName()),
-                contains("publish_dir: ./dist")
+                contains("DIR=\"./dist\"")
         );
     }
 

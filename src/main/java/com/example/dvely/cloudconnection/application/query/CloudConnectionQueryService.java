@@ -6,6 +6,9 @@ import com.example.dvely.cloudconnection.application.result.CloudConnectionVerif
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.model.CloudConnectionVerificationJob;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
+import com.example.dvely.cloudconnection.domain.repository.CloudConnectionSummaryView;
+import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
+import com.example.dvely.cloudconnection.domain.value.CloudProvider;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionVerificationJobRepository;
 import com.example.dvely.common.exception.NotFoundException;
 import java.util.List;
@@ -22,9 +25,36 @@ public class CloudConnectionQueryService {
     private final CloudConnectionVerificationJobRepository verificationJobRepository;
 
     public List<CloudConnectionResult> getCloudConnections(Long ownerUserId) {
-        return cloudConnectionRepository.findAllByOwnerUserIdOrderByCreatedAtDesc(ownerUserId).stream()
-                .map(this::toResult)
+        return cloudConnectionRepository.findSummariesByOwnerUserIdOrderByCreatedAtDesc(ownerUserId).stream()
+                .map(CloudConnectionQueryService::toResult)
                 .toList();
+    }
+
+    /**
+     * 읽기 모델 → 응답. 비밀 세 개는 뷰가 이미 boolean 으로만 들고 있어, 여기서 평문을 볼 방법이
+     * 없다 — 예전의 "평문을 읽어 != null 로 바꾼 뒤 버린다" 를 구조적으로 대체한다.
+     */
+    private static CloudConnectionResult toResult(CloudConnectionSummaryView view) {
+        return new CloudConnectionResult(
+                view.id(),
+                CloudProvider.valueOf(view.provider()),
+                view.displayName(),
+                view.accountId(),
+                view.region(),
+                view.roleArn(),
+                view.awsCredentialType(),
+                view.accessKeyId(),
+                view.secretAccessKeyConfigured(),
+                view.sessionTokenConfigured(),
+                view.gcpCredentialType(),
+                view.serviceAccountKeyConfigured(),
+                view.gcpProjectId(),
+                view.serviceAccountEmail(),
+                CloudConnectionStatus.valueOf(view.status()),
+                view.lastCheckedAt(),
+                view.createdAt(),
+                view.updatedAt()
+        );
     }
 
     public CloudConnectionResult getCloudConnection(Long ownerUserId, Long cloudConnectionId) {

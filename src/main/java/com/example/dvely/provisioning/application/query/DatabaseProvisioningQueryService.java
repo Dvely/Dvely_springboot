@@ -26,7 +26,7 @@ public class DatabaseProvisioningQueryService {
         // EXPIRED 는 DB 단에서 제외한다. 프리뷰 30분 TTL 이라 하루면 수십 개가 쌓이는데, 그걸 다
         // 내려주면 "지금 쓸 수 있는 DB"가 지나간 것들에 묻힌다. 행은 감사·이력으로 남기되(워커가
         // EXPIRED 로 상태만 넘김) 목록에는 활성 자원만 준다.
-        return databaseRepository.findActiveByProjectIdOrderByCreatedAtDesc(projectId)
+        return databaseRepository.findActiveListViewsByProjectId(projectId)
                 .stream().map(ProvisionedDatabaseResult::from).toList();
     }
 

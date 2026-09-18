@@ -16,6 +16,7 @@ import com.example.dvely.environment.domain.model.EnvironmentVariable;
 import com.example.dvely.environment.domain.model.EnvironmentVariableHistory;
 import com.example.dvely.environment.domain.repository.EnvironmentVariableHistoryRepository;
 import com.example.dvely.environment.domain.repository.EnvironmentVariableRepository;
+import com.example.dvely.environment.domain.repository.EnvironmentVariableSummaryView;
 import com.example.dvely.environment.domain.value.EnvironmentScope;
 import com.example.dvely.environment.domain.value.EnvironmentVariableAction;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
@@ -28,6 +29,7 @@ import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -47,13 +49,40 @@ class EnvironmentVariableQueryServiceTest {
                 .isInstanceOf(ProjectNotFoundException.class);
     }
 
+    /**
+     * U6 6-5: secret 변수의 평문은 이제 <b>읽지도 않는다</b>. findPlainValuesByIds 는 secret=false 인
+     * 행만 돌려주므로(SQL 조건) 여기서 빈 맵을 준다 — 그 상태로 value 가 null 이어야 한다. 예전처럼
+     * "평문을 읽어 응답에서 지운다" 가 아니라는 것이 이 테스트의 요지다.
+     */
     @Test
     void secretVariableValueIsMaskedToNull() {
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 7L)).thenReturn(Optional.of(project()));
-        EnvironmentVariable secretVariable = new EnvironmentVariable(
-                1L, 11L, EnvironmentScope.PRODUCTION, "STRIPE_SECRET_KEY", "sk_live_xxx", true, LocalDateTime.now(), LocalDateTime.now()
-        );
-        when(repository.findByProjectIdOrderByScopeAscKeyAsc(11L)).thenReturn(List.of(secretVariable));
+        when(repository.findSummaries(eq(11L), eq(null), anyInt())).thenReturn(List.of(
+                new EnvironmentVariableSummaryView(
+                        1L, "PRODUCTION", "STRIPE_SECRET_KEY", true, LocalDateTime.now(), LocalDateTime.now())
+        ));
+        when(repository.findPlainValuesByIds(List.of(1L))).thenReturn(Map.of());
+
+        List<EnvironmentVariableResult> results = service.getVariables(7L, 11L, null);
+
+        assertThat(results).singleElement().satisfies(result -> {
+            assertThat(result.secret()).isTrue();
+            assertThat(result.value()).isNull();
+        });
+    }
+
+    /**
+     * secret 인 행의 평문이 어쩌다 평문 맵에 섞여 들어와도 응답에는 나가지 않는다 — 두 번째 방어선.
+     * 위 테스트가 "읽지 않는다" 를, 이 테스트가 "설령 읽혀도 안 내보낸다" 를 각각 못박는다.
+     */
+    @Test
+    void secretVariableValueStaysNullEvenIfAPlaintextSomehowArrives() {
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 7L)).thenReturn(Optional.of(project()));
+        when(repository.findSummaries(eq(11L), eq(null), anyInt())).thenReturn(List.of(
+                new EnvironmentVariableSummaryView(
+                        1L, "PRODUCTION", "STRIPE_SECRET_KEY", true, LocalDateTime.now(), LocalDateTime.now())
+        ));
+        when(repository.findPlainValuesByIds(List.of(1L))).thenReturn(Map.of(1L, "sk_live_xxx"));
 
         List<EnvironmentVariableResult> results = service.getVariables(7L, 11L, null);
 
@@ -66,10 +95,12 @@ class EnvironmentVariableQueryServiceTest {
     @Test
     void nonSecretVariableValueIsReturnedAsPlaintext() {
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 7L)).thenReturn(Optional.of(project()));
-        EnvironmentVariable variable = new EnvironmentVariable(
-                2L, 11L, EnvironmentScope.PREVIEW, "API_BASE_URL", "https://api.example.com", false, LocalDateTime.now(), LocalDateTime.now()
-        );
-        when(repository.findByProjectIdOrderByScopeAscKeyAsc(11L)).thenReturn(List.of(variable));
+        when(repository.findSummaries(eq(11L), eq(null), anyInt())).thenReturn(List.of(
+                new EnvironmentVariableSummaryView(
+                        2L, "PREVIEW", "API_BASE_URL", false, LocalDateTime.now(), LocalDateTime.now())
+        ));
+        when(repository.findPlainValuesByIds(List.of(2L)))
+                .thenReturn(Map.of(2L, "https://api.example.com"));
 
         List<EnvironmentVariableResult> results = service.getVariables(7L, 11L, null);
 
@@ -82,12 +113,28 @@ class EnvironmentVariableQueryServiceTest {
     @Test
     void filtersByScopeWhenProvided() {
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 7L)).thenReturn(Optional.of(project()));
-        when(repository.findByProjectIdAndScopeOrderByKeyAsc(11L, EnvironmentScope.PREVIEW)).thenReturn(List.of());
+        when(repository.findSummaries(eq(11L), eq(EnvironmentScope.PREVIEW), anyInt())).thenReturn(List.of());
 
         service.getVariables(7L, 11L, "PREVIEW");
 
-        verify(repository).findByProjectIdAndScopeOrderByKeyAsc(11L, EnvironmentScope.PREVIEW);
+        verify(repository).findSummaries(eq(11L), eq(EnvironmentScope.PREVIEW), anyInt());
+        // 엔티티를 통째로 읽는 예전 경로는 목록에서 더 쓰지 않는다(그쪽은 env_value 를 매 행 복호화했다).
+        verify(repository, never()).findByProjectIdAndScopeOrderByKeyAsc(any(), any());
         verify(repository, never()).findByProjectIdOrderByScopeAscKeyAsc(any());
+    }
+
+    /** limit 를 안 주면 기본 200. 상한을 넘겨 달라고 하면 500 으로 깎는다. */
+    @Test
+    void variableLimitDefaultsTo200AndIsClampedTo500() {
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 7L)).thenReturn(Optional.of(project()));
+        when(repository.findSummaries(eq(11L), eq(null), anyInt())).thenReturn(List.of());
+
+        service.getVariables(7L, 11L, null, null);
+        service.getVariables(7L, 11L, null, 9999);
+
+        // findSummaries 는 "더 있는지" 판단용으로 limit+1 건을 요청한다.
+        verify(repository).findSummaries(11L, null, 201);
+        verify(repository).findSummaries(11L, null, 501);
     }
 
     @Test

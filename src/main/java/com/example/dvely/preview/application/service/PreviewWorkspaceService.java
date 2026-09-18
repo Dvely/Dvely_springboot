@@ -1,5 +1,6 @@
 package com.example.dvely.preview.application.service;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
@@ -32,7 +33,8 @@ public class PreviewWorkspaceService {
     // 컨테이너 exec 는 입력이 없어 영원히 기다리게 되고 에이전트 스레드가 잡힌다. 즉시 실패시킨다.
     private static final String GIT_NO_PROMPT = "GIT_TERMINAL_PROMPT=0 ";
 
-    private static final String APP_DIR = "/workspace/app";
+    /** 컨테이너 안 앱 경로. 값은 {@link ContainerPaths#APP_DIR} 하나에서 온다. */
+    private static final String APP_DIR = ContainerPaths.APP_DIR;
     private static final String BUILD_LOG_PATH = "/tmp/qeploy-build.log";
 
     private final DockerContainerService dockerService;
@@ -78,7 +80,7 @@ public class PreviewWorkspaceService {
         String cloneUrl = "https://github.com/" + sourceRepo + ".git";
 
         // git credential 파일 작성 — 토큰이 명령줄에 노출되지 않게 base64 로 파일에만 쓴다.
-        dockerService.exec(containerId, "apk add --no-cache git 2>/dev/null || true");
+        dockerService.installPackages(containerId, "git");
         String cred = "https://" + username + ":" + userToken + "@github.com";
         String credB64 = Base64.getEncoder().encodeToString(cred.getBytes(StandardCharsets.UTF_8));
         dockerService.exec(containerId,
@@ -256,7 +258,7 @@ public class PreviewWorkspaceService {
         log.info("[PreviewWorkspace] JAVA_FULLSTACK 시작 | backendDir={} frontendDir={}", backendDir, frontendDir);
 
         // JDK + nginx. 이미 있으면 no-op, 정말 없으면 아래 strict 단계가 드러낸다.
-        dockerService.exec(containerId, "apk add --no-cache openjdk21 nginx 2>&1 | tail -n 5 || true");
+        dockerService.installPackages(containerId, "openjdk21", "nginx");
 
         // FE: 빌드해서 정적 산출물을 만든다.
         requireExec(containerId, "cd " + frontendDir + " && npm install", "프론트 npm install");
@@ -283,8 +285,11 @@ public class PreviewWorkspaceService {
 
     public void startInternalNginxRouter(String containerId, String apiPathPrefix, String feBuildDir) {
         writeFile(containerId, NGINX_CONF_PATH, nginxConfig(apiPathPrefix, feBuildDir));
-        dockerService.exec(containerId, "pkill -x nginx 2>/dev/null || true");
-        requireExec(containerId, "nginx -c " + NGINX_CONF_PATH, "nginx 시작");
+        // nginx 는 root 로 둔다. 워크스페이스를 읽기만 하므로 내릴 이유가 없고, 80 미만 포트를
+        // 쓰지는 않지만 마스터 프로세스가 워커를 떨구는 구조라 기동은 root 여야 자연스럽다.
+        // 끄는 것도 root 여야 한다 — node 는 root 프로세스에 시그널을 보내지 못한다.
+        dockerService.execAsRoot(containerId, "pkill -x nginx 2>/dev/null || true");
+        requireRootExec(containerId, "nginx -c " + NGINX_CONF_PATH, "nginx 시작");
         awaitPortReady(containerId, 3000, SERVE_READY_TIMEOUT_SECONDS,
                 "/tmp/preview-nginx-error.log", "nginx-3000");
     }
@@ -361,7 +366,15 @@ public class PreviewWorkspaceService {
 
     /** 실패하면 던지는 exec. env 없는 strict 단계용. */
     private void requireExec(String containerId, String command, String what) {
-        DockerContainerService.ExecResult r = dockerService.execWithExitCode(containerId, command);
+        require(dockerService.execWithExitCode(containerId, command), what);
+    }
+
+    /** 플랫폼이 root 로 해야 하는 것(nginx 기동). 사용자 코드는 여기로 오지 않는다. */
+    private void requireRootExec(String containerId, String command, String what) {
+        require(dockerService.execWithExitCodeAsRoot(containerId, command), what);
+    }
+
+    private void require(DockerContainerService.ExecResult r, String what) {
         if (!r.succeeded()) {
             throw new IllegalStateException(what + " 실패(exitCode=" + r.exitCode() + ").");
         }

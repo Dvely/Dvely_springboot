@@ -1,5 +1,6 @@
 package com.example.dvely.preview.application.service;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.preview.domain.value.PreviewRuntimeType;
 import lombok.RequiredArgsConstructor;
@@ -21,7 +22,8 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class PreviewRuntimeDetector {
 
-    private static final String APP_DIR = "/workspace/app";
+    /** 컨테이너 안 앱 경로. 값은 {@link ContainerPaths#APP_DIR} 하나에서 온다. */
+    private static final String APP_DIR = ContainerPaths.APP_DIR;
 
     private final DockerContainerService dockerService;
 

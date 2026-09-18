@@ -37,15 +37,40 @@ public class AgentRunEventEntity {
     @Column(name = "message", columnDefinition = "TEXT")
     private String message;
 
+    /** 스텝 이벤트일 때 1-based 순번. 태스크 생명주기 이벤트에는 없다(null). */
+    @Column(name = "step_index")
+    private Integer stepIndex;
+
+    /** 스텝 이벤트일 때 계획의 총 스텝 수. */
+    @Column(name = "step_total")
+    private Integer stepTotal;
+
+    /** 스텝 이벤트일 때 그 스텝의 에이전트 종류(CODE/DEPLOY/...). */
+    @Column(name = "agent_type", length = 30)
+    private String agentType;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
     public AgentRunEventEntity(String taskId, String type, TaskStatus status, String message) {
+        this(taskId, type, status, message, null, null, null);
+    }
+
+    public AgentRunEventEntity(String taskId,
+                               String type,
+                               TaskStatus status,
+                               String message,
+                               Integer stepIndex,
+                               Integer stepTotal,
+                               String agentType) {
         this.taskId = taskId;
         this.type = type;
         this.status = status.name();
         this.message = message;
+        this.stepIndex = stepIndex;
+        this.stepTotal = stepTotal;
+        this.agentType = agentType;
     }
 
     public AgentTaskEvent toResult() {
@@ -55,6 +80,9 @@ public class AgentRunEventEntity {
                 type,
                 TaskStatus.valueOf(status),
                 message,
+                stepIndex,
+                stepTotal,
+                agentType,
                 createdAt
         );
     }

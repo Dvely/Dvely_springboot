@@ -30,6 +30,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.client.HttpClientErrorException;
 
 @ExtendWith(MockitoExtension.class)
 class AuthCommandServiceTest {
@@ -145,6 +148,41 @@ class AuthCommandServiceTest {
         assertThat(service.refreshGithubUserToken(10L)).isEqualTo("new-access");
 
         verify(tokenRefresher).refreshWithLock(10L);
+    }
+
+    // ── #337: 외부 호출이 실패하면 저장이 남지 않는다 ────────────────────────────────
+
+    /**
+     * 예전에는 installationId 를 먼저 반영하고 그 뒤에 토큰 교환을 호출했고, 교환이 실패하면
+     * 롤백이 그 반영까지 되돌려 <b>아무것도 저장되지 않았다</b>. 트랜잭션을 걷어내면서 외부
+     * 호출을 저장 앞으로 옮겨 같은 결과를 유지한다 — 이 테스트가 그 순서를 고정한다.
+     */
+    @Test
+    void githubTokenExchangeFailing_savesNeitherTheTokenNorTheInstallationId() {
+        when(userRepository.findById(10L)).thenReturn(Optional.of(user(10L, null)));
+        when(githubAppPort.getUserToken("code"))
+                .thenThrow(HttpClientErrorException.create(
+                        HttpStatus.BAD_REQUEST, "bad_verification_code",
+                        HttpHeaders.EMPTY, new byte[0], null));
+
+        assertThatThrownBy(() -> service.linkGithubApp(10L, 123L, "code"))
+                .isInstanceOf(HttpClientErrorException.class);
+
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void githubUserLookupFailing_createsNoUserAndNoRefreshToken() {
+        when(githubOAuthPort.getAccessToken("code")).thenReturn("oauth-token");
+        when(githubUserPort.getUser("oauth-token"))
+                .thenThrow(HttpClientErrorException.create(
+                        HttpStatus.UNAUTHORIZED, "Unauthorized", HttpHeaders.EMPTY, new byte[0], null));
+
+        assertThatThrownBy(() -> service.loginWithGithub(new GithubLoginCommand("code", "state")))
+                .isInstanceOf(HttpClientErrorException.class);
+
+        verify(userRepository, never()).save(any());
+        verify(refreshTokenRepository, never()).save(any());
     }
 
     private User user(Long id, Long installationId) {

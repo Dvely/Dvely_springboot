@@ -360,7 +360,7 @@ class RepositoryBindingServiceTest {
 
     private void stubPreviewSession() {
         when(previewSessionService.findByTaskId("task-1")).thenReturn(Optional.of(new PreviewSessionInfo(
-                "session-1", 1L, 11L, 21L, "task-1", "container-1", 3000,
+                "session-1", 1L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
                 "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30)
         )));
     }

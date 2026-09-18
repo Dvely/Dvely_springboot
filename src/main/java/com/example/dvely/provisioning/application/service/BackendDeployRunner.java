@@ -248,11 +248,11 @@ public class BackendDeployRunner {
             // 값을 쓰게 한다. 비밀은 SSM 으로만 가고(호스트에서 .env 로 내려짐) user-data 엔 안 담긴다.
             DatabaseEngine engine = server.getBundledDbEngine();
             String password = randomPassword();
-            env.put("DB_NAME", BUNDLED_DB_NAME);
-            env.put("DB_PASSWORD", password);
             env.put("SPRING_DATASOURCE_URL", bundledJdbcUrl(engine));
             env.put("SPRING_DATASOURCE_USERNAME", bundledDbUsername(engine));
             env.put("SPRING_DATASOURCE_PASSWORD", password);
+            // Node/일반 관례로도 함께(아래 putNodeDbEnv 주석 참고). host 는 compose 의 db 서비스명.
+            putNodeDbEnv(env, "db", bundledDbPort(engine), BUNDLED_DB_NAME, bundledDbUsername(engine), password);
         } else {
             databaseRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
                     .filter(db -> db.getStatus() == ProvisionStatus.READY)
@@ -261,6 +261,9 @@ public class BackendDeployRunner {
                         env.put("SPRING_DATASOURCE_URL", jdbcUrl(db));
                         env.put("SPRING_DATASOURCE_USERNAME", db.getUsername());
                         env.put("SPRING_DATASOURCE_PASSWORD", db.getPassword());
+                        // RDS 접속정보를 Node/일반 관례로도 함께(아래 putNodeDbEnv 주석 참고).
+                        putNodeDbEnv(env, db.getHost(), db.getPort(), db.getDatabaseName(),
+                                db.getUsername(), db.getPassword());
                     });
         }
 
@@ -294,6 +297,32 @@ public class BackendDeployRunner {
             case MYSQL -> "root";
             case POSTGRESQL -> "postgres";
         };
+    }
+
+    /** 번들 DB 리슨 포트(엔진별) — {@link #bundledJdbcUrl} 과 같은 값. */
+    private static int bundledDbPort(DatabaseEngine engine) {
+        return switch (engine) {
+            case MYSQL -> 3306;
+            case POSTGRESQL -> 5432;
+        };
+    }
+
+    /**
+     * DB 접속정보를 Node/일반 앱 관례(discrete {@code DB_*})로도 심는다. Spring 관례
+     * ({@code SPRING_DATASOURCE_*})와 <b>함께</b> 줘서 스택 무관하게 앱이 DB 에 붙게 한다 — 위에서 리슨
+     * 포트를 {@code SERVER_PORT}/{@code PORT} 로 이중 제공하는 것과 같은 이유다. 이게 없으면 Node 앱은
+     * {@code DB_HOST} 부재 시 기본값 {@code localhost} 로 떨어져 RDS/번들 DB 에 못 붙는다(실측 발견).
+     */
+    private void putNodeDbEnv(Map<String, String> env, String host, Integer port, String dbName,
+                              String user, String password) {
+        env.put("DB_HOST", host);
+        if (port != null) {
+            env.put("DB_PORT", String.valueOf(port));
+        }
+        env.put("DB_NAME", dbName);
+        env.put("DB_USER", user);
+        env.put("DB_USERNAME", user);   // USER/USERNAME 관례가 갈려 둘 다 준다.
+        env.put("DB_PASSWORD", password);
     }
 
     /** 번들 DB 비밀번호 — 셸·URL·DB 에서 안전한 영숫자만(특수문자 회피). */

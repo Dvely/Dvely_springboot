@@ -1,9 +1,9 @@
 package com.example.dvely.common.exception;
 
 /**
- * An LLM provider could not be called, or refused the call for a reason that is about the account
- * rather than the request: no key configured, a rejected key, exhausted credit, a rate limit, or an
- * outage.
+ * An LLM provider could not be called, refused the call for a reason that is about the account
+ * rather than the request, or answered something we cannot act on: no key configured, a rejected
+ * key, exhausted credit, a rate limit, an outage, or a reply that does not parse.
  *
  * <p>These used to surface as whatever the HTTP client threw. On the synchronous path that meant a
  * bare 500 from the catch-all handler; on the agent's asynchronous path it was swallowed by
@@ -22,7 +22,8 @@ public class LlmProviderException extends RuntimeException {
         AUTH_FAILED,
         QUOTA_EXCEEDED,
         RATE_LIMITED,
-        UPSTREAM_ERROR
+        UPSTREAM_ERROR,
+        MALFORMED_RESPONSE
     }
 
     private final String providerName;
@@ -43,12 +44,18 @@ public class LlmProviderException extends RuntimeException {
     }
 
     /**
-     * Whether trying the exact same call again could plausibly succeed. A rate limit clears and an
-     * outage ends; a missing key, a rejected key, and an empty credit balance do not resolve
+     * Whether trying the exact same call again could plausibly succeed. A rate limit clears, an
+     * outage ends, and a reply whose shape was wrong usually comes back right when the model is
+     * asked again; a missing key, a rejected key, and an empty credit balance do not resolve
      * themselves between retries, so retrying those only delays the message the user needs to see.
+     *
+     * <p>{@code MALFORMED_RESPONSE} is only raised after the caller has already re-asked once, so
+     * "retryable" here means the user may retry — not that another automatic attempt is pending.</p>
      */
     public boolean retryable() {
-        return reason == Reason.RATE_LIMITED || reason == Reason.UPSTREAM_ERROR;
+        return reason == Reason.RATE_LIMITED
+                || reason == Reason.UPSTREAM_ERROR
+                || reason == Reason.MALFORMED_RESPONSE;
     }
 
     private static String userMessage(String providerName, Reason reason) {
@@ -61,6 +68,8 @@ public class LlmProviderException extends RuntimeException {
                     + "다른 AI 제공자를 선택하거나 결제 상태를 확인해주세요.";
             case RATE_LIMITED -> providerName + " 요청량 한도를 초과했습니다. 잠시 후 다시 시도해주세요.";
             case UPSTREAM_ERROR -> providerName + " 호출에 실패했습니다. 잠시 후 다시 시도해주세요.";
+            case MALFORMED_RESPONSE -> providerName + " 응답을 이해하지 못해 요청을 처리하지 못했습니다. "
+                    + "다시 시도하거나 요청을 조금 더 구체적으로 적어주세요.";
         };
     }
 }

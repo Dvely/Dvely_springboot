@@ -11,6 +11,7 @@ import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
 import com.example.dvely.provisioning.domain.value.ServerDeployMode;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
+import com.example.dvely.provisioning.infrastructure.HttpHealthProbe;
 import com.example.dvely.provisioning.infrastructure.SsmRunCommandClient;
 import com.example.dvely.provisioning.infrastructure.TcpHealthChecker;
 import java.time.Duration;
@@ -50,6 +51,7 @@ public class ServerHealthMonitorWorker {
 
     private final ProvisionedServerRepository serverRepository;
     private final TcpHealthChecker healthChecker;
+    private final HttpHealthProbe httpHealthProbe;
     private final CloudConnectionRepository cloudConnectionRepository;
     private final SsmRunCommandClient ssmRunCommandClient;
     private final AuditRecorder auditRecorder;
@@ -71,7 +73,11 @@ public class ServerHealthMonitorWorker {
                 continue;   // 주소가 없으면 확인할 수 없다(정상 RUNNING 이면 항상 있음)
             }
             try {
-                boolean healthy = healthChecker.isHealthy(server.getPublicHost(), server.getPort());
+                // 포트가 열렸는지(TCP=프로세스 살아있음) + 앱이 기능적 이상을 명시적으로 보고하지 않는지
+                // (HTTP /api/health 5xx). TCP 만으로는 앱이 뜬 채 DB 등에 못 붙는 경우를 못 잡았다(#3).
+                // 5xx 만 이상으로 보므로, 헬스 엔드포인트 없는 앱은 기존 TCP 판정 그대로다.
+                boolean healthy = healthChecker.isHealthy(server.getPublicHost(), server.getPort())
+                        && !httpHealthProbe.reportsUnhealthy(server.getPublicHost(), server.getPort());
                 Boolean previous = server.getHealthy();   // fetch 시점 DB 값(디바운스·복구 판정용)
                 // 헬스는 targeted UPDATE 로만 쓴다 — 전체-엔티티 저장을 하지 않아, 다중 인스턴스에서 각자
                 // 헬스체크·기록해도 lost-update 가 없고 교체 워커의 저장과 충돌하지 않는다.

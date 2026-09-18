@@ -4,7 +4,9 @@ import com.example.dvely.agent.application.port.out.LlmToolPort;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
 import com.example.dvely.agent.domain.value.AiModelOptions;
+import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageRecorder;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -24,6 +26,7 @@ import org.springframework.stereotype.Component;
 public class GlmToolClient implements LlmToolPort {
 
     private final AiProperties aiProperties;
+    private final LlmUsageRecorder llmUsageRecorder;
 
     public LlmToolResponse completeWithTools(
             String systemPrompt,
@@ -38,7 +41,10 @@ public class GlmToolClient implements LlmToolPort {
             List<Map<String, Object>> messages,
             List<ToolDefinition> tools,
             AiModelOptions modelOptions) {
-        return OpenAiCompatibleChat.completeWithTools(
+        LlmToolResponse response = OpenAiCompatibleChat.completeWithTools(
                 GlmClient.endpoint(aiProperties), systemPrompt, messages, tools, modelOptions);
+        llmUsageRecorder.record(
+                AiProvider.GLM, modelOptions.modelOr(aiProperties.getGlm().getModel()), response.usage());
+        return response;
     }
 }

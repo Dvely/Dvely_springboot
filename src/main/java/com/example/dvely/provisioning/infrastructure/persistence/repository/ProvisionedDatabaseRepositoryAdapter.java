@@ -1,6 +1,7 @@
 package com.example.dvely.provisioning.infrastructure.persistence.repository;
 
 import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
+import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseListView;
 import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepository;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import com.example.dvely.provisioning.infrastructure.persistence.entity.ProvisionedDatabaseEntity;
@@ -47,10 +48,8 @@ public class ProvisionedDatabaseRepositoryAdapter implements ProvisionedDatabase
     }
 
     @Override
-    public List<ProvisionedDatabase> findActiveByProjectIdOrderByCreatedAtDesc(Long projectId) {
-        return springDataRepository.findByProjectIdAndStatusNotOrderByCreatedAtDesc(
-                        projectId, ProvisionStatus.EXPIRED.name())
-                .stream().map(ProvisionedDatabaseEntity::toDomain).toList();
+    public List<ProvisionedDatabaseListView> findActiveListViewsByProjectId(Long projectId) {
+        return springDataRepository.findActiveListViews(projectId, ProvisionStatus.EXPIRED.name());
     }
 
     @Override

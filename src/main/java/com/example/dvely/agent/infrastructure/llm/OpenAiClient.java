@@ -3,7 +3,9 @@ package com.example.dvely.agent.infrastructure.llm;
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.port.out.LlmPort;
 import com.example.dvely.agent.domain.value.AiModelOptions;
+import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageRecorder;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -19,10 +21,14 @@ public class OpenAiClient implements LlmPort {
     static final String PROVIDER_NAME = "OpenAI";
 
     private final AiProperties aiProperties;
+    private final LlmUsageRecorder llmUsageRecorder;
 
     @Override
     public String complete(String systemPrompt, List<LlmMessage> messages, AiModelOptions modelOptions) {
-        return OpenAiCompatibleChat.complete(endpoint(), systemPrompt, messages, modelOptions);
+        OpenAiCompatibleChat.Completion completion =
+                OpenAiCompatibleChat.complete(endpoint(), systemPrompt, messages, modelOptions);
+        llmUsageRecorder.record(AiProvider.OPENAI, completion.model(), completion.usage());
+        return completion.content();
     }
 
     private OpenAiCompatibleChat.Endpoint endpoint() {

@@ -3,6 +3,7 @@ package com.example.dvely.domainbinding.application.facade;
 import com.example.dvely.domainbinding.application.command.DomainBindingCommandService;
 import com.example.dvely.domainbinding.application.command.dto.BindDomainCommand;
 import com.example.dvely.domainbinding.application.query.DomainBindingQueryService;
+import com.example.dvely.common.paging.CursorPage;
 import com.example.dvely.domainbinding.application.result.DomainBindingResult;
 import com.example.dvely.domainbinding.application.result.DomainSearchResult;
 import com.example.dvely.domainbinding.application.result.VerificationGuideResult;
@@ -21,8 +22,11 @@ public class DomainBindingFacade {
         return queryService.search(keyword);
     }
 
-    public List<DomainBindingResult> getProjectDomains(Long ownerUserId, Long projectId) {
-        return queryService.getProjectDomains(ownerUserId, projectId);
+    public CursorPage<DomainBindingResult> getProjectDomains(Long ownerUserId,
+                                                            Long projectId,
+                                                            Integer limit,
+                                                            String after) {
+        return queryService.getProjectDomains(ownerUserId, projectId, limit, after);
     }
 
     public DomainBindingResult bindDomain(Long ownerUserId, Long projectId, BindDomainCommand command) {

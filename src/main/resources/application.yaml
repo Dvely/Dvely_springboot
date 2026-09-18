@@ -1,3 +1,38 @@
+# 앱은 루프백에만 바인딩한다.
+#
+# 프리뷰 컨테이너는 사용자가 연결한 저장소를 실제로 빌드해 돌린다 — npm postinstall 스크립트나
+# 변조된 의존성이 그 안에서 실행된다는 뜻이다. 컨테이너 간 통신은 막혀 있지만(enable_icc=false)
+# 브리지 게이트웨이를 통해 호스트 서비스로 나가는 길은 그 옵션과 무관하게 열려 있다(실측:
+# 운영과 같은 격리 설정의 컨테이너에서 호스트 리스너에 도달함). 0.0.0.0 에 붙어 있으면 그 길
+# 끝에 Qeploy API 가 있다.
+#
+# 앞단에 nginx 가 있고 127.0.0.1:8080 으로 프록시하므로(deploy/setup-dev-server.sh) 루프백
+# 바인딩으로 정상 동작한다. MySQL 은 이미 같은 이유로 루프백에 묶여 있다.
+#
+# 컨테이너 안에서 앱을 띄우는 배포 형태가 생기면 그때 이 값을 0.0.0.0 으로 덮는다.
+server:
+  address: ${QEPLOY_BIND_ADDRESS:127.0.0.1}
+
+  # 새 연결만 막고 이미 들어온 요청은 마무리한다. Boot 4 부터는 이것이 기본값이지만(3.x 까지는
+  # immediate 였다) 아래 timeout-per-shutdown-phase 를 이 값에 맞춰 조정하므로 의도를 명시해 둔다.
+  # 기본값에 기대면 그 둘의 연결이 보이지 않는다.
+  shutdown: graceful
+
+  compression:
+    enabled: true
+    # 기본값은 2KB 다. 목록 응답(프로젝트·태스크·배포 이력)이 대개 그 아래에 걸려 압축을 못 받았다.
+    min-response-size: 1KB
+    # 기본 목록에 text/event-stream 이 없다는 사실에 기대지 않고 직접 나열한다.
+    # ⚠️ 여기에 text/event-stream 을 넣지 마라. 압축이 붙으면 청크가 버퍼링돼 스트림이 멈춘 것처럼
+    # 보인다 — 에이전트 진행 상황(AgentController /events/stream)과 프리뷰 게이트웨이 프록시가
+    # 모두 SSE 다.
+    mime-types: application/json,application/xml,text/xml,text/html,text/plain,text/css,text/javascript,application/javascript
+
+  tomcat:
+    # 기본 60s. 연결만 맺고 요청 줄을 보내지 않는 소켓이 그동안 요청 스레드를 붙든다. 정상
+    # 클라이언트는 연결 직후 요청을 보내므로 20s 로 줄여도 여유가 있고, 장애 시 스레드가 더 빨리 돈다.
+    connection-timeout: 20s
+
 spring:
   profiles:
     active: local
@@ -17,14 +52,66 @@ spring:
     baseline-version: 5
 
   jpa:
+    # SSE 진행 스트림이 커넥션을 5분씩 쥐고 있었다. OSIV 는 EntityManager(따라서 JDBC 커넥션)를
+    # 요청이 끝날 때까지 붙들어 두는데, 일반 REST 요청은 수십 ms 라 티가 안 나지만 SSE 요청의
+    # 수명은 스트림 수명(STREAM_TIMEOUT_MS 5분)이다. 스트림이 여러 개 열리면 그만큼 커넥션이
+    # 묶여 풀이 마른다.
+    #
+    # 2026-09-08 dev 실측: 01:52 부터 22분간 "Connection is not available (total=10, active=10,
+    # idle=0)" 이 이어지고 재기동으로만 풀렸다. 그 사이 auth/refresh·approvals 가 500 을 냈고
+    # 스케줄 워커도 전부 실패했다 — DB 커넥션이 필요한 모든 것이 함께 죽는다. #312 로 넣은 누수
+    # 탐지가 07:09 에 범인을 이름으로 찍었다:
+    #   Connection leak detection triggered ... at AgentEventStreamService.open(...:31)
+    #
+    # 끄는 것이 안전한 이유: 이 프로젝트는 JPA 연관관계를 하나도 쓰지 않고(@ManyToOne/@OneToMany
+    # 등 0건), 엔티티는 전부 toDomain() 으로 도메인 객체에 옮겨 담아 나간다. 트랜잭션 밖에서
+    # 지연 로딩될 대상 자체가 없다.
+    open-in-view: false
     database: mysql # 사용할 데이터베이스 유형 지정 (MySQL)
     database-platform: org.hibernate.dialect.MySQLDialect # Hibernate에서 사용할 MySQL 방언(dialect) 설정
-    show-sql: true # 실행된 SQL 쿼리를 콘솔에 출력할지 여부 설정
+    # show-sql / format_sql 은 일부러 두지 않는다. show-sql 은 System.out 직출력이라 logback
+    # 레벨로 끌 수 없어, prod·dev 어느 쪽도 덮지 않는 이상 운영에서도 모든 SQL 이 그대로 찍혔다.
+    # dev 로그가 하루 약 265MB 로 불어 3주 반 만에 6.6GB 가 됐고, 디스크가 차는 순간 앱·MySQL·
+    # 프리뷰 컨테이너가 한꺼번에 죽는다(deploy/README.md §5).
+    #
+    # 로컬에서 SQL 을 보려면 gitignore 된 application-local.yml 에 아래를 넣는다. 이쪽은 로거라
+    # 프로파일별로 켜고 끌 수 있다:
+    #   logging:
+    #     level:
+    #       org.hibernate.SQL: DEBUG              # 실행된 SQL
+    #       org.hibernate.orm.jdbc.bind: TRACE    # 바인딩 파라미터까지 (Hibernate 6+)
     hibernate:
       ddl-auto: validate # Flyway migration 기준 스키마와 Entity 매핑 일치 여부만 검증
-    properties:
-      hibernate:
-        format_sql: true # 출력되는 SQL 쿼리를 보기 좋게 포맷팅
+
+  # server.shutdown=graceful 이 쓰는 단계별 상한. 기본값 30s 에서 줄인 것이다.
+  #
+  # 전체 종료 예산의 상한은 pm2 kill_timeout 30s 다(deploy/ecosystem.config*.js.example).
+  # 즉 기본값 30s 는 웹 단계 하나가 그 예산을 통째로 쓸 수 있다는 뜻이고, 그러면 그 뒤에 오는
+  # executor 정리(AsyncConfig)는 시작도 못 해보고 SIGKILL 을 맞는다.
+  #
+  # 그리고 이 앱은 SSE 를 상시로 열어 둔다(에이전트 진행 스트림 5분, 프리뷰 게이트웨이 프록시는
+  # 끝이 없다). 그 스트림은 어차피 유예 안에 끝나지 않으므로, 값이 크면 "스트림이 열려 있는 한
+  # 매번 그 시간을 통째로 소진"하는 결과가 된다 — 배포마다 그만큼 느려질 뿐 얻는 게 없다.
+  # 평범한 REST 요청은 문서상 p95 가 1.5s 안쪽이라 10s 면 드레인에 충분하고, EventSource 는
+  # 끊겨도 알아서 재연결한다.
+  lifecycle:
+    timeout-per-shutdown-phase: 10s
+
+  task:
+    scheduling:
+      # 기본값은 1 이다. @Scheduled 가 29개(27개 파일)인데 스레드가 하나라 전부 직렬화됐다 —
+      # Docker prune·EIP 스윕·도메인 검증(20건 × 외부 API)이 도는 동안 1초 폴링 워커 4종
+      # (agent·deployment·webhook·cloud-connection)이 통째로 멈춘다. 즉 사용자 작업 지연이
+      # 외부 API 속도에 그대로 묶인다. 대부분이 짧은 폴링이고 긴 것은 소수라 6 이면 겹침이 풀린다.
+      pool:
+        size: 6
+      # spring.task.scheduling.shutdown.await-termination 은 켜지 않는다(실측으로 되돌렸다).
+      # 켜면 ThreadPoolTaskScheduler 가 shutdownNow 대신 shutdown 을 부르는데,
+      # ScheduledThreadPoolExecutor 는 그때 이미 큐에 들어간 지연 태스크를 그대로 남긴다
+      # (executeExistingDelayedTasksAfterShutdownPolicy 기본 true). @Scheduled 의 다음 실행분이
+      # 전부 큐에 있으므로 — Docker 스윕은 6시간 뒤다 — 풀이 제때 종료되지 못한다. 실제로 5s 를
+      # 다 쓰고 "Timed out while waiting for executor 'taskScheduler' to terminate" 만 남겼다.
+      # 게다가 DataSource 가 그보다 먼저 닫혀서(빈 파괴 순서) 기다려봐야 DB 작업은 어차피 실패한다.
 
 # Swagger UI readability options (SwaggerConfig.java owns the OpenAPI bean/GroupedOpenApi
 # definitions; these are UI-only display preferences, no effect on the API contract itself).
@@ -105,7 +192,71 @@ qeploy:
     # 안에만 있어서, 기본 TTL 안에 답하지 못하면 승인해도 올릴 것이 남지 않는다.
     binding-approval-hold: ${QEPLOY_PREVIEW_BINDING_APPROVAL_HOLD:6h}
     cleanup-interval-ms: ${QEPLOY_PREVIEW_CLEANUP_INTERVAL_MS:60000}
+    # 프리뷰 컨테이너의 바깥 통신을 허용목록으로 좁힌다 (#332 4단계).
+    #
+    # 기본은 꺼짐이다. 허용목록이 좁으면 빌드가 깨지는데 그 실패는 사용자 프로젝트마다 다르게
+    # 나타나 원인을 가리기 어렵다 — 실제 프로젝트(정적·Node·JAVA_FULLSTACK)로 태워 목록을 확인한
+    # 뒤에 켠다.
+    #
+    # 켜면 프리뷰마다 전용 --internal 네트워크를 만들고, 프록시 하나가 그 전부와 bridge 에 붙는다.
+    # 공유 네트워크 하나로는 안 된다 — enable_icc=false 를 켜면 프리뷰가 프록시에도 닿지 못하고,
+    # 끄면 프리뷰끼리 서로 닿는다(2026-09-15 실측).
+    egress:
+      enabled: ${QEPLOY_PREVIEW_EGRESS_ENABLED:false}
+      proxy-image: ${QEPLOY_PREVIEW_EGRESS_PROXY_IMAGE:alpine:3.20}
+      proxy-name: ${QEPLOY_PREVIEW_EGRESS_PROXY_NAME:qeploy-preview-egress}
+      proxy-alias: ${QEPLOY_PREVIEW_EGRESS_PROXY_ALIAS:qeploy-egress}
+      proxy-port: ${QEPLOY_PREVIEW_EGRESS_PROXY_PORT:8888}
+      network-prefix: ${QEPLOY_PREVIEW_EGRESS_NETWORK_PREFIX:qeploy-preview-}
+      # 통째로 일치해야 한다 — github.com 이 github.com.evil.test 까지 열지 않는다.
+      # 여기서 빠진 호스트는 "설치가 안 된다" 로만 드러나므로 실제 빌드로 확인하고 좁힌다.
+      allowed-hosts: >-
+        ${QEPLOY_PREVIEW_EGRESS_ALLOWED_HOSTS:
+        dl-cdn.alpinelinux.org,
+        registry.npmjs.org,
+        registry.yarnpkg.com,
+        github.com,
+        codeload.github.com,
+        raw.githubusercontent.com,
+        objects.githubusercontent.com,
+        repo.maven.apache.org,
+        plugins.gradle.org,
+        services.gradle.org,
+        dvely.github.io}
+  # 퍼블리싱 템플릿 카탈로그. 정본은 이 서버가 아니라 템플릿 저장소(qeploy-templates)가 Pages 로
+  # 발행하는 catalog.json 이다 — 템플릿 변경 주기와 서버 배포 주기를 묶지 않기 위해서다.
+  # 갱신에 실패하면 직전에 읽어둔 목록을 계속 쓴다. 한 번도 읽지 못한 경우에만 503 이다.
+  template:
+    catalog:
+      url: ${QEPLOY_TEMPLATE_CATALOG_URL:https://dvely.github.io/qeploy-templates/catalog.json}
+      refresh-interval: ${QEPLOY_TEMPLATE_CATALOG_REFRESH_INTERVAL:10m}
+      request-timeout: ${QEPLOY_TEMPLATE_CATALOG_REQUEST_TIMEOUT:5s}
+
+  # 컨테이너가 남기고 간 도커 찌꺼기(고아 볼륨 · dangling 이미지 · 오래된 빌드 캐시) 정리.
+  # 컨테이너는 지워도 그것들은 남는다 — dev 에서 컨테이너 0 개인데 볼륨 2.2GB + 빌드 캐시 6.5GB 가
+  # 쌓여 디스크의 절반 이상을 찌꺼기가 차지한 적이 있다. 디스크가 차면 앱·MySQL·프리뷰가 함께 죽는다.
+  #
+  # 도커를 다른 것과 공유하는 환경이면 enabled 를 끈다 — 남의 캐시까지 지우면 안 된다.
+  docker:
+    sweep:
+      enabled: ${QEPLOY_DOCKER_SWEEP_ENABLED:true}
+      interval-ms: ${QEPLOY_DOCKER_SWEEP_INTERVAL_MS:21600000}
+      initial-delay-ms: ${QEPLOY_DOCKER_SWEEP_INITIAL_DELAY_MS:600000}
+      # 이 시간 안에 쓰인 빌드 캐시는 남긴다. 방금 만든 캐시까지 날리면 다음 빌드가 통째로 느려진다.
+      build-cache-keep-hours: ${QEPLOY_DOCKER_SWEEP_BUILD_CACHE_KEEP_HOURS:48}
   agent:
+    # 에이전트 태스크(CODE·DEPLOY 등)를 실제로 돌리는 스레드풀.
+    #
+    # 실질 동시 실행은 core-size 다 — ThreadPoolExecutor 는 큐가 가득 차야 코어를 넘겨
+    # 스레드를 늘린다. 예전 설정(core2/max5/queue10)에서 max5 는 도달할 수 없는 값이었다.
+    #
+    # 이 태스크들은 벽시계 시간 대부분을 LLM 응답 대기로 쓰므로 코어 수보다 조금 넉넉히 잡는다.
+    # CPU 를 실제로 쓰는 구간은 컨테이너 안 빌드뿐이다. 자원이 다른 환경에서는 이 값을 낮춘다 —
+    # CODE 태스크 하나당 Docker 컨테이너가 하나 뜨므로 메모리가 먼저 한계에 닿는다.
+    executor:
+      core-size: ${QEPLOY_AGENT_EXECUTOR_CORE_SIZE:4}
+      max-size: ${QEPLOY_AGENT_EXECUTOR_MAX_SIZE:8}
+      queue-capacity: ${QEPLOY_AGENT_EXECUTOR_QUEUE_CAPACITY:8}
     worker:
       poll-interval-ms: ${QEPLOY_AGENT_WORKER_POLL_INTERVAL_MS:1000}
       heartbeat-interval-ms: ${QEPLOY_AGENT_WORKER_HEARTBEAT_INTERVAL_MS:30000}
@@ -117,16 +268,30 @@ qeploy:
       # ADR-Y2 (#55): StuckApprovalSweeper's poll interval — defense-in-depth recovery for the D1
       # write-skew stuck state (structurally prevented by ADR-Y1's lock hierarchy; this is the
       # safety net for anything that slips through anyway).
-      sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_SWEEP_INTERVAL_MS:60000}
+      #
+      # #340 5-7: 60초 → 5분. 이 스윕은 자기 자신의 자바독이 "정상이면 항상 0건" 이라고 적은
+      # 회귀망이다. 회귀가 실제로 생겼을 때 5분 안에 잡히면 충분하고(사용자는 이미 승인 버튼을
+      # 누른 뒤 기다리는 중이 아니다 — 그 경로는 ADR-Y1 이 구조적으로 막았다), 그 사이 매분
+      # 도는 것은 정상 상태에서 순수한 낭비다.
+      sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_SWEEP_INTERVAL_MS:300000}
       # AbandonedApprovalSweeper: 아무도 결정하지 않은 승인 대기 태스크를 닫기까지 기다리는 시간.
       # 넉넉해야 한다 — 승인 카드를 띄워둔 채 하루 자리를 비우는 것은 정상이고, 그걸 취소하면
       # 스윕이 오히려 기능을 망가뜨린다. 0 이하로 두면 스윕이 꺼진다.
       abandon-ttl: ${QEPLOY_AGENT_APPROVAL_ABANDON_TTL:7d}
       abandon-sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_ABANDON_SWEEP_INTERVAL_MS:3600000}
+    # AgentRunRetentionScheduler (#338): 끝난 지 이만큼 지난 태스크의 plan_json · failure_log 를
+    # 비우고 진행 이벤트를 지운다. run 행 자체는 preview_sessions · project_changes 의 FK 때문에
+    # 남긴다 — 이력 조회는 계속 동작한다. 0 이하로 두지 말 것(그러면 방금 끝난 태스크를 지운다).
+    retention-days: ${QEPLOY_AGENT_RETENTION_DAYS:90}
+    retention-sweep-interval-ms: ${QEPLOY_AGENT_RETENTION_SWEEP_INTERVAL_MS:3600000}
   deployment:
     worker:
       poll-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_POLL_INTERVAL_MS:1000}
       heartbeat-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_HEARTBEAT_INTERVAL_MS:30000}
+      # #340 5-2: deploymentExecutor 가 포화라 claim 한 이력을 넘기지 못했을 때, PENDING 으로
+      # 되돌리며 next_run_at 에 얹는 backoff. 포화 상태에서 claim<->release 가 매 폴링 반복되는
+      # 것을 막는다(AgentRunWorker 의 같은 이름 설정과 같은 역할).
+      dispatch-reject-backoff-ms: ${QEPLOY_DEPLOYMENT_WORKER_DISPATCH_REJECT_BACKOFF_MS:5000}
     recovery:
       # 결과 웹훅을 놓쳐 IN_PROGRESS 에 멈춘 배포를 GitHub 에 직접 물어 회수한다.
       poll-interval-ms: ${QEPLOY_DEPLOYMENT_RECOVERY_POLL_INTERVAL_MS:60000}
@@ -140,6 +305,11 @@ qeploy:
   cloud-connection:
     worker:
       poll-interval-ms: ${QEPLOY_CLOUD_CONNECTION_WORKER_POLL_INTERVAL_MS:1000}
+    guide:
+      # ROLE_ARN 방식 신뢰 정책에 박히는 값 — 사용자 역할을 AssumeRole 하는 Qeploy 컨트롤 플레인의
+      # AWS identity ARN. 환경마다 다르므로 배포 환경에서 설정한다. 비면 가이드가 placeholder 를
+      # 노출하고 대체를 안내한다(그 신뢰 정책은 그대로 쓸 수 없다).
+      platform-principal-arn: ${QEPLOY_CLOUD_CONNECTION_PLATFORM_PRINCIPAL_ARN:}
   provisioning:
     # LOCAL DB 의 수명. 프리뷰 세션 TTL(preview.ttl, 기본 30m)과 맞춘다 — DB 가 프리뷰 컨테이너
     # 옆에 사는데 세션보다 오래 살면 의미가 없고, 짧으면 프리뷰가 도는 중에 DB 가 먼저 사라진다.
@@ -162,6 +332,15 @@ qeploy:
   webhook:
     worker:
       poll-interval-ms: ${QEPLOY_WEBHOOK_WORKER_POLL_INTERVAL_MS:1000}
+      # #340 5-3: webhookExecutor 가 포화라 claim 한 배달을 넘기지 못했을 때, PENDING 으로
+      # 되돌리며 next_attempt_at 에 얹는 backoff.
+      dispatch-reject-backoff-ms: ${QEPLOY_WEBHOOK_WORKER_DISPATCH_REJECT_BACKOFF_MS:5000}
+    # WebhookDeliveryRetentionScheduler (#338): 이 테이블에는 삭제 로직이 없어서 payload
+    # LONGBLOB 이 이벤트마다 영구히 쌓이고 있었다. 멱등·재시도를 위한 기록이라 최종 상태에
+    # 도달하고 며칠 지나면 아무도 읽지 않는다. 터미널 상태만 지운다 — 처리 대기·재시도 대기·
+    # 처리 중인 배달을 지우면 그 GitHub 이벤트가 유실된다(재전송을 요청할 방법이 없다).
+    retention-days: ${QEPLOY_WEBHOOK_RETENTION_DAYS:7}
+    retention-sweep-interval-ms: ${QEPLOY_WEBHOOK_RETENTION_SWEEP_INTERVAL_MS:3600000}
   chat:
     trash-cleanup-interval-ms: ${QEPLOY_CHAT_TRASH_CLEANUP_INTERVAL_MS:3600000}
   audit:
@@ -169,6 +348,26 @@ qeploy:
     # a proposed default the team confirmed (180 days), not a requirement derived from product docs.
     retention-days: ${QEPLOY_AUDIT_RETENTION_DAYS:180}
     retention-sweep-interval-ms: ${QEPLOY_AUDIT_RETENTION_SWEEP_INTERVAL_MS:3600000}
+  api-token:
+    # TokenCleanupScheduler (#338): 만료된 PAT 을 지우기까지의 유예. 만료 즉시 지우면 목록에서
+    # 사라져 사용자가 인증이 왜 깨졌는지 알 수 없다 — "만료됨"을 얼마간 보여준 뒤 지운다.
+    expired-grace-days: ${QEPLOY_API_TOKEN_EXPIRED_GRACE_DAYS:30}
+
+  # #340 5-1 — 1초 폴링 워커(Agent·배포·클라우드 연결·웹훅)의 적응형 백오프.
+  #
+  # 워커의 @Scheduled 간격(각 도메인의 worker.poll-interval-ms)은 그대로 1초이고, 여기 값은
+  # "그 틱에 DB 를 칠지"를 정한다. 일이 있으면 base-delay-ms, 없으면 두 배씩 늘려 max-delay-ms
+  # 까지 물러난다. 유휴 상태 DB 비용의 대부분이 폴링당 트랜잭션 의례였으므로, 폴링 횟수를 줄이면
+  # 의례까지 같은 비율로 줄어든다.
+  #
+  # max-delay-ms 를 늘려도 사용자 대기가 늘지는 않는다 — enqueue 가 커밋되면 그 큐의 백오프가
+  # 즉시 풀린다(WorkerPollGate). 이 값이 실제로 정하는 것은 "다른 인스턴스가 넣은 일을 최대 얼마나
+  # 늦게 보는가"다. 깨우기 신호는 JVM 로컬이라 인스턴스를 넘지 못하므로, 이 폴백 폴링이 다중
+  # 인스턴스 안전성의 마지막 보루다. 0 으로 두면 안 된다.
+  worker:
+    poll:
+      base-delay-ms: ${QEPLOY_WORKER_POLL_BASE_DELAY_MS:1000}
+      max-delay-ms: ${QEPLOY_WORKER_POLL_MAX_DELAY_MS:30000}
 
 # Cloudflare DNS - managed subdomain automation
 cloudflare:
@@ -181,3 +380,18 @@ cloudflare:
   api-base-url: https://api.cloudflare.com/client/v4
   ttl: 1
   proxied: true
+
+logging:
+  pattern:
+    # 모든 로그 줄에 요청 상관관계 ID 를 얹는다(RequestIdFilter 가 MDC 에 심는다). 콘솔 패턴 전체를
+    # 갈아엎는 대신 Spring Boot 기본 패턴이 참조하는 LOG_LEVEL_PATTERN 자리만 바꿔, 부트 버전이
+    # 올라가며 기본 패턴이 달라져도 따라간다. 요청 밖(스케줄러·기동)에서는 빈칸으로 나온다.
+    level: "%5p [%X{requestId:-}]"
+  level:
+    # docker-java 3.7.1 의 AbstrDockerCmd.exec() 는 LOGGER.debug("Cmd: {}", this) 를 호출하고
+    # toString() 은 모든 필드를 reflection 으로 덤프한다. 그 필드에는 exec 의 cmd(프롬프트 전문)와
+    # env 가 들어 있어, 이 로거가 DEBUG 이면 사용자 소스코드와 비밀이 로그로 그대로 나간다
+    # (3.7.1 + logback 으로 재현 확인). 코딩 에이전트는 키를 파일 스테이징으로 옮겨 env 를 아예
+    # 비웠지만, 프롬프트는 cmd 에 남을 수밖에 없고 DockerContainerService 의 env 경로(프리뷰 DB
+    # 비밀번호)는 여전히 이 로거를 탄다. root=DEBUG 로 뒤집어도 새지 않도록 여기서 못박는다.
+    com.github.dockerjava.core.command: WARN

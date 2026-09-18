@@ -2,6 +2,7 @@ package com.example.dvely.cloudconnection.infrastructure.persistence.repository;
 
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
+import com.example.dvely.cloudconnection.domain.repository.CloudConnectionSummaryView;
 import com.example.dvely.cloudconnection.infrastructure.persistence.entity.CloudConnectionEntity;
 import java.util.List;
 import java.util.Optional;
@@ -38,6 +39,11 @@ public class CloudConnectionRepositoryAdapter implements CloudConnectionReposito
         return springDataRepository.findAllByOwnerUserIdOrderByCreatedAtDesc(ownerUserId).stream()
                 .map(CloudConnectionEntity::toDomain)
                 .toList();
+    }
+
+    @Override
+    public List<CloudConnectionSummaryView> findSummariesByOwnerUserIdOrderByCreatedAtDesc(Long ownerUserId) {
+        return springDataRepository.findSummariesByOwnerUserId(ownerUserId);
     }
 
     @Override

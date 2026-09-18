@@ -1,6 +1,7 @@
 package com.example.dvely.domainbinding.presentation;
 
 import com.example.dvely.domainbinding.application.command.dto.BindDomainCommand;
+import com.example.dvely.common.paging.CursorResponse;
 import com.example.dvely.domainbinding.application.facade.DomainBindingFacade;
 import com.example.dvely.domainbinding.application.result.DomainBindingResult;
 import com.example.dvely.domainbinding.application.result.DomainSearchResult;
@@ -21,6 +22,7 @@ import jakarta.validation.Valid;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -60,13 +62,21 @@ public class DomainBindingController {
         return toSearchResponse(domainBindingFacade.search(keyword));
     }
 
-    @Operation(summary = "프로젝트 도메인 목록 조회", description = "프로젝트에 연결된 도메인 목록을 조회합니다.")
+    @Operation(
+            summary = "프로젝트 도메인 목록 조회",
+            description = "프로젝트에 연결된 도메인 목록을 최신순으로 조회합니다. limit 기본 200, "
+                          + "최대 500(초과 시 500으로 보정). 더 오래된 것이 남아 있으면 응답 헤더 "
+                          + "X-Qeploy-Next-Cursor 에 다음 커서가 실리며, after 로 넘겨 이어 받습니다."
+    )
     @GetMapping("/api/v1/projects/{projectId}/domains")
-    public List<DomainResponse> getProjectDomains(@AuthenticationPrincipal Long ownerUserId,
-                                                  @PathVariable Long projectId) {
-        return domainBindingFacade.getProjectDomains(ownerUserId, projectId).stream()
-                .map(this::toDomainResponse)
-                .toList();
+    public ResponseEntity<List<DomainResponse>> getProjectDomains(
+            @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long projectId,
+            @RequestParam(required = false) Integer limit,
+            @RequestParam(required = false) String after) {
+        return CursorResponse.of(
+                domainBindingFacade.getProjectDomains(ownerUserId, projectId, limit, after)
+                        .map(this::toDomainResponse));
     }
 
     @Operation(

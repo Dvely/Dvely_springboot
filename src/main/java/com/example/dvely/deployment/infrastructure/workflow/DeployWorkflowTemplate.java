@@ -9,6 +9,12 @@ public class DeployWorkflowTemplate {
     private static final String WORKFLOW_NAME = "Qeploy Deploy to GitHub Pages";
     private static final String LEGACY_WORKFLOW_NAME = "Dvely Deploy to GitHub Pages";
 
+    /**
+     * 발행 디렉터리는 러너에서 확정된다. 빌드가 어디에 냈는지는 설정과 프레임워크
+     * 판본에 달려 있어, 워크플로를 만드는 시점에는 확실히 알 수 없다.
+     */
+    private static final String OUT_REF = "${{ steps.publish.outputs.dir }}";
+
     public static String fileName() {
         return WORKFLOW_FILE;
     }
@@ -52,6 +58,9 @@ public class DeployWorkflowTemplate {
                                   PackageManager pm, String nodeVersion) {
         String type   = templateType == null ? "" : templateType.toLowerCase();
         String outDir = publishDir != null ? publishDir : resolvePublishDir(type);
+        // 명시적으로 지정된 발행 경로는 사용자의 선택이므로 건드리지 않는다.
+        boolean nuxt  = publishDir == null
+                && ("nuxt".equals(type) || "nuxtjs".equals(type) || "nuxt3".equals(type));
 
         StringBuilder w = new StringBuilder();
 
@@ -84,7 +93,12 @@ public class DeployWorkflowTemplate {
         w.append("          ref: ${{ inputs.checkout_ref || github.ref_name }}\n\n");
 
         // ── 2. 런타임 설정 ────────────────────────────────────────────────────
-        w.append(runtimeSetupSteps(pm, nodeVersion));
+        // 정적 사이트(package.json 없음)는 Node 도 의존성도 빌드도 필요 없다. setup-node 는
+        // cache 를 켜면 lock 파일을 요구해 그 자리에서 죽고, npm ci 는 package.json 을 찾다 죽는다.
+        boolean staticSite = "static".equals(type);
+        if (!staticSite) {
+            w.append(runtimeSetupSteps(pm, nodeVersion));
+        }
 
         // ── 3. base path 해석 ─────────────────────────────────────────────────
         // path  : trailing slash 포함 (Vite --base, PUBLIC_URL)
@@ -109,41 +123,74 @@ public class DeployWorkflowTemplate {
         w.append("            echo \"base=/${REPO}\" >> $GITHUB_OUTPUT\n");
         w.append("          fi\n\n");
 
-        // ── 4. 프레임워크별 빌드 전 설정 ─────────────────────────────────────
-        String configStep = resolveConfigStep(type, pm);
-        if (!configStep.isEmpty()) {
-            w.append(configStep);
+        // ── 4~6. 프레임워크 설정 · 설치 · 빌드 ───────────────────────────────
+        // 정적 사이트는 셋 다 건너뛴다 — 올릴 파일이 이미 리포지토리에 있다.
+        if (!staticSite) {
+            String configStep = resolveConfigStep(type, pm);
+            if (!configStep.isEmpty()) {
+                w.append(configStep);
+            }
+
+            w.append("      - name: Install dependencies\n");
+            w.append("        run: ").append(pm.installCommand()).append("\n\n");
+
+            w.append("      - name: Build\n");
+            w.append("        run: ").append(resolveBuildCommand(type, pm)).append("\n");
+            w.append("        env:\n");
+            w.append("          BASE_PATH: ${{ steps.base.outputs.path }}\n");
+            w.append("          PUBLIC_URL: ${{ steps.base.outputs.path }}\n");
+            // Next.js 의 basePath 는 trailing slash 가 없어야 한다. 위 두 값은 slash 를 포함하므로
+            // 그대로 쓰면 안 되고, 감싼 config 가 이 값을 읽는다.
+            w.append("          QEPLOY_BASE_PATH: ${{ steps.base.outputs.base }}\n\n");
         }
 
-        // ── 5. 의존성 설치 ────────────────────────────────────────────────────
-        w.append("      - name: Install dependencies\n");
-        w.append("        run: ").append(pm.installCommand()).append("\n\n");
+        // ── 6.5 발행 디렉터리 확정 + 산출물 검증 ─────────────────────────────
+        // 디렉터리를 러너에서 정하는 이유는 Nuxt 다. `nuxi generate` 는 산출물을
+        // `.output/public` 에 내고 `dist` 는 호환용으로 만들어 주는 심볼릭 링크다(Nuxt 4.5
+        // 실측). 링크는 판본·설정에 따라 없을 수도 있고, 발행 액션이 링크를 따라간다는 보장도
+        // 없다. 실물을 가리키면 그 두 불확실성이 함께 사라진다.
+        w.append("      - name: Resolve publish dir\n");
+        w.append("        id: publish\n");
+        w.append("        run: |\n");
+        w.append("          DIR=\"").append(outDir).append("\"\n");
+        if (nuxt) {
+            w.append("          if [ -d \".output/public\" ]; then DIR=\".output/public\"; fi\n");
+        }
+        w.append("          echo \"dir=$DIR\" >> $GITHUB_OUTPUT\n");
+        w.append("          echo \"발행 대상: $DIR\"\n\n");
 
-        // ── 6. 빌드 ──────────────────────────────────────────────────────────
-        w.append("      - name: Build\n");
-        w.append("        run: ").append(resolveBuildCommand(type, pm)).append("\n");
-        w.append("        env:\n");
-        w.append("          BASE_PATH: ${{ steps.base.outputs.path }}\n");
-        w.append("          PUBLIC_URL: ${{ steps.base.outputs.path }}\n");
-        // Next.js 의 basePath 는 trailing slash 가 없어야 한다. 위 두 값은 slash 를 포함하므로
-        // 그대로 쓰면 안 되고, 감싼 config 가 이 값을 읽는다.
-        w.append("          QEPLOY_BASE_PATH: ${{ steps.base.outputs.base }}\n\n");
+        // 산출물 검증은 아래 custom domain 스텝의 `mkdir -p` 보다 <b>앞</b>이어야 한다.
+        // 그 mkdir 은 CNAME 을 쓰려고 디렉터리를 보장하는데, 부수효과로 "산출물이 없다" 를
+        // "산출물이 비었다" 로 바꾼다. 그러면 실패한 스텝 하나 없이 빈 사이트가 배포되고,
+        // 사용자는 어디를 볼지 알 수 없다 — 조용한 실패가 시끄러운 실패보다 나쁘다.
+        w.append("      - name: Verify build output\n");
+        w.append("        run: |\n");
+        w.append("          DIR=\"").append(OUT_REF).append("\"\n");
+        w.append("          if [ ! -d \"$DIR\" ]; then\n");
+        w.append("            echo \"::error::빌드 산출물 디렉터리가 없습니다: $DIR\"\n");
+        w.append("            echo \"빌드가 산출물을 다른 경로에 냈거나, 아무것도 만들지 않았습니다.\"\n");
+        w.append("            exit 1\n");
+        w.append("          fi\n");
+        w.append("          if [ -z \"$(ls -A \"$DIR\" 2>/dev/null)\" ]; then\n");
+        w.append("            echo \"::error::빌드 산출물 디렉터리가 비어 있습니다: $DIR\"\n");
+        w.append("            exit 1\n");
+        w.append("          fi\n\n");
 
         // ── 7. SPA 라우팅 404 대응 (빌드 결과물 있을 때만) ───────────────────
         w.append("      - name: Copy index.html to 404.html\n");
         w.append("        run: |\n");
-        w.append("          [ -f ").append(outDir).append("/index.html ]");
-        w.append(" && cp ").append(outDir).append("/index.html ").append(outDir).append("/404.html || true\n\n");
+        w.append("          [ -f ").append(OUT_REF).append("/index.html ]");
+        w.append(" && cp ").append(OUT_REF).append("/index.html ").append(OUT_REF).append("/404.html || true\n\n");
 
         // ── 8. 기존 custom domain 보존 ───────────────────────────────────────
-        w.append(preserveCustomDomainStep(outDir));
+        w.append(preserveCustomDomainStep(OUT_REF));
 
         // ── 9. gh-pages 배포 ──────────────────────────────────────────────────
         w.append("      - name: Deploy to gh-pages\n");
         w.append("        uses: peaceiris/actions-gh-pages@v4\n");
         w.append("        with:\n");
         w.append("          github_token: ${{ secrets.GITHUB_TOKEN }}\n");
-        w.append("          publish_dir: ").append(outDir).append("\n");
+        w.append("          publish_dir: ").append(OUT_REF).append("\n");
 
         return w.toString();
     }
@@ -194,6 +241,7 @@ public class DeployWorkflowTemplate {
             case "svelte", "sveltekit"     -> sveltekitConfigStep(pm);
             case "gatsby"                  -> gatsbyConfigStep();
             case "astro"                   -> astroConfigStep();
+            case "nuxt", "nuxtjs", "nuxt3" -> nuxtConfigStep();
             default                        -> "";
         };
     }
@@ -294,25 +342,78 @@ public class DeployWorkflowTemplate {
      * Vue CLI: publicPath 설정을 위해 vue.config.js 가 없으면 자동 생성.
      * Vue CLI 는 PUBLIC_URL 을 인식하지 않으므로 vue.config.js 에서 직접 지정해야 함.
      */
+    /**
+     * Vue CLI: publicPath 를 배포 시점 값으로 확정한다.
+     *
+     * publicPath 는 trailing slash 를 포함해야 한다 — Vue CLI 가 그대로 자산 URL 앞에 붙이므로,
+     * slash 가 없으면 "/repoassets/app.js" 가 된다.
+     */
     private static String vueCliConfigStep() {
         return "      - name: Configure Vue CLI public path\n"
              + "        run: |\n"
              + "          BASE=\"${{ steps.base.outputs.path }}\"\n"
-             + "          if [ ! -f \"vue.config.js\" ] && [ ! -f \"vue.config.ts\" ]; then\n"
+             + "          USER_CONFIG=\"\"\n"
+             + "          for f in vue.config.js vue.config.ts; do\n"
+             + "            if [ -f \"$f\" ]; then USER_CONFIG=\"$f\"; break; fi\n"
+             + "          done\n"
+             + "          if [ -z \"$USER_CONFIG\" ]; then\n"
              + "            {\n"
              + "              echo \"module.exports = {\"\n"
              + "              echo \"  publicPath: '$BASE',\"\n"
              + "              echo \"};\"\n"
              + "            } > vue.config.js\n"
              + "            echo \"vue.config.js 생성 완료 (publicPath: $BASE)\"\n"
+             + "            exit 0\n"
+             + "          fi\n"
+             + "          # 사용자의 config 는 지우지 않고 옆으로 옮긴다. 우리 config 가 이것을\n"
+             + "          # 불러와 감싸므로, 사용자가 적은 다른 설정은 그대로 살아남는다.\n"
+             + "          EXT=\"${USER_CONFIG##*.}\"\n"
+             + "          WRAPPED=\"vue.config.qeploy-user.$EXT\"\n"
+             + "          mv \"$USER_CONFIG\" \"$WRAPPED\"\n"
+             + "          # ESM 은 확장자를 반드시 적어야 하고, TypeScript 는 반대로 '.ts' 확장자\n"
+             + "          # import 를 허용하지 않는다(allowImportingTsExtensions 없이는 컴파일 오류).\n"
+             + "          if [ \"$EXT\" = \"ts\" ]; then IMPORT_PATH=\"./${WRAPPED%.ts}\"; else IMPORT_PATH=\"./$WRAPPED\"; fi\n"
+             + "          # 확장자만으로는 모듈 종류를 알 수 없다. SvelteKit 의 svelte.config.js 는\n"
+             + "          # 항상 ESM 이고(프로젝트가 \"type\": \"module\" 이다), CJS 로 감싸면 그 자리에서\n"
+             + "          # 깨진다. 그래서 package.json 의 선언까지 본다.\n"
+             + "          IS_ESM=false\n"
+             + "          case \"$EXT\" in mjs|ts) IS_ESM=true;; esac\n"
+             + "          if [ \"$IS_ESM\" = \"false\" ] && grep -q '\"type\"[[:space:]]*:[[:space:]]*\"module\"' package.json 2>/dev/null; then\n"
+             + "            IS_ESM=true\n"
+             + "          fi\n"
+             + "          if [ \"$IS_ESM\" = \"true\" ]; then\n"
+             + "            {\n"
+             + "              echo \"import userConfig from '$IMPORT_PATH';\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const basePath = process.env.BASE_PATH ?? '/';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"export default {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  publicPath: basePath,\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"vue.config.$EXT\"\n"
              + "          else\n"
-             + "            echo \"::warning::vue.config 파일이 존재합니다. publicPath: '$BASE' 가 설정되어 있는지 확인하세요.\"\n"
-             + "          fi\n\n";
+             + "            {\n"
+             + "              echo \"const userConfig = require('$IMPORT_PATH');\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const basePath = process.env.BASE_PATH ?? '/';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"module.exports = {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  publicPath: basePath,\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"vue.config.$EXT\"\n"
+             + "          fi\n"
+             + "          echo \"$USER_CONFIG 를 $WRAPPED 로 옮기고 감쌌습니다 (publicPath: '$BASE')\"\n";
     }
 
     /**
-     * SvelteKit: 정적 배포를 위해 adapter-static 과 svelte.config.js 를 자동 설정.
-     * adapter-static 없이는 빌드 결과물이 정적 파일로 생성되지 않음.
+     * SvelteKit: adapter-static 을 보장하고 paths.base 를 배포 시점 값으로 확정한다.
+     *
+     * paths.base 는 trailing slash 가 있으면 빌드가 거부하고, 루트일 때는 빈 문자열이어야 한다 —
+     * 그래서 slash 없는 쪽(base)을 읽는다. adapter 는 사용자의 것을 그대로 둔다. 정적 어댑터가
+     * 아니면 배포 자체가 성립하지 않지만 그건 base 문제가 아니고, 남의 어댑터를 갈아치우는 것은
+     * 이 스텝이 할 일보다 훨씬 큰 개입이다.
      */
     private static String sveltekitConfigStep(PackageManager pm) {
         String adapterInstallCmd = switch (pm) {
@@ -328,7 +429,11 @@ public class DeployWorkflowTemplate {
              + "            " + adapterInstallCmd + "\n"
              + "            echo \"@sveltejs/adapter-static 설치 완료\"\n"
              + "          fi\n"
-             + "          if [ ! -f \"svelte.config.js\" ] && [ ! -f \"svelte.config.ts\" ]; then\n"
+             + "          USER_CONFIG=\"\"\n"
+             + "          for f in svelte.config.js svelte.config.ts; do\n"
+             + "            if [ -f \"$f\" ]; then USER_CONFIG=\"$f\"; break; fi\n"
+             + "          done\n"
+             + "          if [ -z \"$USER_CONFIG\" ]; then\n"
              + "            {\n"
              + "              echo \"import adapter from '@sveltejs/adapter-static';\"\n"
              + "              echo \"const config = {\"\n"
@@ -340,49 +445,132 @@ public class DeployWorkflowTemplate {
              + "              echo \"export default config;\"\n"
              + "            } > svelte.config.js\n"
              + "            echo \"svelte.config.js 생성 완료 (adapter-static, base: $BASE)\"\n"
+             + "            exit 0\n"
+             + "          fi\n"
+             + "          # 사용자의 config 는 지우지 않고 옆으로 옮긴다. 우리 config 가 이것을\n"
+             + "          # 불러와 감싸므로, 사용자가 적은 다른 설정은 그대로 살아남는다.\n"
+             + "          EXT=\"${USER_CONFIG##*.}\"\n"
+             + "          WRAPPED=\"svelte.config.qeploy-user.$EXT\"\n"
+             + "          mv \"$USER_CONFIG\" \"$WRAPPED\"\n"
+             + "          # ESM 은 확장자를 반드시 적어야 하고, TypeScript 는 반대로 '.ts' 확장자\n"
+             + "          # import 를 허용하지 않는다(allowImportingTsExtensions 없이는 컴파일 오류).\n"
+             + "          if [ \"$EXT\" = \"ts\" ]; then IMPORT_PATH=\"./${WRAPPED%.ts}\"; else IMPORT_PATH=\"./$WRAPPED\"; fi\n"
+             + "          # 확장자만으로는 모듈 종류를 알 수 없다. SvelteKit 의 svelte.config.js 는\n"
+             + "          # 항상 ESM 이고(프로젝트가 \"type\": \"module\" 이다), CJS 로 감싸면 그 자리에서\n"
+             + "          # 깨진다. 그래서 package.json 의 선언까지 본다.\n"
+             + "          IS_ESM=false\n"
+             + "          case \"$EXT\" in mjs|ts) IS_ESM=true;; esac\n"
+             + "          if [ \"$IS_ESM\" = \"false\" ] && grep -q '\"type\"[[:space:]]*:[[:space:]]*\"module\"' package.json 2>/dev/null; then\n"
+             + "            IS_ESM=true\n"
+             + "          fi\n"
+             + "          if [ \"$IS_ESM\" = \"true\" ]; then\n"
+             + "            {\n"
+             + "              echo \"import userConfig from '$IMPORT_PATH';\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const basePath = process.env.BASE_PATH ?? '/';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"export default {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  kit: { ...(resolved.kit ?? {}), paths: { ...(resolved.kit?.paths ?? {}), base } },\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"svelte.config.$EXT\"\n"
              + "          else\n"
-             + "            echo \"::warning::svelte.config 파일이 존재합니다. adapter-static 과 paths.base: '$BASE' 가 설정되어 있는지 확인하세요.\"\n"
-             + "          fi\n\n";
+             + "            {\n"
+             + "              echo \"const userConfig = require('$IMPORT_PATH');\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const basePath = process.env.BASE_PATH ?? '/';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"module.exports = {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  kit: { ...(resolved.kit ?? {}), paths: { ...(resolved.kit?.paths ?? {}), base } },\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"svelte.config.$EXT\"\n"
+             + "          fi\n"
+             + "          echo \"$USER_CONFIG 를 $WRAPPED 로 옮기고 감쌌습니다 (paths.base: '$BASE')\"\n";
     }
 
     /**
-     * Gatsby: pathPrefix 설정을 위해 gatsby-config.js 가 없으면 자동 생성.
-     * --prefix-paths 플래그 없이 빌드하면 pathPrefix 가 무시됨.
+     * Gatsby: pathPrefix 를 배포 시점 값으로 확정한다.
+     *
+     * BASE 가 비어 있을 때(커스텀 도메인) 그냥 빠져나가면 안 된다 — 커밋된 pathPrefix 가 남아
+     * 자산 경로 앞에 "/repo" 가 붙는데, 그 경로에는 아무것도 없다. 비어 있는 것도 확정해야 할
+     * 값이다. 빌드는 이미 --prefix-paths 로 돈다.
      */
     private static String gatsbyConfigStep() {
         return "      - name: Configure Gatsby path prefix\n"
              + "        run: |\n"
              + "          BASE=\"${{ steps.base.outputs.base }}\"\n"
-             + "          if [ -z \"$BASE\" ]; then exit 0; fi\n"
-             + "          CONFIG_EXISTS=false\n"
+             + "          USER_CONFIG=\"\"\n"
              + "          for f in gatsby-config.js gatsby-config.ts gatsby-config.mjs; do\n"
-             + "            if [ -f \"$f\" ]; then CONFIG_EXISTS=true; break; fi\n"
+             + "            if [ -f \"$f\" ]; then USER_CONFIG=\"$f\"; break; fi\n"
              + "          done\n"
-             + "          if [ \"$CONFIG_EXISTS\" = \"false\" ]; then\n"
+             + "          if [ -z \"$USER_CONFIG\" ]; then\n"
              + "            {\n"
              + "              echo \"module.exports = {\"\n"
              + "              echo \"  pathPrefix: '$BASE',\"\n"
              + "              echo \"};\"\n"
              + "            } > gatsby-config.js\n"
              + "            echo \"gatsby-config.js 생성 완료 (pathPrefix: $BASE)\"\n"
+             + "            exit 0\n"
+             + "          fi\n"
+             + "          # 사용자의 config 는 지우지 않고 옆으로 옮긴다. 우리 config 가 이것을\n"
+             + "          # 불러와 감싸므로, 사용자가 적은 다른 설정은 그대로 살아남는다.\n"
+             + "          EXT=\"${USER_CONFIG##*.}\"\n"
+             + "          WRAPPED=\"gatsby-config.qeploy-user.$EXT\"\n"
+             + "          mv \"$USER_CONFIG\" \"$WRAPPED\"\n"
+             + "          # ESM 은 확장자를 반드시 적어야 하고, TypeScript 는 반대로 '.ts' 확장자\n"
+             + "          # import 를 허용하지 않는다(allowImportingTsExtensions 없이는 컴파일 오류).\n"
+             + "          if [ \"$EXT\" = \"ts\" ]; then IMPORT_PATH=\"./${WRAPPED%.ts}\"; else IMPORT_PATH=\"./$WRAPPED\"; fi\n"
+             + "          # 확장자만으로는 모듈 종류를 알 수 없다. SvelteKit 의 svelte.config.js 는\n"
+             + "          # 항상 ESM 이고(프로젝트가 \"type\": \"module\" 이다), CJS 로 감싸면 그 자리에서\n"
+             + "          # 깨진다. 그래서 package.json 의 선언까지 본다.\n"
+             + "          IS_ESM=false\n"
+             + "          case \"$EXT\" in mjs|ts) IS_ESM=true;; esac\n"
+             + "          if [ \"$IS_ESM\" = \"false\" ] && grep -q '\"type\"[[:space:]]*:[[:space:]]*\"module\"' package.json 2>/dev/null; then\n"
+             + "            IS_ESM=true\n"
+             + "          fi\n"
+             + "          if [ \"$IS_ESM\" = \"true\" ]; then\n"
+             + "            {\n"
+             + "              echo \"import userConfig from '$IMPORT_PATH';\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const basePath = process.env.BASE_PATH ?? '/';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"export default {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  pathPrefix: base,\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"gatsby-config.$EXT\"\n"
              + "          else\n"
-             + "            echo \"::warning::gatsby-config 파일이 존재합니다. pathPrefix: '$BASE' 가 설정되어 있는지 확인하세요.\"\n"
-             + "          fi\n\n";
+             + "            {\n"
+             + "              echo \"const userConfig = require('$IMPORT_PATH');\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const basePath = process.env.BASE_PATH ?? '/';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"module.exports = {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  pathPrefix: base,\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"gatsby-config.$EXT\"\n"
+             + "          fi\n"
+             + "          echo \"$USER_CONFIG 를 $WRAPPED 로 옮기고 감쌌습니다 (pathPrefix: '$BASE')\"\n";
     }
 
     /**
-     * Astro: base 설정을 위해 astro.config.mjs 가 없으면 자동 생성.
-     * base 없이 빌드하면 서브경로에서 asset 404 발생.
+     * Astro: base 와 output 을 배포 시점 값으로 확정한다.
+     *
+     * base 는 빈 문자열이 아니라 '/' 여야 한다 — Astro 의 기본값이 '/' 이고 빈 값은 경로 계산을
+     * 어긋나게 한다. output 이 static 이 아니면 정적 산출물이 나오지 않아 publish 스텝이 찾을
+     * 디렉터리가 없다.
      */
     private static String astroConfigStep() {
         return "      - name: Configure Astro base path\n"
              + "        run: |\n"
              + "          BASE=\"${{ steps.base.outputs.base }}\"\n"
-             + "          CONFIG_EXISTS=false\n"
+             + "          USER_CONFIG=\"\"\n"
              + "          for f in astro.config.mjs astro.config.js astro.config.ts; do\n"
-             + "            if [ -f \"$f\" ]; then CONFIG_EXISTS=true; break; fi\n"
+             + "            if [ -f \"$f\" ]; then USER_CONFIG=\"$f\"; break; fi\n"
              + "          done\n"
-             + "          if [ \"$CONFIG_EXISTS\" = \"false\" ]; then\n"
+             + "          if [ -z \"$USER_CONFIG\" ]; then\n"
              + "            {\n"
              + "              echo \"import { defineConfig } from 'astro/config';\"\n"
              + "              echo \"export default defineConfig({\"\n"
@@ -391,9 +579,115 @@ public class DeployWorkflowTemplate {
              + "              echo \"});\"\n"
              + "            } > astro.config.mjs\n"
              + "            echo \"astro.config.mjs 생성 완료 (base: $BASE)\"\n"
+             + "            exit 0\n"
+             + "          fi\n"
+             + "          # 사용자의 config 는 지우지 않고 옆으로 옮긴다. 우리 config 가 이것을\n"
+             + "          # 불러와 감싸므로, 사용자가 적은 다른 설정은 그대로 살아남는다.\n"
+             + "          EXT=\"${USER_CONFIG##*.}\"\n"
+             + "          WRAPPED=\"astro.config.qeploy-user.$EXT\"\n"
+             + "          mv \"$USER_CONFIG\" \"$WRAPPED\"\n"
+             + "          # ESM 은 확장자를 반드시 적어야 하고, TypeScript 는 반대로 '.ts' 확장자\n"
+             + "          # import 를 허용하지 않는다(allowImportingTsExtensions 없이는 컴파일 오류).\n"
+             + "          if [ \"$EXT\" = \"ts\" ]; then IMPORT_PATH=\"./${WRAPPED%.ts}\"; else IMPORT_PATH=\"./$WRAPPED\"; fi\n"
+             + "          # 확장자만으로는 모듈 종류를 알 수 없다. SvelteKit 의 svelte.config.js 는\n"
+             + "          # 항상 ESM 이고(프로젝트가 \"type\": \"module\" 이다), CJS 로 감싸면 그 자리에서\n"
+             + "          # 깨진다. 그래서 package.json 의 선언까지 본다.\n"
+             + "          IS_ESM=false\n"
+             + "          case \"$EXT\" in mjs|ts) IS_ESM=true;; esac\n"
+             + "          if [ \"$IS_ESM\" = \"false\" ] && grep -q '\"type\"[[:space:]]*:[[:space:]]*\"module\"' package.json 2>/dev/null; then\n"
+             + "            IS_ESM=true\n"
+             + "          fi\n"
+             + "          if [ \"$IS_ESM\" = \"true\" ]; then\n"
+             + "            {\n"
+             + "              echo \"import userConfig from '$IMPORT_PATH';\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const basePath = process.env.BASE_PATH ?? '/';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"export default {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  base: base || '/',\"\n"
+             + "              echo \"  output: 'static',\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"astro.config.$EXT\"\n"
              + "          else\n"
-             + "            echo \"::warning::astro.config 파일이 존재합니다. base: '$BASE' 와 output: 'static' 이 설정되어 있는지 확인하세요.\"\n"
-             + "          fi\n\n";
+             + "            {\n"
+             + "              echo \"const userConfig = require('$IMPORT_PATH');\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const basePath = process.env.BASE_PATH ?? '/';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"module.exports = {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  base: base || '/',\"\n"
+             + "              echo \"  output: 'static',\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"astro.config.$EXT\"\n"
+             + "          fi\n"
+             + "          echo \"$USER_CONFIG 를 $WRAPPED 로 옮기고 감쌌습니다 (base: '$BASE')\"\n";
+    }
+
+    /**
+     * Nuxt: app.baseURL 을 배포 시점 값으로 확정한다.
+     *
+     * Nuxt 는 여태 분기가 아예 없어 커밋된 nuxt.config 이 유일한 진실이었다. baseURL 은
+     * trailing slash 를 포함해야 한다 — Nuxt 가 자산 URL 앞에 그대로 이어 붙인다.
+     */
+    private static String nuxtConfigStep() {
+        return "      - name: Configure Nuxt base URL\n"
+             + "        run: |\n"
+             + "          BASE=\"${{ steps.base.outputs.path }}\"\n"
+             + "          USER_CONFIG=\"\"\n"
+             + "          for f in nuxt.config.js nuxt.config.ts nuxt.config.mjs; do\n"
+             + "            if [ -f \"$f\" ]; then USER_CONFIG=\"$f\"; break; fi\n"
+             + "          done\n"
+             + "          if [ -z \"$USER_CONFIG\" ]; then\n"
+             + "            {\n"
+             + "              echo \"export default {\"\n"
+             + "              echo \"  app: { baseURL: '$BASE' },\"\n"
+             + "              echo \"};\"\n"
+             + "            } > nuxt.config.js\n"
+             + "            echo \"nuxt.config.js 생성 완료 (app.baseURL: $BASE)\"\n"
+             + "            exit 0\n"
+             + "          fi\n"
+             + "          # 사용자의 config 는 지우지 않고 옆으로 옮긴다. 우리 config 가 이것을\n"
+             + "          # 불러와 감싸므로, 사용자가 적은 다른 설정은 그대로 살아남는다.\n"
+             + "          EXT=\"${USER_CONFIG##*.}\"\n"
+             + "          WRAPPED=\"nuxt.config.qeploy-user.$EXT\"\n"
+             + "          mv \"$USER_CONFIG\" \"$WRAPPED\"\n"
+             + "          # ESM 은 확장자를 반드시 적어야 하고, TypeScript 는 반대로 '.ts' 확장자\n"
+             + "          # import 를 허용하지 않는다(allowImportingTsExtensions 없이는 컴파일 오류).\n"
+             + "          if [ \"$EXT\" = \"ts\" ]; then IMPORT_PATH=\"./${WRAPPED%.ts}\"; else IMPORT_PATH=\"./$WRAPPED\"; fi\n"
+             + "          # 확장자만으로는 모듈 종류를 알 수 없다. SvelteKit 의 svelte.config.js 는\n"
+             + "          # 항상 ESM 이고(프로젝트가 \"type\": \"module\" 이다), CJS 로 감싸면 그 자리에서\n"
+             + "          # 깨진다. 그래서 package.json 의 선언까지 본다.\n"
+             + "          IS_ESM=false\n"
+             + "          case \"$EXT\" in mjs|ts) IS_ESM=true;; esac\n"
+             + "          if [ \"$IS_ESM\" = \"false\" ] && grep -q '\"type\"[[:space:]]*:[[:space:]]*\"module\"' package.json 2>/dev/null; then\n"
+             + "            IS_ESM=true\n"
+             + "          fi\n"
+             + "          if [ \"$IS_ESM\" = \"true\" ]; then\n"
+             + "            {\n"
+             + "              echo \"import userConfig from '$IMPORT_PATH';\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const basePath = process.env.BASE_PATH ?? '/';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"export default {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  app: { ...(resolved.app ?? {}), baseURL: basePath },\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"nuxt.config.$EXT\"\n"
+             + "          else\n"
+             + "            {\n"
+             + "              echo \"const userConfig = require('$IMPORT_PATH');\"\n"
+             + "              echo \"const base = process.env.QEPLOY_BASE_PATH ?? '';\"\n"
+             + "              echo \"const basePath = process.env.BASE_PATH ?? '/';\"\n"
+             + "              echo \"const resolved = typeof userConfig === 'function' ? userConfig() : (userConfig?.default ?? userConfig ?? {});\"\n"
+             + "              echo \"module.exports = {\"\n"
+             + "              echo \"  ...resolved,\"\n"
+             + "              echo \"  app: { ...(resolved.app ?? {}), baseURL: basePath },\"\n"
+             + "              echo \"};\"\n"
+             + "            } > \"nuxt.config.$EXT\"\n"
+             + "          fi\n"
+             + "          echo \"$USER_CONFIG 를 $WRAPPED 로 옮기고 감쌌습니다 (app.baseURL: $BASE)\"\n";
     }
 
     // ── 빌드 명령어 ───────────────────────────────────────────────────────────
@@ -434,6 +728,8 @@ public class DeployWorkflowTemplate {
 
     private static String resolvePublishDir(String type) {
         return switch (type) {
+            // 빌드가 없으므로 리포지토리 루트가 곧 발행 대상이다.
+            case "static"                  -> ".";
             case "cra", "create-react-app" -> "./build";
             case "nextjs", "next"          -> "./out";
             case "gatsby"                  -> "./public";

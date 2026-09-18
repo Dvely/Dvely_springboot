@@ -24,7 +24,8 @@ class ChatMapperTest {
         LocalDateTime createdAt = LocalDateTime.now();
         MessageResult result = new MessageResult(
                 101L, 30L, "user", "hi", 0, createdAt, "task-abc123"
-        );
+        ,
+                        null);
 
         MessageResponse response = chatMapper.toMessageResponse(result);
 
@@ -43,7 +44,8 @@ class ChatMapperTest {
         // both pass a null taskId through MessageResult — the mapper must not fabricate one.
         MessageResult result = new MessageResult(
                 102L, 30L, "assistant", "답변입니다", 0, LocalDateTime.now(), null
-        );
+        ,
+                        null);
 
         MessageResponse response = chatMapper.toMessageResponse(result);
 

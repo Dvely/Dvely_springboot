@@ -1,5 +1,7 @@
 package com.example.dvely.agent.application.orchestrator;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -23,7 +25,11 @@ import com.example.dvely.agent.application.service.RuntimeSetupAgentService;
 import com.example.dvely.agent.application.service.BackendDeployAgentService;
 import com.example.dvely.agent.application.dto.ClarificationRequest;
 import com.example.dvely.agent.application.service.DecisionAgentService;
+import com.example.dvely.agent.application.exception.AgentTokenBudgetExceededException;
+import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageRecorder;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.dvely.agent.application.service.RepositoryBindingGate;
 import com.example.dvely.agent.application.service.ResultApprovalGate;
@@ -58,7 +64,7 @@ class AgentPlanExecutorTest {
 
         verify(taskStore).markStepCompleted("task-1", 1);
         verify(taskStore).markDone("task-1", "preview", "수정 완료");
-        verify(messageService).appendAssistant(21L, "수정 완료");
+        verify(messageService).appendAssistant(21L, "수정 완료", ChatMessageKind.AGENT_RESULT, "task-1");
     }
 
     // ── ADR-Y4 (#55): AgentExecutionRegistry unregister-in-finally wiring ──────────────────────
@@ -85,7 +91,9 @@ class AgentPlanExecutorTest {
                 registry,
                 mock(DecisionAgentService.class),
                 mock(InputWaitStore.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
@@ -122,7 +130,9 @@ class AgentPlanExecutorTest {
                 registry,
                 mock(DecisionAgentService.class),
                 mock(InputWaitStore.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         when(codeService.execute(any(), any(), any(), any(), any(), any()))
@@ -160,7 +170,9 @@ class AgentPlanExecutorTest {
                 mock(AgentExecutionRegistry.class),
                 mock(DecisionAgentService.class),
                 mock(InputWaitStore.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
@@ -204,7 +216,9 @@ class AgentPlanExecutorTest {
                 mock(AgentExecutionRegistry.class),
                 mock(DecisionAgentService.class),
                 mock(InputWaitStore.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
@@ -251,7 +265,9 @@ class AgentPlanExecutorTest {
                 mock(AgentExecutionRegistry.class),
                 mock(DecisionAgentService.class),
                 mock(InputWaitStore.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
@@ -287,7 +303,9 @@ class AgentPlanExecutorTest {
                 mock(AgentExecutionRegistry.class),
                 mock(DecisionAgentService.class),
                 mock(InputWaitStore.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
@@ -319,7 +337,7 @@ class AgentPlanExecutorTest {
 
         verify(taskStore).markStepCompleted("task-1", 1);
         verify(taskStore).markDone("task-1", null, "휴지통 보관 기간은 7일입니다.");
-        verify(messageService).appendAssistant(21L, "휴지통 보관 기간은 7일입니다.");
+        verify(messageService).appendAssistant(21L, "휴지통 보관 기간은 7일입니다.", ChatMessageKind.AGENT_RESULT, "task-1");
     }
 
     @Test
@@ -339,7 +357,8 @@ class AgentPlanExecutorTest {
         );
 
         verify(taskStore).markFailed("task-1", "외부 API 실패");
-        verify(messageService).appendAssistant(21L, "작업 중 오류가 발생했습니다: 외부 API 실패");
+        verify(messageService).appendAssistant(21L, "작업 중 오류가 발생했습니다: 외부 API 실패",
+                ChatMessageKind.TASK_FAILED, "task-1");
     }
 
     @Test
@@ -364,7 +383,9 @@ class AgentPlanExecutorTest {
                 mock(AgentExecutionRegistry.class),
                 mock(DecisionAgentService.class),
                 mock(InputWaitStore.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
         );
 
         AgentStep step = new AgentStep(AgentType.DOMAIN_BIND, Map.of());
@@ -379,7 +400,8 @@ class AgentPlanExecutorTest {
 
         // 단순 텍스트 입력(DOMAIN_BIND)이면 clarification 은 null 로 3-인자 오버로드가 호출된다.
         verify(taskStore).markWaitingInput("task-1", "도메인을 입력해주세요.", null);
-        verify(messageService).appendAssistant(21L, "도메인을 입력해주세요.");
+        verify(messageService).appendAssistant(21L, "도메인을 입력해주세요.",
+                ChatMessageKind.INPUT_REQUIRED, "task-1");
     }
 
     // ── A① 스펙 되묻기(CLARIFY) ─────────────────────────────────────────────────
@@ -447,7 +469,7 @@ class AgentPlanExecutorTest {
                 mock(BackendDeployAgentService.class), taskStore, messageService,
                 mock(BuildFailureRecoveryService.class), mock(ChangeService.class), mock(ResultApprovalGate.class),
                 mock(RepositoryBindingGate.class), mock(AgentExecutionRegistry.class),
-                decision, inputWaitStore, new ObjectMapper());
+                decision, inputWaitStore, new ObjectMapper(), usageRecorder(), new AiProperties());
     }
 
     @Test
@@ -472,7 +494,9 @@ class AgentPlanExecutorTest {
                 mock(AgentExecutionRegistry.class),
                 mock(DecisionAgentService.class),
                 mock(InputWaitStore.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
         );
         AgentStep step = new AgentStep(AgentType.RUNTIME_SETUP,
                 Map.of("runtimeType", "NODE_SERVER", "dbEngine", "MYSQL"));
@@ -506,7 +530,9 @@ class AgentPlanExecutorTest {
                 mock(AgentExecutionRegistry.class),
                 mock(DecisionAgentService.class),
                 mock(InputWaitStore.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
         );
         AgentStep step = new AgentStep(AgentType.INFRA_OPERATE, Map.of("operation", "STATUS_CHECK"));
         when(infraOpsAgentService.execute(step, 1L, "task-1", 11L))
@@ -519,7 +545,8 @@ class AgentPlanExecutorTest {
         );
 
         verify(taskStore).markDone("task-1", null, "서버/서비스 상태\n- 배포: 배포 이력 없음");
-        verify(messageService).appendAssistant(21L, "서버/서비스 상태\n- 배포: 배포 이력 없음");
+        verify(messageService).appendAssistant(21L, "서버/서비스 상태\n- 배포: 배포 이력 없음",
+                ChatMessageKind.AGENT_RESULT, "task-1");
     }
 
     @Test
@@ -548,7 +575,9 @@ class AgentPlanExecutorTest {
                 mock(AgentExecutionRegistry.class),
                 mock(DecisionAgentService.class),
                 mock(InputWaitStore.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
         );
         AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
         LlmProviderException failure = new LlmProviderException(
@@ -561,7 +590,8 @@ class AgentPlanExecutorTest {
         verify(taskStore).markFailed("task-1", failure.getMessage());
         // Posted verbatim — the message already tells the user to switch providers or check
         // billing, and a "작업 중 오류가 발생했습니다: " prefix would bury that.
-        verify(messageService).appendAssistant(21L, failure.getMessage());
+        verify(messageService).appendAssistant(21L, failure.getMessage(),
+                ChatMessageKind.TASK_FAILED, "task-1");
         verify(recoveryService, never()).handle(any(), any());
         verify(taskStore, never()).markDone(any(), any(), any());
     }
@@ -570,6 +600,77 @@ class AgentPlanExecutorTest {
                                        TaskStore taskStore,
                                        AgentMessageService messageService) {
         return executor(codeService, mock(ChatAgentService.class), taskStore, messageService);
+    }
+
+    // ── U8 8-6: 태스크당 토큰 예산 상한 ────────────────────────────────────────────────────
+
+    @Test
+    void tellsTheUserWhyTheTaskStoppedWhenItHitsTheTokenBudget() {
+        // 상한에 걸린 태스크가 조용히 멈추면 사용자에게는 "왜 안 되지" 로만 남는다. 사유가
+        // 그대로 보여야 하고, catch-all 의 "작업 중 오류가 발생했습니다" 접두가 붙으면 안 된다.
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentPlanExecutor executor = executor(codeService, taskStore, messageService);
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        AgentTokenBudgetExceededException budgetExceeded =
+                new AgentTokenBudgetExceededException(1_004_200, 1_000_000);
+        when(codeService.execute(any(), any(), any(), any(), any(), any())).thenThrow(budgetExceeded);
+
+        executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L), "task-1", 1L);
+
+        verify(taskStore).markFailed("task-1", budgetExceeded.getMessage());
+        verify(messageService).appendAssistant(
+                21L, budgetExceeded.getMessage(), ChatMessageKind.TASK_FAILED, "task-1");
+        assertThat(budgetExceeded.getMessage())
+                .contains("AI 토큰 예산 상한")
+                .contains("1,004,200")
+                .contains("1,000,000");
+    }
+
+    @Test
+    void doesNotSendABudgetExceededTaskDownTheBuildFailureRetryPath() {
+        // 누적은 태스크 단위로 이어 세므로 재시도해도 첫 호출에서 같은 상한에 다시 걸린다 —
+        // 복구 경로로 흘리면 사용자는 원인이 안 보이는 실패를 두 번 보게 된다.
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        BuildFailureRecoveryService recovery = mock(BuildFailureRecoveryService.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
+                taskStore,
+                mock(AgentMessageService.class),
+                recovery,
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class),
+                mock(RepositoryBindingGate.class),
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        when(codeService.execute(any(), any(), any(), any(), any(), any()))
+                .thenThrow(new AgentTokenBudgetExceededException(1_004_200, 1_000_000));
+
+        executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L), "task-1", 1L);
+
+        verify(recovery, never()).handle(any(), any());
+    }
+
+    /**
+     * 진짜 recorder 를 쓴다. mock 은 {@code openTaskScope} 에서 null 을 돌려주고, 실행 진입점의
+     * try-with-resources 가 그대로 NPE 가 된다 — 저장만 mock 으로 끊는다.
+     */
+    private LlmUsageRecorder usageRecorder() {
+        return new LlmUsageRecorder(mock(LlmUsageStore.class));
     }
 
     private AgentPlanExecutor executor(CodeAgentService codeService,
@@ -593,7 +694,9 @@ class AgentPlanExecutorTest {
                 mock(AgentExecutionRegistry.class),
                 mock(DecisionAgentService.class),
                 mock(InputWaitStore.class),
-                new ObjectMapper()
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
         );
     }
 

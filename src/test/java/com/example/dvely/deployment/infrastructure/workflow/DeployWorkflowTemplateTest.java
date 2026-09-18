@@ -77,12 +77,183 @@ class DeployWorkflowTemplateTest {
      *
      * 그래서 두 어휘를 섞지 않는다 — 배포 경로는 저장소 감지 결과만 쓴다.
      */
+    /**
+     * 나머지 프레임워크도 커밋된 config 를 이긴다.
+     *
+     * 이 다섯은 Qeploy 가 스캐폴딩하지 않는다 — CODE 프롬프트가 만드는 것은 Vite+React·CRA·
+     * Next.js·create-vue·순수 HTML 뿐이다. 즉 이들은 <b>연결된 저장소로만</b> 들어오고, 그
+     * 저장소에는 스캐폴더가 첫날 써 둔 config 가 반드시 있다. 예전 스텝은 그때 경고만 하고
+     * 넘어갔으므로, 이 경로로 들어온 프로젝트는 사실상 항상 base 가 어긋난 채 배포됐다.
+     */
+    @Test
+    void generate_everyFrameworkOverridesACommittedBaseInsteadOfWarning() {
+        record Case(String type, String warning, String override) {}
+        var cases = new Case[]{
+                new Case("vue-cli", "::warning::vue.config", "publicPath: basePath,"),
+                new Case("sveltekit", "::warning::svelte.config", "paths: { ...(resolved.kit?.paths ?? {}), base }"),
+                new Case("gatsby", "::warning::gatsby-config", "pathPrefix: base,"),
+                new Case("astro", "::warning::astro.config", "base: base || '/',"),
+        };
+        for (Case c : cases) {
+            String workflow = DeployWorkflowTemplate.generate(c.type(), null, PackageManager.NPM, "20");
+            assertThat(workflow).as(c.type() + " 는 더 이상 경고만 하지 않는다").doesNotContain(c.warning());
+            assertThat(workflow).as(c.type() + " 가 base 를 확정한다").contains(c.override());
+            assertThat(workflow).as(c.type() + " 가 사용자 설정을 보존한다").contains("...resolved,");
+        }
+    }
+
+    /**
+     * Nuxt 는 분기 자체가 없어 커밋된 nuxt.config 이 유일한 진실이었다.
+     */
+    @Test
+    void generate_nuxtNowHasABaseStepAtAll() {
+        String workflow = DeployWorkflowTemplate.generate("nuxt", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("Configure Nuxt base URL");
+        // baseURL 은 trailing slash 를 포함해야 한다 — Nuxt 가 자산 URL 앞에 그대로 이어 붙인다.
+        assertThat(workflow).contains("baseURL: basePath");
+        assertThat(workflow).contains("nuxt.config.qeploy-user.$EXT");
+    }
+
+    /**
+     * 확장자만으로 모듈 종류를 정하면 SvelteKit 에서 깨진다.
+     *
+     * svelte.config.js 는 확장자가 js 지만 SvelteKit 프로젝트는 항상 "type": "module" 이라
+     * ESM 이다. 확장자만 보고 CJS 로 감싸면 require 가 ESM 을 읽다 그 자리에서 죽는다.
+     */
+    @Test
+    void generate_decidesModuleKindByPackageJsonNotOnlyByExtension() {
+        String workflow = DeployWorkflowTemplate.generate("sveltekit", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("grep -q '\"type\"[[:space:]]*:[[:space:]]*\"module\"' package.json");
+        assertThat(workflow).contains("case \"$EXT\" in mjs|ts) IS_ESM=true;; esac");
+    }
+
+    /**
+     * 커스텀 도메인이면 base 는 비어야 하는데, Gatsby 는 그 경우 스텝을 통째로 건너뛰었다.
+     *
+     * 건너뛰면 커밋된 pathPrefix 가 그대로 남아 자산 앞에 "/repo" 가 붙는다. 그 경로에는 아무것도
+     * 없으므로 전부 404 다. 비어 있는 것도 확정해야 할 값이다.
+     */
+    @Test
+    void generate_gatsbyDoesNotSkipItselfWhenTheBaseIsEmpty() {
+        String workflow = DeployWorkflowTemplate.generate("gatsby", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).doesNotContain("if [ -z \"$BASE\" ]; then exit 0; fi");
+        assertThat(workflow).contains("pathPrefix: base,");
+    }
+
+    /**
+     * config 가 없는 저장소에서는 예전처럼 새로 만든다 — 지금 동작하는 경로다.
+     */
+    @Test
+    void generate_stillCreatesAConfigWhenTheRepositoryHasNone() {
+        for (String type : new String[]{"vue-cli", "sveltekit", "gatsby", "astro", "nuxt"}) {
+            String workflow = DeployWorkflowTemplate.generate(type, null, PackageManager.NPM, "20");
+            assertThat(workflow).as(type).contains("if [ -z \"$USER_CONFIG\" ]; then");
+            assertThat(workflow).as(type).contains("생성 완료");
+        }
+    }
+
+    /**
+     * SvelteKit 은 사용자의 adapter 를 갈아치우지 않는다.
+     *
+     * 정적 어댑터가 아니면 배포가 성립하지 않지만 그건 base 문제가 아니고, 남의 어댑터를 바꾸는
+     * 것은 이 스텝이 할 일보다 훨씬 큰 개입이다. 설치와 경고까지만 한다.
+     */
+    @Test
+    void generate_sveltekitKeepsTheUsersAdapterWhenWrapping() {
+        String workflow = DeployWorkflowTemplate.generate("sveltekit", null, PackageManager.NPM, "20");
+
+        // 감싼 config 는 kit 를 펼쳐 넣으므로 adapter 가 살아남는다.
+        assertThat(workflow).contains("kit: { ...(resolved.kit ?? {})");
+        // 덮어쓰는 것은 paths.base 뿐이다.
+        assertThat(workflow).doesNotContain("adapter: adapter({ fallback: '404.html' }),\\n\" + \"              echo \"  kit");
+    }
+
+    /**
+     * 산출물이 없을 때 조용히 빈 사이트를 배포하던 것을 막는다 (#330).
+     *
+     * <p>예전 순서는 이랬다: 빌드가 아무것도 안 만들어도 404 복사는 {@code || true} 로 넘어가고,
+     * custom domain 스텝의 {@code mkdir -p} 가 <b>빈 디렉터리를 만들어</b>, 발행 액션이 그걸
+     * 올렸다. 실패한 스텝이 하나도 없는 채로 사이트 전체가 404 가 된다 — 사용자는 어디를 볼지
+     * 알 수 없다.</p>
+     */
+    @Test
+    void generate_refusesToPublishWhenTheBuildProducedNothing() {
+        String workflow = DeployWorkflowTemplate.generate("astro", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("Verify build output");
+        assertThat(workflow).contains("빌드 산출물 디렉터리가 없습니다");
+        assertThat(workflow).contains("빌드 산출물 디렉터리가 비어 있습니다");
+    }
+
+    /**
+     * 검증은 {@code mkdir -p} 보다 앞에 있어야 한다. 뒤에 두면 그 mkdir 이 "산출물이 없다" 를
+     * "산출물이 비었다" 로 바꿔 놓은 뒤라, 검증이 볼 수 있는 것은 이미 만들어진 빈 디렉터리다.
+     */
+    @Test
+    void generate_verifiesOutputBeforeAnythingCreatesTheDirectory() {
+        String workflow = DeployWorkflowTemplate.generate("astro", null, PackageManager.NPM, "20");
+
+        assertThat(workflow.indexOf("Verify build output"))
+                .isLessThan(workflow.indexOf("Preserve custom domain"));
+    }
+
+    /**
+     * Nuxt 는 산출물을 {@code .output/public} 에 낸다 — {@code dist} 는 호환용 심볼릭 링크다
+     * (Nuxt 4.5.2 실측). 링크는 판본·설정에 따라 없을 수 있고, 발행 액션이 링크를 따라간다는
+     * 보장도 없다. 실물을 가리키면 두 불확실성이 함께 사라진다.
+     */
+    @Test
+    void generate_nuxtPublishesWhereItsOutputActuallyIs() {
+        String workflow = DeployWorkflowTemplate.generate("nuxt", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("if [ -d \".output/public\" ]; then DIR=\".output/public\"; fi");
+        // Nuxt 2 처럼 그 경로가 없는 판본에서는 예전 값으로 떨어진다.
+        assertThat(workflow).contains("DIR=\"./dist\"");
+    }
+
+    @Test
+    void generate_otherFrameworksKeepTheirOwnOutputDirectory() {
+        // 이 분기는 Nuxt 만의 사정이다 — 다른 프레임워크에 붙이면 없는 경로를 찾는 비용만 는다.
+        for (String type : new String[]{"astro", "gatsby", "sveltekit", "nextjs", "cra"}) {
+            String workflow = DeployWorkflowTemplate.generate(type, null, PackageManager.NPM, "20");
+            assertThat(workflow).as(type).doesNotContain(".output/public");
+        }
+    }
+
+    /**
+     * 발행 경로를 명시적으로 받은 경우는 사용자의 선택이므로 추측으로 덮지 않는다.
+     */
+    @Test
+    void generate_anExplicitPublishDirIsNotSecondGuessed() {
+        String workflow = DeployWorkflowTemplate.generate("nuxt", "./public", PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("DIR=\"./public\"");
+        assertThat(workflow).doesNotContain(".output/public");
+    }
+
+    /**
+     * 하류 스텝들은 확정된 값을 봐야 한다. 하나라도 옛 상수를 그대로 쓰면 그 스텝만 다른
+     * 디렉터리를 보게 되고, Nuxt 에서는 그게 곧 빈 곳을 보는 것이다.
+     */
+    @Test
+    void generate_everyDownstreamStepUsesTheResolvedDirectory() {
+        String workflow = DeployWorkflowTemplate.generate("nuxt", null, PackageManager.NPM, "20");
+
+        assertThat(workflow).contains("publish_dir: ${{ steps.publish.outputs.dir }}");
+        assertThat(workflow).contains("[ -f ${{ steps.publish.outputs.dir }}/index.html ]");
+        assertThat(workflow).contains("mkdir -p ${{ steps.publish.outputs.dir }}");
+    }
+
     @Test
     void generate_contentTemplateNamesAreNotFrameworkVocabulary() {
         for (String contentTemplate : new String[]{"landing", "portfolio", "e-commerce"}) {
             assertThat(DeployWorkflowTemplate.generate(contentTemplate, null, PackageManager.NPM, "20"))
                     .as("contentTemplate=%s", contentTemplate)
-                    .contains("publish_dir: ./dist");
+                    // 발행 경로는 러너에서 확정되므로, 어떤 값으로 확정되는지를 본다.
+                    .contains("DIR=\"./dist\"");
         }
     }
 
@@ -90,7 +261,7 @@ class DeployWorkflowTemplateTest {
     void generate_fallsBackToDistWhenFrameworkIsUnknown() {
         // 감지 실패 시 null 이 그대로 넘어온다. Vite 산출물이 dist 라 기본값이 이것이다.
         assertThat(DeployWorkflowTemplate.generate(null, null, PackageManager.NPM, "20"))
-                .contains("publish_dir: ./dist");
+                .contains("DIR=\"./dist\"");
     }
 
     @Test
@@ -99,10 +270,10 @@ class DeployWorkflowTemplateTest {
 
         assertThat(workflow).contains("      - name: Preserve custom domain");
         assertThat(workflow).contains("CNAME=\"${{ steps.base.outputs.cname }}\"");
-        assertThat(workflow).contains("printf '%s\\n' \"$CNAME\" > ./dist/CNAME");
+        assertThat(workflow).contains("printf '%s\\n' \"$CNAME\" > ${{ steps.publish.outputs.dir }}/CNAME");
         assertThat(workflow).contains("git fetch origin gh-pages --depth=1");
         assertThat(workflow).contains("git show FETCH_HEAD:CNAME > /tmp/qeploy-cname");
-        assertThat(workflow).contains("cp /tmp/qeploy-cname ./dist/CNAME");
+        assertThat(workflow).contains("cp /tmp/qeploy-cname ${{ steps.publish.outputs.dir }}/CNAME");
         assertThat(workflow).containsSubsequence(
                 "      - name: Preserve custom domain",
                 "      - name: Deploy to gh-pages"
@@ -167,5 +338,39 @@ class DeployWorkflowTemplateTest {
         assertThat(DeployWorkflowTemplate.correlationIdFromRunTitle(
                 DeployWorkflowTemplate.runTitle("deployment-123")
         )).isEqualTo("deployment-123");
+    }
+
+    /**
+     * 프레임워크 없이 만든 정적 사이트는 Node 도 의존성도 빌드도 없다. 그런데 워크플로는 늘
+     * setup-node(cache 켬) + install + build 를 넣었고, cache 는 lock 파일을 요구해 그 자리에서
+     * 죽었다 — 2026-09-08 dev 실측(dldnsgkr/static-todo-v2):
+     * {@code Dependencies lock file is not found ... Supported file patterns: package-lock.json,
+     * npm-shrinkwrap.json, yarn.lock}. 승인까지 다 끝난 배포가 마지막에 실패한다.
+     */
+    @Test
+    void staticSiteSkipsNodeSetupInstallAndBuild() {
+        String workflow = DeployWorkflowTemplate.generate("static", null, PackageManager.NPM, "20");
+
+        assertThat(workflow)
+                .doesNotContain("actions/setup-node")
+                .doesNotContain("Install dependencies")
+                .doesNotContain("- name: Build");
+        // 올릴 파일이 이미 리포지토리에 있으므로 루트를 그대로 발행한다.
+        // 정적 사이트는 저장소 루트가 곧 발행 대상이다.
+        assertThat(workflow).contains("DIR=\".\"");
+        // 체크아웃과 발행은 그대로 남아야 한다.
+        assertThat(workflow).contains("actions/checkout@v4").contains("peaceiris/actions-gh-pages@v4");
+    }
+
+    /** 정적이 아닌 프로젝트는 예전 그대로 빌드한다(회귀 방지). */
+    @Test
+    void nonStaticProjectsStillSetUpNodeAndBuild() {
+        String workflow = DeployWorkflowTemplate.generate("vue", null, PackageManager.NPM, "20");
+
+        assertThat(workflow)
+                .contains("actions/setup-node")
+                .contains("Install dependencies")
+                .contains("- name: Build")
+                .contains("DIR=\"./dist\"");
     }
 }

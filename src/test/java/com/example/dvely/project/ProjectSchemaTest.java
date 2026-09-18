@@ -20,8 +20,11 @@ class ProjectSchemaTest {
         assertEquals(0, tableCount("repositories"));
         assertEquals(1, columnCount("projects", "project_id"));
         assertEquals(0, columnCount("projects", "repo_id"));
-        assertEquals(1, columnCount("pipelines", "project_id"));
-        assertEquals(1, columnCount("deployments", "project_id"));
+        // pipelines · deployments 는 V62 에서 사라졌다(#338). 원래 이 두 줄은 "V13 이
+        // repository_id 를 project_id 로 바꿨다"를 확인하는 것이었는데, 두 테이블은 V1 이후
+        // 한 번도 매핑된 적이 없는 죽은 테이블이었다. 배포 이력의 정본은 deployment_histories 다.
+        assertEquals(0, tableCount("pipelines"));
+        assertEquals(0, tableCount("deployments"));
         assertEquals(1, columnCount("domains", "project_id"));
         assertEquals(1, columnCount("chat_sessions", "project_id"));
         assertEquals(1, tableCount("project_approval_policies"));

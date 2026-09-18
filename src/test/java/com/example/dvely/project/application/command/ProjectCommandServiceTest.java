@@ -12,7 +12,7 @@ import static org.mockito.Mockito.when;
 import com.example.dvely.audit.application.AuditEvent;
 import com.example.dvely.audit.application.AuditRecorder;
 import com.example.dvely.audit.domain.value.AuditAction;
-import com.example.dvely.chat.application.command.ChatCommandService;
+import com.example.dvely.project.application.service.ProjectDeletionService;
 import com.example.dvely.project.application.command.dto.ConnectProjectRepositoryCommand;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
 import com.example.dvely.project.application.port.out.GithubRepositoryPort;
@@ -29,8 +29,12 @@ import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
+import com.example.dvely.template.application.port.out.TemplateCatalogPort;
+import com.example.dvely.template.application.service.TemplateCatalogGuard;
+import com.example.dvely.template.domain.model.Template;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -52,10 +56,13 @@ class ProjectCommandServiceTest {
     private UserProfilePort userProfilePort;
 
     @Mock
-    private ChatCommandService chatCommandService;
+    private ProjectDeletionService projectDeletionService;
 
     @Mock
     private AuditRecorder auditRecorder;
+
+    @Mock
+    private TemplateCatalogPort templateCatalogPort;
 
     private ProjectCommandService projectCommandService;
 
@@ -66,12 +73,15 @@ class ProjectCommandServiceTest {
                 new ProjectDomainService(),
                 githubRepositoryPort,
                 userProfilePort,
-                chatCommandService,
                 auditRecorder,
                 // 실제 구현을 물린다. 저장소 연결의 마지막 순서(preview 브랜치 준비 → 바인딩 →
                 // 저장 → 감사)는 이 서비스로 옮겨갔을 뿐 동작이 바뀐 게 아니라, mock 으로 막으면
                 // 기존 검증이 전부 무의미해진다.
-                new RepositoryProvisioningService(githubRepositoryPort, projectRepository, auditRecorder)
+                new RepositoryProvisioningService(githubRepositoryPort, projectRepository, auditRecorder),
+                // 같은 이유로 실제 구현을 물린다. blank 로 시작하는 프로젝트는 확인할 템플릿이
+                // 없어 카탈로그를 건드리지 않는데, mock 으로 막으면 그 사실이 검증되지 않는다.
+                new TemplateCatalogGuard(templateCatalogPort),
+                projectDeletionService
         );
     }
 
@@ -94,6 +104,11 @@ class ProjectCommandServiceTest {
 
     @Test
     void createProject_normalizesTemplateAndDefaultsDraftMode() {
+        // 카탈로그에는 정규화된 ID 만 있다. 여기서 "E Commerce" 로 스텁하지 않는 것이 요점이다 —
+        // 정규화 전 값으로 물으면 이 스텁이 비어 있어 생성이 실패한다.
+        when(templateCatalogPort.findById("e-commerce")).thenReturn(Optional.of(
+                new Template("e-commerce", "이커머스", "설명", List.of(), "vanilla",
+                        "index.html", List.of(), "demo", "src")));
         when(projectRepository.save(any(Project.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         ProjectDetailResult result = projectCommandService.createProject(
@@ -104,6 +119,22 @@ class ProjectCommandServiceTest {
         assertThat(result.startMode()).isEqualTo("template");
         assertThat(result.templateType()).isEqualTo("e-commerce");
         assertThat(result.draftMode()).isEqualTo("fast");
+    }
+
+    @Test
+    void createProject_rejectsTemplateThatIsNotInCatalog() {
+        // 이전에는 슬러그 형식만 맞으면 무엇이든 저장됐다. 값을 읽는 코드가 없어 드러나지 않았을
+        // 뿐이고, 씨딩이 붙으면 "고를 때는 성공, 만들 때는 실패" 가 된다.
+        when(templateCatalogPort.findById("made-up-template")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> projectCommandService.createProject(
+                1L,
+                new CreateProjectCommand("store", "template", "made-up-template", null)
+        ))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("made-up-template");
+
+        verify(projectRepository, never()).save(any(Project.class));
     }
 
     @Test
@@ -322,11 +353,14 @@ class ProjectCommandServiceTest {
     void deleteProject_withRepositoryMode_deletesGithubRepositoryAndRecordsAudit() {
         Project project = boundProject();
         when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
-        when(projectRepository.save(any(Project.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         projectCommandService.deleteProject(1L, 11L, com.example.dvely.project.application.command.dto.ProjectDeleteMode.PROJECT_AND_REPOSITORY);
 
         verify(githubRepositoryPort).deleteRepository(1L, "octo/repo");
+        // 로컬 정리는 짧은 트랜잭션 하나로 묶여 ProjectDeletionService 가 맡는다(#337) — GitHub
+        // 삭제가 끝난 뒤에만 불린다.
+        verify(projectDeletionService).purge(
+                1L, 11L, com.example.dvely.project.application.command.dto.ProjectDeleteMode.PROJECT_AND_REPOSITORY);
         // H3 (design §4): recorded right after the real GitHub deletion succeeds.
         ArgumentCaptor<AuditEvent> auditCaptor = ArgumentCaptor.forClass(AuditEvent.class);
         verify(auditRecorder).record(auditCaptor.capture());
@@ -360,6 +394,46 @@ class ProjectCommandServiceTest {
         // asserting AuditRecorder's own contract (that belongs to
         // AuditRecorderIntegrationTest#recordNeverThrowsEvenWhenTheUnderlyingWriteFails).
         verify(githubRepositoryPort).deleteRepository(1L, "octo/repo");
+        verify(projectDeletionService, never()).purge(any(), any(), any());
+    }
+
+    // ── #337: 외부 호출이 실패하면 저장이 남지 않는다 ────────────────────────────────
+
+    @Test
+    void connectRepository_previewBranchPreparationFailing_savesNoBinding() {
+        Project project = emptyProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(githubRepositoryPort.getRepository(1L, "octo/new-repo"))
+                .thenReturn(Optional.of(new GithubRepositoryPort.GithubRepository(
+                        "octo/new-repo", "new-repo", "octo", null, false, "main", OffsetDateTime.now())));
+        org.mockito.Mockito.doThrow(new IllegalStateException("preview 브랜치 준비 실패"))
+                .when(githubRepositoryPort).preparePreviewBranch(1L, "octo/new-repo");
+
+        assertThatThrownBy(() -> projectCommandService.connectRepository(
+                1L, 11L, new ConnectProjectRepositoryCommand("existing", null, "octo/new-repo", null)))
+                .isInstanceOf(IllegalStateException.class);
+
+        verify(projectRepository, never()).save(any(Project.class));
+        verifyNoInteractions(auditRecorder);
+    }
+
+    /**
+     * 저장소까지 지우는 모드에서 GitHub 삭제가 실패하면 로컬 정리는 시작되지 않는다 — 예전에는
+     * 트랜잭션 롤백이 주던 성질을, 외부 삭제를 정리보다 앞에 두는 순서로 유지한다(#337).
+     */
+    @Test
+    void deleteProject_githubDeletionFailing_leavesTheProjectUntouched() {
+        Project project = boundProject();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        org.mockito.Mockito.doThrow(new IllegalStateException("GitHub 저장소 삭제 실패"))
+                .when(githubRepositoryPort).deleteRepository(1L, "octo/repo");
+
+        assertThatThrownBy(() -> projectCommandService.deleteProject(
+                1L, 11L, com.example.dvely.project.application.command.dto.ProjectDeleteMode.PROJECT_AND_REPOSITORY))
+                .isInstanceOf(IllegalStateException.class);
+
+        verify(projectDeletionService, never()).purge(any(), any(), any());
+        verifyNoInteractions(auditRecorder);
     }
 
     private Project emptyProject() {

@@ -3,6 +3,7 @@ package com.example.dvely.agent.application.service;
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.chat.domain.model.ChatMessage;
 import com.example.dvely.chat.domain.repository.ChatMessageRepository;
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.chat.domain.value.ChatRole;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -23,8 +24,30 @@ public class AgentMessageService {
 
     private final ChatMessageRepository chatMessageRepository;
 
+    /** 종류를 붙이지 않는 줄(순수 대화 답변 등). */
     @Transactional
     public void appendAssistant(Long conversationId, String content) {
+        appendAssistant(conversationId, content, null);
+    }
+
+    /** 태스크와 이어지지 않는 줄. */
+    @Transactional
+    public void appendAssistant(Long conversationId, String content, ChatMessageKind kind) {
+        appendAssistant(conversationId, content, kind, null);
+    }
+
+    /**
+     * 종류를 붙이고 태스크에 이어 남긴다.
+     *
+     * <p>종류는 화면이 본문 문자열로 의미를 추론하지 않게 한다 — 그 추론은 이미 한 번 사고를
+     * 냈다(존재하지 않는 승인 버튼). {@link ChatMessageKind} 참고.</p>
+     *
+     * <p>taskId 는 "이 줄이 어느 작업의 것인가" 를 남긴다. 없으면 결과 줄에서 그 작업의 diff 로
+     * 넘어가거나 실패 줄에서 그 작업만 재시도하는 것이 불가능하다 — 화면은 "가장 마지막 것"
+     * 같은 휴리스틱으로 짐작할 수밖에 없다.</p>
+     */
+    @Transactional
+    public void appendAssistant(Long conversationId, String content, ChatMessageKind kind, String taskId) {
         if (conversationId == null || content == null || content.isBlank()) {
             return;
         }
@@ -32,7 +55,9 @@ public class AgentMessageService {
                 conversationId,
                 ChatRole.ASSISTANT,
                 content.trim(),
-                0
+                0,
+                kind,
+                taskId
         ));
     }
 
@@ -45,13 +70,16 @@ public class AgentMessageService {
      */
     @Transactional(readOnly = true)
     public List<LlmMessage> getConversationContext(Long conversationId) {
-        return chatMessageRepository.findAllByConversationIdOrderByCreatedAtAsc(conversationId)
-                .stream()
-                .map(message -> new LlmMessage(
-                        message.getRole().toStorage(),
-                        message.getContent()
-                ))
-                .toList();
+        // 전량을 싣던 자리다. 오래 쓴 대화일수록 모든 요청이 비싸졌고 언젠가는 컨텍스트 상한에
+        // 닿았다 — 무엇을 잃는지는 ConversationWindow 참고.
+        return ConversationWindow.apply(
+                chatMessageRepository.findAllByConversationIdOrderByCreatedAtAsc(conversationId)
+                        .stream()
+                        .map(message -> new LlmMessage(
+                                message.getRole().toStorage(),
+                                message.getContent()
+                        ))
+                        .toList());
     }
 
     /**
@@ -87,12 +115,14 @@ public class AgentMessageService {
         }
 
         int last = userMessages.size() - 1;
-        return java.util.stream.IntStream.range(0, userMessages.size())
+        // 표시를 먼저 붙이고 그다음에 자른다. 순서가 반대면 창 안의 마지막 턴에 [지금 처리할
+        // 요청] 이 붙어, 이미 처리된 옛 요청이 새 요청으로 둔갑한다.
+        return ConversationWindow.apply(java.util.stream.IntStream.range(0, userMessages.size())
                 .mapToObj(index -> new LlmMessage(
                         ChatRole.USER.toStorage(),
                         (index == last ? CURRENT_REQUEST_LABEL : PAST_REQUEST_LABEL)
                                 + userMessages.get(index).getContent()
                 ))
-                .toList();
+                .toList());
     }
 }

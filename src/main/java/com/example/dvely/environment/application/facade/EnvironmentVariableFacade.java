@@ -1,6 +1,7 @@
 package com.example.dvely.environment.application.facade;
 
 import com.example.dvely.environment.application.command.EnvironmentVariableCommandService;
+import com.example.dvely.common.paging.CursorPage;
 import com.example.dvely.environment.application.query.EnvironmentVariableQueryService;
 import com.example.dvely.environment.application.result.EnvironmentVariableHistoryResult;
 import com.example.dvely.environment.application.result.EnvironmentVariableResult;
@@ -15,8 +16,11 @@ public class EnvironmentVariableFacade {
     private final EnvironmentVariableQueryService queryService;
     private final EnvironmentVariableCommandService commandService;
 
-    public List<EnvironmentVariableResult> getVariables(Long userId, Long projectId, String scope) {
-        return queryService.getVariables(userId, projectId, scope);
+    public CursorPage<EnvironmentVariableResult> getVariables(Long userId,
+                                                              Long projectId,
+                                                              String scope,
+                                                              Integer limit) {
+        return queryService.getVariables(userId, projectId, scope, limit);
     }
 
     public List<EnvironmentVariableHistoryResult> getHistory(Long userId, Long projectId, Integer limit) {

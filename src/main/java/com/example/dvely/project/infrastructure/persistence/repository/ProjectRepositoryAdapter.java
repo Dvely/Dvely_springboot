@@ -3,6 +3,7 @@ package com.example.dvely.project.infrastructure.persistence.repository;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.infrastructure.persistence.entity.ProjectEntity;
+import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -41,8 +42,32 @@ public class ProjectRepositoryAdapter implements ProjectRepository {
             String sourceRepository
     ) {
         return springDataProjectRepository
-                .findFirstByOwnerUserIdAndSourceRepositoryIgnoreCaseAndDeletedFalseOrderByUpdatedAtDesc(ownerUserId, sourceRepository)
+                .findFirstByOwnerUserIdAndSourceRepositoryAndDeletedFalseOrderByUpdatedAtDesc(ownerUserId, sourceRepository)
                 .map(ProjectEntity::toDomain);
+    }
+
+    @Override
+    public List<Project> findAllByIdInAndOwnerUserId(Collection<Long> projectIds, Long ownerUserId) {
+        if (projectIds.isEmpty()) {
+            return List.of();
+        }
+        return springDataProjectRepository.findByIdInAndOwnerUserId(projectIds, ownerUserId).stream()
+                .map(ProjectEntity::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<Project> findAllActiveByOwnerUserIdAndSourceRepositoryIn(Long ownerUserId,
+                                                                        Collection<String> sourceRepositories) {
+        if (sourceRepositories.isEmpty()) {
+            return List.of();
+        }
+        return springDataProjectRepository
+                .findByOwnerUserIdAndDeletedFalseAndSourceRepositoryInOrderByUpdatedAtDescIdDesc(
+                        ownerUserId, sourceRepositories)
+                .stream()
+                .map(ProjectEntity::toDomain)
+                .toList();
     }
 
     @Override
@@ -52,13 +77,13 @@ public class ProjectRepositoryAdapter implements ProjectRepository {
 
     @Override
     public Optional<Project> findBySourceRepository(String sourceRepository) {
-        return springDataProjectRepository.findFirstBySourceRepositoryIgnoreCase(sourceRepository)
+        return springDataProjectRepository.findFirstBySourceRepository(sourceRepository)
                 .map(ProjectEntity::toDomain);
     }
 
     @Override
     public List<Project> findAllBySourceRepository(String sourceRepository) {
-        return springDataProjectRepository.findBySourceRepositoryIgnoreCaseAndDeletedFalse(sourceRepository)
+        return springDataProjectRepository.findBySourceRepositoryAndDeletedFalse(sourceRepository)
                 .stream()
                 .map(ProjectEntity::toDomain)
                 .toList();

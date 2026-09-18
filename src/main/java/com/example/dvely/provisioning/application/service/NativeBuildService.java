@@ -4,6 +4,7 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService.ExecResult;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.agent.infrastructure.docker.ContainerRole;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -51,6 +52,7 @@ public class NativeBuildService {
 
         String sessionId = "build-" + projectId + "-" + System.currentTimeMillis();
         String containerId = dockerService.createAndStartContainer(
+                ContainerRole.BUILD,
                 ownerUserId, sessionId, projectId, null, null,
                 DockerContainerService.JAVA_MEMORY_LIMIT_BYTES);
         try {

@@ -2,9 +2,13 @@ package com.example.dvely.deployment.application.service;
 
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.service.BuildFailureAnalyzer;
+import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
+import com.example.dvely.agent.domain.value.ThinkingLevel;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.llm.LlmRouter;
+import com.example.dvely.agent.infrastructure.usage.LlmUsagePhase;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageScope;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -115,6 +119,17 @@ public class DeploymentFailureAnalysisService {
     // method's try/finally — so this stays bounded by "analyses currently in flight", not by
     // total historical analysis count.
     private final ConcurrentHashMap<Long, Object> inFlightLocks = new ConcurrentHashMap<>();
+
+    /**
+     * LLM 호출을 요청 스레드에서 떼어내 시간 상한을 씌우기 위한 executor(용도는 {@link #runAnalysis}
+     * 참고). 호출마다 만들지 않고 하나를 계속 쓴다 — 매번 만들면 그 수만큼 executor 객체가 생기고,
+     * 정작 상한을 넘겨 버려진 태스크는 어느 쪽이든 그대로 남는다.
+     *
+     * <p>여기에 {@code shutdown()} 을 걸지 않는 것이 요점이다. 호출 하나가 끝날 때마다 닫으면
+     * 다음 호출이 RejectedExecutionException 을 맞는다. 가상 스레드는 항상 데몬이라 열어둔 채로도
+     * JVM 종료를 막지 않는다.</p>
+     */
+    private final ExecutorService llmCallExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     /**
      * GET semantics: returns only a previously saved analysis, no side effects, no LLM/GitHub
@@ -331,13 +346,30 @@ public class DeploymentFailureAnalysisService {
         // stuck upstream connection could otherwise block this call forever and never reach the
         // rule-based fallback below. CompletableFuture#orTimeout enforces a caller-side cutoff
         // without touching ClaudeClient itself.
-        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+        // 제공자와 모델은 설정에서 온다. 예전에는 여기가 ANTHROPIC + 그 제공자의 최상위 기본
+        // 모델로 박혀 있었다 — 12,000자 로그를 한 번 요약하는 데 최상위 모델을 쓸 근거가 없었고,
+        // 배포의 defaultProvider(GLM)와도 어긋났다. 분석 품질이 떨어지면 설정만으로 되돌린다
+        // (AiProperties.FailureAnalysis).
+        AiProvider provider = aiProperties.failureAnalysisProvider();
+        String configuredModel = aiProperties.getFailureAnalysis().modelOrNull();
+        AiModelOptions modelOptions = new AiModelOptions(configuredModel, ThinkingLevel.OFF);
+
         try {
             String raw = CompletableFuture
                     .supplyAsync(
-                            () -> llmRouter.route(AiProvider.ANTHROPIC)
-                                    .complete(SYSTEM_PROMPT, List.of(new LlmMessage("user", excerpt))),
-                            executor
+                            () -> {
+                                // 스코프는 스레드를 넘지 않으므로 이 안에서 연다 — 여기서 열지
+                                // 않으면 이 호출의 토큰이 어느 구간 것인지 남지 않는다.
+                                try (LlmUsageScope ignored = LlmUsageScope.open(
+                                        null, null, null, LlmUsagePhase.DEPLOY_FAILURE_ANALYSIS)) {
+                                    return llmRouter.route(provider).complete(
+                                            SYSTEM_PROMPT,
+                                            List.of(new LlmMessage("user", excerpt)),
+                                            modelOptions);
+                                }
+                            },
+                            // #336: 호출마다 executor 를 새로 만들지 않는다(필드의 공용 가상 스레드 executor).
+                            llmCallExecutor
                     )
                     .orTimeout(llmTimeoutSeconds, TimeUnit.SECONDS)
                     .join();
@@ -346,8 +378,8 @@ public class DeploymentFailureAnalysisService {
                     AnalysisSource.LLM,
                     parsed.summary(),
                     parsed.suggestedFix(),
-                    AiProvider.ANTHROPIC.name(),
-                    aiProperties.getAnthropic().getModel()
+                    provider.name(),
+                    modelOptions.modelOr(aiProperties.providerConfig(provider).getModel())
             );
         } catch (RuntimeException exception) {
             // Any LLM transport failure, timeout, or unparseable response falls back to the
@@ -360,17 +392,10 @@ public class DeploymentFailureAnalysisService {
             log.warn("배포 실패 분석 LLM 실패, 룰 기반으로 폴백: exceptionType={}", cause.getClass().getSimpleName());
             BuildFailureAnalyzer.Analysis ruleBased = buildFailureAnalyzer.analyze(excerpt);
             return new AnalysisOutcome(AnalysisSource.RULE_BASED, ruleBased.userMessage(), ruleBased.suggestedFix(), null, null);
-        } finally {
-            // Non-blocking: shutdown() only stops the executor from accepting new tasks, it does
-            // NOT cancel or wait for the LLM call submitted above. If that call is still running
-            // past the timeout (exactly the case this whole wrapper exists for), it is simply
-            // abandoned to finish or die on its own virtual thread — deliberately NOT using
-            // try-with-resources/ExecutorService#close() here, since close() awaits termination
-            // and would block just as indefinitely as the un-timed-out call would have, defeating
-            // the point of this fix. Virtual threads are always daemon threads, so an abandoned
-            // one cannot prevent JVM shutdown either.
-            executor.shutdown();
         }
+        // 상한을 넘긴 호출은 정리하지 않고 그대로 버린다. try-with-resources 나 shutdown() 뒤의
+        // awaitTermination 은 바로 그 반환되지 않는 호출을 기다리므로, 상한을 씌운 의미가 사라진다.
+        // 버려진 태스크는 자기 가상 스레드(데몬) 위에서 끝나거나 죽는다.
     }
 
     @SuppressWarnings("unchecked")

@@ -1,0 +1,12 @@
+{
+  "name": "@qeploy/cli",
+  "version": "0.1.0",
+  "description": "Qeploy CLI for terminals, CI, and agents without MCP",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": { "qeploy": "src/bin.js" },
+  "license": "MIT",
+  "dependencies": {
+    "@qeploy/client": "0.1.0"
+  }
+}

@@ -1,14 +1,18 @@
 package com.example.dvely.config;
 
+import jakarta.servlet.DispatcherType;
 import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
 import com.example.dvely.auth.application.port.out.TokenPort;
+import com.example.dvely.apitoken.application.service.ApiTokenAuthenticator;
 import com.example.dvely.auth.infrastructure.config.security.JwtAuthenticationFilter;
+import com.example.dvely.common.paging.CursorResponse;
 import com.example.dvely.common.response.ApiResponse;
 import com.example.dvely.common.response.ErrorCode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -31,6 +35,7 @@ public class SecurityConfig {
             HttpSecurity http,
             TokenPort tokenPort,
             TokenBlacklistPort tokenBlacklistPort,
+            ApiTokenAuthenticator apiTokenAuthenticator,
             CorsConfigurationSource corsConfigurationSource,
             ObjectMapper objectMapper
     ) throws Exception {
@@ -40,6 +45,24 @@ public class SecurityConfig {
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // SSE 가 쓰는 <b>비동기 디스패치</b>는 인가 검사에서 제외한다.
+                        //
+                        // Spring Security 6.1+ 는 REQUEST 뿐 아니라 ASYNC·FORWARD·ERROR 디스패치도
+                        // 필터한다. SseEmitter 는 최초 요청에서 응답 헤더를 내보낸 뒤 비동기 디스패치로
+                        // 이어지는데, 그 디스패치는 컨테이너 스레드에서 새로 시작돼 SecurityContext 가
+                        // 없다. 그래서 이미 인증을 통과한 요청이 두 번째 관문에서 거부된다.
+                        //
+                        // 증상이 고약하다. 응답은 이미 커밋된 뒤라 401 본문조차 못 쓰고 로그에만
+                        // 남는다(2026-09-07~08 dev 에서 계속 찍히던 것):
+                        //   AuthorizationDeniedException: Access Denied
+                        //   Unable to handle the Spring Security Exception because the response is
+                        //   already committed
+                        // FE 에는 스트림이 401 로 끊긴 것으로 보이고, 폴백인 5초 폴링으로 내려앉는다 —
+                        // 화면은 안 깨지므로 진행 표시가 실시간이 아니게 된 것을 아무도 모른다.
+                        //
+                        // 최초 REQUEST 디스패치는 그대로 인가를 거치므로 보호 범위는 줄지 않는다.
+                        // ASYNC 만 연다 — FORWARD/INCLUDE 는 그대로 인가를 거친다.
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
                         // 인증 없이 접근 가능한 Auth 엔드포인트
                         .requestMatchers(
                                 "/api/v1/auth/github/url",
@@ -50,6 +73,9 @@ public class SecurityConfig {
                                 "/api/v1/previews/**",
                                 "/api/v1/tls/allow"
                         ).permitAll()
+                        // 템플릿 카탈로그. 내용 자체가 이미 공개 Pages 에 있는 정적 목록이고 사용자
+                        // 데이터가 없다. 로그인 전 화면에서도 갤러리를 띄울 수 있게 열어둔다.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/templates", "/api/v1/templates/*").permitAll()
                         // Swagger UI
                         .requestMatchers(
                                 "/swagger-ui/**",
@@ -75,7 +101,7 @@ public class SecurityConfig {
                         ))
                 )
                 .addFilterBefore(
-                        new JwtAuthenticationFilter(tokenPort, tokenBlacklistPort),
+                        new JwtAuthenticationFilter(tokenPort, tokenBlacklistPort, apiTokenAuthenticator),
                         UsernamePasswordAuthenticationFilter.class
                 )
                 .build();
@@ -90,6 +116,10 @@ public class SecurityConfig {
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
+        // U6(#341) 6-3·6-4: 커서 페이지네이션의 다음 커서. 브라우저는 노출 목록에 없는 응답 헤더를
+        // JS 에 아예 보여주지 않으므로(allowedHeaders 는 요청 헤더 쪽이다) 여기 없으면 FE 가 커서를
+        // 읽을 수 없다. 목록 응답 본문은 배열 그대로 두고 커서만 헤더로 내보내기 때문에 필요하다.
+        config.setExposedHeaders(List.of(CursorResponse.NEXT_CURSOR_HEADER));
 
         // 프리뷰 게이트웨이 전용 CORS (Issue #108). CSP sandbox(#102)로 불투명 오리진이 된
         // 프리뷰 문서의 module script 는 Origin: null 로 오는데, 위 FE 오리진 목록 기반

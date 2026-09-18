@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.dvely.auth.infrastructure.config.GithubProperties;
 import java.net.URI;
+import org.springframework.web.client.RestClient;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -28,7 +29,8 @@ class GithubOAuthClientTest {
                         "1", "/tmp/none.pem", "https://qeploy.com/api/v1/auth/github/app/callback",
                         "webhook-secret", "Iv23liTestClientId", "app-secret")
         );
-        return new GithubOAuthClient(properties);
+        // 이 테스트는 URL 조립만 본다 — 호출이 나가지 않으므로 클라이언트는 아무거나 좋다.
+        return new GithubOAuthClient(properties, RestClient.create());
     }
 
     @Test

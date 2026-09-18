@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.service;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -119,7 +120,8 @@ class RepositoryBindingGateTest {
         gate.requestIfRequired(plan, 0, "task-1", 1L, 11L);
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(agentMessageService).appendAssistant(eq(21L), captor.capture());
+        verify(agentMessageService).appendAssistant(eq(21L), captor.capture(),
+                eq(ChatMessageKind.APPROVAL_REQUESTED), eq("task-1"));
         // The name shown here is the one an empty approve body falls back to, so the user must
         // see exactly what they will get if they just press approve.
         assertThat(captor.getValue())
@@ -231,7 +233,8 @@ class RepositoryBindingGateTest {
         assertThat(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).isTrue();
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(agentMessageService).appendAssistant(eq(21L), captor.capture());
+        verify(agentMessageService).appendAssistant(eq(21L), captor.capture(),
+                eq(ChatMessageKind.APPROVAL_REQUESTED), eq("task-1"));
         assertThat(captor.getValue()).doesNotContain("- preview: ");
     }
 
@@ -247,7 +250,7 @@ class RepositoryBindingGateTest {
 
     private void stubPreviewSession() {
         when(previewSessionService.findByTaskId("task-1")).thenReturn(Optional.of(new PreviewSessionInfo(
-                "session-1", 1L, 11L, 21L, "task-1", "container-1", 3000,
+                "session-1", 1L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
                 "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30)
         )));
     }

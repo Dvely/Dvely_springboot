@@ -1,5 +1,6 @@
 package com.example.dvely.agent.presentation.dto;
 
+import com.example.dvely.agent.application.dto.AnsweredClarification;
 import com.example.dvely.agent.application.dto.ClarificationRequest;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -78,5 +79,15 @@ public record TaskStatusResponse(
                 사람이 읽는 문자열(예: 체크박스면 "로그인, 이미지 업로드")로 만들어 /input 으로 보낸다.
                 """,
                 nullable = true)
-        ClarificationRequest clarification
+        ClarificationRequest clarification,
+
+        @Schema(description = """
+                이미 답한 되묻기. 질문·선택지와 사용자가 고른 답(answer)을 함께 담는다. 되묻기 폼은 답한
+                순간 사라지므로(이중 제출 방지) clarification 은 그때 null 이 되고, 그 뒤로는 무엇을 골랐는지
+                화면에서 확인할 방법이 없었다 — 이 값으로 "이렇게 정했습니다" 를 읽기 전용 카드로 그린다.
+                선택지를 그대로 보여주되 answer 와 일치하는 항목만 표시하면 된다.
+                되묻기를 거치지 않은 태스크에서는 null 이다.
+                """,
+                nullable = true)
+        AnsweredClarification answeredClarification
 ) {}

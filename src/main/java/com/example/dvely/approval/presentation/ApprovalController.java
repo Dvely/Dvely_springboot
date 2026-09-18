@@ -5,15 +5,18 @@ import com.example.dvely.approval.application.result.ApprovalResult;
 import com.example.dvely.approval.presentation.dto.ApprovalDecisionRequest;
 import com.example.dvely.approval.presentation.dto.ApprovalInputResponse;
 import com.example.dvely.approval.presentation.dto.ApprovalResponse;
+import com.example.dvely.common.paging.CursorResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @Tag(name = "Approval", description = "Agent 작업 승인 및 거절 API")
@@ -25,17 +28,21 @@ public class ApprovalController {
 
     @Operation(
             summary = "프로젝트 승인 목록 조회",
-            description = "프로젝트에서 생성된 모든 승인 요청을 상태(PENDING/APPROVED/REJECTED/CANCELLED)와 " +
-                          "무관하게 최신순으로 조회합니다."
+            description = "프로젝트에서 생성된 승인 요청을 상태(PENDING/APPROVED/REJECTED/CANCELLED)와 " +
+                          "무관하게 최신순으로 조회합니다. limit 기본 200, 최대 500(초과 시 500으로 보정). " +
+                          "더 오래된 것이 남아 있으면 응답 헤더 X-Qeploy-Next-Cursor 에 다음 커서가 실리며, " +
+                          "after 로 넘겨 이어 받습니다."
     )
     @GetMapping("/api/v1/projects/{projectId}/approvals")
-    public List<ApprovalResponse> getProjectApprovals(
+    public ResponseEntity<List<ApprovalResponse>> getProjectApprovals(
             @AuthenticationPrincipal Long ownerUserId,
-            @PathVariable Long projectId
+            @PathVariable Long projectId,
+            @RequestParam(required = false) Integer limit,
+            @RequestParam(required = false) String after
     ) {
-        return approvalFacade.getProjectApprovals(ownerUserId, projectId).stream()
-                .map(this::toResponse)
-                .toList();
+        return CursorResponse.of(
+                approvalFacade.getProjectApprovals(ownerUserId, projectId, limit, after)
+                        .map(this::toResponse));
     }
 
     @Operation(

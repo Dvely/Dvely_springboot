@@ -124,8 +124,8 @@ class DeploymentFailureAnalysisServiceTest {
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
                 new GithubActionsPort.DeploymentLogs(901L, List.of(), "npm ERR! missing script: build")
         );
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenReturn(
+        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
+        when(llmPort.complete(any(), anyList(), any())).thenReturn(
                 "{\"summary\": \"빌드 스크립트가 없습니다.\", \"suggestedFix\": \"package.json에 build 스크립트를 추가하세요.\"}"
         );
         when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
@@ -139,6 +139,54 @@ class DeploymentFailureAnalysisServiceTest {
         verifyNoInteractions(buildFailureAnalyzer);
     }
 
+    // ── U8 8-5: 제공자·모델을 코드에 박지 않는다 ──────────────────────────────────────────
+
+    @Test
+    void followsTheDeploymentsDefaultProviderInsteadOfPinningAnthropic() {
+        // 이 한 경로만 ANTHROPIC + 그 제공자의 최상위 모델로 박혀 있었다. 12,000자 로그를 한 번
+        // 요약하는 데 쓸 근거가 없었고, default-provider(GLM)와도 어긋났다.
+        stubLlmAnalysis("{\"summary\":\"요약\",\"suggestedFix\":\"수정\"}");
+        ArgumentCaptor<DeploymentFailureAnalysis> saved =
+                ArgumentCaptor.forClass(DeploymentFailureAnalysis.class);
+
+        service.analyze(1L, 51L);
+
+        verify(analysisRepository).save(saved.capture());
+        assertThat(saved.getValue().getProvider()).isEqualTo("GLM");
+        assertThat(saved.getValue().getModel()).isEqualTo("z-ai/glm-4.6");
+        verify(llmRouter).route(AiProvider.GLM);
+    }
+
+    @Test
+    void canBePinnedBackToAnthropicByConfigurationWhenAnalysisQualityDrops() {
+        // 품질이 떨어지면 실패 분석 자체가 쓸모없어진다. 되돌리는 길은 재배포가 아니라 설정이다.
+        aiProperties.getFailureAnalysis().setProvider(AiProvider.ANTHROPIC);
+        aiProperties.getFailureAnalysis().setModel("claude-opus-4-5-20251101");
+        stubLlmAnalysis("{\"summary\":\"요약\",\"suggestedFix\":\"수정\"}");
+        ArgumentCaptor<DeploymentFailureAnalysis> saved =
+                ArgumentCaptor.forClass(DeploymentFailureAnalysis.class);
+
+        service.analyze(1L, 51L);
+
+        verify(analysisRepository).save(saved.capture());
+        assertThat(saved.getValue().getProvider()).isEqualTo("ANTHROPIC");
+        assertThat(saved.getValue().getModel()).isEqualTo("claude-opus-4-5-20251101");
+        verify(llmRouter).route(AiProvider.ANTHROPIC);
+    }
+
+    private void stubLlmAnalysis(String json) {
+        stubOwnedHistory(failedHistoryWithRunId());
+        when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
+                new GithubActionsPort.DeploymentLogs(901L, List.of(), "npm ERR! build failed")
+        );
+        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
+        when(llmPort.complete(any(), anyList(), any())).thenReturn(json);
+        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
+                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
+    }
+
     @Test
     void analyzeFallsBackToRuleBasedWhenLlmThrows() {
         stubOwnedHistory(failedHistoryWithRunId());
@@ -147,8 +195,8 @@ class DeploymentFailureAnalysisServiceTest {
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
                 new GithubActionsPort.DeploymentLogs(901L, List.of(), "cannot find module 'react'")
         );
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenThrow(new IllegalStateException("Claude API 응답이 비어있습니다"));
+        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
+        when(llmPort.complete(any(), anyList(), any())).thenThrow(new IllegalStateException("Claude API 응답이 비어있습니다"));
         when(buildFailureAnalyzer.analyze(any())).thenReturn(new BuildFailureAnalyzer.Analysis(
                 "빌드에 필요한 모듈을 찾지 못했습니다.", "cannot find module 'react'", "dependency를 다시 설치하세요."
         ));
@@ -170,8 +218,8 @@ class DeploymentFailureAnalysisServiceTest {
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
                 new GithubActionsPort.DeploymentLogs(901L, List.of(), "some log text")
         );
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenReturn("this is not json at all");
+        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
+        when(llmPort.complete(any(), anyList(), any())).thenReturn("this is not json at all");
         when(buildFailureAnalyzer.analyze(any())).thenReturn(new BuildFailureAnalyzer.Analysis(
                 "프로젝트 빌드가 완료되지 않았습니다.", "some log text", "로그를 확인하세요."
         ));
@@ -192,8 +240,8 @@ class DeploymentFailureAnalysisServiceTest {
         );
         stubOwnedHistory(history);
         when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenReturn(
+        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
+        when(llmPort.complete(any(), anyList(), any())).thenReturn(
                 "{\"summary\": \"트리거 실패\", \"suggestedFix\": \"다시 시도하세요.\"}"
         );
         when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
@@ -216,8 +264,8 @@ class DeploymentFailureAnalysisServiceTest {
         String logText = noise + "npm ERR! critical failure marker\n" + noise;
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L))
                 .thenReturn(new GithubActionsPort.DeploymentLogs(901L, List.of(), logText));
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenReturn(
+        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
+        when(llmPort.complete(any(), anyList(), any())).thenReturn(
                 "{\"summary\": \"실패\", \"suggestedFix\": \"수정\"}"
         );
         when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
@@ -245,8 +293,8 @@ class DeploymentFailureAnalysisServiceTest {
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
                 new GithubActionsPort.DeploymentLogs(901L, List.of(), "some log")
         );
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenReturn(
+        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
+        when(llmPort.complete(any(), anyList(), any())).thenReturn(
                 "{\"summary\": \"이 요청의 요약\", \"suggestedFix\": \"이 요청의 수정안\"}"
         );
         when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
@@ -291,7 +339,7 @@ class DeploymentFailureAnalysisServiceTest {
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
                 new GithubActionsPort.DeploymentLogs(901L, List.of(), "some log")
         );
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
+        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
 
         // Stateful fake instead of a one-shot stub: the whole point is to prove the *second*
         // caller sees the *first* caller's saved row via the double-checked cache, so
@@ -307,7 +355,7 @@ class DeploymentFailureAnalysisServiceTest {
         AtomicInteger llmCallCount = new AtomicInteger();
         CountDownLatch llmEntered = new CountDownLatch(1);
         CountDownLatch releaseLlm = new CountDownLatch(1);
-        when(llmPort.complete(any(), anyList())).thenAnswer(invocation -> {
+        when(llmPort.complete(any(), anyList(), any())).thenAnswer(invocation -> {
             llmCallCount.incrementAndGet();
             llmEntered.countDown();
             assertThat(releaseLlm.await(5, TimeUnit.SECONDS)).isTrue();
@@ -360,9 +408,9 @@ class DeploymentFailureAnalysisServiceTest {
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
                 new GithubActionsPort.DeploymentLogs(901L, List.of(), secretLaden)
         );
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
+        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
         ArgumentCaptor<List<LlmMessage>> messagesCaptor = ArgumentCaptor.forClass(List.class);
-        when(llmPort.complete(any(), messagesCaptor.capture())).thenReturn(
+        when(llmPort.complete(any(), messagesCaptor.capture(), any())).thenReturn(
                 "{\"summary\": \"실패\", \"suggestedFix\": \"수정\"}"
         );
         when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
@@ -398,8 +446,8 @@ class DeploymentFailureAnalysisServiceTest {
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L))
                 .thenThrow(new RuntimeException("GitHub API rate limit exceeded"));
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenReturn(
+        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
+        when(llmPort.complete(any(), anyList(), any())).thenReturn(
                 "{\"summary\": \"요약\", \"suggestedFix\": \"수정\"}"
         );
         when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
@@ -422,8 +470,8 @@ class DeploymentFailureAnalysisServiceTest {
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
                 new GithubActionsPort.DeploymentLogs(901L, List.of(), "some log")
         );
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList())).thenAnswer(invocation -> {
+        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
+        when(llmPort.complete(any(), anyList(), any())).thenAnswer(invocation -> {
             // Sleeps far longer than the 1-second test timeout above; orTimeout must win the
             // race and hand control to the rule-based fallback rather than waiting on this.
             Thread.sleep(3000);

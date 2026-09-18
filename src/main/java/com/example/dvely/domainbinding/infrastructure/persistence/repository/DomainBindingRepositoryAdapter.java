@@ -42,9 +42,29 @@ public class DomainBindingRepositoryAdapter implements DomainBindingRepository {
     }
 
     @Override
+    public List<DomainBinding> findProjectDomainsPage(Long projectId, Long after, int limit) {
+        return springDataRepository
+                .findProjectDomainsPage(projectId, after,
+                        org.springframework.data.domain.PageRequest.of(0, limit))
+                .stream()
+                .map(DomainBindingEntity::toDomain)
+                .toList();
+    }
+
+    @Override
     public List<DomainBinding> findByStatus(DomainStatus status, int limit) {
         return springDataRepository
                 .findByStatusOrderByCreatedAtAsc(status.name(), PageRequest.of(0, limit))
+                .stream()
+                .map(DomainBindingEntity::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<DomainBinding> findConnectedPendingHttps(int limit) {
+        return springDataRepository
+                .findByStatusAndHttpsEnforcedFalseOrderByCreatedAtAsc(
+                        DomainStatus.CONNECTED.name(), PageRequest.of(0, limit))
                 .stream()
                 .map(DomainBindingEntity::toDomain)
                 .toList();
@@ -62,7 +82,7 @@ public class DomainBindingRepositoryAdapter implements DomainBindingRepository {
 
     @Override
     public boolean existsByHostnameIgnoreCase(String hostname) {
-        return springDataRepository.existsByHostnameIgnoreCase(hostname);
+        return springDataRepository.existsByHostname(hostname);
     }
 
     @Override
@@ -73,6 +93,6 @@ public class DomainBindingRepositoryAdapter implements DomainBindingRepository {
     @Override
     public boolean existsByHostnameIgnoreCaseAndHostingTarget(String hostname,
             com.example.dvely.domainbinding.domain.value.DomainHostingTarget hostingTarget) {
-        return springDataRepository.existsByHostnameIgnoreCaseAndHostingTarget(hostname, hostingTarget.name());
+        return springDataRepository.existsByHostnameAndHostingTarget(hostname, hostingTarget.name());
     }
 }

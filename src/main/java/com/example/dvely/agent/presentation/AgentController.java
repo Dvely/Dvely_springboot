@@ -8,7 +8,6 @@ import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.result.AgentSubmitResult;
 import com.example.dvely.agent.application.service.AgentEventStreamService;
 import com.example.dvely.agent.application.service.AiProviderQueryService;
-import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.agent.presentation.dto.AiProvidersResponse;
 import com.example.dvely.agent.presentation.dto.DecisionRequest;
@@ -50,7 +49,6 @@ public class AgentController {
     private final AgentFacade           agentFacade;
     private final AgentOrchestrator     agentOrchestrator;
     private final TaskStore             taskStore;
-    private final InputWaitStore        inputWaitStore;
     private final PreviewSessionService previewSessionService;
     private final AgentEventStreamService agentEventStreamService;
     private final AiProviderQueryService  aiProviderQueryService;
@@ -95,11 +93,14 @@ public class AgentController {
             summary = "사용 가능한 AI 제공자·모델 목록",
             description = "요청 body 의 aiProvider·model 에 지정할 수 있는 값들을 반환합니다. "
                           + "apiKey 가 설정된 제공자만 담기며, 각 제공자의 기본 모델·선택 가능 모델·"
-                          + "thinking 지원 모델을 함께 줍니다. FE 의 제공자 선택 UI 가 이걸 소비합니다."
+                          + "thinking 지원 모델을 함께 줍니다. FE 의 제공자 선택 UI 가 이걸 소비합니다. "
+                          + "코딩 에이전트(CLAUDE_CODE·CODEX)는 서버 키가 아니라 **본인이 등록한 키**로 "
+                          + "갈리므로, 해당 벤더 키를 등록한 사용자에게만 나타납니다. 이들은 모델·thinking 을 "
+                          + "CLI 가 정하므로 목록이 비어 있습니다."
     )
     @GetMapping("/ai-providers")
-    public AiProvidersResponse aiProviders() {
-        List<AiProvidersResponse.Provider> providers = aiProviderQueryService.availableProviders().stream()
+    public AiProvidersResponse aiProviders(@Parameter(hidden = true) @AuthenticationPrincipal Long userId) {
+        List<AiProvidersResponse.Provider> providers = aiProviderQueryService.availableProviders(userId).stream()
                 .map(v -> new AiProvidersResponse.Provider(
                         v.provider(), v.defaultModel(), v.models(), v.thinkingModels()))
                 .toList();
@@ -149,7 +150,8 @@ public class AgentController {
                 failure == null ? 0 : failure.maxAttempts(),
                 retryable,
                 pendingApprovalId,
-                taskStore.getClarification(taskId)
+                taskStore.getClarification(taskId),
+                taskStore.getAnsweredClarification(taskId)
         ));
     }
 
@@ -187,6 +189,9 @@ public class AgentController {
                         event.type(),
                         event.status(),
                         event.message(),
+                        event.stepIndex(),
+                        event.stepTotal(),
+                        event.agentType(),
                         event.createdAt()
                 ))
                 .toList());
@@ -230,7 +235,9 @@ public class AgentController {
         if (task.status() != com.example.dvely.agent.application.dto.TaskStatus.WAITING_INPUT) {
             throw new IllegalStateException("사용자 입력을 기다리는 Agent task가 아닙니다. taskId=" + taskId);
         }
-        boolean accepted = inputWaitStore.supply(taskId, userId, request.value());
+        // 값 저장과 대화 기록을 함께 한다(AgentOrchestrator#supplyInput) — 답이 대화에 남지 않으면
+        // 폼이 사라진 뒤 사용자가 무엇을 골랐는지 확인할 방법이 없다.
+        boolean accepted = agentOrchestrator.supplyInput(taskId, userId, task.conversationId(), request.value());
         if (!accepted) {
             throw taskNotFound(taskId);
         }

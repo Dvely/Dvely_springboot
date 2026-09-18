@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.application.service;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService.ExecResult;
 import com.example.dvely.auth.application.command.AuthCommandService;
@@ -23,7 +24,7 @@ import org.springframework.stereotype.Component;
 public class BackendSourceClone {
 
     /** clone 대상 경로. 두 빌드 서비스가 이 경로를 기준으로 산출물을 찾는다. */
-    public static final String APP_DIR = "/workspace/app";
+    public static final String APP_DIR = ContainerPaths.APP_DIR;
     private static final String GIT_NO_PROMPT = "GIT_TERMINAL_PROMPT=0 ";
 
     private final DockerContainerService dockerService;

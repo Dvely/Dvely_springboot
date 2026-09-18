@@ -1,5 +1,8 @@
 package com.example.dvely.agent.infrastructure.docker;
 
+import com.example.dvely.preview.infrastructure.egress.PreviewNetworkPolicy;
+import java.time.Duration;
+import com.github.dockerjava.api.model.PruneType;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.CreateContainerResponse;
@@ -10,11 +13,13 @@ import com.github.dockerjava.api.exception.ConflictException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.exception.NotModifiedException;
 import com.github.dockerjava.api.model.Capability;
+import com.github.dockerjava.api.model.ContainerNetwork;
 import com.github.dockerjava.api.model.CpuStatsConfig;
 import com.github.dockerjava.api.model.CpuUsageConfig;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.LogConfig;
 import com.github.dockerjava.api.model.MemoryStatsConfig;
 import com.github.dockerjava.api.model.Network;
 import com.github.dockerjava.api.model.Ports;
@@ -43,7 +48,9 @@ import java.util.LinkedHashMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -51,7 +58,12 @@ import java.util.concurrent.TimeUnit;
 public class DockerContainerService {
 
     private static final String IMAGE          = "node:20-alpine";
-    private static final int    CONTAINER_PORT = 3000;
+    /**
+     * 컨테이너 안에서 프리뷰가 서빙하는 포트. 호스트 포트를 발행하지 않게 된 뒤(#358) 게이트웨이와
+     * 레디니스 프로브가 컨테이너 IP 와 함께 이 값을 쓰므로 공개한다 — 각자 3000 을 적어 두면
+     * 한쪽만 바뀌었을 때 502 로만 드러난다.
+     */
+    public static final int CONTAINER_PORT = 3000;
     private static final long   EXEC_TIMEOUT_MIN = 10L;
     // Host-side bind address for the preview container's published port (Issue #76, BI-081/G1).
     // Kept as a plain constant rather than a configuration property, matching the
@@ -65,6 +77,25 @@ public class DockerContainerService {
     private static final String PROJECT_ID_LABEL = "qeploy.projectId";
     private static final String CONVERSATION_ID_LABEL = "qeploy.conversationId";
     private static final String TASK_ID_LABEL = "qeploy.taskId";
+    private static final String ROLE_LABEL = "qeploy.role";
+
+    /**
+     * 프리뷰 컨테이너가 도는 사용자. {@code node:20-alpine} 에 이미 있는 uid 1000 이라 전용 이미지가
+     * 필요 없다.
+     *
+     * <p>여기서 도는 것은 <b>사용자가 연결한 저장소의 코드</b>다 — {@code npm install} 의 postinstall
+     * 스크립트와 빌드 스크립트는 저장소가 정한다. 그것이 root 로 도는 것을 막는다.</p>
+     */
+    private static final String PREVIEW_USER = "node";
+
+    /** exec 을 root 로 올릴 때 쓰는 값. 컨테이너 기본 사용자와 무관하게 root 가 된다. */
+    private static final String ROOT_USER = "root";
+
+    /**
+     * {@code HOME} 을 함께 준다. 없으면 npm 캐시와 {@code git config --global} 이 root 홈을 쓰려다
+     * 죽는다 — 빌드가 아니라 설정 파일 때문에 실패하고, 원인이 로그에 안 남는다.
+     */
+    private static final String PREVIEW_HOME = "/home/" + PREVIEW_USER;
     private static final String LEGACY_AGENT_LABEL = "dvely.agent";
 
     // --- Preview container isolation policy (BI-194). Kept as plain constants rather than
@@ -77,6 +108,22 @@ public class DockerContainerService {
     public static final long JAVA_MEMORY_LIMIT_BYTES = 2L << 30; // 2 GiB
     private static final long NANO_CPUS = 1_000_000_000L; // 1.0 vCPU per session, fair-share
     private static final long PIDS_LIMIT = 256L; // fork-bomb guard; ~4x observed npm install process counts
+
+    /**
+     * 컨테이너 로그 상한 (Issue #342, 7-6).
+     *
+     * <p>로그 드라이버에 상한이 없으면 dev 서버 stdout 이 TTL 동안 무제한으로 쌓인다 — 사용자 코드가
+     * 루프 안에서 찍는 로그 한 줄이 호스트 디스크를 채우는 경로이고, 그 컨테이너가 도는 것은 우리
+     * 호스트다. 크기 상한과 회전 개수를 둬 컨테이너 하나가 쓰는 로그를 유계로 만든다.</p>
+     *
+     * <p>값의 근거: 로그 조회 API({@code getContainerLogs})는 꼬리만 읽으므로 진단에 필요한 것은
+     * "최근"뿐이다. 10 MiB × 2 개면 빌드 실패 원인을 찾기에 넉넉하고, 컨테이너당 20 MiB 로 묶인다.
+     * 드라이버를 {@code json-file} 로 명시하는 이유는 이 옵션이 그 드라이버의 것이라서다 — 호스트
+     * 기본 드라이버가 다르면(journald 등) 옵션이 조용히 무시된다.</p>
+     */
+    private static final LogConfig BOUNDED_LOG_CONFIG = new LogConfig(
+            LogConfig.LoggingType.JSON_FILE,
+            Map.of("max-size", "10m", "max-file", "2"));
     private static final String PREVIEW_NETWORK_NAME = "qeploy-preview";
     // one-shot `stats` needs ~1s to sample a CPU delta (see getContainerStats); 3s is the
     // point past which we degrade the /status response instead of blocking the caller.
@@ -85,30 +132,36 @@ public class DockerContainerService {
 
     private final DockerClient dockerClient;
 
+    /**
+     * 프리뷰가 붙을 네트워크와 환경변수를 정한다. 기본은 공유 브리지이고, egress 를 켜면 프리뷰마다
+     * 전용 internal 네트워크 + 프록시로 바뀐다(#332 4단계). <b>빌드 컨테이너는 이 정책을 타지
+     * 않는다</b> — 역할을 가른 이유가 그것이다.
+     *
+     * <p>세터 주입인 이유는 이 클래스가 무인자 생성자로도 만들어지기 때문이다(테스트가 직접
+     * 인스턴스를 만든다). 그때는 null 이고 공유 브리지로 떨어진다.</p>
+     */
+    private PreviewNetworkPolicy previewNetworkPolicy;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setPreviewNetworkPolicy(PreviewNetworkPolicy previewNetworkPolicy) {
+        this.previewNetworkPolicy = previewNetworkPolicy;
+    }
+
     public DockerContainerService() {
-        String dockerHost = System.getProperty("os.name").toLowerCase().contains("win")
-                ? "npipe:////./pipe/docker_engine"
-                : "unix:///var/run/docker.sock";
-        var config = DefaultDockerClientConfig.createDefaultConfigBuilder()
-                .withDockerHost(dockerHost)
-                .build();
-        var httpClient = new OkDockerHttpClient.Builder()
-                .dockerHost(config.getDockerHost())
-                .sslConfig(config.getSSLConfig())
-                .build();
-        this.dockerClient = DockerClientImpl.getInstance(config, httpClient);
+        this.dockerClient = DockerClients.createLocal();
     }
 
     DockerContainerService(DockerClient dockerClient) {
         this.dockerClient = dockerClient;
     }
 
-    public String createAndStartContainer(Long userId,
+    public String createAndStartContainer(ContainerRole role,
+                                          Long userId,
                                           String previewSessionId,
                                           Long projectId,
                                           Long conversationId,
                                           String taskId) {
-        return createAndStartContainer(userId, previewSessionId, projectId,
+        return createAndStartContainer(role, userId, previewSessionId, projectId,
                 conversationId, taskId, MEMORY_LIMIT_BYTES);
     }
 
@@ -117,37 +170,35 @@ public class DockerContainerService {
      * {@link #JAVA_MEMORY_LIMIT_BYTES} 를 넘긴다. swap 은 메모리와 같게 둬(추가 swap 없음) OOM 이
      * 느린 디스크 뒤로 숨지 않고 깨끗하게 kill 되도록 한다.
      */
-    public String createAndStartContainer(Long userId,
+    public String createAndStartContainer(ContainerRole role,
+                                          Long userId,
                                           String previewSessionId,
                                           Long projectId,
                                           Long conversationId,
                                           String taskId,
                                           long memoryBytes) {
+        Objects.requireNonNull(role, "role");
         pullImageIfNeeded();
-        ensurePreviewNetwork();
+        // 빌드는 언제나 공유 브리지다. 프리뷰만 정책을 탄다 — egress 를 켜도 배포 파이프라인이
+        // 흔들리지 않게 하는 것이 역할 구분(#332 1단계)의 목적이다.
+        boolean contained = role == ContainerRole.PREVIEW && previewNetworkPolicy != null;
+        String previewNetwork = contained
+                ? previewNetworkPolicy.attachNetwork(previewSessionId)
+                : ensureSharedPreviewNetwork();
+        List<String> egressEnv = contained ? previewNetworkPolicy.environment() : List.<String>of();
 
-        ExposedPort exposedPort = ExposedPort.tcp(CONTAINER_PORT);
-        Ports portBindings = new Ports();
-        // Bind to loopback only, with a dynamic (0 = daemon-assigned) host port (Issue #76,
-        // BI-081/G1 — see audit .agent-team/01-reverse/preview-exposure-audit.md §2.1 F1-F4).
-        // `Ports.Binding.bindPort(int)` leaves HostIp unset, which Docker resolves to 0.0.0.0 —
-        // i.e. every network interface, reachable from outside the host. The container behind
-        // this port runs an unauthenticated static file server (`npx serve`, no session/token
-        // check of its own), so an unset HostIp was a full bypass of the gateway's accessToken
-        // check (PreviewGatewayService) and Spring Security entirely. `PreviewGatewayService`
-        // already only ever proxies to `127.0.0.1:hostPort`, so it never needed the port reachable
-        // from any other interface — this binding just stops promising more than that.
-        // PRD §14.2's "internal-network-only access" principle is what this enforces at the
-        // Docker layer instead of leaving it to host-firewall configuration (which the repo has
-        // no way to guarantee, per the audit's G5).
-        // NOTE for future readers: this hard-codes "the gateway and the Docker daemon are on the
-        // same host". If preview containers ever move to a remote/multi-host Docker daemon, this
-        // loopback bind must be revisited together with the gateway's proxy target — otherwise
-        // the gateway simply can't reach the container at all.
-        portBindings.bind(exposedPort, Ports.Binding.bindIpAndPort(HOST_BIND_IP, 0));
+        // 호스트 포트를 발행하지 않는다. 게이트웨이는 컨테이너 IP 로 직접 붙고(PreviewGatewayService),
+        // 컨테이너 IP 는 호스트에서만 라우팅된다 — 브리지 대역(172.x)은 호스트 밖에서 도달 경로가
+        // 없다. 발행을 없애면 루프백이라도 열려 있던 면이 사라지고, internal 네트워크로 옮길 때
+        // (#332 4단계) 발행이 아예 동작하지 않는 제약에도 걸리지 않는다.
+        //
+        // 이전 구조(127.0.0.1 에 랜덤 포트 발행)에서 남은 교훈은 유지된다: 게이트웨이와 Docker
+        // 데몬이 같은 호스트라는 전제다. 오히려 더 강하게 의존하므로, 프리뷰가 원격/다중 호스트
+        // 데몬으로 옮겨가면 게이트웨이의 프록시 타깃과 함께 반드시 재검토해야 한다.
 
         Map<String, String> labels = new HashMap<>();
         labels.put(AGENT_LABEL, "true");
+        labels.put(ROLE_LABEL, role.label());
         labels.put(USER_ID_LABEL, String.valueOf(userId));
         putLabel(labels, PREVIEW_SESSION_ID_LABEL, previewSessionId);
         putLabel(labels, PROJECT_ID_LABEL, projectId);
@@ -161,9 +212,7 @@ public class DockerContainerService {
         // disabled. Rootfs stays read-write (the agent writes project files into the container)
         // and no restart policy is set (a dead container surfaces via the status API instead).
         CreateContainerResponse container = dockerClient.createContainerCmd(IMAGE)
-                .withExposedPorts(exposedPort)
                 .withHostConfig(HostConfig.newHostConfig()
-                        .withPortBindings(portBindings)
                         .withMemory(memoryBytes)
                         .withMemorySwap(memoryBytes)
                         .withNanoCPUs(NANO_CPUS)
@@ -171,12 +220,23 @@ public class DockerContainerService {
                         .withCapDrop(Capability.ALL)
                         .withCapAdd(Capability.CHOWN, Capability.SETUID, Capability.SETGID)
                         .withSecurityOpts(List.of("no-new-privileges"))
-                        .withNetworkMode(PREVIEW_NETWORK_NAME))
+                        .withLogConfig(BOUNDED_LOG_CONFIG)
+                        .withNetworkMode(previewNetwork))
                 .withLabels(labels)
+                // 프리뷰만 node 로 돌린다. 빌드는 그대로 root 다 — 역할을 가른 이유가 이것이고,
+                // 배포 파이프라인은 이 변경의 영향을 받지 않는다.
+                .withUser(role == ContainerRole.PREVIEW ? PREVIEW_USER : null)
+                .withEnv(role == ContainerRole.PREVIEW
+                        ? java.util.stream.Stream.concat(
+                                java.util.stream.Stream.of("HOME=" + PREVIEW_HOME), egressEnv.stream()).toList()
+                        : List.<String>of())
                 .withCmd("tail", "-f", "/dev/null")
                 .exec();
 
         dockerClient.startContainerCmd(container.getId()).exec();
+        if (role == ContainerRole.PREVIEW) {
+            prepareWorkspaceOwnership(container.getId());
+        }
         log.info("Docker 컨테이너 시작: id={} userId={}", container.getId(), userId);
         return container.getId();
     }
@@ -188,6 +248,12 @@ public class DockerContainerService {
      * (Conflict) from Docker on create — that's caught and ignored since the network exists
      * either way by the time we observe it.
      */
+    /** 정책이 없는 경로(테스트가 직접 만든 인스턴스)와 빌드 컨테이너가 쓰는 공유 네트워크. */
+    private String ensureSharedPreviewNetwork() {
+        ensurePreviewNetwork();
+        return PREVIEW_NETWORK_NAME;
+    }
+
     private void ensurePreviewNetwork() {
         // Docker's network list "name" filter matches by substring, not exact name — filtering
         // the returned candidates down to an exact name match avoids a superstring collision
@@ -512,23 +578,90 @@ public class DockerContainerService {
      * getter's (verified against a real container in
      * DockerContainerServicePortBindingIntegrationTest).
      */
-    public int getMappedPort(String containerId) {
+    /**
+     * 게이트웨이가 프록시할 컨테이너 주소.
+     *
+     * <p>호스트 포트를 발행하지 않으므로 이 값이 유일한 도달 경로다. 브리지 대역이라 호스트에서만
+     * 라우팅되고, 컨테이너 사이는 {@code enable_icc=false} 가 막는다.</p>
+     *
+     * <p>컨테이너를 다시 만들거나 재시작하면 바뀔 수 있다 — 발행 포트가 재할당되던 것과 같은
+     * 성질이라, 그때 다시 읽어 세션에 반영해야 한다({@code PreviewSessionEntity#rebindContainerIp}).</p>
+     */
+    public String getContainerIp(String containerId) {
         InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
-        Ports.Binding[] bindings = inspect.getNetworkSettings() == null
-                || inspect.getNetworkSettings().getPorts() == null
-                || inspect.getNetworkSettings().getPorts().getBindings() == null
+        String ip = inspect.getNetworkSettings() == null || inspect.getNetworkSettings().getNetworks() == null
                 ? null
-                : inspect.getNetworkSettings().getPorts()
-                .getBindings()
-                .get(ExposedPort.tcp(CONTAINER_PORT));
-        if (bindings == null
-                || bindings.length == 0
-                || bindings[0] == null
-                || bindings[0].getHostPortSpec() == null
-                || bindings[0].getHostPortSpec().isBlank()) {
-            throw new IllegalStateException("컨테이너 포트 바인딩이 없습니다. containerId=" + containerId);
+                : inspect.getNetworkSettings().getNetworks().values().stream()
+                        .map(ContainerNetwork::getIpAddress)
+                        .filter(value -> value != null && !value.isBlank())
+                        .findFirst()
+                        .orElse(null);
+        if (ip == null) {
+            // 여기서 조용히 넘어가면 게이트웨이가 빈 주소로 프록시해 502 만 남는다 —
+            // "깨진 이미지" 로만 보이고 원인이 어디에도 안 남는 형태다.
+            throw new IllegalStateException("컨테이너 IP 를 확인할 수 없습니다. containerId=" + containerId);
         }
-        return Integer.parseInt(bindings[0].getHostPortSpec());
+        return ip;
+    }
+
+    /**
+     * 워크스페이스를 처음부터 {@link #PREVIEW_USER} 소유로 만든다.
+     *
+     * <p><b>중간에 넘기지 않는다.</b> {@code cap-drop ALL} 이 {@code DAC_OVERRIDE} 를 떼기 때문에
+     * 이 컨테이너의 root 는 남의 디렉터리에 쓰지 못한다. 그래서 주인이 하나여야 하고, 절반만 옮기는
+     * 설계는 없다 — 중간에 node 로 넘기면 그 뒤의 root 명령이 전부 막히고, 반대로 두면 node 가
+     * 아무것도 못 쓴다.</p>
+     *
+     * <p>{@code /} 가 root 소유라 node 스스로는 {@code /workspace} 를 만들지 못한다. 그래서 root 가
+     * 만들어 넘긴다.</p>
+     */
+    private void prepareWorkspaceOwnership(String containerId) {
+        ExecResult result = execWithExitCodeAsUser(
+                containerId,
+                "mkdir -p " + ContainerPaths.APP_DIR
+                        + " && chown -R " + PREVIEW_USER + ":" + PREVIEW_USER + " /workspace",
+                ROOT_USER,
+                List.of());
+        if (!result.succeeded()) {
+            // 여기서 실패하면 뒤의 모든 쓰기가 막힌다. 컨테이너를 살려 두면 "왜 아무것도 안 써지지"
+            // 로 한참 헤매게 되므로, 만든 쪽에서 원인과 함께 끊는다.
+            throw new IllegalStateException(
+                    "프리뷰 워크스페이스 소유자를 준비하지 못했습니다 (exit=" + result.exitCode() + "): "
+                            + result.output());
+        }
+    }
+
+    /**
+     * 플랫폼이 필요로 하는 패키지를 깐다. <b>언제나 root 로 돈다.</b>
+     *
+     * <p>프리뷰 컨테이너의 기본 사용자는 {@code node} 라 {@code apk} 가 거부된다. 호출부마다
+     * "여긴 root 여야 하나" 를 다시 판단하게 두면 한 곳만 빠뜨려도 그 경로가 조용히 깨지므로,
+     * 설치라는 행위 자체를 root 로 고정한다.</p>
+     *
+     * <p>실패를 허용한다 — 이미 깔려 있거나 이미지가 alpine 이 아닐 수 있고, 그때는 뒤따르는
+     * 명령이 알아서 동작하거나 자기 사유로 실패한다.</p>
+     */
+    public void installPackages(String containerId, String... packages) {
+        if (packages == null || packages.length == 0) {
+            return;
+        }
+        execWithExitCodeAsUser(
+                containerId,
+                "apk add --no-cache " + String.join(" ", packages) + " >/dev/null 2>&1 || true",
+                ROOT_USER,
+                List.of());
+    }
+
+    /**
+     * root 로 실행한다. 프리뷰 컨테이너에서 플랫폼이 해야 하는 일(패키지 설치·nginx 기동)에만 쓴다.
+     * 빌드 컨테이너는 기본이 root 라 결과가 같다.
+     */
+    public String execAsRoot(String containerId, String command) {
+        return execWithExitCodeAsUser(containerId, command, ROOT_USER, List.of()).output();
+    }
+
+    public ExecResult execWithExitCodeAsRoot(String containerId, String command) {
+        return execWithExitCodeAsUser(containerId, command, ROOT_USER, List.of());
     }
 
     public String exec(String containerId, String command) {
@@ -563,10 +696,24 @@ public class DockerContainerService {
      * (프리뷰 백엔드 런타임에 사용자 env + DB 커넥션을 주입하는 경로가 이걸 쓴다.)
      */
     public ExecResult execWithExitCode(String containerId, String command, List<String> env) {
-        log.debug("Docker exec: {}", command);
+        // user=null 이면 컨테이너에 설정된 사용자로 돈다 — 프리뷰는 node, 빌드는 root.
+        return execWithExitCodeAsUser(containerId, command, null, env);
+    }
+
+    /**
+     * @param user {@code null} 이면 컨테이너의 기본 사용자. {@link #ROOT_USER} 면 root 로 올려 실행한다.
+     *             {@code no-new-privileges} 는 exec 사용자 지정을 막지 않는다(데몬이 정하는 값이라
+     *             setuid 경로가 아니다) — dev 에서 실측 확인했다.
+     */
+    private ExecResult execWithExitCodeAsUser(String containerId,
+                                              String command,
+                                              String user,
+                                              List<String> env) {
+        log.debug("Docker exec{}: {}", user == null ? "" : "(" + user + ")", command);
         ExecCreateCmdResponse execCreate = dockerClient.execCreateCmd(containerId)
                 .withAttachStdout(true)
                 .withAttachStderr(true)
+                .withUser(user)
                 .withEnv(env == null || env.isEmpty() ? null : List.copyOf(env))
                 .withCmd("sh", "-c", command)
                 .exec();
@@ -666,6 +813,7 @@ public class DockerContainerService {
                         .withCapAdd(Capability.CHOWN, Capability.SETUID, Capability.SETGID,
                                 Capability.DAC_OVERRIDE, Capability.FOWNER, Capability.SETFCAP)
                         .withSecurityOpts(List.of("no-new-privileges"))
+                        .withLogConfig(BOUNDED_LOG_CONFIG)
                         .withNetworkMode(networkName))
                 .withAliases(networkAlias)
                 .withLabels(Map.of(AGENT_LABEL, "true"))
@@ -707,7 +855,7 @@ public class DockerContainerService {
     /** DB 컨테이너를 강제 제거한다. 이미 없으면 조용히 넘어간다. */
     public void removeDatabaseContainer(String containerId) {
         try {
-            dockerClient.removeContainerCmd(containerId).withForce(true).exec();
+            dockerClient.removeContainerCmd(containerId).withForce(true).withRemoveVolumes(true).exec();
             log.info("DB 컨테이너 제거: id={}", containerId);
         } catch (NotFoundException e) {
             log.debug("DB 컨테이너가 이미 없음: id={}", containerId);
@@ -818,7 +966,83 @@ public class DockerContainerService {
         }
     }
 
+    /**
+     * 컨테이너 안의 디렉터리를 통째로 호스트로 꺼낸다.
+     *
+     * <p>{@code skipSegments} 에 든 이름이 경로의 어느 구간으로든 나타나면 그 항목은 건너뛴다.
+     * {@code node_modules} 처럼 수만 개 파일이면서 반대편에서 다시 만들 수 있는 것을 나르지 않기
+     * 위한 것이다 — 그걸 나르면 한 번의 복사가 실행 전체를 지배한다.</p>
+     *
+     * @return 실제로 꺼낸 파일 수
+     */
+    public long copyDirectoryFromContainer(String containerId,
+                                           String containerPath,
+                                           Path destDir,
+                                           Set<String> skipSegments) {
+        long files = 0;
+        try (InputStream tar = dockerClient.copyArchiveFromContainerCmd(containerId, containerPath).exec();
+             TarArchiveInputStream tin = new TarArchiveInputStream(tar)) {
+
+            TarArchiveEntry entry;
+            while ((entry = tin.getNextEntry()) != null) {
+                if (hasSkippedSegment(entry.getName(), skipSegments)) {
+                    continue;
+                }
+                Path target = resolveInside(destDir, entry.getName());
+                if (entry.isDirectory()) {
+                    Files.createDirectories(target);
+                    continue;
+                }
+                if (!entry.isFile()) {
+                    // 심볼릭 링크·장치 파일은 프로젝트가 나를 필요가 없고, 링크를 따라가는 것이
+                    // 바로 tar 추출이 잘못되는 경로다.
+                    continue;
+                }
+                Files.createDirectories(target.getParent());
+                try (OutputStream out = Files.newOutputStream(target)) {
+                    tin.transferTo(out);
+                }
+                files++;
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("컨테이너 디렉터리 반출 실패: " + containerPath, e);
+        }
+        return files;
+    }
+
+    /** 호스트 디렉터리를 컨테이너의 {@code remoteParent} 밑으로 넣는다(디렉터리 이름 그대로). */
+    public void copyDirectoryToContainer(String containerId, Path hostDir, String remoteParent) {
+        dockerClient.copyArchiveToContainerCmd(containerId)
+                .withHostResource(hostDir.toString())
+                .withRemotePath(remoteParent)
+                .exec();
+    }
+
+    private boolean hasSkippedSegment(String entryName, Set<String> skipSegments) {
+        for (String segment : entryName.split("/")) {
+            if (skipSegments.contains(segment)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * tar 항목을 목적지 안쪽으로만 푼다. tar 는 {@code ../../etc/passwd} 를 이름으로 가질 수 있고,
+     * 이건 사용자의 코드가 도는 컨테이너에서 오는 tar 다.
+     */
+    private Path resolveInside(Path root, String entryName) {
+        Path resolved = root.resolve(entryName).normalize();
+        if (!resolved.startsWith(root)) {
+            throw new IllegalStateException("디렉터리 밖을 가리키는 tar 항목입니다: " + entryName);
+        }
+        return resolved;
+    }
+
     public void removeContainer(String containerId) {
+        // 컨테이너를 지우기 전에 세션 몫의 네트워크를 되돌린다. 지운 뒤에는 라벨을 읽을 수 없어
+        // 어느 세션의 것인지 알 방법이 사라진다.
+        releasePreviewNetwork(containerId);
         try {
             dockerClient.stopContainerCmd(containerId).withTimeout(5).exec();
         } catch (NotFoundException e) {
@@ -828,7 +1052,7 @@ public class DockerContainerService {
             log.info("Docker 컨테이너가 이미 중지되어 있습니다. remove 진행: id={}", containerId);
         }
         try {
-            dockerClient.removeContainerCmd(containerId).withForce(true).exec();
+            dockerClient.removeContainerCmd(containerId).withForce(true).withRemoveVolumes(true).exec();
         } catch (NotFoundException e) {
             log.info("Docker 컨테이너가 이미 없습니다. remove 생략: id={}", containerId);
             return;
@@ -836,16 +1060,106 @@ public class DockerContainerService {
         log.info("Docker 컨테이너 제거: id={}", containerId);
     }
 
+    /**
+     * 프리뷰 세션 전용 자원(egress 네트워크)을 되돌린다. 기본 정책에서는 아무 일도 하지 않는다.
+     *
+     * <p>실패를 삼킨다 — 여기서 던지면 정작 컨테이너 회수가 멈춘다. 회수되지 못한 네트워크는
+     * 정책 쪽 로그로 드러난다.</p>
+     */
+    private void releasePreviewNetwork(String containerId) {
+        if (previewNetworkPolicy == null) {
+            return;
+        }
+        try {
+            var labels = dockerClient.inspectContainerCmd(containerId).exec().getConfig().getLabels();
+            String sessionId = labels == null ? null : labels.get(PREVIEW_SESSION_ID_LABEL);
+            if (sessionId != null && !sessionId.isBlank()) {
+                previewNetworkPolicy.release(sessionId);
+            }
+        } catch (RuntimeException e) {
+            log.debug("프리뷰 네트워크 회수 생략: containerId={} 사유={}", containerId, e.toString());
+        }
+    }
+
+    /**
+     * 컨테이너가 남기고 간 <b>도커 찌꺼기</b>를 회수한다. 고아 볼륨 · dangling 이미지 · 오래된
+     * 빌드 캐시 세 가지이며, <b>실행 중이거나 정지 상태로 남아 있는 컨테이너가 쓰는 것은 건드리지
+     * 않는다</b>(도커의 prune 이 그 판정을 한다).
+     *
+     * <p>왜 필요한가: 컨테이너는 지워도 그것들은 남는다. 2026-09-08 dev 에서 컨테이너가 0 개인데
+     * 고아 볼륨 10 개(2.2GB)와 빌드 캐시 6.5GB 가 쌓여 디스크의 절반 이상을 찌꺼기가 차지했다.
+     * 디스크가 차면 앱·MySQL·프리뷰 컨테이너가 한꺼번에 죽는다.</p>
+     *
+     * <p>빌드 캐시는 {@code until} 이전 것만 지운다 — 방금 만든 캐시까지 날리면 다음 빌드가
+     * 통째로 느려진다. 볼륨 누수 자체는 removeContainer 의 withRemoveVolumes 로 원천에서 막았고,
+     * 이건 그 이전에 쌓인 것과 비정상 종료로 새는 것을 받아내는 안전망이다.</p>
+     *
+     * @return 회수한 바이트 수(도커가 알려준 값의 합). 도커에 닿지 못하면 -1
+     */
+    public long pruneGarbage(Duration buildCacheKeep) {
+        try {
+            long freed = 0;
+            freed += nullToZero(dockerClient.pruneCmd(PruneType.VOLUMES).exec().getSpaceReclaimed());
+            freed += nullToZero(dockerClient.pruneCmd(PruneType.IMAGES).exec().getSpaceReclaimed());
+            freed += nullToZero(dockerClient.pruneCmd(PruneType.BUILD)
+                    .withUntilFilter(buildCacheKeep.toHours() + "h")
+                    .exec()
+                    .getSpaceReclaimed());
+            return freed;
+        } catch (RuntimeException e) {
+            // 도커가 없어도 앱은 뜬다(이 클래스의 전제). 정리는 부가 기능이라 실패를 삼킨다.
+            log.warn("도커 찌꺼기 정리 실패(작업은 계속): {}", e.getMessage());
+            return -1;
+        }
+    }
+
+    private static long nullToZero(Long value) {
+        return value == null ? 0L : value;
+    }
+
     private void pullImageIfNeeded() {
         pullImageIfNeeded(IMAGE);
     }
 
+    /**
+     * 로컬에 없을 때만 pull 한다 (Issue #342, 7-5).
+     *
+     * <p>예전에는 컨테이너를 만들 때마다 조건 없이 {@code pullImageCmd} 를 돌렸다. 이미 있는
+     * 이미지에도 레지스트리 왕복을 하고, 네트워크가 느리거나 레지스트리가 응답하지 않으면 컨테이너
+     * 생성이 최대 3 분을 기다린 뒤에야 진행됐다 — 프리뷰를 띄우는 사용자가 그 시간을 그대로 본다.
+     * 같은 문제를 코딩 에이전트 쪽은 {@code inspectImageCmd} 선확인으로 이미 피하고 있다
+     * ({@code CodingAgentContainerRunner#assertImagePresent}).</p>
+     *
+     * <p>다만 그쪽과 달리 여기서는 없으면 <b>pull 한다.</b> 코딩 에이전트 이미지는 로컬에서만 빌드하는
+     * 것이라 부재가 곧 설정 오류이지만, 이 이미지는 공개 베이스({@code node:20-alpine})라 첫 기동에
+     * 받아오는 것이 정상 경로다.</p>
+     */
     private void pullImageIfNeeded(String image) {
+        if (imagePresentLocally(image)) {
+            log.debug("Docker 이미지가 이미 로컬에 있음(pull 생략): {}", image);
+            return;
+        }
         try {
             dockerClient.pullImageCmd(image).start().awaitCompletion(3, TimeUnit.MINUTES);
             log.info("Docker 이미지 준비 완료: {}", image);
         } catch (Exception e) {
             log.warn("이미지 pull 실패 (로컬에 존재할 수 있음): {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 판정이 안 되면 "없다"로 답한다 — 그러면 호출부가 pull 로 떨어져 예전 동작이 된다. 선확인의
+     * 목적은 왕복을 줄이는 것이지 새로운 실패 지점을 만드는 것이 아니다.
+     */
+    private boolean imagePresentLocally(String image) {
+        try {
+            dockerClient.inspectImageCmd(image).exec();
+            return true;
+        } catch (NotFoundException e) {
+            return false;
+        } catch (RuntimeException e) {
+            log.debug("이미지 로컬 존재 확인 실패(pull 로 진행): image={} {}", image, e.getMessage());
+            return false;
         }
     }
 

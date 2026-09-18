@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -178,6 +179,45 @@ class StuckDeploymentRecoveryWorkerTest {
         worker.recoverStuckDeployments();
 
         verify(outcomeService).applySuccess(healthy, project);
+    }
+
+    /**
+     * #340 5-4 — 판정을 못 얻은 이력을 매 주기 다시 묻지 않는다.
+     *
+     * <p>예전에는 멈춘 배포 한 건이 포기 시각(기본 120분)에 닿을 때까지 <b>매분</b> GitHub 을
+     * 쳤다 — 한 건당 최대 120회다. GitHub Actions 실행 상태는 초 단위로 바뀌지 않으므로 결론이
+     * 없는 조회가 이어지면 물러난다(1 → 2 → 5 → 10분).</p>
+     */
+    @Test
+    void anInconclusiveLookupIsNotRepeatedOnTheVeryNextSweep() {
+        // 아직 도는 중 = 판정 없음. updatedAt 이 최근이라 포기 시각(120분)에도 닿지 않았다.
+        DeploymentHistory history = stuckHistory(901L, LocalDateTime.now().minusMinutes(20));
+        givenStuck(history);
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project()));
+        givenActiveToken();
+        when(githubActionsPort.getWorkflowRunStatus("user-token", "octo/repo", 901L))
+                .thenReturn(new GithubActionsPort.WorkflowRunStatus(901L, "in_progress", null));
+
+        worker.recoverStuckDeployments();
+        worker.recoverStuckDeployments();
+        worker.recoverStuckDeployments();
+
+        // 세 번 돌았지만 GitHub 은 한 번만 물었다 — 나머지는 백오프가 걸러냈다.
+        verify(githubActionsPort, times(1))
+                .getWorkflowRunStatus("user-token", "octo/repo", 901L);
+        verify(outcomeService, never()).applyFailure(any(), any(), any(), anyString());
+    }
+
+    /** 프로젝트가 사라진 이력도 매분 다시 확인할 이유가 없다 — 다음 주기에도 없다. */
+    @Test
+    void aHistoryWhoseProjectVanishedIsNotRecheckedEverySweep() {
+        givenStuck(stuckHistory(902L, LocalDateTime.now().minusMinutes(20)));
+        when(projectRepository.findById(11L)).thenReturn(Optional.empty());
+
+        worker.recoverStuckDeployments();
+        worker.recoverStuckDeployments();
+
+        verify(projectRepository, times(1)).findById(11L);
     }
 
     private void givenStuck(DeploymentHistory history) {

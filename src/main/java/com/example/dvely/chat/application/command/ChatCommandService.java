@@ -69,39 +69,35 @@ public class ChatCommandService {
         return toResult(conversationRepository.save(conversation), restoreProject, LocalDateTime.now());
     }
 
+    /**
+     * U6(#341) 6-8: 한 문장으로 옮긴다. 예전에는 대화 N 건을 엔티티로 읽어 한 건씩 save 했다 —
+     * 프로젝트 삭제 한 번에 SELECT 1 + UPDATE N 이었다. softDelete 의 "이미 삭제됐으면 무시" 가드는
+     * 쿼리의 {@code deleted = false} 조건이 그대로 대신한다.
+     */
     @Transactional
     public void trashConversationsForProject(Long userId, Long projectId) {
-        List<Conversation> conversations = conversationRepository
-                .findAllByUserIdAndProjectIdAndDeletedFalseOrderByUpdatedAtDesc(userId, projectId);
-        LocalDateTime deletedAt = LocalDateTime.now();
-        for (Conversation conversation : conversations) {
-            conversation.softDelete(deletedAt);
-            conversationRepository.save(conversation);
-        }
+        conversationRepository.softDeleteAllByUserIdAndProjectId(userId, projectId, LocalDateTime.now());
     }
 
+    /**
+     * U6 6-8: 한 문장으로 지운다. 메시지는 따로 지우지 않는다(#338) — chat_messages 의 FK 가 V19
+     * 부터 ON DELETE CASCADE 라 DB 가 함께 지운다. 벌크 DELETE 도 실제 SQL DELETE 이므로 그 CASCADE
+     * 와 다른 테이블의 SET NULL(approvals·agent_runs 등 이력 보존)이 예전과 똑같이 돈다.
+     */
     @Transactional
     public void deleteConversationsForProject(Long userId, Long projectId) {
-        List<Conversation> conversations = conversationRepository.findAllByUserIdAndProjectId(userId, projectId);
-        for (Conversation conversation : conversations) {
-            if (conversation.getId() == null) {
-                continue;
-            }
-            chatMessageRepository.deleteAllByConversationId(conversation.getId());
-            conversationRepository.deleteById(conversation.getId());
-        }
+        conversationRepository.deleteAllByUserIdAndProjectId(userId, projectId);
     }
 
+    /**
+     * 만료된 휴지통 대화를 영구 삭제한다.
+     *
+     * <p>#340 5-9 · #341 6-8: 엔티티를 전부 로드한 뒤 {@code deleteById} 를 N 번 부르던 것을 벌크
+     * DELETE 한 문장으로 바꿨다. 지우려고 읽을 이유가 없다 — 삭제 조건이 곧 SELECT 조건이었다.</p>
+     */
     @Transactional
     public int purgeExpiredConversations() {
-        List<Conversation> expired = conversationRepository.findAllByDeletedTrueAndDeletedAtLessThanEqual(
-                ChatTrashPolicy.cutoff(LocalDateTime.now())
-        );
-        expired.stream()
-                .map(Conversation::getId)
-                .filter(java.util.Objects::nonNull)
-                .forEach(conversationRepository::deleteById);
-        return expired.size();
+        return conversationRepository.deleteExpiredTrash(ChatTrashPolicy.cutoff(LocalDateTime.now()));
     }
 
     @Transactional
@@ -110,18 +106,24 @@ public class ChatCommandService {
                 .orElseThrow(() -> new ConversationNotFoundException(conversationId, userId));
         AiProvider provider = requestedProvider != null ? requestedProvider : aiProperties.getDefaultProvider();
 
+        // Decision(LLM 호출)은 오래 걸린다. 요청 스레드에서 기다리면 FE 가 타임아웃(Network Error)
+        // 나므로, PENDING 태스크를 열어 taskId 만 먼저 응답하고 Decision→제출은 백그라운드로 넘긴다.
+        // FE 는 이 taskId 로 SSE 를 열어 계획·진행·실패를 실시간으로 받는다(항상 non-null).
+        //
+        // 메시지 저장보다 먼저 하는 이유: 사용자 발화에도 taskId 를 실어 저장해야 목록 조회에서
+        // "이 요청이 어느 작업을 낳았나" 를 알 수 있다. 예전에는 저장이 먼저라 taskId 를 못 넣었고,
+        // 그 값은 이 POST 응답에만 실려 나가 GET 목록에서는 전부 null 이었다.
+        // 같은 트랜잭션이므로 뒤가 실패하면 PENDING 태스크도 함께 롤백된다.
+        Long projectId = conversation.getProjectId();
+        String taskId = agentOrchestrator.createPending(userId, conversationId);
+
         ChatMessage message = chatMessageRepository.save(
-                new ChatMessage(conversation.getId(), ChatRole.USER, content, 0)
+                new ChatMessage(conversation.getId(), ChatRole.USER, content, 0, null, taskId)
         );
         if (conversation.assignTitleFromFirstMessage(content)) {
             conversationRepository.save(conversation);
         }
 
-        // Decision(LLM 호출)은 오래 걸린다. 요청 스레드에서 기다리면 FE 가 타임아웃(Network Error)
-        // 나므로, PENDING 태스크를 열어 taskId 만 먼저 응답하고 Decision→제출은 백그라운드로 넘긴다.
-        // FE 는 이 taskId 로 SSE 를 열어 계획·진행·실패를 실시간으로 받는다(항상 non-null).
-        Long projectId = conversation.getProjectId();
-        String taskId = agentOrchestrator.createPending(userId, conversationId);
         dispatchDecisionAfterCommit(taskId, userId, conversationId, projectId, provider);
         return toMessageResult(message, taskId);
     }
@@ -228,7 +230,8 @@ public class ChatCommandService {
                 message.getContent(),
                 message.getTokenCount(),
                 message.getCreatedAt(),
-                taskId
+                taskId,
+                message.getKind()
         );
     }
 }

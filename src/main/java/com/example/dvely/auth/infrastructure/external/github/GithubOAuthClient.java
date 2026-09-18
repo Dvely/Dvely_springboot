@@ -3,13 +3,12 @@ package com.example.dvely.auth.infrastructure.external.github;
 import com.example.dvely.auth.application.port.out.GithubOAuthPort;
 import com.example.dvely.auth.infrastructure.config.GithubProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
 @Component
-@RequiredArgsConstructor
 public class GithubOAuthClient implements GithubOAuthPort {
 
     private static final String GITHUB_BASE_URL = "https://github.com";
@@ -17,6 +16,13 @@ public class GithubOAuthClient implements GithubOAuthPort {
     private static final String TOKEN_PATH = "/login/oauth/access_token";
 
     private final GithubProperties properties;
+    private final RestClient githubRestClient;
+
+    public GithubOAuthClient(GithubProperties properties,
+                             @Qualifier("githubRestClient") RestClient githubRestClient) {
+        this.properties = properties;
+        this.githubRestClient = githubRestClient;
+    }
 
     /**
      * OAuth App 인증 URL 생성
@@ -46,7 +52,7 @@ public class GithubOAuthClient implements GithubOAuthPort {
     public String getAccessToken(String code) {
         AccessTokenResponse response;
         try {
-            response = RestClient.create()
+            response = githubRestClient
                     .post()
                     .uri(GITHUB_BASE_URL + TOKEN_PATH)
                     .header("Accept", "application/json")

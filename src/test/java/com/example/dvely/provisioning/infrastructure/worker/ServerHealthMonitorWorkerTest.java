@@ -36,6 +36,7 @@ class ServerHealthMonitorWorkerTest {
 
     @Mock private ProvisionedServerRepository serverRepository;
     @Mock private TcpHealthChecker healthChecker;
+    @Mock private com.example.dvely.provisioning.infrastructure.HttpHealthProbe httpHealthProbe;
     @Mock private CloudConnectionRepository cloudConnectionRepository;
     @Mock private SsmRunCommandClient ssmRunCommandClient;
     @Mock private com.example.dvely.audit.application.AuditRecorder auditRecorder;
@@ -68,6 +69,21 @@ class ServerHealthMonitorWorkerTest {
 
         verify(serverRepository).recordHealth(1L, true);
         verify(serverRepository, never()).claimRecovery(anyLong());
+    }
+
+    @Test
+    void appReportsFunctionalFailureViaHttp5xx_recordsUnhealthyEvenWhenPortOpen() {
+        // 배포 e2e 발견 #3: 포트는 열려 있어(TCP healthy) 프로세스는 살아 있지만, 앱이 DB 에 못 붙어
+        // /api/health 가 5xx 를 준다. TCP 만 보면 healthy 로 오판했다 — HTTP 5xx 를 기능적 이상으로 잡는다.
+        ProvisionedServer server = running("1.2.3.4");
+        server.recordHealthCheck(true);
+        batch(server);
+        when(healthChecker.isHealthy("1.2.3.4", 8080)).thenReturn(true);          // 포트 열림(프로세스 살아있음)
+        when(httpHealthProbe.reportsUnhealthy("1.2.3.4", 8080)).thenReturn(true);  // 앱이 5xx(예: DB down)
+
+        worker.monitorRunningServers();
+
+        verify(serverRepository).recordHealth(1L, false);   // 기능적 이상 → unhealthy
     }
 
     @Test

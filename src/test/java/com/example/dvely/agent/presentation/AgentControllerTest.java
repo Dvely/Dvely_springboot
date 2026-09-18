@@ -53,7 +53,6 @@ class AgentControllerTest {
                 agentFacade,
                 agentOrchestrator,
                 taskStore,
-                inputWaitStore,
                 mock(PreviewSessionService.class),
                 mock(AgentEventStreamService.class),
                 mock(AiProviderQueryService.class)
@@ -207,11 +206,13 @@ class AgentControllerTest {
 
     @Test
     void ownerInputQueuesPersistentTask() {
-        when(inputWaitStore.supply("task-1", 1L, "my-domain")).thenReturn(true);
+        // 대화 기록까지 함께 하도록 AgentOrchestrator#supplyInput 를 거친다 — 답이 대화에 남지
+        // 않으면 되묻기 폼이 사라진 뒤 사용자가 무엇을 골랐는지 확인할 방법이 없다.
+        when(agentOrchestrator.supplyInput("task-1", 1L, 21L, "my-domain")).thenReturn(true);
 
         assertThat(controller.submitInput(1L, "task-1", new TaskInputRequest("my-domain")).getStatusCode())
                 .isEqualTo(HttpStatus.NO_CONTENT);
-        verify(inputWaitStore).supply("task-1", 1L, "my-domain");
+        verify(agentOrchestrator).supplyInput("task-1", 1L, 21L, "my-domain");
     }
 
     @Test

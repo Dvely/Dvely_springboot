@@ -41,8 +41,9 @@ out/
 ### VS Code ###
 .vscode/
 
-### Notion ###
-.notion/
+### Notion — 추적한다(공유 SSOT) ###
+# prd/srs/state/api/connection/ROADMAP/컨벤션 문서는 두 사람이 같은 기준을 봐야 하므로 저장소에 둔다.
+# 시크릿 스캔 완료(2026-09-06): 키·토큰 없음. 새 문서를 넣을 때도 값이 아니라 규약만 적을 것.
 
 ### DS_Store ###
 .DS_Store
@@ -52,11 +53,15 @@ Dvely_FE_test/
 
 ### Local config ###
 gradle.properties
+# 실제 API 키·DB 비밀번호가 들어 있다. 절대 추적하지 않는다.
 src/main/resources/application-local.yml
-CLAUDE.md
 
-### AI harness (Claude Code / BATHOS) ###
+### AI harness — 개인 작업물이라 공유하지 않는다 ###
+# .claude/, .agent-team/ 은 세션 스냅샷·리뷰 산출물 등 개인 하네스 출력이다(수 MB).
+# 프로젝트 지식은 AGENTS.md / CLAUDE.md / .notion/ 으로 올려 공유한다.
 /.claude/
 /.agent-team/
 /assets/
 /modules/
+
+# AGENTS.md(Codex)와 CLAUDE.md(Claude Code)는 추적한다 — 두 도구가 같은 현황을 이어받게 하는 진입점.

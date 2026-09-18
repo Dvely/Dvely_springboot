@@ -11,6 +11,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.MissingRequestHeaderException;
+import com.example.dvely.template.application.exception.TemplateCatalogUnavailableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
@@ -113,7 +114,23 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ErrorCode.GITHUB_APP_REPOSITORY_ACCESS_DENIED, e.getMessage()));
     }
 
+    // 400 - BYOK 코딩 에이전트인데 해당 벤더의 본인 API 키가 미등록
+    @ExceptionHandler(AiCredentialNotRegisteredException.class)
+    public ResponseEntity<ApiResponse<Void>> handleAiCredentialNotRegistered(
+            AiCredentialNotRegisteredException e) {
+        log.warn("AI credential not registered: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.error(ErrorCode.AI_CREDENTIAL_NOT_REGISTERED, e.getMessage()));
+    }
+
     // 404 - 리소스 없음
+    @ExceptionHandler(TemplateCatalogUnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTemplateCatalogUnavailable(TemplateCatalogUnavailableException e) {
+        log.error("템플릿 카탈로그 조회 실패", e);
+        return ResponseEntity.status(ErrorCode.TEMPLATE_CATALOG_UNAVAILABLE.getStatus())
+                .body(ApiResponse.error(ErrorCode.TEMPLATE_CATALOG_UNAVAILABLE, e.getMessage()));
+    }
+
     @ExceptionHandler(NotFoundException.class)
     public ResponseEntity<ApiResponse<Void>> handleNotFound(NotFoundException e) {
         log.warn("Not found: {}", e.getMessage());
@@ -172,7 +189,7 @@ public class GlobalExceptionHandler {
         ErrorCode errorCode = switch (e.reason()) {
             case MISSING_API_KEY, AUTH_FAILED, QUOTA_EXCEEDED -> ErrorCode.AI_PROVIDER_UNAVAILABLE;
             case RATE_LIMITED -> ErrorCode.AI_PROVIDER_RATE_LIMITED;
-            case UPSTREAM_ERROR -> ErrorCode.AI_PROVIDER_ERROR;
+            case UPSTREAM_ERROR, MALFORMED_RESPONSE -> ErrorCode.AI_PROVIDER_ERROR;
         };
         // The provider's own response body is already logged by LlmProviderErrors; this line is
         // about which request was affected, so it stays short and carries no response content.

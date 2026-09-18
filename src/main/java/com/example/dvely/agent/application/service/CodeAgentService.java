@@ -2,6 +2,7 @@ package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.exception.AgentIterationLimitException;
+import com.example.dvely.agent.application.exception.AgentTokenBudgetExceededException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
 import com.example.dvely.agent.application.port.out.LlmToolPort;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
@@ -10,6 +11,7 @@ import com.example.dvely.agent.application.port.out.ToolDefinition;
 import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
+import com.example.dvely.agent.infrastructure.codingagent.CodingAgentWorkspaceBridge;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
 import com.example.dvely.agent.infrastructure.llm.GlmToolClient;
@@ -20,6 +22,8 @@ import com.example.dvely.preview.application.service.PreviewRuntimeLauncher;
 import com.example.dvely.preview.application.service.PreviewServeException;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.preview.application.service.PreviewWorkspaceService;
+import com.example.dvely.template.domain.model.Template;
+import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import java.util.Base64;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -27,6 +31,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Map;
 
 @Slf4j
@@ -67,7 +72,9 @@ public class CodeAgentService {
     private final PreviewRuntimeLauncher   previewRuntimeLauncher;
     private final PreviewWorkspaceService previewWorkspaceService;
     private final BuildFailureAnalyzer    buildFailureAnalyzer;
+    private final TemplateSeedingService  templateSeedingService;
     private final AiProperties            aiProperties;
+    private final CodingAgentWorkspaceBridge codingAgentWorkspaceBridge;
 
     private static final String SYSTEM_PROMPT = """
             You are an expert full-stack developer working inside a Docker container (node:20-alpine).
@@ -75,11 +82,18 @@ public class CodeAgentService {
 
             ## Workflow — New Project
             1. Check /workspace first (execute_command: ls /workspace).
-            2. Scaffold only if no project exists yet:
+            2. The project MUST live in /workspace/app. Everything after you — the git push to the
+               preview branch, the change diff, the deploy — looks in /workspace/app and nowhere
+               else, so files written to /workspace itself are silently left behind.
+               Scaffold only if no project exists yet:
                - Vite + React (preferred): npm create vite@latest app -- --template react
                - CRA:                      npx create-react-app app
                - Next.js:                  npx create-next-app@latest app --no-git
                - Vue:                      npm create vue@latest app
+               - Plain HTML/CSS/JS, when the request asks for no framework and no build step:
+                 do NOT run a scaffolder. Run `mkdir -p /workspace/app` and write index.html and
+                 its assets there yourself. This is the one case with no scaffolder to create the
+                 directory for you, so you must create it.
             3. !! IMPLEMENT THE REQUESTED FEATURE — THIS IS MANDATORY !!
                - Read the scaffolded source files first (read_file src/App.jsx etc.).
                - Rewrite or create ALL necessary source files to implement the feature.
@@ -87,6 +101,8 @@ public class CodeAgentService {
             4. Install any additional dependencies if needed.
             5. Build ONLY after implementation is complete:
                cd /workspace/app && npm run build
+               Skip this step for a plain HTML/CSS/JS project — it has no build step and no
+               package.json, and the preview serves /workspace/app directly.
 
             ## Workflow — Modifying Existing Project
             1. ls /workspace to find the project directory.
@@ -99,6 +115,12 @@ public class CodeAgentService {
             - CRITICAL: scaffold → implement feature → build. Never build before implementing.
             - If a command fails, read the error and fix it before continuing.
             - Each execute_command runs independently; chain with: cd /path && command
+            - Do NOT pin a router basename, or a build-time `base`, to a deploy path. The usual
+              GitHub Pages recipe — `<BrowserRouter basename={import.meta.env.BASE_URL}>` — is
+              inlined when the app is built, but the preview serves it under a different path that
+              changes every time it is opened. The router then matches nothing and shows a
+              blank page with no console error, which is nearly impossible to diagnose.
+              Leave both unset; deployment sets its own base at build time.
             - When the build succeeds, respond with TEXT ONLY (no tool calls). This closing text is
               shown DIRECTLY TO THE END USER — the non-technical owner of the app, not a developer —
               so write a short, friendly product summary, NOT a build log. Rules for it:
@@ -175,6 +197,14 @@ public class CodeAgentService {
             previewWorkspaceService.prepareProject(containerId, userId, projectId);
         }
 
+        // 저장소를 먼저 받은 뒤에 씨딩을 시도한다. 순서가 반대면 clone 이 씨앗을 덮거나
+        // 비어 있지 않은 디렉터리에 clone 하려다 실패한다. 씨딩은 작업 디렉터리가 비었을
+        // 때만 일어나므로, 저장소가 있는 프로젝트에서는 자연히 건너뛴다.
+        Optional<Template> seededTemplate = templateSeedingService.seedIfNeeded(containerId, projectId);
+        if (seededTemplate.isPresent()) {
+            instruction = withTemplateContext(instruction, seededTemplate.get());
+        }
+
         try {
             // GLM shares OpenAI's loop rather than getting its own: OpenRouter returns
             // OpenAI-shaped tool_calls, so the transcript built here is identical down to the
@@ -185,6 +215,12 @@ public class CodeAgentService {
                         openAiToolClient, "OpenAI", instruction, containerId, modelOptions);
                 case GLM -> runOpenAiCompatibleLoop(
                         glmToolClient, "GLM", instruction, containerId, modelOptions);
+                // A coding agent does not share this loop: it brings its own container and edits a
+                // bind-mounted host checkout, while everything here drives tools inside the running
+                // preview container. The bridge carries the project across and back, so the rest of
+                // the step — preview launch, diff, push — sees the same /workspace/app it always has.
+                case CLAUDE_CODE, CODEX ->
+                        codingAgentWorkspaceBridge.run(containerId, userId, provider, instruction);
             };
 
             // 세션은 PROVISIONING 으로 만들어져 있다. 서버가 실제로 뜬 뒤에만 ACTIVE 로 올려야
@@ -217,6 +253,13 @@ public class CodeAgentService {
             // the task's retry budget on a call that cannot start succeeding between attempts.
             log.error("[CodeAgent] AI 제공자 호출 실패 | userId={} provider={} reason={}",
                     userId, e.providerName(), e.reason());
+            throw e;
+        } catch (AgentTokenBudgetExceededException e) {
+            // 아래 빌드실패 경로로 흘리면 안 된다. 빌드 로그를 분석해 "프로젝트 빌드가 완료되지
+            // 않았습니다" 로 닫히는데, 빌드는 실패하지 않았고 재시도해도 같은 상한에 곧바로 다시
+            // 걸린다 — 사용자에게는 원인이 안 보이는 실패 두 번이 된다.
+            log.warn("[CodeAgent] 토큰 예산 초과로 중단 | userId={} containerId={} used={} budget={}",
+                    userId, containerId, e.usedTokens(), e.budgetTokens());
             throw e;
         } catch (AgentIterationLimitException e) {
             // Deliberately not routed through BuildFailureAnalyzer like the branch below: nothing
@@ -254,6 +297,49 @@ public class CodeAgentService {
                     e
             );
         }
+    }
+
+    /**
+     * 씨딩된 템플릿을 지시문 앞에 붙인다.
+     *
+     * 시스템 프롬프트는 "프로젝트가 없으면 스캐폴드" 로 시작한다. 파일이 이미 있으니 모델이
+     * 알아서 수정 경로를 타는 것이 정상이지만, 그 판단을 추측에 맡기지 않는다 — 한 번이라도
+     * 스캐폴더가 돌면 사용자가 고른 템플릿이 통째로 덮인다.
+     *
+     * contentHints 를 함께 넘기는 것이 요점이다. 사용자가 원하는 것은 "내용만 바꾸기" 인데,
+     * 어디가 내용이고 어디가 구조인지 모델이 스스로 판단하면 레이아웃까지 건드린다.
+     */
+    private String withTemplateContext(String instruction, Template template) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("## Starting point — a template is ALREADY in place\n")
+                .append("The user picked the \"").append(template.name())
+                .append("\" template and it is already extracted into ").append(ContainerPaths.APP_DIR)
+                .append(".\n")
+                .append("DO NOT scaffold. DO NOT run any project generator (create-vite, create-react-app,\n")
+                .append("create-next-app, ...). Running one would overwrite what the user chose.\n")
+                .append("Start by reading what is there: execute_command `ls -A ")
+                .append(ContainerPaths.APP_DIR).append("`, then read the files before editing.\n");
+
+        if (template.stack() != null) {
+            prompt.append("Stack: ").append(template.stack())
+                    .append(" (entry: ").append(template.entry() == null ? "index.html" : template.entry())
+                    .append(").\n");
+        }
+
+        if (template.contentHints() != null && !template.contentHints().isEmpty()) {
+            prompt.append("\nThe template declares which parts are \"content\" — meant to be replaced:\n");
+            for (Template.ContentHint hint : template.contentHints()) {
+                prompt.append("- ").append(hint.key())
+                        .append(" (").append(hint.where()).append("): ").append(hint.desc()).append("\n");
+            }
+        }
+
+        prompt.append("\nKeep the template's structure and visual design unless the user asks to change it.\n")
+                .append("Preserve the language of the existing copy unless the user asks otherwise.\n")
+                .append("\n## What the user asked for\n")
+                .append(instruction);
+
+        return prompt.toString();
     }
 
     public record CodeResult(String previewUrl, String summary) {}

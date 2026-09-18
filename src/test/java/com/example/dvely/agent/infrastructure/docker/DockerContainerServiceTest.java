@@ -18,8 +18,14 @@ import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.CreateNetworkCmd;
+import com.github.dockerjava.api.command.ExecCreateCmd;
+import com.github.dockerjava.api.command.ExecCreateCmdResponse;
+import com.github.dockerjava.api.command.ExecStartCmd;
+import com.github.dockerjava.api.command.InspectExecCmd;
+import com.github.dockerjava.api.command.InspectExecResponse;
 import com.github.dockerjava.api.command.InspectContainerCmd;
 import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.github.dockerjava.api.command.InspectImageCmd;
 import com.github.dockerjava.api.command.InspectNetworkCmd;
 import com.github.dockerjava.api.command.ListNetworksCmd;
 import com.github.dockerjava.api.command.LogContainerCmd;
@@ -31,11 +37,13 @@ import com.github.dockerjava.api.command.StopContainerCmd;
 import com.github.dockerjava.api.exception.ConflictException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.Capability;
+import com.github.dockerjava.api.model.ContainerNetwork;
 import com.github.dockerjava.api.model.CpuStatsConfig;
 import com.github.dockerjava.api.model.CpuUsageConfig;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.LogConfig;
 import com.github.dockerjava.api.model.MemoryStatsConfig;
 import com.github.dockerjava.api.model.Network;
 import com.github.dockerjava.api.model.NetworkSettings;
@@ -69,28 +77,33 @@ class DockerContainerServiceTest {
     }
 
     @Test
-    void getMappedPortRejectsMissingBinding() {
-        mockInspectWithBindings(null);
+    void getContainerIpRejectsMissingNetworkSettings() {
+        mockInspectWithNetworks(null);
 
-        assertThatThrownBy(() -> service.getMappedPort("container-1"))
+        assertThatThrownBy(() -> service.getContainerIp("container-1"))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("포트 바인딩");
+                .hasMessageContaining("컨테이너 IP");
     }
 
     @Test
-    void getMappedPortRejectsEmptyBinding() {
-        mockInspectWithBindings(new Ports.Binding[0]);
+    void getContainerIpRejectsBlankAddress() {
+        mockInspectWithNetworks(Map.of("qeploy-preview", networkWithIp("")));
 
-        assertThatThrownBy(() -> service.getMappedPort("container-1"))
+        assertThatThrownBy(() -> service.getContainerIp("container-1"))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("포트 바인딩");
+                .hasMessageContaining("컨테이너 IP");
     }
 
+    /**
+     * 게이트웨이가 프록시할 유일한 주소다(#358 이후 호스트 포트를 발행하지 않는다). 여기서 빈 값을
+     * 조용히 돌려주면 게이트웨이가 빈 주소로 프록시해 502 만 남고, 사용자에게는 "깨진 이미지" 로만
+     * 보인다 — 원인이 어디에도 안 남는 형태라 실패로 끊는다.
+     */
     @Test
-    void getMappedPortReturnsHostPort() {
-        mockInspectWithBindings(new Ports.Binding[]{Ports.Binding.bindPort(32768)});
+    void getContainerIpReturnsTheAddress() {
+        mockInspectWithNetworks(Map.of("qeploy-preview", networkWithIp("172.18.0.2")));
 
-        assertThat(service.getMappedPort("container-1")).isEqualTo(32768);
+        assertThat(service.getContainerIp("container-1")).isEqualTo("172.18.0.2");
     }
 
     @Test
@@ -113,6 +126,8 @@ class DockerContainerServiceTest {
         when(stopCommand.withTimeout(5)).thenReturn(stopCommand);
         when(dockerClient.removeContainerCmd("container-1")).thenReturn(removeCommand);
         when(removeCommand.withForce(true)).thenReturn(removeCommand);
+        // 익명 볼륨까지 함께 지운다 — 안 그러면 컨테이너만 사라지고 볼륨이 고아로 남는다.
+        when(removeCommand.withRemoveVolumes(true)).thenReturn(removeCommand);
         when(removeCommand.exec()).thenThrow(new IllegalStateException("docker unavailable"));
 
         assertThatThrownBy(() -> service.removeContainer("container-1"))
@@ -150,14 +165,9 @@ class DockerContainerServiceTest {
     @Test
     void createAndStartContainerAppliesIsolationHostConfig() {
         mockNetworkAlreadyExists(true);
-        CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
-        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
-        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
-        when(createCommand.exec()).thenReturn(createResponse);
-        when(createResponse.getId()).thenReturn("container-1");
-        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+        mockContainerCreation();
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
         verify(createCommand).withHostConfig(hostConfigCaptor.capture());
@@ -173,46 +183,106 @@ class DockerContainerServiceTest {
         assertThat(hostConfig.getNetworkMode()).isEqualTo("qeploy-preview");
     }
 
-    // Issue #76 (BI-081/G1): the host port binding itself must carry HostIp=127.0.0.1, not just
-    // "some port binding exists" — an unset HostIp (the pre-fix Ports.Binding.bindPort(0)) is
-    // exactly the bug this guards against, and would pass a looser "a binding was added" check.
-    // A real-Docker assertion that the *daemon* actually enforces this loopback bind lives in
-    // DockerContainerServicePortBindingIntegrationTest; this test only proves the request we send
-    // asks for it.
+    /**
+     * 빌드 컨테이너는 아무것도 서빙하지 않는다 — 저장소를 받아 산출물만 꺼내고 버린다.
+     * 포트를 게시하면 연결하는 쪽도 없이 면만 늘어난다(getMappedPort 는 프리뷰 경로만 부른다).
+     *
+     * <p>역할 라벨은 운영자가 `docker ps` 에서 둘을 갈라 보기 위한 것이고, 그보다 중요하게는
+     * 뒤따르는 격리 작업(#332)이 프리뷰만 골라 바꿀 수 있게 하는 기준이다.</p>
+     */
     @Test
-    void createAndStartContainerBindsHostPortToLoopbackOnly() {
+    void buildContainerIsLabelledAsBuild() {
         mockNetworkAlreadyExists(true);
-        CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
-        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
-        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
-        when(createCommand.exec()).thenReturn(createResponse);
-        when(createResponse.getId()).thenReturn("container-1");
-        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+        mockContainerCreation();
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.BUILD, 1L, "session-1", 11L, null, null);
+
+        ArgumentCaptor<Map<String, String>> labelCaptor = ArgumentCaptor.captor();
+        verify(createCommand).withLabels(labelCaptor.capture());
+        assertThat(labelCaptor.getValue()).containsEntry("qeploy.role", "build");
 
         ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
         verify(createCommand).withHostConfig(hostConfigCaptor.capture());
-        Ports.Binding[] bindings = hostConfigCaptor.getValue().getPortBindings()
-                .getBindings()
-                .get(ExposedPort.tcp(3000));
-        assertThat(bindings).hasSize(1);
-        assertThat(bindings[0].getHostIp()).isEqualTo("127.0.0.1");
-        // Port stays dynamic (daemon-assigned) — only HostIp changed, not the "which port" policy.
-        assertThat(bindings[0].getHostPortSpec()).isEqualTo("0");
+
+        // 격리 정책은 역할과 무관하게 그대로다 — 빌드도 사용자 저장소의 코드를 돌린다.
+        assertThat(hostConfigCaptor.getValue().getCapDrop()).containsExactly(Capability.ALL);
+        assertThat(hostConfigCaptor.getValue().getSecurityOpts()).containsExactly("no-new-privileges");
+    }
+
+    /**
+     * 프리뷰 컨테이너에서 도는 것은 <b>사용자가 연결한 저장소의 코드</b>다 — npm postinstall 과
+     * 빌드 스크립트는 저장소가 정한다. 그것이 root 로 돌면 안 된다(#332).
+     *
+     * <p>HOME 이 함께 가야 한다. 없으면 npm 캐시와 git config --global 이 root 홈을 쓰려다 죽고,
+     * 빌드가 아니라 설정 파일 때문에 실패해 원인이 로그에 안 남는다.</p>
+     */
+    @Test
+    void previewContainerRunsAsNodeWithItsOwnHome() {
+        mockNetworkAlreadyExists(true);
+        mockContainerCreation();
+
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
+
+        verify(createCommand).withUser("node");
+        ArgumentCaptor<List<String>> envCaptor = ArgumentCaptor.captor();
+        verify(createCommand).withEnv(envCaptor.capture());
+        assertThat(envCaptor.getValue()).contains("HOME=/home/node");
+    }
+
+    /**
+     * 빌드 컨테이너는 그대로 root 다. 역할을 가른 이유가 이것이고, 이 값이 흔들리면 배포
+     * 파이프라인 전체를 다시 검증해야 한다.
+     */
+    @Test
+    void buildContainerStaysRoot() {
+        mockNetworkAlreadyExists(true);
+        mockContainerCreation();
+
+        service.createAndStartContainer(ContainerRole.BUILD, 1L, "session-1", 11L, null, null);
+
+        verify(createCommand).withUser(null);
+        verify(dockerClient, never()).execCreateCmd(anyString());   // 소유자 준비도 하지 않는다
+    }
+
+    @Test
+    void previewContainerIsLabelledAsPreview() {
+        mockNetworkAlreadyExists(true);
+        mockContainerCreation();
+
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
+
+        ArgumentCaptor<Map<String, String>> labelCaptor = ArgumentCaptor.captor();
+        verify(createCommand).withLabels(labelCaptor.capture());
+        assertThat(labelCaptor.getValue()).containsEntry("qeploy.role", "preview");
+    }
+
+    /**
+     * Issue #76(BI-081/G1)의 후신. 원래는 발행 포트의 HostIp 가 루프백인지를 봤다 — 미설정이면
+     * 데몬이 0.0.0.0(모든 인터페이스)으로 해석해 게이트웨이의 토큰 검사를 통째로 우회할 수 있었다.
+     *
+     * <p>#358 에서 발행 자체를 없앴으므로 지켜야 할 성질이 더 강해졌다: <b>호스트 포트가 하나도
+     * 없어야 한다.</b> 게이트웨이는 컨테이너 IP 로만 닿고, 브리지 대역은 호스트 밖에서 라우팅되지
+     * 않는다.</p>
+     */
+    @Test
+    void createAndStartContainerPublishesNoHostPort() {
+        mockNetworkAlreadyExists(true);
+        mockContainerCreation();
+
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
+
+        ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
+        verify(createCommand).withHostConfig(hostConfigCaptor.capture());
+        assertThat(hostConfigCaptor.getValue().getPortBindings()).isNull();
+        verify(createCommand, never()).withExposedPorts(any(ExposedPort[].class));
     }
 
     @Test
     void createAndStartContainerSkipsNetworkCreationWhenNetworkAlreadyExists() {
         mockNetworkAlreadyExists(true);
-        CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
-        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
-        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
-        when(createCommand.exec()).thenReturn(createResponse);
-        when(createResponse.getId()).thenReturn("container-1");
-        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+        mockContainerCreation();
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         verify(dockerClient, never()).createNetworkCmd();
     }
@@ -223,6 +293,7 @@ class DockerContainerServiceTest {
     @Test
     void createAndStartContainerWarnsButProceedsWhenExistingNetworkIccMismatched() {
         mockNetworkAlreadyExists(false);
+        mockSuccessfulExec();
         CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
         CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
         when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
@@ -230,7 +301,7 @@ class DockerContainerServiceTest {
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
 
-        assertThatCode(() -> service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1"))
+        assertThatCode(() -> service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1"))
                 .doesNotThrowAnyException();
 
         verify(dockerClient).inspectNetworkCmd();
@@ -249,6 +320,7 @@ class DockerContainerServiceTest {
         when(listCommand.exec()).thenReturn(List.of(superstringMatch));
         CreateNetworkCmd createNetworkCommand = mock(CreateNetworkCmd.class, RETURNS_SELF);
         when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCommand);
+        mockSuccessfulExec();
         CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
         CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
         when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
@@ -256,7 +328,7 @@ class DockerContainerServiceTest {
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         verify(dockerClient).createNetworkCmd();
         verify(dockerClient, never()).inspectNetworkCmd();
@@ -271,6 +343,7 @@ class DockerContainerServiceTest {
         when(listCommand.exec()).thenReturn(List.of());
         CreateNetworkCmd createNetworkCommand = mock(CreateNetworkCmd.class, RETURNS_SELF);
         when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCommand);
+        mockSuccessfulExec();
         CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
         CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
         when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
@@ -278,7 +351,7 @@ class DockerContainerServiceTest {
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
 
-        service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, String>> optionsCaptor = ArgumentCaptor.forClass(Map.class);
@@ -296,6 +369,7 @@ class DockerContainerServiceTest {
         CreateNetworkCmd createNetworkCommand = mock(CreateNetworkCmd.class, RETURNS_SELF);
         when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCommand);
         when(createNetworkCommand.exec()).thenThrow(new ConflictException("network already exists"));
+        mockSuccessfulExec();
         CreateContainerCmd createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
         CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
         when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
@@ -303,10 +377,110 @@ class DockerContainerServiceTest {
         when(createResponse.getId()).thenReturn("container-1");
         when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
 
-        String containerId = service.createAndStartContainer(1L, "session-1", 11L, 21L, "task-1");
+        String containerId = service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
 
         assertThat(containerId).isEqualTo("container-1");
         verify(dockerClient).startContainerCmd("container-1");
+    }
+
+    // --- Issue #342 7-5: 로컬에 있는 이미지는 pull 하지 않는다 ---------------------------
+
+    /**
+     * 예전에는 컨테이너를 만들 때마다 조건 없이 pull 했다. 이미 있는 이미지에도 레지스트리 왕복을
+     * 하고, 레지스트리가 느리면 컨테이너 생성이 최대 3 분을 기다린다 — 프리뷰를 띄우는 사용자가 그
+     * 시간을 그대로 본다. 선확인이 성공하면 pull 이 <b>아예 나가지 않아야</b> 한다.
+     */
+    @Test
+    void createAndStartContainerSkipsThePullWhenTheImageIsAlreadyLocal() {
+        mockNetworkAlreadyExists(true);
+        when(dockerClient.inspectImageCmd(anyString())).thenReturn(mock(InspectImageCmd.class));
+        mockContainerCreation();
+
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
+
+        verify(dockerClient, never()).pullImageCmd(anyString());
+    }
+
+    /**
+     * 반대로 없으면 받아온다 — 이 이미지는 공개 베이스(node:20-alpine)라 첫 기동에 pull 하는 것이
+     * 정상 경로다(로컬 빌드 전용인 코딩 에이전트 이미지와 다른 점).
+     */
+    @Test
+    void createAndStartContainerStillPullsWhenTheImageIsMissing() {
+        mockNetworkAlreadyExists(true);
+        InspectImageCmd inspect = mock(InspectImageCmd.class);
+        when(dockerClient.inspectImageCmd(anyString())).thenReturn(inspect);
+        when(inspect.exec()).thenThrow(new NotFoundException("no such image"));
+        mockContainerCreation();
+
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
+
+        verify(dockerClient).pullImageCmd(anyString());
+    }
+
+    // --- Issue #342 7-6: 컨테이너 로그에 상한이 있다 -------------------------------------
+
+    /**
+     * 로그 드라이버에 상한이 없으면 dev 서버 stdout 이 TTL 동안 무제한으로 쌓인다 — 사용자 코드가
+     * 루프에서 찍는 로그 한 줄이 우리 호스트 디스크를 채우는 경로다. 드라이버까지 json-file 로 못
+     * 박아야 옵션이 조용히 무시되지 않는다.
+     */
+    @Test
+    void createAndStartContainerBoundsTheContainerLogSize() {
+        mockNetworkAlreadyExists(true);
+        mockContainerCreation();
+
+        service.createAndStartContainer(ContainerRole.PREVIEW, 1L, "session-1", 11L, 21L, "task-1");
+
+        ArgumentCaptor<HostConfig> hostConfigCaptor = ArgumentCaptor.forClass(HostConfig.class);
+        verify(createCommand).withHostConfig(hostConfigCaptor.capture());
+        LogConfig logConfig = hostConfigCaptor.getValue().getLogConfig();
+        assertThat(logConfig).isNotNull();
+        assertThat(logConfig.getType()).isEqualTo(LogConfig.LoggingType.JSON_FILE);
+        assertThat(logConfig.getConfig()).containsEntry("max-size", "10m").containsEntry("max-file", "2");
+    }
+
+    /** 컨테이너 생성·기동 스텁. 위 세 테스트가 captor 로 쓰는 createCommand 를 남긴다. */
+    private CreateContainerCmd createCommand;
+
+    private void mockContainerCreation() {
+        createCommand = mock(CreateContainerCmd.class, RETURNS_SELF);
+        CreateContainerResponse createResponse = mock(CreateContainerResponse.class);
+        when(dockerClient.createContainerCmd(anyString())).thenReturn(createCommand);
+        when(createCommand.exec()).thenReturn(createResponse);
+        when(createResponse.getId()).thenReturn("container-1");
+        when(dockerClient.startContainerCmd("container-1")).thenReturn(mock(StartContainerCmd.class));
+        // 프리뷰 생성은 시작 직후 워크스페이스 소유자를 root exec 으로 넘긴다(#332).
+        mockSuccessfulExec();
+    }
+
+    /**
+     * exec 한 번이 성공(exit=0)하도록 최소한으로 엮는다.
+     *
+     * <p>lenient 인 이유: 빌드 컨테이너는 소유자 준비를 하지 않아 exec 이 한 번도 불리지 않는다.
+     * 역할에 따라 쓰이기도 안 쓰이기도 하는 스텁이라, 안 쓰였다고 테스트를 깨뜨릴 일이 아니다.</p>
+     */
+    @SuppressWarnings("unchecked")
+    private void mockSuccessfulExec() {
+        ExecCreateCmd execCreate = mock(ExecCreateCmd.class, RETURNS_SELF);
+        ExecCreateCmdResponse execCreateResponse = mock(ExecCreateCmdResponse.class);
+        lenient().when(dockerClient.execCreateCmd(anyString())).thenReturn(execCreate);
+        lenient().when(execCreate.exec()).thenReturn(execCreateResponse);
+        lenient().when(execCreateResponse.getId()).thenReturn("exec-1");
+
+        ExecStartCmd execStart = mock(ExecStartCmd.class, RETURNS_SELF);
+        lenient().when(dockerClient.execStartCmd("exec-1")).thenReturn(execStart);
+        lenient().when(execStart.exec(any(ResultCallback.Adapter.class))).thenAnswer(invocation -> {
+            ResultCallback.Adapter<Frame> callback = invocation.getArgument(0);
+            callback.onComplete();
+            return callback;
+        });
+
+        InspectExecCmd inspectExec = mock(InspectExecCmd.class, RETURNS_SELF);
+        InspectExecResponse inspectExecResponse = mock(InspectExecResponse.class);
+        lenient().when(dockerClient.inspectExecCmd("exec-1")).thenReturn(inspectExec);
+        lenient().when(inspectExec.exec()).thenReturn(inspectExecResponse);
+        lenient().when(inspectExecResponse.getExitCodeLong()).thenReturn(0L);
     }
 
     /**
@@ -660,19 +834,20 @@ class DockerContainerServiceTest {
         return stats;
     }
 
-    private void mockInspectWithBindings(Ports.Binding[] bindings) {
+    private ContainerNetwork networkWithIp(String ip) {
+        ContainerNetwork network = mock(ContainerNetwork.class);
+        when(network.getIpAddress()).thenReturn(ip);
+        return network;
+    }
+
+    private void mockInspectWithNetworks(Map<String, ContainerNetwork> networks) {
         InspectContainerCmd command = mock(InspectContainerCmd.class);
         InspectContainerResponse response = mock(InspectContainerResponse.class);
         NetworkSettings networkSettings = mock(NetworkSettings.class);
-        Ports ports = mock(Ports.class);
 
         when(dockerClient.inspectContainerCmd(anyString())).thenReturn(command);
         when(command.exec()).thenReturn(response);
         when(response.getNetworkSettings()).thenReturn(networkSettings);
-        when(networkSettings.getPorts()).thenReturn(ports);
-
-        Map<ExposedPort, Ports.Binding[]> bindingMap = new HashMap<>();
-        bindingMap.put(ExposedPort.tcp(3000), bindings);
-        when(ports.getBindings()).thenReturn(bindingMap);
+        when(networkSettings.getNetworks()).thenReturn(networks);
     }
 }

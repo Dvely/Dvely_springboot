@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.orchestrator;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -12,6 +13,7 @@ import static org.mockito.Mockito.when;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.application.service.AgentMessageService;
+import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
@@ -41,7 +43,8 @@ class AbandonStaleApprovalTaskTest {
             mock(ConversationRepository.class),
             mock(ProjectApprovalPolicyRepository.class),
             approvalRepository,
-            messageService
+            messageService,
+            mock(InputWaitStore.class)
     );
 
     @Test
@@ -74,7 +77,7 @@ class AbandonStaleApprovalTaskTest {
         assertThat(orchestrator.abandonStaleApprovalTask("task-1")).isFalse();
 
         verify(taskStore, never()).cancel(anyString(), any());
-        verify(messageService, never()).appendAssistant(any(), anyString());
+        verify(messageService, never()).appendAssistant(any(), anyString(), any(), any());
     }
 
     @Test
@@ -93,7 +96,7 @@ class AbandonStaleApprovalTaskTest {
         when(taskStore.cancel("task-1", 7L)).thenReturn(false);
 
         assertThat(orchestrator.abandonStaleApprovalTask("task-1")).isFalse();
-        verify(messageService, never()).appendAssistant(any(), anyString());
+        verify(messageService, never()).appendAssistant(any(), anyString(), any(), any());
     }
 
     /**
@@ -110,7 +113,7 @@ class AbandonStaleApprovalTaskTest {
 
         assertThat(orchestrator.cancel("task-1", 7L)).isTrue();
 
-        verify(messageService).appendAssistant(21L, "작업을 취소했습니다.");
+        verify(messageService).appendAssistant(21L, "작업을 취소했습니다.", ChatMessageKind.TASK_CANCELLED, "task-1");
     }
 
     @Test
@@ -122,7 +125,7 @@ class AbandonStaleApprovalTaskTest {
 
         orchestrator.reject("task-1", 7L);
 
-        verify(messageService, never()).appendAssistant(any(), anyString());
+        verify(messageService, never()).appendAssistant(any(), anyString(), any(), any());
     }
 
     @Test
@@ -132,7 +135,7 @@ class AbandonStaleApprovalTaskTest {
 
         assertThat(orchestrator.cancel("task-1", 7L)).isFalse();
 
-        verify(messageService, never()).appendAssistant(any(), anyString());
+        verify(messageService, never()).appendAssistant(any(), anyString(), any(), any());
     }
 
     private void givenTask(TaskStatus status) {

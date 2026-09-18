@@ -10,6 +10,7 @@ import com.example.dvely.chat.application.result.MessageResult;
 import com.example.dvely.chat.infrastructure.mapper.ChatMapper;
 import com.example.dvely.chat.presentation.dto.ConversationResponse;
 import com.example.dvely.chat.presentation.dto.MessageResponse;
+import com.example.dvely.common.paging.CursorPage;
 import com.example.dvely.chat.presentation.dto.SendMessageRequest;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -100,7 +101,8 @@ class ChatControllerTest {
                                 0,
                                 LocalDateTime.now(),
                                 null
-                );
+                ,
+                        null);
                 MessageResponse response = new MessageResponse(
                                 100L,
                                 20L,
@@ -109,16 +111,18 @@ class ChatControllerTest {
                                 0,
                                 LocalDateTime.now(),
                                 null
-                );
+                ,
+                        null);
 
-                when(chatFacade.getMessages(1L, 20L)).thenReturn(List.of(result));
+                when(chatFacade.getMessages(1L, 20L, null, null))
+                                .thenReturn(CursorPage.of(List.of(result)));
                 when(chatMapper.toMessageResponse(result)).thenReturn(response);
 
-                List<MessageResponse> responses = chatController.getMessages(1L, 20L);
+                List<MessageResponse> responses = chatController.getMessages(1L, 20L, null, null).getBody();
 
                 assertThat(responses).hasSize(1);
                 assertThat(responses.get(0).messageId()).isEqualTo(100L);
-                verify(chatFacade).getMessages(1L, 20L);
+                verify(chatFacade).getMessages(1L, 20L, null, null);
         }
 
         @Test
@@ -132,7 +136,8 @@ class ChatControllerTest {
                                 0,
                                 LocalDateTime.now(),
                                 "task-abc123"
-                );
+                ,
+                        null);
                 MessageResponse response = new MessageResponse(
                                 101L,
                                 30L,
@@ -141,7 +146,8 @@ class ChatControllerTest {
                                 0,
                                 LocalDateTime.now(),
                                 "task-abc123"
-                );
+                ,
+                        null);
 
                 when(chatFacade.sendMessage(1L, 30L, "hi", null)).thenReturn(result);
                 when(chatMapper.toMessageResponse(result)).thenReturn(response);

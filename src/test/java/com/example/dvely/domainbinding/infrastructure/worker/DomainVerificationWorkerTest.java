@@ -35,7 +35,10 @@ class DomainVerificationWorkerTest {
         worker = new DomainVerificationWorker(
                 domainBindingRepository,
                 commandService,
-                new DomainVerificationProperties(60000L, 20, 30, 1440)
+                new DomainVerificationProperties(60000L, 20, 30, 1440),
+                // 검증을 호출 스레드에서 그대로 돌린다 — 이 파일이 보는 것은 "무엇을 검증했는가"이지
+                // 어느 스레드에서 돌았는가가 아니다(#340 5-5 로 실서비스는 전용 executor 를 쓴다).
+                Runnable::run
         );
     }
 
@@ -52,6 +55,23 @@ class DomainVerificationWorkerTest {
 
         verify(commandService).checkVerificationAsSystem(1L);
         verify(commandService).checkVerificationAsSystem(2L);
+    }
+
+    /**
+     * #340 5-5 — 갓 만든 도메인이라도 매 주기(60초) 다시 검증하지는 않는다. 커스텀 도메인은
+     * TTL 이 1440분이라 예전에는 한 건당 최대 1,440회, 그것도 Cloudflare + GitHub + HTTPS 프로브
+     * 세 묶음이 나갔다. 기다리는 대상이 DNS 전파와 호스팅 반영이라 그렇게 촘촘히 볼 이유가 없다.
+     */
+    @Test
+    void aDomainCheckedJustNowIsNotRecheckedOnTheVeryNextSweep() {
+        givenVerifyingDomains(managedSubdomain(1L, "a.qeploy.com", LocalDateTime.now()));
+        when(commandService.checkVerificationAsSystem(anyLong())).thenReturn(result(DomainStatus.VERIFYING));
+
+        worker.verifyPendingDomains();
+        worker.verifyPendingDomains();
+        worker.verifyPendingDomains();
+
+        verify(commandService, org.mockito.Mockito.times(1)).checkVerificationAsSystem(1L);
     }
 
     @Test
@@ -113,6 +133,41 @@ class DomainVerificationWorkerTest {
 
         verify(commandService, never()).checkVerificationAsSystem(anyLong());
         verify(commandService, never()).abandonVerification(anyLong());
+    }
+
+    @Test
+    void rechecksConnectedDomainStillWithoutHttps_toWarmTheCertAndFillTheBadge() {
+        // 배포 e2e 발견 #6: EC2(Caddy on-demand TLS)는 첫 https 요청 때 인증서를 발급하므로 바인딩 직후엔
+        // httpsEnforced=false. 워커가 CONNECTED 후 재검증을 안 하면 사용자가 수동 "검증 재시도" 를 눌러야만
+        // 뱃지가 떴다. 재검증 프로브가 인증서를 warming 하므로 다음 주기엔 true 가 된다.
+        when(domainBindingRepository.findByStatus(DomainStatus.VERIFYING, 20)).thenReturn(List.of());
+        when(domainBindingRepository.findConnectedPendingHttps(20))
+                .thenReturn(List.of(connectedNoHttps(9L, LocalDateTime.now())));   // 방금 CONNECTED
+        when(commandService.checkVerificationAsSystem(9L)).thenReturn(result(DomainStatus.CONNECTED));
+
+        worker.verifyPendingDomains();
+
+        verify(commandService).checkVerificationAsSystem(9L);   // 재검증(프로브가 인증서 warm)
+    }
+
+    @Test
+    void stopsRecheckingConnectedDomainPastTheWarmingWindow() {
+        // 창(30분)을 지나도록 https 가 안 붙었으면 무한 프로브를 막는다 — 수동 재검증에 맡긴다.
+        when(domainBindingRepository.findByStatus(DomainStatus.VERIFYING, 20)).thenReturn(List.of());
+        when(domainBindingRepository.findConnectedPendingHttps(20))
+                .thenReturn(List.of(connectedNoHttps(9L, LocalDateTime.now().minusMinutes(31))));
+
+        worker.verifyPendingDomains();
+
+        verify(commandService, never()).checkVerificationAsSystem(anyLong());
+    }
+
+    private DomainBinding connectedNoHttps(Long id, LocalDateTime createdAt) {
+        return new DomainBinding(
+                id, 11L, DomainType.MANAGED_SUBDOMAIN, DomainHostingTarget.AWS,
+                "app.qeploy.com", DomainStatus.CONNECTED, VerificationMethod.A,
+                "1.2.3.4", "record-1", false, CertificateStatus.PENDING, null, null,
+                createdAt, createdAt);
     }
 
     private void givenVerifyingDomains(DomainBinding... domains) {

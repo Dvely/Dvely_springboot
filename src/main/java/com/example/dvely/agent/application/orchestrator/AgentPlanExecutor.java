@@ -1,9 +1,11 @@
 package com.example.dvely.agent.application.orchestrator;
 
+import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.exception.AgentInputRequiredException;
+import com.example.dvely.agent.application.exception.AgentTokenBudgetExceededException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
 import com.example.dvely.agent.application.service.BuildFailureRecoveryService;
 import com.example.dvely.agent.application.service.ChatAgentService;
@@ -27,7 +29,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import com.example.dvely.agent.domain.value.AiModelOptions;
+import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageRecorder;
+import com.example.dvely.agent.infrastructure.usage.LlmUsageScope;
 import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
 import com.example.dvely.common.exception.LlmProviderException;
@@ -60,10 +65,15 @@ public class AgentPlanExecutor {
     private final DecisionAgentService decisionAgentService;   // 되묻기 답 반영 재-decide
     private final InputWaitStore inputWaitStore;               // CLARIFY 답 consume
     private final ObjectMapper objectMapper;                   // CLARIFY 구조화 질문 파싱
+    private final LlmUsageRecorder llmUsageRecorder;           // 태스크 토큰 계측·예산 스코프
+    private final AiProperties aiProperties;                   // 태스크당 토큰 상한
 
     @Async("agentExecutor")
     public void execute(AgentPlan plan, String taskId, Long userId) {
-        try {
+        // 이 실행 스레드에서 나는 모든 LLM 호출이 이 태스크에 귀속되고, 누적 토큰이 여기 상한에
+        // 걸린다. 스코프는 스레드를 넘지 않으므로 실행 진입점인 여기가 유일하게 맞는 자리다.
+        try (LlmUsageScope ignored = llmUsageRecorder.openTaskScope(
+                taskId, userId, plan.projectId(), aiProperties.getCodeAgent().getMaxTaskTokens())) {
             doExecute(plan, taskId, userId);
         } finally {
             // The only unregister site for a task that made it onto an executor thread — covers
@@ -89,6 +99,10 @@ public class AgentPlanExecutor {
                 }
                 AgentStep step = withSuggestedFix(plan.steps().get(i), taskId, userId);
                 log.info("--- Step [{}/{}] agentType={} ---", i + 1, plan.steps().size(), step.agentType());
+                taskStore.appendStepEvent(
+                        taskId, "STEP_STARTED", com.example.dvely.agent.application.dto.TaskStatus.RUNNING,
+                        stepProgressMessage(step.agentType(), i + 1, plan.steps().size()),
+                        i + 1, plan.steps().size(), step.agentType().name());
                 if (step.agentType() == AgentType.CLARIFY) {
                     // 답이 없으면 던져서 WAITING_INPUT, 있으면 재-decide 후 재큐한다 — 어느 쪽이든 이 실행은 종료.
                     handleClarify(step, plan, taskId, initialTask);
@@ -125,6 +139,10 @@ public class AgentPlanExecutor {
                         }
                     }
                 }
+                taskStore.appendStepEvent(
+                        taskId, "STEP_COMPLETED", com.example.dvely.agent.application.dto.TaskStatus.RUNNING,
+                        stepDoneMessage(step.agentType(), i + 1, plan.steps().size()),
+                        i + 1, plan.steps().size(), step.agentType().name());
                 taskStore.markStepCompleted(taskId, i + 1);
             }
             if (taskStore.isCancelled(taskId)) {
@@ -135,7 +153,9 @@ public class AgentPlanExecutor {
             AgentTask task = taskStore.get(taskId);
             agentMessageService.appendAssistant(
                     task == null ? null : task.conversationId(),
-                    summary == null || summary.isBlank() ? "작업을 완료했습니다." : summary
+                    summary == null || summary.isBlank() ? "작업을 완료했습니다." : summary,
+                    ChatMessageKind.AGENT_RESULT,
+                    taskId
             );
             log.info("=== AgentPlan 실행 완료: taskId={} | previewUrl={} ===", taskId, previewUrl);
 
@@ -144,7 +164,9 @@ public class AgentPlanExecutor {
             AgentTask task = taskStore.get(taskId);
             agentMessageService.appendAssistant(
                     task == null ? null : task.conversationId(),
-                    exception.getMessage()
+                    exception.getMessage(),
+                    ChatMessageKind.INPUT_REQUIRED,
+                    taskId
             );
             log.info("=== AgentPlan 사용자 입력 대기: taskId={} ===", taskId);
         } catch (CodeAgentExecutionException exception) {
@@ -153,6 +175,26 @@ public class AgentPlanExecutor {
             }
             buildFailureRecoveryService.handle(taskId, exception);
             log.warn("=== AgentPlan build 실패 및 복구 대기: taskId={} ===", taskId);
+        } catch (AgentTokenBudgetExceededException exception) {
+            // 상한에 걸린 태스크가 조용히 멈추면 사용자에게는 "왜 안 되지" 로만 남는다. 아래
+            // catch-all 로 흘리면 "작업 중 오류가 발생했습니다" 가 앞에 붙어, 사용자가 읽어야 할
+            // 단 하나의 문장(무엇에 걸렸고 무엇을 하면 되는지)이 묻힌다. 그래서 전용 분기다.
+            //
+            // 재시도로 흘리지 않는 것도 의도다 — 누적은 태스크 단위로 이어 세므로, 재시도해도
+            // 첫 호출에서 곧바로 같은 상한에 다시 걸린다.
+            if (taskStore.isCancelled(taskId)) {
+                return;
+            }
+            taskStore.markFailed(taskId, exception.getMessage());
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    exception.getMessage(),
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
+            );
+            log.warn("=== AgentPlan 토큰 예산 초과로 중단: taskId={} used={} budget={} ===",
+                    taskId, exception.usedTokens(), exception.budgetTokens());
         } catch (LlmProviderException exception) {
             // Separated from the catch-all below only for the chat reply: the provider message is
             // already a complete, actionable sentence ("... 크레딧이 부족해 ... 다른 AI 제공자를
@@ -165,7 +207,9 @@ public class AgentPlanExecutor {
             AgentTask task = taskStore.get(taskId);
             agentMessageService.appendAssistant(
                     task == null ? null : task.conversationId(),
-                    exception.getMessage()
+                    exception.getMessage(),
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
             );
             log.error("=== AgentPlan AI 제공자 실패: taskId={} provider={} reason={} ===",
                     taskId, exception.providerName(), exception.reason());
@@ -178,7 +222,9 @@ public class AgentPlanExecutor {
             AgentTask task = taskStore.get(taskId);
             agentMessageService.appendAssistant(
                     task == null ? null : task.conversationId(),
-                    "작업 중 오류가 발생했습니다: " + safeMessage(e)
+                    "작업 중 오류가 발생했습니다: " + safeMessage(e),
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
             );
             log.error("=== AgentPlan 실행 실패: taskId={} ===", taskId, e);
         }
@@ -222,7 +268,7 @@ public class AgentPlanExecutor {
             case DOMAIN_BIND   -> handleDomainBind(step, userId, taskId, projectId);
             case INFRA_OPERATE -> handleInfraOperate(step, userId, taskId, projectId);
             case RUNTIME_SETUP -> handleRuntimeSetup(step, userId, projectId);
-            case BACKEND_DEPLOY -> handleBackendDeploy(step, userId, projectId);
+            case BACKEND_DEPLOY -> handleBackendDeploy(step, userId, taskId, projectId);
             case CHAT          -> handleChat(step, aiProvider, modelOptions, taskId);
             // CLARIFY 는 dispatch 이전(루프)에서 처리된다 — 여기 오면 로직 오류.
             case CLARIFY       -> throw new IllegalStateException("CLARIFY 는 dispatch 앞에서 처리되어야 한다");
@@ -235,6 +281,42 @@ public class AgentPlanExecutor {
      * 새 플랜을 만들고, 플랜을 교체·재큐한다 — 워커가 새 플랜을 처음부터 실행한다. 답을 CODE 지시문에만 끼워
      * 넣지 않고 재-decide 하는 이유: 스택 선택은 RUNTIME_SETUP·CODE·BACKEND_DEPLOY 를 함께 바꿔야 일관되다.
      */
+    /**
+     * 진행 중 문구. 로그가 아니라 <b>사용자가 읽는 줄</b>이라, 내부 용어(컨테이너·워크스페이스·
+     * 브랜치) 대신 무엇이 되고 있는지를 말한다. 여러 단계짜리 계획이면 몇 번째인지도 붙인다 —
+     * "언제 끝나나" 를 가늠할 수 있는 유일한 단서다.
+     */
+    private String stepProgressMessage(AgentType type, int index, int total) {
+        return withProgress(switch (type) {
+            case CODE           -> "코드를 만들고 있습니다";
+            case DEPLOY         -> "배포하고 있습니다";
+            case DOMAIN_BIND    -> "도메인을 연결하고 있습니다";
+            case INFRA_OPERATE  -> "서버 작업을 진행하고 있습니다";
+            case RUNTIME_SETUP  -> "실행 환경을 준비하고 있습니다";
+            case BACKEND_DEPLOY -> "백엔드를 배포하고 있습니다";
+            case CHAT           -> "답변을 준비하고 있습니다";
+            case CLARIFY        -> "확인이 필요한 내용을 정리하고 있습니다";
+        }, index, total);
+    }
+
+    private String stepDoneMessage(AgentType type, int index, int total) {
+        return withProgress(switch (type) {
+            case CODE           -> "코드 작업을 마쳤습니다";
+            case DEPLOY         -> "배포 요청을 접수했습니다";
+            case DOMAIN_BIND    -> "도메인 연결을 마쳤습니다";
+            case INFRA_OPERATE  -> "서버 작업을 마쳤습니다";
+            case RUNTIME_SETUP  -> "실행 환경을 준비했습니다";
+            case BACKEND_DEPLOY -> "백엔드 배포 요청을 접수했습니다";
+            case CHAT           -> "답변을 마쳤습니다";
+            case CLARIFY        -> "확인 내용을 정리했습니다";
+        }, index, total);
+    }
+
+    /** 한 단계짜리 계획에 "(1/1)" 을 붙이면 군더더기다. */
+    private String withProgress(String text, int index, int total) {
+        return total <= 1 ? text : text + " (" + index + "/" + total + ")";
+    }
+
     private void handleClarify(AgentStep step, AgentPlan plan, String taskId, AgentTask task) {
         ClarificationRequest request = parseClarification(step);
         Optional<String> answer = inputWaitStore.consume(taskId);
@@ -276,7 +358,8 @@ public class AgentPlanExecutor {
     }
 
     private CodeResult handleDeploy(AgentStep step, Long userId, String taskId, Long projectId) {
-        log.info("[DEPLOY 에이전트] GitHub Pages 배포 시작 | userId={} projectId={}", userId, projectId);
+        log.info("[DEPLOY 에이전트] 배포 시작 | userId={} projectId={} hostingType={}",
+                userId, projectId, step.parameters().getOrDefault("hostingType", "(프로젝트 설정 유지)"));
         log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
         log.info("  repoName    : {}", step.parameters().getOrDefault("repoName", ""));
         return deployAgentService.execute(step, userId, taskId, projectId);
@@ -303,11 +386,15 @@ public class AgentPlanExecutor {
         return runtimeSetupAgentService.execute(step, userId, projectId);
     }
 
-    private CodeResult handleBackendDeploy(AgentStep step, Long userId, Long projectId) {
+    private CodeResult handleBackendDeploy(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[BACKEND_DEPLOY 에이전트] 운영 백엔드 배포 요청 | userId={} projectId={} instanceType={} dbEngine={}",
                 userId, projectId, step.parameters().getOrDefault("instanceType", ""),
                 step.parameters().getOrDefault("dbEngine", ""));
-        return backendDeployAgentService.execute(step, userId, projectId);
+        // 배포 승인(DB/서버)에 대화 id 를 실어 채팅이 대화 스코프로 그 승인을 찾아 카드로 띄우게 한다
+        // (배포 e2e 발견 #1 저위험 1단계). 승인은 여전히 standalone 이라 라우팅은 불변.
+        AgentTask task = taskStore.get(taskId);
+        Long conversationId = task == null ? null : task.conversationId();
+        return backendDeployAgentService.execute(step, userId, projectId, conversationId, taskId);
     }
 
     private CodeResult handleChat(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, AiModelOptions modelOptions, String taskId) {

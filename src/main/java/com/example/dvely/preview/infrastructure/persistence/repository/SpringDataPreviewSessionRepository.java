@@ -6,6 +6,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface SpringDataPreviewSessionRepository extends JpaRepository<PreviewSessionEntity, String> {
 
@@ -45,4 +48,30 @@ public interface SpringDataPreviewSessionRepository extends JpaRepository<Previe
     // 하나만 남기고 나머지는 스스로 물러난다. ProjectPreviewService#provision 참고.
     List<PreviewSessionEntity> findByProjectIdAndOwnerUserIdAndStatusIn(
             Long projectId, Long ownerUserId, Collection<String> statuses);
+
+    /**
+     * 게이트웨이 접근 흔적만 갱신하는 단일 UPDATE (Issue #342, 7-1).
+     *
+     * <p>엔티티를 고쳐 {@code save} 하는 대신 UPDATE 한 문장을 쓰는 이유는 <b>호출 빈도</b>다. 이
+     * 갱신은 프리뷰 페이지가 끌어오는 자산 하나하나마다 불린다 — 엔티티 경로는 그 요청마다 더티 체크
+     * UPDATE 와 쓰기 락을 만들었다.</p>
+     *
+     * <p>{@code lastAccessedAt < :staleBefore} 조건이 <b>스로틀 자체</b>다. 호출부도 같은 조건을
+     * 미리 보고 대부분을 걸러내지만, 같은 페이지의 자산 요청 여럿이 동시에 같은 낡은 행을 읽었을 때는
+     * 그 확인이 전부 통과한다. MySQL 의 UPDATE 는 현재 커밋 값을 다시 읽으므로 그 중 먼저 커밋한
+     * 하나만 조건에 맞고 나머지는 0 행으로 끝난다.</p>
+     *
+     * <p>{@code expiresAt} 은 호출부가 이미 정한 값을 그대로 받는다 — 유예({@code
+     * holdForBindingApproval})가 준 더 먼 만료를 앞당기지 않기 위한 비교는 호출부에 남는다.
+     * {@code updatedAt} 은 명시적으로 넣는다: 벌크 UPDATE 는 {@code @UpdateTimestamp} 를 거치지
+     * 않으므로 안 넣으면 이 경로에서만 갱신 시각이 멈춘다.</p>
+     */
+    @Modifying(flushAutomatically = false, clearAutomatically = false)
+    @Query("update PreviewSessionEntity s "
+           + "set s.lastAccessedAt = :now, s.updatedAt = :now, s.expiresAt = :expiresAt "
+           + "where s.id = :sessionId and s.lastAccessedAt < :staleBefore")
+    int touchAccess(@Param("sessionId") String sessionId,
+                    @Param("now") LocalDateTime now,
+                    @Param("expiresAt") LocalDateTime expiresAt,
+                    @Param("staleBefore") LocalDateTime staleBefore);
 }

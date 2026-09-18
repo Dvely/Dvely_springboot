@@ -2,14 +2,18 @@ package com.example.dvely.agent.infrastructure.store;
 
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.dto.AnsweredClarification;
 import com.example.dvely.agent.application.dto.ClarificationRequest;
 import com.example.dvely.agent.application.dto.AgentTaskEvent;
 import com.example.dvely.agent.application.dto.AgentTaskFailure;
 import com.example.dvely.agent.application.dto.TaskStatus;
+import com.example.dvely.agent.application.stream.AgentEventAppendedEvent;
 import com.example.dvely.agent.infrastructure.persistence.entity.AgentRunEntity;
 import com.example.dvely.agent.infrastructure.persistence.entity.AgentRunEventEntity;
 import com.example.dvely.agent.infrastructure.persistence.repository.SpringDataAgentRunEventRepository;
 import com.example.dvely.agent.infrastructure.persistence.repository.SpringDataAgentRunRepository;
+import com.example.dvely.common.worker.WorkQueue;
+import com.example.dvely.common.worker.WorkQueuedEvent;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
@@ -19,12 +23,15 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Component
+@Slf4j
 @RequiredArgsConstructor
 public class TaskStore {
 
@@ -49,6 +56,7 @@ public class TaskStore {
     private final SpringDataAgentRunRepository runRepository;
     private final SpringDataAgentRunEventRepository eventRepository;
     private final ObjectMapper objectMapper;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Transactional
     public void save(AgentTask task) {
@@ -61,6 +69,39 @@ public class TaskStore {
         return runRepository.findByTaskIdAndOwnerUserId(taskId, ownerUserId)
                 .map(AgentRunEntity::toTask)
                 .orElse(null);
+    }
+
+    /**
+     * 스트림 루프용 1쿼리 프로젝션(#339 4-1). 소유자가 아니거나 태스크가 없으면 {@code null}.
+     *
+     * <p>{@link #getOwned} 를 매초 부르던 자리다 — 그 호출은 루프가 쓰지도 않는
+     * {@code plan_json} LONGTEXT 까지 실어 왔다. 여기서는 상태와 마지막 이벤트 번호만 한
+     * 문장으로 읽는다. 소유권 조건은 그 문장 안에 그대로 남는다 — 같은 인덱스 조회라 공짜다.</p>
+     */
+    @Transactional(readOnly = true)
+    public StreamState getStreamState(String taskId, Long ownerUserId) {
+        return runRepository.findStreamState(taskId, ownerUserId)
+                .map(state -> new StreamState(
+                        TaskStatus.valueOf(state.status()),
+                        state.lastEventId() == null ? 0L : state.lastEventId()))
+                .orElse(null);
+    }
+
+    /** 스트림 한 틱이 알아야 할 전부 — 태스크 상태와 마지막 이벤트 번호. */
+    public record StreamState(TaskStatus status, long lastEventId) {}
+
+    /**
+     * 스트림 루프의 이벤트 조회. {@link #getEvents} 와 달리 소유권을 다시 묻지 않는다 —
+     * 같은 틱의 {@link #getStreamState} 가 이미 소유자 조건으로 걸러냈고, 그것을 여기서 한 번 더
+     * 확인하면 매 틱 쿼리가 하나 늘어난다.
+     */
+    @Transactional(readOnly = true)
+    public List<AgentTaskEvent> getEventsSince(String taskId, long afterEventId) {
+        return eventRepository
+                .findByTaskIdAndIdGreaterThanOrderByIdAsc(taskId, afterEventId)
+                .stream()
+                .map(AgentRunEventEntity::toResult)
+                .toList();
     }
 
     @Transactional(readOnly = true)
@@ -100,7 +141,7 @@ public class TaskStore {
                         conversationId, userId, TERMINAL_STATUSES,
                         org.springframework.data.domain.PageRequest.of(0, 1))
                 .stream().findFirst()
-                .map(run -> new ActiveTask(run.getTaskId(), TaskStatus.valueOf(run.getStatus())));
+                .map(view -> new ActiveTask(view.getTaskId(), TaskStatus.valueOf(view.getStatus())));
     }
 
     /** 대화의 현재 살아있는 태스크 포인터(id + 상태). */
@@ -123,6 +164,27 @@ public class TaskStore {
         }
     }
 
+    /**
+     * 이미 답한 되묻기. 답이 없었거나(되묻기를 거치지 않은 태스크) 스냅샷을 못 읽으면 null 이다 —
+     * 읽기 실패로 태스크 조회 전체를 깨뜨리지 않는다. 이 값은 화면을 꾸미는 부가 정보라,
+     * 없으면 예전처럼 보이는 것으로 충분하다.
+     */
+    public AnsweredClarification getAnsweredClarification(String taskId) {
+        String json = runRepository.findById(taskId)
+                .map(AgentRunEntity::getAnsweredClarificationJson)
+                .filter(s -> s != null && !s.isBlank())
+                .orElse(null);
+        if (json == null) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, AnsweredClarification.class);
+        } catch (Exception e) {
+            log.warn("answered clarification 파싱 실패: taskId={}", taskId, e);
+            return null;
+        }
+    }
+
     @Transactional
     public void removePlan(String taskId) {
         requireRun(taskId).clearPlan();
@@ -140,6 +202,7 @@ public class TaskStore {
         AgentRunEntity run = requireRun(taskId);
         run.enqueue(false);
         appendEvent(taskId, "QUEUED", TaskStatus.QUEUED, "Agent task 실행을 대기합니다.");
+        signalWorkQueued();
     }
 
     @Transactional
@@ -153,7 +216,44 @@ public class TaskStore {
         }
         run.enqueue(true);
         appendEvent(taskId, "RETRY_QUEUED", TaskStatus.RETRY_WAIT, "수정안을 적용해 작업을 다시 실행합니다.");
+        signalWorkQueued();
         return true;
+    }
+
+    /**
+     * 폴링 한 번이 하는 일 전부 — 만료 리스 회수와 claim 을 <b>한 트랜잭션</b>으로 묶는다(#340 5-1).
+     *
+     * <p>둘을 따로 부르면 폴링 한 번이 트랜잭션 두 개가 되고, 트랜잭션 하나는
+     * {@code SET autocommit=0} → 쿼리 → {@code COMMIT} → {@code SET autocommit=1} 로 왕복 네 번이다.
+     * 유휴 상태 실측에서 비용의 대부분이 SELECT 가 아니라 이 의례였다 — 합치는 것만으로 절반이
+     * 줄어든다.</p>
+     *
+     * <p>덤으로 회수 지연이 한 폴링 짧아진다. 회수 UPDATE 가 같은 트랜잭션에서 먼저 반영되므로,
+     * 방금 RETRY_WAIT 로 돌아온 태스크를 <b>같은 폴링의</b> claim 이 곧바로 집는다.</p>
+     *
+     * @param claimLimit 0 이하면 claim 쿼리를 아예 내지 않는다 — 실행기가 포화라 집어봐야 곧바로
+     *                   되돌려야 하는 상황(ADR-Y3)에서도 <b>회수는 계속 돌아야</b> 하기 때문이다.
+     *                   포화를 이유로 폴링을 통째로 건너뛰면 좀비 리스가 그만큼 오래 남는다.
+     */
+    @Transactional
+    public PollBatch recoverAndClaim(String workerId, int claimLimit) {
+        List<String> leaseExhausted = recoverExpiredLeases();
+        List<String> claimed = claimLimit > 0 ? claimRunnableTasks(workerId, claimLimit) : List.of();
+        return new PollBatch(leaseExhausted, claimed);
+    }
+
+    /**
+     * 폴링 한 번의 결과.
+     *
+     * @param leaseExhausted 복구 횟수를 소진해 FAILED 로 닫힌 taskId — 호출자가 사용자에게 알린다
+     * @param claimed        이번 폴링이 집은 taskId
+     */
+    public record PollBatch(List<String> leaseExhausted, List<String> claimed) {
+
+        /** 이번 폴링이 무언가라도 건드렸는가 — 워커의 백오프 판단 근거. */
+        public boolean touchedWork() {
+            return !leaseExhausted.isEmpty() || !claimed.isEmpty();
+        }
     }
 
     @Transactional
@@ -374,6 +474,7 @@ public class TaskStore {
                 TaskStatus.QUEUED,
                 "지연된 승인 처리를 복구해 작업을 시작합니다."
         );
+        signalWorkQueued();
     }
 
     /**
@@ -530,6 +631,7 @@ public class TaskStore {
             return false;
         }
         appendEvent(taskId, eventType, TaskStatus.QUEUED, message);
+        signalWorkQueued();
         return true;
     }
 
@@ -561,6 +663,19 @@ public class TaskStore {
         }
         run.replacePlan(writePlan(newPlan));
         appendEvent(taskId, "REPLANNED", TaskStatus.QUEUED, "되묻기 답을 반영해 재계획했습니다.");
+        signalWorkQueued();
+    }
+
+    /**
+     * 이 태스크가 워커가 집을 수 있는 상태가 됐다고 알린다(#340 5-1).
+     *
+     * <p>{@code WorkerPollGate} 가 커밋 뒤에 받아 백오프를 즉시 푼다. 이 신호가 없으면, 유휴가
+     * 길어져 폴링 간격이 상한까지 늘어난 상태에서 사용자가 메시지를 보냈을 때 그 상한만큼
+     * 기다리게 된다 — 명백한 UX 회귀다. 신호가 있으면 백오프 값과 무관하게 다음 틱(≤1초)에
+     * 집힌다.</p>
+     */
+    private void signalWorkQueued() {
+        eventPublisher.publishEvent(new WorkQueuedEvent(WorkQueue.AGENT_RUN));
     }
 
     private String writeClarification(ClarificationRequest clarification) {
@@ -583,6 +698,7 @@ public class TaskStore {
         }
         run.supplyInput(value.trim());
         appendEvent(taskId, "INPUT_RECEIVED", TaskStatus.QUEUED, "사용자 입력을 받아 task를 다시 대기열에 넣었습니다.");
+        signalWorkQueued();
         return true;
     }
 
@@ -651,6 +767,42 @@ public class TaskStore {
 
     private void appendEvent(String taskId, String type, TaskStatus status, String message) {
         eventRepository.save(new AgentRunEventEntity(taskId, type, status, message));
+        signalEventAppended(taskId);
+    }
+
+    // 열려 있는 SSE 스트림을 깨운다(#339 4-2). 커밋된 뒤에 전달되므로(AFTER_COMMIT) 스트림이
+    // 깨어났을 때는 이 행이 이미 보인다.
+    private void signalEventAppended(String taskId) {
+        eventPublisher.publishEvent(new AgentEventAppendedEvent(taskId));
+    }
+
+    /**
+     * 스텝의 시작·완료를 이벤트로 남긴다. 태스크 상태는 건드리지 않는다 — 이건 진행 표시용이지
+     * 상태 전이가 아니다.
+     *
+     * <p>여태 이벤트는 태스크 생명주기(CREATED/QUEUED/STARTED/COMPLETED)뿐이라, 코드 생성처럼
+     * 몇 분 걸리는 스텝이 도는 동안 화면에 아무 변화가 없었다. 사용자는 진행 중인지 멈춘 건지
+     * 오류인지 구분할 수 없다.</p>
+     *
+     * <p>이벤트 적재는 실패해도 작업을 멈추지 않는다. 진행 표시가 안 보이는 것과 작업이 죽는 것은
+     * 무게가 다르다.</p>
+     */
+    @Transactional
+    public void appendStepEvent(String taskId,
+                                String type,
+                                TaskStatus status,
+                                String message,
+                                int stepIndex,
+                                int stepTotal,
+                                String agentType) {
+        try {
+            eventRepository.save(new AgentRunEventEntity(
+                    taskId, type, status, message, stepIndex, stepTotal, agentType));
+            signalEventAppended(taskId);
+        } catch (RuntimeException e) {
+            log.warn("스텝 진행 이벤트 적재 실패(작업은 계속): taskId={} type={} step={}/{}",
+                    taskId, type, stepIndex, stepTotal, e);
+        }
     }
 
     private String writePlan(AgentPlan plan) {

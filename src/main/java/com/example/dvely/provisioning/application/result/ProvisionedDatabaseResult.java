@@ -1,6 +1,6 @@
 package com.example.dvely.provisioning.application.result;
 
-import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
+import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseListView;
 import java.time.LocalDateTime;
 
 /**
@@ -24,12 +24,16 @@ public record ProvisionedDatabaseResult(
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {
-    public static ProvisionedDatabaseResult from(ProvisionedDatabase d) {
+    /**
+     * U6 6-5: password 를 읽지 않는 읽기 모델에서 만든다. method·engine·origin·status·failureCode 는
+     * DB 도 응답도 문자열이라 중간에 enum 으로 되돌리지 않는다 — 값은 예전과 같다.
+     */
+    public static ProvisionedDatabaseResult from(ProvisionedDatabaseListView d) {
         return new ProvisionedDatabaseResult(
-                d.getId(), d.getProjectId(), d.getMethod().name(), d.getEngine().name(),
-                d.getOrigin().name(), d.getStatus().name(), d.getHost(), d.getPort(), d.getDatabaseName(),
-                d.getUsername(), d.getExpiresAt(),
-                d.getFailureCode() == null ? null : d.getFailureCode().name(),
-                d.getErrorMessage(), d.getCreatedAt(), d.getUpdatedAt());
+                d.id(), d.projectId(), d.method(), d.engine(),
+                d.origin(), d.status(), d.host(), d.port(), d.databaseName(),
+                d.username(), d.expiresAt(),
+                d.failureCode(),
+                d.errorMessage(), d.createdAt(), d.updatedAt());
     }
 }
