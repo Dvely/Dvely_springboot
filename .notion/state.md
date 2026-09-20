@@ -207,9 +207,9 @@
 ## 2.18 배포 실패 복구 — ROADMAP U6 (Issue #48 / PR #50, 2026-07-18 병합)
 
 - `deployment_failure_analyses` 테이블 신설(V24, 이력당 최대 1건)과 `deployment_histories.retried_from_history_id` 컬럼 추가
-- `POST /deployments/{id}/failure-analysis`: FAILED 배포만 대상(아니면 409). 이미 저장된 분석이 있으면 LLM을 다시 호출하지 않고 그대로 반환(멱등, 리뷰 확정으로 중복 호출 차단)
-- 분석 로그는 GitHub Actions job/step 로그에서 최대 12,000자만 발췌하고, 전송 전 시크릿으로 보이는 패턴을 정규식으로 레닥션(`***REDACTED***`)한 뒤 LLM에 전달
-- LLM 호출은 60초 타임아웃(`CompletableFuture#orTimeout`)을 두고, 타임아웃·전송 실패·응답 파싱 실패 시 룰 기반(rule-based) 분석으로 자동 fallback해 항상 응답을 반환한다(`source`: `LLM` 또는 `RULE_BASED`)
+- `POST /deployments/{id}/failure-analysis`: FAILED 배포만 대상(아니면 409). 이미 저장된 분석이 있으면 다시 분석하지 않고 그대로 반환(멱등, 리뷰 확정으로 중복 호출 차단)
+- 분석 로그는 GitHub Actions job/step 로그에서 최대 12,000자만 발췌하고, 시크릿으로 보이는 패턴은 정규식으로 레닥션(`***REDACTED***`)
+- ⚠️ **LLM 경로는 2026-09-21 제거됐다(§4.32).** 지금은 룰 기반이 유일한 분석이고 `analysisSource`는 항상 `RULE_BASED`다. 아래 서술 중 LLM 호출·타임아웃·fallback 부분은 그 시점 이전의 기록이다
 - `GET /deployments/{id}/failure-analysis`: 저장된 결과만 반환(부작용 없음). 분석 이력이 없으면 404
 - `POST /deployments/{id}/retry`: FAILED 배포만 대상(아니면 409), `201` 응답. 원본과 동일한 `deployTargetType`(VERSION이면 동일 버전)으로 새 `DeploymentHistory`를 생성하고 `retriedFromHistoryId`로 원본과 연결한다. 원본 이력은 되돌리지 않고 감사 목적으로 보존
 - 재시도는 직접 Deployment API와 동일하게 Approval 없이 즉시 큐잉된다(대칭적 동작, 의도적 설계)

@@ -553,6 +553,8 @@ Base path: `/api/v1/agent`
 
 `projectId`가 없으면 신규 작업, 있으면 기존 프로젝트 수정 문맥으로 분류한다. `conversationId`가 있으면 소유 대화를 확인하고 대화의 프로젝트 문맥을 task에 연결한다.
 
+`aiProvider`는 **필수이며, 호출자 본인이 키를 등록한 제공자여야 한다**(#364). 값은 벤더(`ANTHROPIC`·`OPENAI`·`GLM`) 또는 코딩 에이전트(`CLAUDE_CODE`·`CODEX`)다. 서버 키로 도는 기본 경로는 없어졌고, 키가 없으면 실행 전에 `400 AI_CREDENTIAL_NOT_REGISTERED`로 떨어진다. 코딩 에이전트는 대응 벤더 키로 인증한다(`CLAUDE_CODE`→Anthropic, `CODEX`→OpenAI) — 계획·채팅은 그 벤더의 chat-completions로, 코드 생성만 벤더 CLI로 돈다.
+
 응답 주요 필드:
 
 - `steps`: `CODE`, `DEPLOY`, `DOMAIN_BIND`, `CHAT`, `INFRA_OPERATE`
@@ -673,6 +675,25 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 
 ---
 
+### 9.6 사용 가능한 AI 제공자 조회
+
+`GET /api/v1/agent/ai-providers` — 이 사용자가 `aiProvider`로 지정할 수 있는 것과, 각각에 허용된 모델을 돌려준다.
+
+```json
+{ "providers": [
+  { "provider": "ANTHROPIC", "defaultModel": "claude-opus-4-5-20251101",
+    "models": ["claude-opus-4-5-20251101"], "thinkingModels": ["claude-opus-4-5-20251101"] },
+  { "provider": "CLAUDE_CODE", "defaultModel": null, "models": [], "thinkingModels": [] }
+] }
+```
+
+- **근거는 호출자가 등록한 크리덴셜이다**(#364). 예전에는 배포에 설정된 서버 키가 근거였다. 키를 하나도 등록하지 않았으면 **빈 배열**이고, 미인증 호출도 빈 배열이다.
+- 벤더 키 하나를 등록하면 그 벤더와 **대응 코딩 에이전트가 함께** 나온다(`ANTHROPIC`→`CLAUDE_CODE`, `OPENAI`→`CODEX`). 키는 벤더 단위로 한 번만 등록하면 되기 때문이다. `GLM`은 코딩 에이전트 모드가 없어 벤더만 나온다.
+- 코딩 에이전트는 `models: []`·`defaultModel: null`이다 — 코드 생성 단계의 모델을 벤더 CLI가 정하므로 고를 것이 없다. 빈 목록이 정직한 답이고, 플레이스홀더를 넣으면 아무것도 바꾸지 않는 선택지를 그리게 된다.
+- **API 키는 어떤 필드로도 나가지 않는다.** 모델 카탈로그는 배포 설정(`qeploy.ai.*`)에서 오고 비밀이 아니다.
+
+---
+
 ## 10. Deployment API
 
 | Method | Path | 기능 |
@@ -747,14 +768,14 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 `POST /deployments/{deploymentId}/failure-analysis`:
 
 - FAILED 상태 배포만 대상이다(아니면 `409`).
-- 이미 저장된 분석 결과가 있으면 LLM을 다시 호출하지 않고 그대로 반환한다(멱등).
-- 신규 분석은 GitHub Actions 로그 수집 + LLM 호출로 응답까지 약 15~30초가 걸릴 수 있다.
-- 로그는 최대 12,000자만 발췌하고, 전송 전에 시크릿으로 보이는 패턴을 정규식으로 레닥션(`***REDACTED***`)한 뒤 LLM에 전달한다.
-- LLM 호출은 60초 타임아웃이며, 타임아웃·전송 실패·응답 파싱 실패 시 룰 기반(rule-based) 분석으로 자동 fallback해 항상 응답을 반환한다. 응답의 `source` 필드로 `LLM`/`RULE_BASED`를 구분한다.
+- 이미 저장된 분석 결과가 있으면 다시 분석하지 않고 그대로 반환한다(멱등).
+- 신규 분석은 GitHub Actions 로그 수집 + 룰 기반 분석이다. 소요 시간은 로그 수집에 달려 있다.
+- 로그는 최대 12,000자만 발췌하고, 시크릿으로 보이는 패턴은 정규식으로 레닥션(`***REDACTED***`)한다.
+- **LLM을 쓰지 않는다(#364).** 사용자가 `aiProvider`를 고르지 않는 내부 경로라 BYOK로 돌릴 수 없는데, 서버 키로 도는 경로를 남기지 않기로 했다. 응답의 `analysisSource`는 항상 `RULE_BASED`다 — 필드와 enum은 나중에 BYOK 요약을 붙일 자리로 남겨 뒀다.
 
 `GET /deployments/{deploymentId}/failure-analysis`:
 
-- 저장된 결과만 반환한다(부작용 없음, LLM/GitHub 재호출 없음). 분석을 실행한 적이 없으면 `404`.
+- 저장된 결과만 반환한다(부작용 없음, GitHub 재호출 없음). 분석을 실행한 적이 없으면 `404`.
 
 `POST /deployments/{deploymentId}/retry`:
 
@@ -1186,7 +1207,11 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 
 키 없이 코딩 에이전트를 요청하면 `400 AI_CREDENTIAL_NOT_REGISTERED`. 서버가 운영자 키로 대신 채우지 않는다 — 사용자를 대신한 결제·재판매·중개는 제공사 약관이 금지한다. FE 는 이 코드를 키 등록 화면 유도에 쓴다.
 
-### 16.5 저장 스키마
+### 16.5 어디에 쓰이는가
+
+등록한 키는 **그 사용자의 모든 AI 실행**에 쓰인다 — 계획(DECISION)·채팅·코드 생성 전부. 서버 키로 도는 경로는 없다(#364). 지금 무엇을 고를 수 있는지는 `GET /api/v1/agent/ai-providers`(§9.6)로 조회한다.
+
+### 16.6 저장 스키마
 
 `ai_provider_credentials`(V44): `user_id`, `provider`, `encrypted_api_key`, `label`, timestamps. `UNIQUE(user_id, provider)` + 사용자 삭제 시 CASCADE.
 

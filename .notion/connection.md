@@ -30,7 +30,7 @@ Auth ─────────────→ User
                        ↓
 Project ──────────→ GitHub Repository (연결/해제, settings/repository)
    ↓                   ↓
-Chat              Deployment ──→ GitHub Pages / Actions ──→ 실패 시 원인 분석(LLM+룰) + 재시도
+Chat              Deployment ──→ GitHub Pages / Actions ──→ 실패 시 원인 분석(룰 기반) + 재시도
    ↓                   ↑ (정책 ON이면 신규 프로젝트 첫 배포만 자동 merge, §9.3)
 Decision Agent    Webhook(workflow_run/push/pull_request/installation)
    ├─→ Code Agent ──→ Docker PreviewSession ──→ Change(diff, PREVIEW_READY)   ← task 단위
@@ -72,7 +72,7 @@ AuditRecorder(횡단) ──→ Project/Deploy Agent/ResultApprovalGate/ResultAp
 - Deployment는 GitHub Pages만 실행한다.
 - CloudConnection은 등록 후 실제 STS/IAM 검증을 거치며, 프로젝트 Infrastructure 설정에서 선택할 수 있다. 다만 실제 배포/운영에는 아직 사용되지 않는다.
 - Environment/Secrets는 저장·조회·이력까지는 완비되어 있으나, Preview/Deployment 실행에 실제로 주입되는 연결은 아직 없다(§8.5, §14.2 참고).
-- 배포가 실패하면 온디맨드 원인 분석(LLM, 실패 시 룰 기반 fallback)과 승인 없는 재시도가 가능하다(§10.5 참고).
+- 배포가 실패하면 온디맨드 원인 분석(룰 기반)과 승인 없는 재시도가 가능하다(§10.5 참고).
 - Approval은 Agent task 기반뿐 아니라 API 직접 생성 standalone 승인도 지원한다. `INFRA_OPERATION` 타입은 두 출처를 모두 가지는 유일한 유형이다(standalone: 인프라 설정 저장, §13.2 / Agent 기반: Cloud Ops RESTART, §8.6).
 - Cloud Ops Agent(§8.6)는 새 HTTP 엔드포인트 없이 기존 Chat/Agent 흐름을 확장한다. 실제 프로비저닝된 서버가 없다는 사실을 매 상태 조회마다 명시한다(정직한 전제).
 - CODE 작업 결과를 main에 반영(git merge)하는 것과 실제로 배포(Pages 공개)하는 것은 이제 서로 다른 단계다(§9.3, 결과 승인 게이트). merge 권한은 기본적으로 결과 승인에 있으며, 직접 배포 API는 신규 프로젝트의 첫 배포에서만 예외적으로 자동 merge한다.
@@ -93,7 +93,7 @@ AuditRecorder(횡단) ──→ Project/Deploy Agent/ResultApprovalGate/ResultAp
 | Change | Code Agent 산출물의 diff/summary 저장·조회, 결과 승인 결과(MERGED/REJECTED) 반영 | rebuild API가 남음 |
 | Preview | task 단위 + **프로젝트 단위** Docker PreviewSession(Issue #94), gateway proxy(호스트 포트 loopback 바인딩, BI-081/G1), 상태/로그 조회, 자원·권한 격리, 기준 오리진 해석·Docker 가용성 점검(Issue #95) | websocket/backend preview, 게이트웨이 인가 강화(소유권/JWT, Issue #77), 서빙 중 세션 갱신(`?refresh=true`) 확장이 남음 |
 | Environment | 프로젝트별 환경변수/Secret CRUD, scope 분리, 암호화, 이력 | Preview/Deployment 런타임 실주입 연결이 남음 |
-| Deployment | preview→main PR/merge, tag, GitHub Pages, 이력/로그, 실패 원인 분석(LLM+룰)+재시도 | GitHub Pages 중심 부분 구현, 취소/직렬화 미구현 |
+| Deployment | preview→main PR/merge, tag, GitHub Pages, 이력/로그, 실패 원인 분석(룰 기반)+재시도 | GitHub Pages 중심 부분 구현, 취소/직렬화 미구현 |
 | Webhook | workflow_run/push/pull_request/installation 반영, delivery 재시도 | 다른 GitHub 이벤트 확장 여지 있음 |
 | DomainBinding | 관리형/커스텀 도메인, DNS 검증, Approval 연동 | Pages만 지원, HTTPS www/apex 정책 미구현 |
 | CloudConnection | AWS/GCP credential 저장, 실제 STS/IAM 검증, 프로젝트 선택 연결 | 실제 cloud 배포/비용 실집행/운영 미연결(비용 추정·운영 질의 자체는 구현됨) |
@@ -400,7 +400,7 @@ CHAT step
 → ChatAgentService
 → TaskStore에서 task의 conversationId 조회
 → conversation 히스토리에서 중복 user 턴 제거(Decision Agent의 재작성 instruction과 겹치지 않게)
-→ LlmRouter 경유 LLM 1회 호출(system prompt 고정, Qeploy 어시스턴트 역할)
+→ LlmRouter.route(provider, task.ownerUserId) 로 호출자 본인 키를 바인딩한 뒤 LLM 1회 호출(system prompt 고정)
 → 응답을 CodeResult.summary로 반환 → AgentPlanExecutor가 assistant 메시지로 저장
 ```
 
@@ -498,6 +498,8 @@ POST /conversations/{id}/messages  (aiProvider 필수)
 ```
 
 **배포 설정으로 떨어지는 갈래가 없다.** 예전에는 `aiProvider` 를 생략하면 `AiProperties` 의 서버 키로 돌았고, 로그인한 누구나 운영자 계정에 과금할 수 있었다. 지금 `AiProperties` 에 남은 것은 **모델 카탈로그**(`model`·`allowed-models`·`thinking-models`·`base-url`)이고 비밀이 아니다.
+
+벤더 매핑·코딩 에이전트의 두 경로·모듈 의존 방향은 **§19** 에 자세히 있다.
 
 `model` 과 `thinking-models` 가 어긋나면 기동 때 `AiModelConfigInspector` 가 경고한다 — 어긋나도 기동은 되고 요청 시 400 으로만 나타나, 설정한 사람과 증상을 보는 사람이 다른 시점에 있기 때문이다(PR #362).
 
@@ -684,13 +686,12 @@ installation(created/unsuspend/new_permissions_accepted)
 POST /deployments/{deploymentId}/failure-analysis
 → DeploymentFailureAnalysisService
 → 소유권 확인, FAILED 상태 확인(아니면 409)
-→ 기존 저장된 분석이 있으면 그대로 반환(멱등, LLM 재호출 없음)
+→ 기존 저장된 분석이 있으면 그대로 반환(멱등, 재분석 없음)
 → 신규 분석: GitHub Actions 로그 조회
 → job/step 로그를 최대 12,000자로 발췌
 → 시크릿으로 보이는 패턴을 정규식으로 레닥션(***REDACTED***)
-→ LlmRouter 경유 LLM 호출(60초 타임아웃)
-→ 성공: summary/logExcerpt/suggestedFix를 deployment_failure_analyses에 저장(source=LLM)
-→ 타임아웃/실패/파싱 실패: 룰 기반 분석으로 fallback해 항상 응답 생성(source=RULE_BASED)
+→ BuildFailureAnalyzer(룰 기반) — LLM 을 부르지 않는다(#364)
+→ summary/logExcerpt/suggestedFix를 deployment_failure_analyses에 저장(source=RULE_BASED)
 
 GET /deployments/{deploymentId}/failure-analysis
 → 저장된 결과만 조회, 없으면 404 (부작용 없음)
@@ -990,7 +991,7 @@ GET/PUT/DELETE /projects/{projectId}/settings/cost-budget
 10. Repository Settings 조회 + 연결 해제 (완료, ROADMAP U5)
 11. ZIP/GitHub import workflow → ROADMAP 이후 별도 백로그
 12. CloudConnection 실제 provider health (완료)
-13. 배포 실패 원인 분석(LLM+룰 fallback) + 재시도 (완료, ROADMAP U6, §10.5 참고)
+13. 배포 실패 원인 분석(룰 기반) + 재시도 (완료, ROADMAP U6 · #364 로 LLM 경로 제거, §10.5 참고)
 14. 인프라 설정 저장(provider-중립 4개 enum) + standalone INFRA_OPERATION 승인 (완료, ROADMAP U7, §13.2 참고)
 15. 비용 추정(정적 가격표) + 예산 저장/평가 (완료, Issue #53, §14.3 참고)
 16. Cloud Ops Agent — 자연어 서버 상태/로그/장애분석/재시작(RESTART만 실행, 나머지는 정직한 거부) (완료, Issue #54, §8.6 참고)
@@ -1109,3 +1110,30 @@ JwtAuthenticationFilter
 
 - `RequestIdFilter`는 `OncePerRequestFilter` 기본값을 따라 **ASYNC 디스패치에서는 다시 돌지 않는다**. SSE의 비동기 디스패치 구간 로그에는 `requestId`가 비어 나온다.
 - 폐기 토큰 부정 캐시의 다중 인스턴스 전파 지연(기본 60초)은 설계상 남는 창이다. 없애려면 `not-revoked-ttl: 0`으로 매 요청 DB 조회로 돌아가거나, 인스턴스 간 무효화 전파(pub/sub) 수단이 필요하다 — 후자는 현재 인프라에 없다.
+
+---
+
+## 19. AI 실행 키 연결 (Issue #364)
+
+LLM 호출에 실릴 키가 어디서 오는지. **배포 설정에서 오는 갈래는 없다.**
+
+```text
+요청(aiProvider 필수)
+→ DecisionAgentService / ChatAgentService / CodeAgentService
+→ LlmRouter.route(provider, userId)  ·  LlmToolRouter.route(provider, userId)
+→ UserAiKeyResolver.require(userId, provider)      ← 키를 구하는 유일한 곳
+   → provider.credentialVendor()  (CLAUDE_CODE→ANTHROPIC, CODEX→OPENAI, 벤더는 자기 자신)
+   → AiProviderCredentialRepository.findByUserIdAndProvider(userId, vendor)
+   → 없으면 AiCredentialNotRegisteredException → 400 AI_CREDENTIAL_NOT_REGISTERED
+→ 그 키가 바인딩된 LlmPort / LlmToolPort 반환
+→ ClaudeClient · OpenAiClient · GlmClient (또는 …ToolClient) 가 호출마다 키를 싣는다
+```
+
+**연결의 성질**
+
+- `agent` → `aiaccount` 의존이 여기서 생긴다(역방향인 `aiaccount` → `agent`(AiProvider enum)는 원래 있었다).
+- 키는 **포트를 만들 때** 풀린다. 미등록 사용자의 요청은 LLM 왕복을 시작조차 못 하므로 과금이 0이다.
+- `src/main` 에서 `getApiKey()` 를 부르는 곳은 `UserAiKeyResolver` 한 곳뿐이다. 이것이 "서버 키로 도는 경로가 없다"의 구조적 근거다.
+- `AiProperties` 는 더 이상 키를 들지 않는다. 남은 것은 모델 카탈로그(`model`·`allowedModels`·`thinkingModels`·`baseUrl`)이고 비밀이 아니다.
+- **코딩 에이전트는 두 경로로 갈린다** — 계획·채팅은 위 chat-completions 경로로, 코드 생성은 `CodeAgentService` → `CodingAgentWorkspaceBridge` → `CodingAgentExecutionService`(벤더 CLI)로 간다. 양쪽이 **같은 벤더 크리덴셜**을 읽으므로 사용자는 키를 한 번만 등록한다.
+- `GET /agent/ai-providers`(`AiProviderQueryService`)도 같은 크리덴셜을 근거로 목록을 낸다. 배포 설정 키를 보지 않는다.
