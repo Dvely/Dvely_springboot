@@ -34,6 +34,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 @ExtendWith(MockitoExtension.class)
 class DecisionAgentServiceTest {
 
+    private static final Long USER_ID = 1L;
+
     private static final String VALID_PLAN = """
             {
               "steps": [
@@ -57,12 +59,12 @@ class DecisionAgentServiceTest {
     @BeforeEach
     void setUp() {
         service = new DecisionAgentService(llmRouter, projectDecisionContextResolver);
-        when(llmRouter.route(AiProvider.GLM)).thenReturn(llmPort);
+        when(llmRouter.route(AiProvider.GLM, USER_ID)).thenReturn(llmPort);
         when(projectDecisionContextResolver.resolve(44L)).thenReturn(Optional.empty());
     }
 
     private AgentPlan decide() {
-        return service.decide("todo 앱 만들어줘", AiProvider.GLM, 44L);
+        return service.decide(USER_ID, "todo 앱 만들어줘", AiProvider.GLM, 44L);
     }
 
     private void answers(String first, String... rest) {

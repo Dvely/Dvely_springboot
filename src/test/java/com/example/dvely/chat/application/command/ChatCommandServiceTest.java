@@ -3,8 +3,10 @@ package com.example.dvely.chat.application.command;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
@@ -111,17 +113,16 @@ class ChatCommandServiceTest {
         when(conversationRepository.findByIdAndUserIdAndDeletedFalse(21L, 2L))
                 .thenReturn(Optional.of(conversation));
         when(chatMessageRepository.save(any(ChatMessage.class))).thenReturn(saved);
-        when(aiProperties.getDefaultProvider()).thenReturn(AiProvider.ANTHROPIC);
         when(agentOrchestrator.createPending(2L, 21L)).thenReturn("task-abc123");
 
-        MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘", null);
+        MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘", AiProvider.ANTHROPIC);
 
         // taskId 는 Decision 을 기다리지 않고 즉시 발급된 PENDING 태스크의 id 다.
         assertThat(result.messageId()).isEqualTo(31L);
         assertThat(result.taskId()).isEqualTo("task-abc123");
         assertThat(conversation.getTitle()).isEqualTo("FAQ를 추가해줘");
         verify(conversationRepository).save(conversation);
-        // Decision→제출은 백그라운드로 넘어간다(제공자 미지정 → 기본 제공자, projectId 는 대화의 값).
+        // Decision→제출은 백그라운드로 넘어간다(제공자는 요청이 지정한 값, projectId 는 대화의 값).
         verify(agentOrchestrator).createPending(2L, 21L);
         verify(asyncDecisionRunner).decideAndSubmit("task-abc123", 2L, 21L, 7L, AiProvider.ANTHROPIC);
     }
@@ -140,8 +141,34 @@ class ChatCommandServiceTest {
         MessageResult result = chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘", AiProvider.GLM);
 
         assertThat(result.taskId()).isEqualTo("task-glm");
-        // 제공자를 지정하면 기본값 해석 없이 그대로 백그라운드 Decision 에 전달된다.
+        // 요청이 지정한 제공자가 다른 값으로 치환되지 않고 그대로 백그라운드 Decision 에 전달된다.
         verify(asyncDecisionRunner).decideAndSubmit("task-glm", 2L, 21L, 7L, AiProvider.GLM);
+    }
+
+    /**
+     * #364: 예전에는 제공자를 안 적은 요청이 서버 기본 제공자(운영자 키)로 실행됐다 — 이 테스트가
+     * 그 동작("미지정 → 기본 제공자로 디스패치")을 못 박고 있었다. 이제 정반대가 성질이다: 미지정
+     * 요청은 어떤 부수효과도 만들기 전에 거절된다. 태스크도, 메시지도, 비동기 Decision 도 없어야
+     * 한다 — 하나라도 남으면 "누구의 키로 돌지 모르는 요청"이 실행 경로에 들어간 것이다.
+     */
+    @Test
+    void sendMessageRejectsARequestThatDoesNotNameAnAiProviderAndRunsNothing() {
+        Conversation conversation = new Conversation(
+                21L, 2L, 7L, false, null, LocalDateTime.now(), LocalDateTime.now());
+        // lenient: 거절이 대화 조회보다 앞서든 뒤든 이 테스트의 성질(아무것도 실행하지 않는다)은 같다.
+        lenient().when(conversationRepository.findByIdAndUserIdAndDeletedFalse(21L, 2L))
+                .thenReturn(Optional.of(conversation));
+
+        assertThatThrownBy(() -> chatCommandService.sendMessage(2L, 21L, "FAQ를 추가해줘", null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("aiProvider");
+
+        verify(agentOrchestrator, never()).createPending(any(), any());
+        verify(chatMessageRepository, never()).save(any());
+        verify(conversationRepository, never()).save(any());
+        verify(asyncDecisionRunner, never()).decideAndSubmit(any(), any(), any(), any(), any());
+        // 서버 설정에서 제공자를 대신 찾지 않는다 — 폴백이 되살아나면 이 상호작용이 잡는다.
+        verifyNoInteractions(aiProperties);
     }
 
     @Test

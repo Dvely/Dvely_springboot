@@ -8,6 +8,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -17,6 +18,7 @@ import static org.mockito.Mockito.when;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.exception.AgentIterationLimitException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
+import com.example.dvely.agent.application.port.out.LlmToolPort;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.domain.value.AgentType;
@@ -24,9 +26,7 @@ import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.codingagent.CodingAgentWorkspaceBridge;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
-import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
-import com.example.dvely.agent.infrastructure.llm.GlmToolClient;
-import com.example.dvely.agent.infrastructure.llm.OpenAiToolClient;
+import com.example.dvely.agent.infrastructure.llm.LlmToolRouter;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
@@ -61,10 +61,15 @@ class CodeAgentServiceTest {
     private static final String CONTAINER_ID = "container-1";
     private static final String TASK_ID = "task-1";
     private static final int MAX_ITERATIONS = 3;
+    private static final Long USER_ID = 1L;
 
-    @Mock private ClaudeToolClient claudeToolClient;
-    @Mock private OpenAiToolClient openAiToolClient;
-    @Mock private GlmToolClient glmToolClient;
+    // The service no longer holds provider clients; it asks the router for a port already bound to
+    // the caller's own key. One port per provider keeps "which provider's loop ran" observable —
+    // the GLM test below asserts exactly that GLM never falls onto the OpenAI or Claude port.
+    @Mock private LlmToolRouter llmToolRouter;
+    @Mock private LlmToolPort claudeToolPort;
+    @Mock private LlmToolPort openAiToolPort;
+    @Mock private LlmToolPort glmToolPort;
     @Mock private DockerContainerService dockerService;
     @Mock private PreviewSessionService previewSessionService;
     @Mock private UserRepository userRepository;
@@ -94,9 +99,7 @@ class CodeAgentServiceTest {
                 mock(PreviewEnvComposer.class),
                 previewWorkspaceService);
         service = new CodeAgentService(
-                claudeToolClient,
-                openAiToolClient,
-                glmToolClient,
+                llmToolRouter,
                 dockerService,
                 previewSessionService,
                 previewRuntimeLauncher,
@@ -107,6 +110,12 @@ class CodeAgentServiceTest {
                 mock(CodingAgentWorkspaceBridge.class)
         );
         when(previewSessionService.acquire(TASK_ID)).thenReturn(previewSession());
+        // Lenient because each test drives one provider and leaves the other two routes unused.
+        // The stubs match on USER_ID, so a service that dropped or changed the caller's id would
+        // get a null port back and fail loudly instead of running on someone else's key.
+        lenient().when(llmToolRouter.route(AiProvider.ANTHROPIC, USER_ID)).thenReturn(claudeToolPort);
+        lenient().when(llmToolRouter.route(AiProvider.OPENAI, USER_ID)).thenReturn(openAiToolPort);
+        lenient().when(llmToolRouter.route(AiProvider.GLM, USER_ID)).thenReturn(glmToolPort);
     }
 
     @Test
@@ -114,7 +123,7 @@ class CodeAgentServiceTest {
         // Every round asks for another tool call and the model never sends a text-only turn, so
         // the loop runs out of rounds. Before the fix this returned a sentence that became the
         // step summary: AgentPlanExecutor marked the task done and posted it as the chat reply.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of("command", "ls"))));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("app");
 
@@ -124,7 +133,8 @@ class CodeAgentServiceTest {
                 .hasMessageContaining(String.valueOf(MAX_ITERATIONS))
                 .hasRootCauseInstanceOf(AgentIterationLimitException.class);
 
-        verify(claudeToolClient, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList(), any());
+        verify(claudeToolPort, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList(), any());
+        verify(llmToolRouter).route(AiProvider.ANTHROPIC, USER_ID);
         // The preview server must not be started for a run that never reached a build: doing so is
         // what let an unbuilt workspace be served as a finished result.
         verify(dockerService, never()).exec(eq(CONTAINER_ID), contains("npx serve"));
@@ -135,7 +145,7 @@ class CodeAgentServiceTest {
         // suggestedFix is not cosmetic: AgentPlanExecutor#withSuggestedFix appends it to the
         // instruction on retry, and the retry reuses this container — that is what makes the retry
         // continue the work rather than scaffold it all over again.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of("command", "npm run build"))));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("built");
 
@@ -159,7 +169,7 @@ class CodeAgentServiceTest {
                         "index.html",
                         List.of(new Template.ContentHint("hero.title", "index.html", "히어로 대제목")),
                         "https://demo", "https://src.tar.gz")));
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of("command", "ls"))));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("index.html");
 
@@ -167,7 +177,7 @@ class CodeAgentServiceTest {
                 .isInstanceOf(CodeAgentExecutionException.class);
 
         ArgumentCaptor<List<Map<String, Object>>> messages = ArgumentCaptor.captor();
-        verify(claudeToolClient, atLeastOnce())
+        verify(claudeToolPort, atLeastOnce())
                 .completeWithTools(anyString(), messages.capture(), anyList(), any());
 
         String firstUserMessage = String.valueOf(messages.getValue().getFirst().get("content"));
@@ -180,7 +190,7 @@ class CodeAgentServiceTest {
 
     @Test
     void openAiLoopFailsTheSameWayWhenItRunsOutOfRounds() {
-        when(openAiToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(openAiToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(openAiToolResponse("stop", toolCall("call-1", "execute_command", Map.of("command", "ls"))));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("app");
 
@@ -188,15 +198,16 @@ class CodeAgentServiceTest {
                 .isInstanceOf(CodeAgentExecutionException.class)
                 .hasRootCauseInstanceOf(AgentIterationLimitException.class);
 
-        verify(openAiToolClient, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList(), any());
+        verify(openAiToolPort, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList(), any());
+        verify(llmToolRouter).route(AiProvider.OPENAI, USER_ID);
     }
 
     @Test
-    void glmRunsThroughItsOwnClientOnTheOpenAiShapedLoop() {
+    void glmRunsOnItsOwnRouteOnTheOpenAiShapedLoop() {
         // GLM reaches OpenRouter, which answers in OpenAI's shape — so it shares that loop, but it
-        // must not share the OpenAI client: routing it there would sign the call with the wrong
-        // key and bill the wrong account.
-        when(glmToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        // must not share the OpenAI route: asking the router for OPENAI would sign the call with
+        // the wrong key and bill the wrong account.
+        when(glmToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(openAiToolResponse("stop", toolCall("call-1", "execute_command", Map.of("command", "ls"))));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("app");
 
@@ -204,21 +215,26 @@ class CodeAgentServiceTest {
                 .isInstanceOf(CodeAgentExecutionException.class)
                 .hasRootCauseInstanceOf(AgentIterationLimitException.class);
 
-        verify(glmToolClient, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList(), any());
-        verify(openAiToolClient, never()).completeWithTools(anyString(), anyList(), anyList(), any());
-        verify(claudeToolClient, never()).completeWithTools(anyString(), anyList(), anyList(), any());
+        verify(glmToolPort, times(MAX_ITERATIONS)).completeWithTools(anyString(), anyList(), anyList(), any());
+        verify(openAiToolPort, never()).completeWithTools(anyString(), anyList(), anyList(), any());
+        verify(claudeToolPort, never()).completeWithTools(anyString(), anyList(), anyList(), any());
+        // The port choice above is only as good as the route that produced it: the caller's own
+        // GLM key must be what was asked for, and no other vendor's key may have been resolved.
+        verify(llmToolRouter).route(AiProvider.GLM, USER_ID);
+        verify(llmToolRouter, never()).route(eq(AiProvider.OPENAI), any());
+        verify(llmToolRouter, never()).route(eq(AiProvider.ANTHROPIC), any());
     }
 
     @Test
     void glmFinishesWhenTheModelStopsAskingForTools() {
-        when(glmToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(glmToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(openAiTextResponse("완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(invocation -> {
             String command = invocation.getArgument(1);
             return command.contains("serve_ready") ? "serve_ready=yes" : "exists";
         });
 
-        CodeAgentService.CodeResult result = service.execute(step(), AiProvider.GLM, 1L, null, TASK_ID);
+        CodeAgentService.CodeResult result = service.execute(step(), AiProvider.GLM, USER_ID, null, TASK_ID);
 
         assertThat(result.summary()).isEqualTo("완료했습니다.");
     }
@@ -230,7 +246,7 @@ class CodeAgentServiceTest {
         String head = "npm install 시작\n";
         String tail = "\nnpm ERR! build failed";
         String oversized = head + "x".repeat(30_000) + tail;
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of("command", "npm install"))))
                 .thenReturn(textResponse("완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(invocation -> {
@@ -241,7 +257,7 @@ class CodeAgentServiceTest {
             return command.contains("npm install") ? oversized : "exists";
         });
 
-        service.execute(step(), AiProvider.ANTHROPIC, 1L, null, TASK_ID);
+        service.execute(step(), AiProvider.ANTHROPIC, USER_ID, null, TASK_ID);
 
         String toolResult = capturedToolResultContent();
         assertThat(toolResult).hasSizeLessThan(oversized.length());
@@ -254,13 +270,13 @@ class CodeAgentServiceTest {
     void doesNotRunAToolCallThatWasCutOffByTheOutputLimit() {
         // stop_reason=max_tokens means the last block stopped mid-generation, so its arguments may
         // be half a file. Writing that truncated content is worse than not writing it.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("max_tokens",
                         toolCall("call-1", "write_file", Map.of("path", "/workspace/app/src/App.jsx", "content", "export default function App() {"))))
                 .thenReturn(textResponse("완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(serveReadyOr("exists"));
 
-        service.execute(step(), AiProvider.ANTHROPIC, 1L, null, TASK_ID);
+        service.execute(step(), AiProvider.ANTHROPIC, USER_ID, null, TASK_ID);
 
         verify(dockerService, never()).exec(eq(CONTAINER_ID), contains("App.jsx"));
         assertThat(capturedToolResultContent()).contains("잘렸으므로 실행하지 않았습니다");
@@ -270,12 +286,12 @@ class CodeAgentServiceTest {
     void answersAToolCallWithMissingArgumentsInsteadOfFailingTheWholeRun() {
         // A missing argument used to be a raw cast to null and an NPE out of the loop, failing the
         // task with an unrelated message; the model can simply be told what it left out.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of())))
                 .thenReturn(textResponse("완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(serveReadyOr("exists"));
 
-        CodeAgentService.CodeResult result = service.execute(step(), AiProvider.ANTHROPIC, 1L, null, TASK_ID);
+        CodeAgentService.CodeResult result = service.execute(step(), AiProvider.ANTHROPIC, USER_ID, null, TASK_ID);
 
         assertThat(result.summary()).isEqualTo("완료했습니다.");
         assertThat(capturedToolResultContent()).contains("command 인자가 없어");
@@ -283,13 +299,13 @@ class CodeAgentServiceTest {
 
     @Test
     void servesTheBuildOutputDirectoryWhenTheBuildProducedOne() {
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(textResponse("빌드까지 완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(containerWith(
                 "/workspace/app/dist"
         ));
 
-        service.execute(step(), AiProvider.ANTHROPIC, 1L, null, TASK_ID);
+        service.execute(step(), AiProvider.ANTHROPIC, USER_ID, null, TASK_ID);
 
         verify(dockerService).exec(eq(CONTAINER_ID), contains("npx serve -s /workspace/app/dist"));
     }
@@ -299,7 +315,7 @@ class CodeAgentServiceTest {
         // A Vite project with no dist/: its /workspace/app/index.html is the source entry point,
         // and serving that is what made a failed build look like a finished task with a preview
         // that renders nothing. Failing here instead hands the build log to BuildFailureAnalyzer.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(textResponse("빌드까지 완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(containerWith(
                 "/workspace/app"  // package.json 이 함께 있는 소스 루트
@@ -321,13 +337,13 @@ class CodeAgentServiceTest {
     void stillServesAStaticProjectThatHasNoBuildStep() {
         // The index.html fallback exists for exactly this: a plain static site, whose index.html
         // has no package.json beside it, is legitimately its own output.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(textResponse("정적 페이지를 만들었습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(containerWith(
                 "/workspace/site"
         ));
 
-        service.execute(step(), AiProvider.ANTHROPIC, 1L, null, TASK_ID);
+        service.execute(step(), AiProvider.ANTHROPIC, USER_ID, null, TASK_ID);
 
         verify(dockerService).exec(eq(CONTAINER_ID), contains("npx serve -s /workspace/site"));
     }
@@ -337,7 +353,7 @@ class CodeAgentServiceTest {
         // The realistic Vite layout once a build has run under a directory the known-name check
         // does not cover: both /workspace/web and /workspace/web/output hold an index.html, and
         // only the former has a package.json beside it.
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(textResponse("빌드까지 완료했습니다."));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(invocation -> {
             String command = invocation.getArgument(1);
@@ -353,7 +369,7 @@ class CodeAgentServiceTest {
             return "missing";
         });
 
-        service.execute(step(), AiProvider.ANTHROPIC, 1L, null, TASK_ID);
+        service.execute(step(), AiProvider.ANTHROPIC, USER_ID, null, TASK_ID);
 
         verify(dockerService).exec(eq(CONTAINER_ID), contains("npx serve -s /workspace/web/output"));
     }
@@ -406,7 +422,7 @@ class CodeAgentServiceTest {
      */
     @Test
     void serverStartFailureIsAServeFailureNotABuildFailure() {
-        when(claudeToolClient.completeWithTools(anyString(), anyList(), anyList(), any()))
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(textResponse("완료했습니다."));
         // dist 는 있지만(빌드 산출물 존재) 포트가 안 열린다 → startPreviewServer 가 폴링 타임아웃.
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(invocation -> {
@@ -421,7 +437,7 @@ class CodeAgentServiceTest {
     }
 
     private CodeAgentService.CodeResult execute(AiProvider provider) {
-        return service.execute(step(), provider, 1L, null, TASK_ID);
+        return service.execute(step(), provider, USER_ID, null, TASK_ID);
     }
 
     private AgentStep step() {
@@ -430,7 +446,7 @@ class CodeAgentServiceTest {
 
     private PreviewSessionInfo previewSession() {
         return new PreviewSessionInfo(
-                "session-1", 1L, null, 21L, TASK_ID, CONTAINER_ID, "172.18.0.2",
+                "session-1", USER_ID, null, 21L, TASK_ID, CONTAINER_ID, "172.18.0.2",
                 "http://localhost:8080/api/v1/previews/session-1/token/", LocalDateTime.now().plusMinutes(30)
         );
     }
@@ -473,7 +489,7 @@ class CodeAgentServiceTest {
      */
     private String capturedToolResultContent() {
         ArgumentCaptor<List<Map<String, Object>>> captor = ArgumentCaptor.forClass(List.class);
-        verify(claudeToolClient, times(2))
+        verify(claudeToolPort, times(2))
                 .completeWithTools(anyString(), captor.capture(), any(), any());
         List<Map<String, Object>> transcript = captor.getValue();
         for (Map<String, Object> message : transcript) {

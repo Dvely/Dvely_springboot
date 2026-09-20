@@ -61,8 +61,11 @@ qeploy:
     # 사이트라 기본값 'self' 를 그대로 쓴다.
     frame-ancestors: "${QEPLOY_PREVIEW_FRAME_ANCESTORS:'self' http://localhost:5173}"
   ai:
+    # 벤더 API 키는 여기에 없다. 사용자 본인 키(BYOK)로만 실행한다 — 배포가 키를 들고 있으면
+    # 로그인한 누구나 운영자 계정에 과금할 수 있고, 실제로 공개 운영 중에 그 상태였다(#364).
+    # 아래 값들은 "무엇을 고를 수 있는가"(모델 카탈로그)일 뿐 비밀이 아니다.
+    # 키 조회는 UserAiKeyResolver 한 곳뿐이며 배포 설정으로 떨어지는 갈래가 없다.
     anthropic:
-      api-key: ${QEPLOY_AI_ANTHROPIC_API_KEY:${ANTHROPIC_API_KEY:}}
       model: ${QEPLOY_AI_ANTHROPIC_MODEL:claude-opus-4-5-20251101}
       # Messages API 전체 URL. 사내 프록시를 거치게 하거나, 나가는 요청 본문을 실제로 검사하는
       # 테스트에서 로컬 서버로 돌릴 때 쓴다.
@@ -73,7 +76,6 @@ qeploy:
       # thinking(사고 깊이)을 지원하는 모델. 목록 밖 모델에 thinking을 요청하면 400으로 거절한다.
       thinking-models: ${QEPLOY_AI_ANTHROPIC_THINKING_MODELS:claude-opus-4-5-20251101}
     openai:
-      api-key: ${QEPLOY_AI_OPENAI_API_KEY:${OPENAI_API_KEY:}}
       model: ${QEPLOY_AI_OPENAI_MODEL:gpt-4o}
       allowed-models: ${QEPLOY_AI_OPENAI_ALLOWED_MODELS:}
       # gpt-4o는 reasoning_effort를 받지 않으므로 기본값은 비어 있다. o-시리즈 등 추론 모델을
@@ -82,7 +84,6 @@ qeploy:
     glm:
       # OpenRouter 경유 GLM. OpenRouter 는 OpenAI 챗 컴플리션 형식을 그대로 쓰므로 전송 규격은
       # openai 와 같고, 키/엔드포인트/모델 슬러그만 다르다.
-      api-key: ${QEPLOY_AI_GLM_API_KEY:${OPENROUTER_API_KEY:}}
       model: ${QEPLOY_AI_GLM_MODEL:z-ai/glm-4.6}
       allowed-models: ${QEPLOY_AI_GLM_ALLOWED_MODELS:}
       # thinking 을 지원하는 모델. 목록 밖 모델에 thinking 을 요청하면 조용히 무시하지 않고
@@ -125,13 +126,6 @@ qeploy:
     # 1024 였을 때 다단계 계획 JSON 이 중간에서 잘렸고, 그때마다 교정 재시도가 전체 컨텍스트를
     # 한 번 더 보냈다 — 아끼는 출력 토큰보다 치르는 입력 토큰이 컸다. 상한이지 할당량이 아니다.
     completion-max-tokens: ${QEPLOY_AI_COMPLETION_MAX_TOKENS:4096}
-    # 배포 실패 로그 요약 전용. 비워 두면 위 default-provider 와 그 제공자의 기본 모델을 따른다.
-    # 예전에는 이 한 경로만 ANTHROPIC + 최상위 모델로 코드에 박혀 있었다 — 12,000자 로그를 한 번
-    # 요약하는 데 쓸 근거가 없었고 default-provider 와도 어긋났다.
-    # 되돌리는 법: provider 에 ANTHROPIC, model 에 claude-opus-4-5-20251101 을 적고 재배포한다.
-    failure-analysis:
-      provider: ${QEPLOY_AI_FAILURE_ANALYSIS_PROVIDER:}
-      model: ${QEPLOY_AI_FAILURE_ANALYSIS_MODEL:}
 
   # BYOK 코딩 에이전트(사용자 본인 공식 API 키로 벤더 CLI 를 헤드리스 실행).
   # qeploy.ai.code-agent(위, CODE 스텝의 LLM 왕복 예산)와는 다른 축이다 — 이름이 비슷하니 주의.

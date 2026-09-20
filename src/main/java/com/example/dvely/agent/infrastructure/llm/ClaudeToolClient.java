@@ -1,6 +1,5 @@
 package com.example.dvely.agent.infrastructure.llm;
 
-import com.example.dvely.agent.application.port.out.LlmToolPort;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
@@ -22,7 +21,7 @@ import java.util.Map;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class ClaudeToolClient implements LlmToolPort {
+public class ClaudeToolClient {
 
     private static final String API_VERSION = "2023-06-01";
     // Output budget per round. 4096 was not enough to emit one real source file in a single
@@ -36,21 +35,17 @@ public class ClaudeToolClient implements LlmToolPort {
     private final LlmUsageRecorder llmUsageRecorder;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    @SuppressWarnings("unchecked")
-    public LlmToolResponse completeWithTools(
-            String systemPrompt,
-            List<Map<String, Object>> messages,
-            List<ToolDefinition> tools) {
-        return completeWithTools(systemPrompt, messages, tools, AiModelOptions.defaults());
-    }
-
-    @Override
+    /**
+     * The key is a parameter for the same reason as in {@link ClaudeClient}: the deployment holds
+     * no key of its own, so every round is signed with the calling user's own credential.
+     */
     @SuppressWarnings("unchecked")
     public LlmToolResponse completeWithTools(
             String systemPrompt,
             List<Map<String, Object>> messages,
             List<ToolDefinition> tools,
-            AiModelOptions modelOptions) {
+            AiModelOptions modelOptions,
+            String apiKey) {
 
         List<Map<String, Object>> toolsPayload = tools.stream()
                 .map(t -> Map.<String, Object>of(
@@ -60,7 +55,7 @@ public class ClaudeToolClient implements LlmToolPort {
                 ))
                 .toList();
 
-        LlmProviderErrors.requireApiKey(ClaudeClient.PROVIDER_NAME, aiProperties.getAnthropic().getApiKey());
+        LlmProviderErrors.requireApiKey(ClaudeClient.PROVIDER_NAME, apiKey);
 
         String model = modelOptions.modelOr(aiProperties.getAnthropic().getModel());
         Map<String, Object> body = new HashMap<>();
@@ -77,7 +72,7 @@ public class ClaudeToolClient implements LlmToolPort {
                 .post()
                 .uri(aiProperties.getAnthropic().getBaseUrl())
                 // 키는 호출마다 싣는다 — 공용 클라이언트의 기본 헤더로 박으면 인스턴스에 고정된다.
-                .header("x-api-key", aiProperties.getAnthropic().getApiKey())
+                .header("x-api-key", apiKey)
                 .header("anthropic-version", API_VERSION)
                 .body(body)
                 .retrieve()

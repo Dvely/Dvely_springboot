@@ -1,7 +1,6 @@
 package com.example.dvely.agent.infrastructure.llm;
 
 import com.example.dvely.agent.application.port.out.LlmMessage;
-import com.example.dvely.agent.application.port.out.LlmPort;
 import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
@@ -19,7 +18,7 @@ import java.util.Map;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class ClaudeClient implements LlmPort {
+public class ClaudeClient {
 
     private static final String API_VERSION  = "2023-06-01";
     static final String PROVIDER_NAME = "Anthropic";
@@ -27,9 +26,16 @@ public class ClaudeClient implements LlmPort {
     private final AiProperties aiProperties;
     private final LlmUsageRecorder llmUsageRecorder;
 
-    @Override
-    public String complete(String systemPrompt, List<LlmMessage> messages, AiModelOptions modelOptions) {
-        LlmProviderErrors.requireApiKey(PROVIDER_NAME, aiProperties.getAnthropic().getApiKey());
+    /**
+     * The key is a parameter, not a field read from configuration, because the deployment no longer
+     * holds one — {@link LlmRouter} looks up the calling user's own key and binds it per request.
+     * That is what keeps a run billed to whoever asked for it.
+     */
+    public String complete(String systemPrompt,
+                           List<LlmMessage> messages,
+                           AiModelOptions modelOptions,
+                           String apiKey) {
+        LlmProviderErrors.requireApiKey(PROVIDER_NAME, apiKey);
 
         List<Map<String, Object>> apiMessages = messages.stream()
                 .map(m -> Map.<String, Object>of("role", m.role(), "content", m.content()))
@@ -47,7 +53,8 @@ public class ClaudeClient implements LlmPort {
                 .post()
                 .uri(aiProperties.getAnthropic().getBaseUrl())
                 // 키는 호출마다 싣는다 — 공용 클라이언트의 기본 헤더로 박으면 인스턴스에 고정된다.
-                .header("x-api-key", aiProperties.getAnthropic().getApiKey())
+                // 사용자마다 키가 다른 지금은 그 고정이 곧 남의 키로 과금되는 사고다.
+                .header("x-api-key", apiKey)
                 .header("anthropic-version", API_VERSION)
                 .body(body)
                 .retrieve()

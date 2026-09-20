@@ -73,7 +73,10 @@ public class ChatAgentService {
         // turns into markFailed(...) + a user-facing assistant error message. Catching here too
         // would duplicate that handling and diverge from how CodeAgentService/DeployAgentService/
         // DomainBindAgentService let non-recoverable errors propagate the same way.
-        String answer = llmRouter.route(provider).complete(SYSTEM_PROMPT, messages, modelOptions);
+        // The key is the task owner's own (#364), which is why the task is resolved above even when
+        // the conversation history is not needed — there is no deployment key to fall back to.
+        String answer = llmRouter.route(provider, task == null ? null : task.ownerUserId())
+                .complete(SYSTEM_PROMPT, messages, modelOptions);
         log.info("[ChatAgent] 완료 | taskId={}", taskId);
         return new CodeResult(null, answer);
     }

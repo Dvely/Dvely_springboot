@@ -39,6 +39,9 @@ class AnthropicRequestBodyTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    /** The caller's own key, handed to every call — the deployment holds none to configure. */
+    private static final String API_KEY = "test-key-not-a-real-credential";
+
     /** CodeAgentService 의 도구 정의와 같은 모양(개수와 순서만 같으면 배치 검증에는 충분하다). */
     private static final List<ToolDefinition> TOOLS = List.of(
             new ToolDefinition("execute_command", "Execute a shell command.",
@@ -67,7 +70,6 @@ class AnthropicRequestBodyTest {
         server.start();
 
         aiProperties = new AiProperties();
-        aiProperties.getAnthropic().setApiKey("test-key-not-a-real-credential");
         aiProperties.getAnthropic().setBaseUrl(
                 "http://127.0.0.1:" + server.getAddress().getPort() + "/v1/messages");
         recorder = new LlmUsageRecorder(mock(LlmUsageStore.class));
@@ -83,7 +85,7 @@ class AnthropicRequestBodyTest {
     @Test
     void sendsExactlyFourCacheBreakpointsInTheDocumentedPlaces() throws Exception {
         new ClaudeToolClient(aiProperties, recorder)
-                .completeWithTools("SYSTEM", transcriptAfterRounds(3), TOOLS, AiModelOptions.defaults());
+                .completeWithTools("SYSTEM", transcriptAfterRounds(3), TOOLS, AiModelOptions.defaults(), API_KEY);
 
         Map<String, Object> body = lastBody();
         assertThat(countBreakpoints(body)).isEqualTo(4);
@@ -100,7 +102,7 @@ class AnthropicRequestBodyTest {
         // 적중률은 0 이다. tools 와 system 은 상수이므로 직렬화 결과가 같아야 한다.
         ClaudeToolClient client = new ClaudeToolClient(aiProperties, recorder);
         for (int round = 1; round <= 5; round++) {
-            client.completeWithTools("SYSTEM", transcriptAfterRounds(round), TOOLS, AiModelOptions.defaults());
+            client.completeWithTools("SYSTEM", transcriptAfterRounds(round), TOOLS, AiModelOptions.defaults(), API_KEY);
         }
 
         List<String> prefixes = new ArrayList<>();
@@ -119,7 +121,7 @@ class AnthropicRequestBodyTest {
         // 마커가 값을 하려면 접두가 "덧붙기만" 해야 한다. 앞부분을 다시 쓰는 순간 캐시는 깨진다.
         ClaudeToolClient client = new ClaudeToolClient(aiProperties, recorder);
         for (int round = 1; round <= 4; round++) {
-            client.completeWithTools("SYSTEM", transcriptAfterRounds(round), TOOLS, AiModelOptions.defaults());
+            client.completeWithTools("SYSTEM", transcriptAfterRounds(round), TOOLS, AiModelOptions.defaults(), API_KEY);
         }
 
         for (int i = 1; i < capturedBodies.size(); i++) {
@@ -144,7 +146,7 @@ class AnthropicRequestBodyTest {
         ClaudeToolClient client = new ClaudeToolClient(aiProperties, recorder);
         int rounds = 10;
         for (int round = 1; round <= rounds; round++) {
-            client.completeWithTools("SYSTEM", transcriptAfterRounds(round), TOOLS, AiModelOptions.defaults());
+            client.completeWithTools("SYSTEM", transcriptAfterRounds(round), TOOLS, AiModelOptions.defaults(), API_KEY);
         }
 
         long totalSent = 0;
@@ -170,7 +172,7 @@ class AnthropicRequestBodyTest {
     @Test
     void sendsTheToolLoopsOwnOutputBudget() throws Exception {
         new ClaudeToolClient(aiProperties, recorder)
-                .completeWithTools("SYSTEM", transcriptAfterRounds(1), TOOLS, AiModelOptions.defaults());
+                .completeWithTools("SYSTEM", transcriptAfterRounds(1), TOOLS, AiModelOptions.defaults(), API_KEY);
 
         assertThat(lastBody().get("max_tokens")).isEqualTo(8_192);
     }
@@ -182,7 +184,7 @@ class AnthropicRequestBodyTest {
         aiProperties.setCompletionMaxTokens(2_048);
 
         new ClaudeClient(aiProperties, recorder)
-                .complete("SYSTEM", List.of(new LlmMessage("user", "안녕")), AiModelOptions.defaults());
+                .complete("SYSTEM", List.of(new LlmMessage("user", "안녕")), AiModelOptions.defaults(), API_KEY);
 
         assertThat(lastBody().get("max_tokens")).isEqualTo(2_048);
     }
@@ -195,10 +197,10 @@ class AnthropicRequestBodyTest {
         List<LlmMessage> windowed = ConversationWindow.apply(whole);
         ClaudeClient client = new ClaudeClient(aiProperties, recorder);
 
-        client.complete("SYSTEM", whole, AiModelOptions.defaults());
+        client.complete("SYSTEM", whole, AiModelOptions.defaults(), API_KEY);
         long wholeBytes = capturedBodies.get(0).getBytes(StandardCharsets.UTF_8).length;
 
-        client.complete("SYSTEM", windowed, AiModelOptions.defaults());
+        client.complete("SYSTEM", windowed, AiModelOptions.defaults(), API_KEY);
         long windowedBytes = capturedBodies.get(1).getBytes(StandardCharsets.UTF_8).length;
 
         System.out.printf("[U8 8-3] 120턴 대화 요청 본문: 전량 %,d bytes → 윈도우 %,d bytes (%.1f%% 감소)%n",
@@ -217,7 +219,7 @@ class AnthropicRequestBodyTest {
         LlmUsage total = LlmUsage.NONE;
         for (int round = 1; round <= 10; round++) {
             LlmToolResponse response = client.completeWithTools(
-                    "SYSTEM", transcriptAfterRounds(round), TOOLS, AiModelOptions.defaults());
+                    "SYSTEM", transcriptAfterRounds(round), TOOLS, AiModelOptions.defaults(), API_KEY);
             total = total.plus(response.usage());
         }
 

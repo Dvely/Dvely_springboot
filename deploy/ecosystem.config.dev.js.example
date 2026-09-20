@@ -72,16 +72,13 @@ module.exports = {
         GITHUB_WEBHOOK_SECRET: '',
 
         // --- AI ---
-        // 제공자는 요청의 aiProvider 로 고른다(#236). 안 고르면 채팅 경로는 ANTHROPIC 기본.
-        // GET /api/v1/agent/ai-providers 가 api-key 채워진 제공자만 노출하고 FE 셀렉트가 그
-        // 목록을 쓴다 — 채운 만큼 뜬다. 셋 다 비면 셀렉트도 없고 에이전트도 못 돈다(제공자 없음).
-        // 최소 하나는 유효한 키여야 한다.
-        QEPLOY_AI_ANTHROPIC_API_KEY: '',
-        QEPLOY_AI_OPENAI_API_KEY: '',
-        // GLM (Z.ai 직결). api-key 를 채우면 셀렉트에 GLM 이 뜬다. Z.ai 키는 base-url·model 을
-        // 함께 둬야 한다 — 안 그러면 기본 OpenRouter 로 나가 401. OpenRouter 키(sk-or-v1-…)를
-        // 쓸 거면 아래 base-url·model 두 줄을 지우고 api-key 만 채운다(기본값 z-ai/glm-4.6).
-        QEPLOY_AI_GLM_API_KEY:  '',
+        // 제공자는 요청의 aiProvider 로 고르고, 생략할 수 없다. 실행은 전부 사용자 본인 키
+        // (BYOK)로 나간다 — QEPLOY_AI_*_API_KEY 는 이제 아무도 읽지 않으므로 채우지 말 것(#364).
+        // GET /api/v1/agent/ai-providers 는 "그 사용자가 등록한 키" 기준으로 목록을 낸다.
+        //
+        // 아래 두 줄은 GLM 이 어느 게이트웨이로 나가는지를 정한다(비밀이 아니다). Z.ai 직결이면
+        // 그대로 두고, OpenRouter 를 쓰려면 두 줄을 지운다(기본값 z-ai/glm-4.6). 사용자가 등록한
+        // GLM 키가 여기서 고른 게이트웨이의 키여야 한다.
         QEPLOY_AI_GLM_BASE_URL: 'https://api.z.ai/api/paas/v4/chat/completions',
         QEPLOY_AI_GLM_MODEL:    'glm-4.7-flash',
 
