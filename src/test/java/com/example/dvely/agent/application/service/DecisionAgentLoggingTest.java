@@ -38,6 +38,8 @@ class DecisionAgentLoggingTest {
             """.formatted("const INTERNAL_ENDPOINT = 'https://inventory.corp.example/api'; "
             .repeat(20));
 
+    private static final Long USER_ID = 1L;
+
     private final LlmRouter llmRouter = mock(LlmRouter.class);
     private final LlmPort llmPort = mock(LlmPort.class);
     private final ProjectDecisionContextResolver contextResolver =
@@ -64,10 +66,10 @@ class DecisionAgentLoggingTest {
 
     @Test
     void neverLogsTheWholeResponseAtInfo() {
-        when(llmRouter.route(AiProvider.GLM)).thenReturn(llmPort);
+        when(llmRouter.route(AiProvider.GLM, USER_ID)).thenReturn(llmPort);
         when(llmPort.complete(any(), anyList(), any())).thenReturn(SECRET_LOOKING_PLAN);
 
-        service.decide(List.of(new LlmMessage("user", "재고 앱 만들어줘")), AiProvider.GLM, null);
+        service.decide(USER_ID, List.of(new LlmMessage("user", "재고 앱 만들어줘")), AiProvider.GLM, null);
 
         List<ILoggingEvent> infoAndAbove = appender.list.stream()
                 .filter(event -> event.getLevel().isGreaterOrEqual(Level.INFO))
@@ -84,10 +86,10 @@ class DecisionAgentLoggingTest {
 
     @Test
     void truncatesTheResponsePreviewEvenAtDebug() {
-        when(llmRouter.route(AiProvider.GLM)).thenReturn(llmPort);
+        when(llmRouter.route(AiProvider.GLM, USER_ID)).thenReturn(llmPort);
         when(llmPort.complete(any(), anyList(), any())).thenReturn(SECRET_LOOKING_PLAN);
 
-        service.decide(List.of(new LlmMessage("user", "재고 앱 만들어줘")), AiProvider.GLM, null);
+        service.decide(USER_ID, List.of(new LlmMessage("user", "재고 앱 만들어줘")), AiProvider.GLM, null);
 
         assertThat(appender.list).anySatisfy(event -> {
             assertThat(event.getLevel()).isEqualTo(Level.DEBUG);
@@ -100,12 +102,12 @@ class DecisionAgentLoggingTest {
     @Test
     void alsoTruncatesTheFailedResponseEchoedInTheRepairRetryWarning() {
         // 파싱 실패 경로가 원문을 가장 길게 찍던 곳이다 — 실패한 응답과 재시도 응답 둘 다.
-        when(llmRouter.route(AiProvider.GLM)).thenReturn(llmPort);
+        when(llmRouter.route(AiProvider.GLM, USER_ID)).thenReturn(llmPort);
         when(llmPort.complete(any(), anyList(), any()))
                 .thenReturn("이건 JSON 이 아니다 " + "INTERNAL_ENDPOINT ".repeat(50));
 
         try {
-            service.decide(List.of(new LlmMessage("user", "재고 앱")), AiProvider.GLM, null);
+            service.decide(USER_ID, List.of(new LlmMessage("user", "재고 앱")), AiProvider.GLM, null);
         } catch (RuntimeException expected) {
             // 재시도까지 실패하면 던지는 것이 정상이다(조용한 CHAT 폴백은 이미 걷어냈다).
         }

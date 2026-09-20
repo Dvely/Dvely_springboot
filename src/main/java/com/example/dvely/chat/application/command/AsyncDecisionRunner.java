@@ -59,7 +59,7 @@ public class AsyncDecisionRunner {
             // 계획 수립에는 사용자 발화만 넘긴다. 우리가 쓴 운영 안내가 섞이면 모델이 그 문장을
             // 흉내 내다 JSON 을 내지 못한다 — AgentMessageService#getUserIntentHistory 참고.
             List<LlmMessage> history = agentMessageService.getUserIntentHistory(conversationId);
-            AgentPlan plan = decisionAgentService.decide(history, provider, projectId);
+            AgentPlan plan = decisionAgentService.decide(userId, history, provider, projectId);
             agentOrchestrator.submitDecided(taskId, plan, userId, conversationId);
         } catch (RuntimeException exception) {
             log.warn("[AsyncDecisionRunner] Decision 실패로 태스크를 FAILED 로 닫습니다. taskId={}", taskId, exception);

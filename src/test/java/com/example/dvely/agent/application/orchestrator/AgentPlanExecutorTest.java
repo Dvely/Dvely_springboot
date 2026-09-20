@@ -450,13 +450,14 @@ class AgentPlanExecutorTest {
         when(inputWaitStore.consume("task-1")).thenReturn(java.util.Optional.of("Java로 해줘"));
         AgentPlan replanned = new AgentPlan(
                 java.util.List.of(new AgentStep(AgentType.CODE, Map.of())), "r2", AiProvider.OPENAI, 11L);
-        when(decision.decide(org.mockito.ArgumentMatchers.anyList(), eq(AiProvider.OPENAI), eq(11L), any(), eq(false)))
+        // 재계획도 LLM 호출이라 태스크 소유자의 키로 나가야 한다 — taskStore() 의 소유자가 1L 이다.
+        when(decision.decide(eq(1L), org.mockito.ArgumentMatchers.anyList(), eq(AiProvider.OPENAI), eq(11L), any(), eq(false)))
                 .thenReturn(replanned);
 
         executor.execute(new AgentPlan(java.util.List.of(clarify), "r", AiProvider.OPENAI, 11L), "task-1", 1L);
 
         // 답을 반영해 CLARIFY 금지(false)로 재-decide → 새 플랜으로 교체·재큐. WAITING_INPUT 안 함.
-        verify(decision).decide(org.mockito.ArgumentMatchers.anyList(), eq(AiProvider.OPENAI), eq(11L), any(), eq(false));
+        verify(decision).decide(eq(1L), org.mockito.ArgumentMatchers.anyList(), eq(AiProvider.OPENAI), eq(11L), any(), eq(false));
         verify(taskStore).replacePlanAndRequeue("task-1", replanned);
         verify(taskStore, never()).markWaitingInput(any(), any(), any());
     }

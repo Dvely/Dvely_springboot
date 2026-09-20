@@ -40,7 +40,10 @@ final class OpenAiCompatibleChat {
      * @param providerName the name users see in an error message, so it says "OpenRouter(GLM)"
      *                     rather than "OpenAI" when an OpenRouter key is the one that is missing
      * @param url          the full chat-completions URL, posted to verbatim
-     * @param config       the provider's configured key and model
+     * @param apiKey       the calling user's own key. Passed in rather than read from {@code config}
+     *                     because the deployment no longer holds one — every call is billed to the
+     *                     user who made it, and {@link LlmRouter} binds the key per request
+     * @param config       the provider's model catalogue (which models may be named, which think)
      * @param reasoning    how this provider is asked for reasoning depth
      * @param extraHeaders headers beyond auth and content-type; empty for plain OpenAI
      * @param retry        how hard to try again when a call fails for a reason that could clear
@@ -48,6 +51,7 @@ final class OpenAiCompatibleChat {
     record Endpoint(
             String providerName,
             String url,
+            String apiKey,
             AiProperties.Provider config,
             LlmRequestOptions.ReasoningStyle reasoning,
             Map<String, String> extraHeaders,
@@ -71,7 +75,7 @@ final class OpenAiCompatibleChat {
                                String systemPrompt,
                                List<LlmMessage> messages,
                                AiModelOptions modelOptions) {
-        LlmProviderErrors.requireApiKey(endpoint.providerName(), endpoint.config().getApiKey());
+        LlmProviderErrors.requireApiKey(endpoint.providerName(), endpoint.apiKey());
 
         List<Map<String, String>> apiMessages = new ArrayList<>();
         apiMessages.add(Map.of("role", "system", "content", systemPrompt));
@@ -98,7 +102,7 @@ final class OpenAiCompatibleChat {
                                              List<Map<String, Object>> messages,
                                              List<ToolDefinition> tools,
                                              AiModelOptions modelOptions) {
-        LlmProviderErrors.requireApiKey(endpoint.providerName(), endpoint.config().getApiKey());
+        LlmProviderErrors.requireApiKey(endpoint.providerName(), endpoint.apiKey());
 
         List<Map<String, Object>> toolsPayload = tools.stream()
                 .map(t -> Map.of(
@@ -225,7 +229,7 @@ final class OpenAiCompatibleChat {
         RestClient.RequestBodySpec request = LlmHttp.client()
                 .post()
                 .uri(endpoint.url())
-                .header("Authorization", "Bearer " + endpoint.config().getApiKey());
+                .header("Authorization", "Bearer " + endpoint.apiKey());
         endpoint.extraHeaders().forEach(request::header);
         return request;
     }

@@ -56,7 +56,7 @@ class AgentFacadeTest {
                 List.of(101L)
         );
         when(agentOrchestrator.resolveProjectId(1L, null, 21L)).thenReturn(11L);
-        when(decisionAgentService.decide(eq("수정해줘"), eq(AiProvider.OPENAI), eq(11L), any(AiModelOptions.class)))
+        when(decisionAgentService.decide(eq(1L), eq("수정해줘"), eq(AiProvider.OPENAI), eq(11L), any(AiModelOptions.class)))
                 .thenReturn(plan);
         when(agentOrchestrator.submit(plan, 1L, 21L)).thenReturn(submission);
 
@@ -71,7 +71,8 @@ class AgentFacadeTest {
         assertThat(result.plan()).isEqualTo(plan);
         assertThat(result.submission()).isEqualTo(submission);
         verify(agentOrchestrator).resolveProjectId(1L, null, 21L);
-        verify(decisionAgentService).decide(eq("수정해줘"), eq(AiProvider.OPENAI), eq(11L), any(AiModelOptions.class));
+        // 첫 인자가 제출한 사용자다 — 계획 수립의 LLM 호출이 그 사용자의 키로 나가야 하기 때문이다.
+        verify(decisionAgentService).decide(eq(1L), eq("수정해줘"), eq(AiProvider.OPENAI), eq(11L), any(AiModelOptions.class));
         verify(agentOrchestrator).submit(plan, 1L, 21L);
     }
 }

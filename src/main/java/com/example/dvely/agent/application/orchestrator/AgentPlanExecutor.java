@@ -330,6 +330,7 @@ public class AgentPlanExecutor {
         conversation.add(new LlmMessage("assistant", request.question()));
         conversation.add(new LlmMessage("user", answer.get()));
         AgentPlan replanned = decisionAgentService.decide(
+                task == null ? null : task.ownerUserId(),
                 conversation, plan.aiProvider(), plan.projectId(), plan.modelOptions(), false);
         taskStore.replacePlanAndRequeue(taskId, replanned);
         log.info("=== 스펙 되묻기 답 반영 → 재계획: taskId={} newSteps={} ===",
