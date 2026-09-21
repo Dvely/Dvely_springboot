@@ -1,5 +1,7 @@
 package com.example.dvely.auth.presentation;
 
+import org.springframework.web.util.UriComponentsBuilder;
+import java.nio.charset.StandardCharsets;
 import com.example.dvely.auth.application.facade.AuthFacade;
 import com.example.dvely.auth.application.port.out.TokenPort;
 import com.example.dvely.auth.infrastructure.config.FrontendProperties;
@@ -117,13 +119,29 @@ public class AuthController {
                 }
             }
             return ResponseEntity.status(HttpStatus.FOUND)
-                    .location(URI.create(baseUrl + "?githubAppLinked=true"))
+                    .location(redirectTo(baseUrl, true, null))
                     .build();
         } catch (Exception e) {
+            // 예전에는 메시지를 그대로 이어 붙였다. 메시지가 한글·공백이라 URI.create 가
+            // IllegalArgumentException 을 냈고, 에러 페이지로 보내려던 이 자리가 스스로 400 을
+            // 만들었다 — 사용자는 안내 화면 대신 raw 오류를 봤다(#367, 2026-08-29 부터 관측).
             return ResponseEntity.status(HttpStatus.FOUND)
-                    .location(URI.create(baseUrl + "?githubAppLinked=false&error=" + e.getMessage()))
+                    .location(redirectTo(baseUrl, false, e.getMessage()))
                     .build();
         }
+    }
+
+    /**
+     * 콜백 결과를 프론트로 돌려보내는 주소. 쿼리 값은 반드시 인코딩해서 싣는다 —
+     * 메시지에 한글이나 공백이 들어가도 주소가 깨지지 않아야 한다.
+     */
+    private URI redirectTo(String baseUrl, boolean linked, String error) {
+        UriComponentsBuilder builder = UriComponentsBuilder.fromUriString(baseUrl)
+                .queryParam("githubAppLinked", linked);
+        if (error != null && !error.isBlank()) {
+            builder.queryParam("error", error);
+        }
+        return builder.build().encode(StandardCharsets.UTF_8).toUri();
     }
 
     @Operation(

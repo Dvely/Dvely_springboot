@@ -49,16 +49,42 @@ class UserReauthorizationTest {
         assertThat(user.needsGithubAppReauthorization()).isTrue();
     }
 
+    /**
+     * 예전에는 이 경우를 "재인증 필요" 로 봤다. 그 결과 설치도 안 한 사용자에게 재인증 화면이
+     * 뜨고, 그 버튼이 부르는 경로는 설치를 전제하므로 403 만 돌려줬다 — 눌러도 같은 자리로
+     * 돌아오는 고리가 됐다(#367, 운영에서 7회 반복 관측).
+     *
+     * <p>미설치는 재인증이 아니라 <b>설치</b>다. 화면이 가야 할 곳이 다르다.</p>
+     */
     @Test
-    void neverLinkedUserRequiresReauthorization() {
+    void neverLinkedUserNeedsInstallationNotReauthorization() {
         User user = new User(new GithubId("1"), "octo", null);
 
+        assertThat(user.hasGithubAppInstalled()).isFalse();
         assertThat(user.getRefreshTokenExpiresAt()).isNull();
+        assertThat(user.needsGithubAppReauthorization()).isFalse();
+    }
+
+    /**
+     * 설치는 했는데 리프레시 토큰이 사라진 경우는 여전히 재인증이다 — 권한은 그대로고 토큰만
+     * 다시 받으면 된다. 위 경우와 갈리는 지점이 설치 여부다.
+     */
+    @Test
+    void installedUserWithoutRefreshTokenStillNeedsReauthorization() {
+        User user = new User(new GithubId("1"), "octo", null);
+        user.updateInstallationId(1L);
+
+        assertThat(user.hasGithubAppInstalled()).isTrue();
         assertThat(user.needsGithubAppReauthorization()).isTrue();
     }
 
+    /**
+     * 이름대로 <b>App 이 연동된</b> 사용자를 만든다. 예전에는 설치 ID 없이 토큰만 넣었는데,
+     * 재인증 판정이 설치 여부를 보지 않던 때라 티가 나지 않았다 — 이제는 설치가 전제다(#367).
+     */
     private User linked(LocalDateTime accessExpiresAt) {
         User user = new User(new GithubId("1"), "octo", null);
+        user.updateInstallationId(1L);
         user.updateUserToken("access", "refresh", accessExpiresAt);
         return user;
     }

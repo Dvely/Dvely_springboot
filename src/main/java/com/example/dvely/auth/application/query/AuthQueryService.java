@@ -1,5 +1,6 @@
 package com.example.dvely.auth.application.query;
 
+import com.example.dvely.common.exception.GithubAppNotInstalledException;
 import com.example.dvely.auth.application.command.dto.LoginUrlResult;
 import com.example.dvely.auth.application.port.out.GithubAppPort;
 import com.example.dvely.auth.application.port.out.GithubOAuthPort;
@@ -46,7 +47,9 @@ public class AuthQueryService {
                 .getGithubInstallationId();
 
         if (installationId == null) {
-            throw new ForbiddenException("GitHub App이 설치되지 않았습니다. 먼저 App을 설치해 주세요.");
+            // ForbiddenException 이면 코드가 FORBIDDEN 으로 나가고, 클라이언트는 코드로 분기하므로
+            // 설치 안내에 닿지 못한다(#367). 전용 코드로 낸다.
+            throw new GithubAppNotInstalledException("GitHub App이 설치되지 않았습니다. 먼저 App을 설치해 주세요.");
         }
 
         return githubAppPort.getReauthorizeUrl(installationId, userToken);
