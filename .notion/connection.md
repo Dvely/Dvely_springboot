@@ -99,6 +99,7 @@ AuditRecorder(횡단) ──→ Project/Deploy Agent/ResultApprovalGate/ResultAp
 | CloudConnection | AWS/GCP credential 저장, 실제 STS/IAM 검증, 프로젝트 선택 연결 | 실제 cloud 배포/비용 실집행/운영 미연결(비용 추정·운영 질의 자체는 구현됨) |
 | AuditLog | GitHub/배포/도메인/인프라 작업 16종 기록(비차단 REQUIRES_NEW), 프로젝트별 조회 API, 180일 retention 배치 | 계정 수준 감사(installation·로그인 이력)·`/me/audit-logs`는 범위 밖 |
 | Template | 템플릿 저장소가 Pages 로 발행한 `catalog.json` 취득·캐시(stale-while-error), 카탈로그 API, 프로젝트 생성 시 `templateType` 실재 검증, 첫 CODE 스텝 씨딩 | FE 갤러리·썸네일 자동화가 남음 |
+| AiAccount | 사용자 본인 AI 키 등록·암호화 보관, `UserAiKeyResolver` 로 실행 시점 키 해석. **배포 설정에 벤더 키가 없다**(#364) — `src/main` 의 `getApiKey()` 는 전부 이 모듈 안이다 | 사용량 상한·사용자별 할당은 없음 |
 
 ---
 
@@ -484,6 +485,21 @@ CodeAgentService.execute
 **순서가 중요하다.** clone 이 씨딩보다 먼저다 — 반대면 clone 이 씨앗을 덮거나, 비어 있지 않은 디렉터리에 clone 하려다 실패한다. 씨딩이 "비었을 때만" 이므로 저장소가 있는 프로젝트에서는 자연히 건너뛴다.
 
 `sourceUrl` 은 셸 명령에 들어간다. 카탈로그는 우리 저장소가 발행하지만 그 값을 그대로 셸에 넘기는 구조를 두지 않는다 — 형식(`https://…​.tar.gz`, 안전 문자만)을 먼저 검증한다.
+
+---
+
+### 8.y AI 키가 오는 곳 (Issue #364)
+
+```text
+POST /conversations/{id}/messages  (aiProvider 필수)
+→ UserAiKeyResolver               사용자가 등록한 키를 찾는다
+→ 없으면 AI_CREDENTIAL_NOT_REGISTERED (400)
+→ LlmRouter → 제공자 클라이언트
+```
+
+**배포 설정으로 떨어지는 갈래가 없다.** 예전에는 `aiProvider` 를 생략하면 `AiProperties` 의 서버 키로 돌았고, 로그인한 누구나 운영자 계정에 과금할 수 있었다. 지금 `AiProperties` 에 남은 것은 **모델 카탈로그**(`model`·`allowed-models`·`thinking-models`·`base-url`)이고 비밀이 아니다.
+
+`model` 과 `thinking-models` 가 어긋나면 기동 때 `AiModelConfigInspector` 가 경고한다 — 어긋나도 기동은 되고 요청 시 400 으로만 나타나, 설정한 사람과 증상을 보는 사람이 다른 시점에 있기 때문이다(PR #362).
 
 ---
 

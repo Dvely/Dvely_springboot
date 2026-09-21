@@ -494,9 +494,16 @@ Base path: `/api/v1/projects/{projectId}/environment-variables`
 
 ```json
 {
-  "content": "헤더 크기를 줄여줘"
+  "content": "헤더 크기를 줄여줘",
+  "aiProvider": "CLAUDE_CODE"
 }
 ```
+
+> **⚠️ `aiProvider` 는 필수다** (Issue #364 / PR #365). 생략하면 400 이다.
+>
+> 예전에는 생략하면 배포에 설정된 **서버 키**로 돌았다. 그 경로가 없어졌다 — 로그인한 누구나 운영자 계정에 과금할 수 있었고, 사용량 상한도 사용자별 할당도 없었기 때문이다. FE 가 화면에서 서버 키 제공자를 걷어냈어도 서버는 여전히 받았고, 브라우저 JWT 만 있으면 `curl` 로 그대로 부를 수 있었다.
+>
+> 고를 수 있는 값은 **사용자가 키를 등록한 제공자뿐**이고, 목록은 `GET /api/v1/agent/ai-providers`(§9)가 그 기준으로 내려준다. 키가 없는 제공자를 지정하면 `AI_CREDENTIAL_NOT_REGISTERED`(400) 다 — 키 등록 화면으로 유도한다.
 
 현재 동작:
 

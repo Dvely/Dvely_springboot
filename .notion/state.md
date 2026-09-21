@@ -1197,7 +1197,7 @@ READ·WRITE 가 똑같이 기본 90일·최대 365일이었다. 유출됐을 때
 `.notion/ROADMAP.md`가 단위(Unit) 단위 실행 순서의 SSOT다. 아래는 지금까지 진행해 온 Phase 이력이며, U1~U7·Issue #45·Cost & Budget·Cloud Ops Agent·Issue #56·Issue #55·Issue #57·Issue #74(Audit Log)·Issue #76(Preview 외부 노출 차단, BI-081/G1)·Issue #77(게이트웨이 인가, G2·G4)이 모두 완료된 이후 신규 작업은 ROADMAP의 "이후 백로그"(`BI-163~165` Project Settings 나머지)와 U-sec 단위를 따른다.
 
 
-## 4.22 퍼블리싱 템플릿 — 카탈로그 + 씨딩 (Issue #318, PR-1~4)
+## 4.29 퍼블리싱 템플릿 — 카탈로그 + 씨딩 (Issue #318, PR-1~4)
 
 **되는 것**
 
@@ -1274,6 +1274,75 @@ busybox `wget` 은 프록시 CONNECT 터널링을 하지 않는다. egress 를 �
 
 - **기본이 꺼짐이다.** 허용목록이 좁으면 빌드가 깨지고 그 실패는 사용자 프로젝트마다 다르게 나타난다 — dev 에서 정적·Node·JAVA_FULLSTACK 을 실제로 태워 목록을 확인한 뒤 켠다
 - 고아 네트워크 정리는 컨테이너 회수에 얹혀 있다(`removeContainer` 가 라벨로 세션을 찾아 되돌린다). 컨테이너가 이미 사라진 뒤 남은 네트워크를 거두는 주기 작업은 없다
+
+
+
+## 4.30 프리뷰 컨테이너를 node 로 돌린다 (Issue #332 1~3단계)
+
+**되는 것**
+
+- 프리뷰 컨테이너의 기본 사용자가 `node`(uid 1000)다. 여기서 도는 것은 **사용자가 연결한 저장소의 코드**이고(`npm install` 의 postinstall·빌드 스크립트), 그것이 root 로 돌던 것을 내렸다
+- 워크스페이스는 생성 시점부터 `node` 소유다. `HOME=/home/node` 를 함께 준다 — 없으면 npm 캐시와 `git config --global` 이 root 홈을 쓰려다 죽고, **빌드가 아니라 설정 파일 때문에 실패해 원인이 로그에 안 남는다**
+- root 가 필요한 것만 표시한다: `installPackages`(apk 전용, root 고정) · nginx 기동/종료 · 생성 직후 `mkdir`+`chown`
+- **빌드 컨테이너는 그대로 root** 다. `ContainerRole` 로 역할을 가른 이유가 이것이고, 덕분에 배포 파이프라인은 한 줄도 바뀌지 않았다
+
+**확정된 제약 — 이것이 설계를 결정했다**
+
+`cap-drop ALL` 이 `DAC_OVERRIDE` 를 뗀다. 그래서 이 컨테이너의 root 는 **파일 권한을 우회하지 못한다.** 워크스페이스 주인은 하나여야 하고, 중간에 넘기면 그 뒤의 root 명령이 전부 막힌다 — 절반만 옮기는 설계는 없다.
+
+**방향이 요점이었다**
+
+워크스페이스를 만지는 40곳을 하나씩 바꾸면 빠뜨린 곳만 조용히 깨진다. 기본을 뒤집고 root 가 필요한 짧은 목록만 표시했다. `docker exec -u root` 가 `no-new-privileges` 와 무관하게 동작하는 것(데몬이 정하는 값이라 setuid 경로가 아니다)을 착수 전에 실측해 이 방향이 가능함을 확인했다.
+
+**실측 (dev, 실제 컨테이너)**
+
+```
+저장소 코드 uid        1000 (root 아님)
+/etc/shadow 읽기       거부      apk (node)      거부
+워크스페이스 쓰기      허용      gradle 빌드     exit=0 · 캐시 /home/node/.gradle
+nginx(root) 기동       exit=0 · node 소유 파일 서빙 · node 는 못 끄고 root 는 끈다
+```
+
+**인계 문서에 없던 root 필요 지점 2곳을 채웠다** — 템플릿 씨딩(#321)과 diff 기준 커밋(#324)이 `apk` 를 명령 체인 안에 품고 있었다. 그대로 두면 체인 전체가 root 로 돌아 작업 트리에 root 소유 파일이 섞이고, 그 뒤 node 명령이 막힌다.
+
+**기존 컨테이너는 재생성 없이 이어진다** — 사용자 설정이 없어 그대로 root 로 돌고 `execAsRoot` 도 같은 결과다.
+
+## 4.31 AI 모델 설정 어긋남을 기동 때 드러낸다 (Issue #332, PR #362)
+
+`model` 과 `thinking-models` 는 독립된 스위치인데 함께 맞아야 의미가 생긴다. 어긋나도 **기동은 성공하고**, 요청이 들어와 thinking 을 달라고 할 때에야 400 으로 나타난다 — 설정을 바꾼 사람과 증상을 보는 사람이 다른 시점에 있는 형태다.
+
+운영 설정을 손보다 실제로 났다(2026-09-18). GLM 의 `model` 을 기본값에서 바꾸면서 `thinking-models` 를 그대로 뒀다.
+
+기동 때 두 가지를 본다:
+
+| 조건 | 뜻 |
+|---|---|
+| 기본 `model` 이 `thinking-models` 에 없음 | 그 모델로는 thinking 을 못 쓴다 |
+| `thinking-models` 에 `model` 도 `allowed-models` 도 아닌 항목 | 아무도 지정할 수 없는 죽은 설정 |
+
+`thinking-models` 가 **비어 있는 것은 경고하지 않는다** — "이 제공자는 thinking 을 받지 않는다" 는 분명한 선언이고 `gpt-4o` 가 그렇다. **기동을 막지는 않는다**: 어긋남이 의도인 배포가 있을 수 있다(기본은 싼 모델, thinking 은 `allowed-models` 의 다른 모델로만).
+
+## 4.32 AI 실행을 사용자 본인 키로만 (Issue #364, PR #365)
+
+> 이 절은 다른 작업자(Inseong Kim)의 머지분을 **코드 실측으로** 정리한 것이다 — PR 이 문서를 갱신하지 않았다.
+
+**무엇이 문제였나**
+
+공개 운영 중에 로그인한 누구나 운영자 계정에 과금할 수 있었다. `aiProvider` 를 생략하거나 벤더를 직접 지정하면 배포에 설정된 **서버 키**로 실행됐고, 사용량 상한도 사용자별 할당도 없었다. FE 가 화면에서 서버 키 제공자를 걷어냈지만 서버는 여전히 받았다 — 브라우저 JWT 만 있으면 `curl` 로 그대로 부를 수 있었다.
+
+**바뀐 것 (코드 실측)**
+
+- 키를 구하는 경로가 `UserAiKeyResolver` 하나로 모였다. `src/main` 의 `getApiKey()` 호출은 전부 `aiaccount`(사용자 자격증명) 안에 있고, **배포 설정으로 떨어지는 갈래가 없다**
+- `application-prod.yml`·`application-dev.yml` 에서 벤더 `api-key` 가 사라졌다. `AiProperties` 에 남은 것은 **모델 카탈로그**이고 비밀이 아니다
+- 제공자 목록(`GET /api/v1/agent/ai-providers`)도 서버 키가 아니라 **사용자가 등록한 키**를 근거로 낸다
+
+**⚠️ 깨뜨리는 변경**
+
+`POST /api/v1/conversations/{id}/messages` 의 `aiProvider` 가 **필수**가 됐다(`@NotNull`). 키를 등록하지 않은 사용자는 `AI_CREDENTIAL_NOT_REGISTERED` 로 떨어진다.
+
+**배포 설정에 미치는 영향**
+
+`QEPLOY_AI_ANTHROPIC_API_KEY` · `QEPLOY_AI_OPENAI_API_KEY` · `QEPLOY_AI_GLM_API_KEY` 는 **이 릴리스가 나간 뒤 읽히지 않는다.** 모델·thinking 설정(`*_MODEL`, `*_THINKING_MODELS`)은 모델 카탈로그라 계속 쓰인다.
 
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
