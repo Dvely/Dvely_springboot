@@ -45,7 +45,7 @@ public class AgentFacade {
         AiModelOptions modelOptions = modelOptionsResolver.resolve(
                 aiProvider, requestedModel, requestedThinking
         );
-        AgentPlan plan = decisionAgentService.decide(content, aiProvider, projectId, modelOptions);
+        AgentPlan plan = decisionAgentService.decide(userId, content, aiProvider, projectId, modelOptions);
         AgentSubmission submission = agentOrchestrator.submit(plan, userId, conversationId);
         return new AgentSubmitResult(plan, submission);
     }

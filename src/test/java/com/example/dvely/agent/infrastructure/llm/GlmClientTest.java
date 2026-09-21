@@ -7,20 +7,35 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Covers the part of the GLM client that is not the shared OpenAI wire format: where the call goes,
- * which key signs it, and which optional OpenRouter headers ride along.
+ * which key signs it (the caller's, passed per call), and which optional OpenRouter headers ride
+ * along.
  */
 class GlmClientTest {
 
-    @Test
-    void postsToTheConfiguredEndpointWithTheGlmKeyAndModel() {
-        AiProperties properties = new AiProperties();
-        properties.getGlm().setApiKey("sk-or-key");
+    /** A stand-in for the calling user's own key; the deployment no longer holds one. */
+    private static final String USER_KEY = "sk-or-key-of-the-caller";
 
-        OpenAiCompatibleChat.Endpoint endpoint = GlmClient.endpoint(properties);
+    @Test
+    void postsToTheConfiguredEndpointWithTheCallersKeyAndTheConfiguredModel() {
+        OpenAiCompatibleChat.Endpoint endpoint = GlmClient.endpoint(new AiProperties(), USER_KEY);
 
         assertThat(endpoint.url()).isEqualTo("https://openrouter.ai/api/v1/chat/completions");
-        assertThat(endpoint.config().getApiKey()).isEqualTo("sk-or-key");
+        // The key on the endpoint is the one passed in — config carries the model catalogue only.
+        assertThat(endpoint.apiKey()).isEqualTo(USER_KEY);
         assertThat(endpoint.config().getModel()).isEqualTo("z-ai/glm-4.6");
+    }
+
+    @Test
+    void doesNotRememberAKeyBetweenEndpoints() {
+        // The client is a singleton bean shared by every user, so an endpoint built for one caller
+        // must not leave anything behind that the next one could pick up.
+        AiProperties properties = new AiProperties();
+
+        OpenAiCompatibleChat.Endpoint first = GlmClient.endpoint(properties, "key-of-user-a");
+        OpenAiCompatibleChat.Endpoint second = GlmClient.endpoint(properties, "key-of-user-b");
+
+        assertThat(first.apiKey()).isEqualTo("key-of-user-a");
+        assertThat(second.apiKey()).isEqualTo("key-of-user-b");
     }
 
     @Test
@@ -28,13 +43,13 @@ class GlmClientTest {
         AiProperties properties = new AiProperties();
         properties.getGlm().setBaseUrl("https://gateway.internal/v1/chat/completions");
 
-        assertThat(GlmClient.endpoint(properties).url())
+        assertThat(GlmClient.endpoint(properties, USER_KEY).url())
                 .isEqualTo("https://gateway.internal/v1/chat/completions");
     }
 
     @Test
     void usesOpenRoutersReasoningParameterRatherThanOpenAisReasoningEffort() {
-        assertThat(GlmClient.endpoint(new AiProperties()).reasoning())
+        assertThat(GlmClient.endpoint(new AiProperties(), USER_KEY).reasoning())
                 .isEqualTo(LlmRequestOptions.ReasoningStyle.OPENROUTER_REASONING);
     }
 
@@ -46,7 +61,7 @@ class GlmClientTest {
         AiProperties properties = new AiProperties();
         properties.getGlm().setBaseUrl("https://api.z.ai/api/paas/v4/chat/completions");
 
-        assertThat(GlmClient.endpoint(properties).reasoning())
+        assertThat(GlmClient.endpoint(properties, USER_KEY).reasoning())
                 .isEqualTo(LlmRequestOptions.ReasoningStyle.ZAI_THINKING);
     }
 
@@ -70,7 +85,7 @@ class GlmClientTest {
     @Test
     void sendsNoAttributionHeadersUntilTheDeploymentConfiguresThem() {
         // They are optional at OpenRouter, and an empty HTTP-Referer is worse than none.
-        assertThat(GlmClient.endpoint(new AiProperties()).extraHeaders()).isEmpty();
+        assertThat(GlmClient.endpoint(new AiProperties(), USER_KEY).extraHeaders()).isEmpty();
     }
 
     @Test
@@ -79,14 +94,14 @@ class GlmClientTest {
         properties.getGlm().setReferer("https://qeploy.com");
         properties.getGlm().setTitle("Qeploy");
 
-        assertThat(GlmClient.endpoint(properties).extraHeaders())
+        assertThat(GlmClient.endpoint(properties, USER_KEY).extraHeaders())
                 .containsEntry("HTTP-Referer", "https://qeploy.com")
                 .containsEntry("X-Title", "Qeploy");
     }
 
     @Test
     void namesTheGatewayInErrorsBecauseThatIsWhereAKeyOrBalanceIsFixed() {
-        assertThat(GlmClient.endpoint(new AiProperties()).providerName())
+        assertThat(GlmClient.endpoint(new AiProperties(), USER_KEY).providerName())
                 .isEqualTo("GLM(openrouter.ai)");
     }
 
@@ -97,7 +112,7 @@ class GlmClientTest {
         AiProperties properties = new AiProperties();
         properties.getGlm().setBaseUrl("https://api.z.ai/api/paas/v4/chat/completions");
 
-        assertThat(GlmClient.endpoint(properties).providerName()).isEqualTo("GLM(api.z.ai)");
+        assertThat(GlmClient.endpoint(properties, USER_KEY).providerName()).isEqualTo("GLM(api.z.ai)");
     }
 
     @Test

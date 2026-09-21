@@ -325,7 +325,7 @@ Accept: text/event-stream
 | POST | `/api/v1/trash/conversations/{id}/restore` | 휴지통 대화 복구(7일 경과 시 불가) | - | `ConversationResponse` | 404, 409(7일 경과) |
 | DELETE | `/api/v1/trash/conversations/{id}` | 휴지통 대화 영구 삭제 | - | 204 | 404 |
 | GET | `/api/v1/conversations/{id}/messages` | 대화 메시지 목록(생성순) | - | `[MessageResponse]` | 404 |
-| POST | `/api/v1/conversations/{id}/messages` | 메시지 저장 + Decision Agent 동기 판단(승인 정책에 따라 Agent task 큐잉) | `{ content }` | 201 `{ messageId, conversationId, role, content, tokenCount, createdAt, taskId }`(`taskId`는 판단 성공 시에만 채워짐) | 400, 404 |
+| POST | `/api/v1/conversations/{id}/messages` | 메시지 저장 + Decision Agent 동기 판단(승인 정책에 따라 Agent task 큐잉) | `{ content, aiProvider }` — **`aiProvider` 필수**(#364) | 201 `{ messageId, conversationId, role, content, tokenCount, createdAt, taskId }`(`taskId`는 판단 성공 시에만 채워짐) | 400, 404 |
 
 ### 4.5 Agent — `com.example.dvely.agent.presentation` (8)
 
@@ -333,7 +333,7 @@ Accept: text/event-stream
 
 | 메서드 | 경로 | 용도 | 요청 | 응답(핵심 필드) | 주요 에러 |
 |---|---|---|---|---|---|
-| POST | `/decision` | 자연어 요청 분석 → 실행 계획 수립 + 비동기 제출 | `{ content, aiProvider(ANTHROPIC\|OPENAI\|GLM), projectId?, conversationId?, model?, thinking? }` | `{ steps[], reasoning, aiProvider, taskId, status, approvalIds }` | 400, 401, 429/502/503(AI 제공자) |
+| POST | `/decision` | 자연어 요청 분석 → 실행 계획 수립 + 비동기 제출 | `{ content, aiProvider(ANTHROPIC\|OPENAI\|GLM\|CLAUDE_CODE\|CODEX), projectId?, conversationId?, model?, thinking? }` | `{ steps[], reasoning, aiProvider, taskId, status, approvalIds }` | 400, 401, 429/502/503(AI 제공자) |
 | GET | `/tasks/{taskId}` | 태스크 상태 조회 | - | `{ taskId, status, previewUrl, summary, error, question, failureLog, suggestedFix, attempt, maxAttempts, retryable, pendingApprovalId }` | 404 |
 | GET | `/tasks/{taskId}/events` | 영속 이벤트 목록(증분) | query: `afterEventId`(기본 0) | `[{ eventId, taskId, type, status, message, createdAt }]` | 404 |
 | GET | `/tasks/{taskId}/events/stream` | SSE 이벤트 스트림 | query: `afterEventId` | `text/event-stream`(`@RawApiResponse`) | 404(emitter null) |
@@ -360,16 +360,29 @@ Accept: text/event-stream
 확정된 설정은 그 태스크의 모든 단계에 그대로 적용됩니다(실행 도중 서버 설정이 바뀌어도 태스크가 모델을 갈아타지 않음). 400 응답의 `message`에 사용 가능한 값이 함께 담기므로 그대로 노출해도 됩니다.
 
 
+#### 모든 AI 실행은 본인 키로 나갑니다 (#364, 2026-09-21)
+
+**서버 키로 도는 경로가 없어졌습니다.** 예전에는 `aiProvider` 를 생략하거나 벤더(`ANTHROPIC`·`OPENAI`·`GLM`)를 지정하면 배포에 설정된 운영자 키로 실행되고 그 비용이 운영자에게 청구됐습니다. 지금은 **호출한 사용자가 등록한 키**로만 실행됩니다.
+
+FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
+
+- **`aiProvider` 를 생략할 수 없습니다.** `POST /conversations/{id}/messages` 에서도 필수가 됐습니다(예전에는 생략 시 서버 기본 제공자로 실행). 비워 보내면 **400** 입니다. `POST /agent/decision` 은 원래부터 필수였습니다.
+- **`GET /agent/ai-providers` 의 의미가 바뀌었습니다.** 이제 "배포가 키를 가진 제공자"가 아니라 **"이 사용자가 키를 등록한 제공자"** 목록입니다. 키를 하나도 등록하지 않았으면 **빈 배열**이 옵니다 — 그 상태에서는 입력을 잠그고 키 등록(`/api/v1/ai-credentials`)으로 보내면 됩니다.
+- **키가 없으면 `AI_CREDENTIAL_NOT_REGISTERED`(400)** 입니다. 코딩 에이전트뿐 아니라 **모든 AI 실행 경로**(계획·채팅·코드 생성)가 이 코드를 낼 수 있습니다. `message` 에 어느 벤더 키가 없는지 담기므로 그대로 안내해도 됩니다.
+
+키는 **벤더 단위로 한 번만** 등록하면 됩니다. `CLAUDE_CODE` 는 Anthropic 키를, `CODEX` 는 OpenAI 키를 씁니다 — 같은 키가 그 벤더의 chat-completions 실행(계획·채팅)과 CLI 실행(코드 생성) 양쪽에 쓰입니다.
+
+#### 코딩 에이전트 제공자
+
+`aiProvider` 에 **코딩 에이전트**(`CLAUDE_CODE`·`CODEX`)를 지정할 수 있습니다(2026-09-11).
+
+벤더 제공자와 다른 점은 하나입니다.
+
+- **`model`·`thinking` 을 지정할 수 없습니다.** 코드 생성 단계는 벤더 CLI 가 모델을 정하므로 목록이 비어 오고(`models: []`, `defaultModel: null`), 지정해 보내면 **400** 입니다. 무시하지 않고 거절하는 이유는, 조용히 무시하면 사용자가 고르지 않은 모델을 골랐다고 믿게 되기 때문입니다.
+
+> 계획(DECISION)과 채팅 단계는 CLI 가 아니라 그 벤더의 chat-completions 로 돕니다. 사용자가 등록한 같은 키를 쓰므로 추가로 등록할 것은 없습니다. **2026-09-21 이전에는 이 경로가 막혀 있어, 코딩 에이전트를 고르면 계획 단계에서 바로 실패했습니다** — 그 회귀는 해소됐습니다.
+
 #### GLM 제공자
-
-`aiProvider` 에 **코딩 에이전트**(`CLAUDE_CODE`·`CODEX`)도 지정할 수 있습니다(2026-09-11).
-
-여기에는 다른 제공자와 두 가지가 다릅니다.
-
-- **본인이 등록한 키로만 나타납니다.** `GET /agent/ai-providers` 는 서버 키가 설정된 제공자에 더해, **호출한 사용자가 등록한** AI 크리덴셜(`/api/v1/ai-credentials`)에 해당하는 코딩 에이전트를 함께 돌려줍니다. BYOK 이므로 사용량이 사용자에게 청구되고, 대신 켜 줄 서버 키가 존재할 수 없습니다. 키 없는 사용자에게 노출하면 고르는 순간 실패하는 선택지가 됩니다.
-- **`model`·`thinking` 을 지정할 수 없습니다.** 벤더 CLI 가 정하므로 목록이 비어 오고(`models: []`, `defaultModel: null`), 지정해 보내면 **400** 입니다. 무시하지 않고 거절하는 이유는, 조용히 무시하면 사용자가 고르지 않은 모델을 골랐다고 믿게 되기 때문입니다.
-
-키 미등록 상태로 코딩 에이전트를 지정하면 `AI_CREDENTIAL_NOT_REGISTERED` 로 떨어지므로, 키 등록 화면으로 유도하면 됩니다.
 
 `aiProvider: "GLM"` 은 OpenRouter 를 거쳐 GLM 을 호출합니다. FE 관점에서는 기존 두 제공자와 계약이 완전히 같습니다 — 요청/응답 형태, `model`·`thinking` 규칙, 아래의 AI 제공자 오류 코드가 모두 그대로입니다.
 
@@ -402,7 +415,7 @@ Accept: text/event-stream
 | GET | `/api/v1/projects/{id}/deployment-candidates` | 재배포/롤백 가능한 성공(LIVE·PREVIEW_READY) 버전만 | - | `[{ versionId, versionName, commitSha, title, deployStatus, deployedUrl, deployedAt }]` | - |
 | GET | `/api/v1/deployments/{id}/logs` | GitHub Actions 빌드 로그(Job/Step 상태 + 전체 로그 텍스트) | - | `{ historyId, workflowRunId, jobs[{ jobId, name, status, conclusion, steps[] }], logText }` | 404 |
 | POST | `/api/v1/deployments/{id}/retry` | 실패한 배포를 새 이력으로 재큐잉(기존 이력 보존) | - | 201 `DeployResponse` | 409(대상이 FAILED 아님) |
-| POST | `/api/v1/deployments/{id}/failure-analysis` | 실패 원인 분석 실행(LLM, 이미 있으면 멱등 재사용) | - | `{ deploymentId, summary, logExcerpt, suggestedFix, analysisSource(LLM\|RULE_BASED), analyzedAt }` | 409(대상이 FAILED 아님) |
+| POST | `/api/v1/deployments/{id}/failure-analysis` | 실패 원인 분석 실행(룰 기반, 이미 있으면 멱등 재사용) | - | `{ deploymentId, summary, logExcerpt, suggestedFix, analysisSource(항상 RULE_BASED), analyzedAt }` | 409(대상이 FAILED 아님) |
 | GET | `/api/v1/deployments/{id}/failure-analysis` | 저장된 분석 결과만 조회(부작용 없음) | - | 위와 동일 shape | 404(분석 이력 없음 — 먼저 POST 필요) |
 | GET | `/api/v1/versions/{versionId}` | 버전 상세(merge 유저/PR/배포 URL) | - | `{ versionId, versionName, commitSha, title, description, deployStatus, deployedUrl, mergedBy, mergedByAvatarUrl, prNumber, mergedAt }` | 404 |
 
@@ -575,7 +588,7 @@ PUT /api/v1/ai-credentials/ANTHROPIC
           "maskedApiKey": "sk-ant****", "label": "개인 계정", ... }
 ```
 
-키를 등록하지 않은 채 코딩 에이전트를 요청하면 `400 AI_CREDENTIAL_NOT_REGISTERED` 가 온다. 서버가 운영자 키로 대신 채워주지 않는다(제공사 약관상 사용자를 대신한 결제·중개가 금지된다). FE 는 이 코드를 받으면 키 등록 화면으로 보내면 된다.
+키를 등록하지 않은 채 AI 실행을 요청하면 `400 AI_CREDENTIAL_NOT_REGISTERED` 가 온다. 코딩 에이전트뿐 아니라 **벤더 제공자를 지정한 계획·채팅·코드 생성도 마찬가지**다(#364) — 서버가 운영자 키로 대신 채워주는 경로 자체가 없다(제공사 약관상 사용자를 대신한 결제·중개가 금지되고, 공개 운영에서는 로그인한 누구나 운영자에게 과금할 수 있는 구멍이 된다). FE 는 이 코드를 받으면 키 등록 화면으로 보내면 된다.
 
 키에 공백·제어문자가 있으면 400 이다. 컨테이너 환경변수로 그대로 주입되는 값이라, 개행이 섞여 붙여넣어진 키를 조용히 받지 않는다.
 
@@ -747,9 +760,9 @@ CODE 단계는 GitHub 저장소 연결과 무관하게 동작합니다(Docker �
 → status: PENDING → IN_PROGRESS(buildStatus: queued → in_progress → completed) → LIVE 또는 FAILED
 
 ③ (FAILED인 경우) POST /api/v1/deployments/501/failure-analysis
-→ (LLM 분석, 15~30초 소요 가능) { "summary": "...", "suggestedFix": "...", "analysisSource": "LLM" }
+→ (룰 기반 분석, 로그 수집 시간만 소요) { "summary": "...", "suggestedFix": "...", "analysisSource": "RULE_BASED" }
 
-④ 같은 분석 재조회: GET /api/v1/deployments/501/failure-analysis  (즉시 응답, LLM 재호출 없음)
+④ 같은 분석 재조회: GET /api/v1/deployments/501/failure-analysis  (즉시 응답, 재분석 없음)
 
 ⑤ POST /api/v1/deployments/501/retry
 → 201 { "deploymentId": 502, "projectId": 12, "deployTargetType": "LATEST", "status": "PENDING", "pagesUrl": null, "createdAt": "..." }

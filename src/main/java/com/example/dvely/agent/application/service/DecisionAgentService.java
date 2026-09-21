@@ -256,30 +256,36 @@ public class DecisionAgentService {
             }
             """;
 
-    public AgentPlan decide(String userMessage, AiProvider provider, Long projectId) {
-        return decide(userMessage, provider, projectId, AiModelOptions.defaults());
+    public AgentPlan decide(Long userId, String userMessage, AiProvider provider, Long projectId) {
+        return decide(userId, userMessage, provider, projectId, AiModelOptions.defaults());
     }
 
-    public AgentPlan decide(String userMessage, AiProvider provider, Long projectId, AiModelOptions modelOptions) {
-        return decide(List.of(new LlmMessage("user", userMessage)), provider, projectId, modelOptions);
-    }
-
-    public AgentPlan decide(List<LlmMessage> conversation, AiProvider provider, Long projectId) {
-        return decide(conversation, provider, projectId, AiModelOptions.defaults());
-    }
-
-    public AgentPlan decide(List<LlmMessage> conversation,
+    public AgentPlan decide(Long userId,
+                            String userMessage,
                             AiProvider provider,
                             Long projectId,
                             AiModelOptions modelOptions) {
-        return decide(conversation, provider, projectId, modelOptions, true);
+        return decide(userId, List.of(new LlmMessage("user", userMessage)), provider, projectId, modelOptions);
+    }
+
+    public AgentPlan decide(Long userId, List<LlmMessage> conversation, AiProvider provider, Long projectId) {
+        return decide(userId, conversation, provider, projectId, AiModelOptions.defaults());
+    }
+
+    public AgentPlan decide(Long userId,
+                            List<LlmMessage> conversation,
+                            AiProvider provider,
+                            Long projectId,
+                            AiModelOptions modelOptions) {
+        return decide(userId, conversation, provider, projectId, modelOptions, true);
     }
 
     /**
      * {@code allowClarify=false} 면 결정이 다시 CLARIFY 를 내지 못하게 가드를 붙인다 — 사용자가 되묻기에
      * 이미 답한 뒤의 재-decide 에 쓴다(무한 되묻기 방지). 그 외엔 4-인자 버전과 동일하다.
      */
-    public AgentPlan decide(List<LlmMessage> conversation,
+    public AgentPlan decide(Long userId,
+                            List<LlmMessage> conversation,
                             AiProvider provider,
                             Long projectId,
                             AiModelOptions modelOptions,
@@ -303,19 +309,20 @@ public class DecisionAgentService {
                 messages.add(new LlmMessage("user", context.asFactsLine()));
             });
         }
-        String raw = complete(provider, messages, modelOptions, projectId);
+        String raw = complete(userId, provider, messages, modelOptions, projectId);
         try {
             return parse(raw, provider, projectId, modelOptions);
         } catch (RuntimeException failure) {
-            return retryOnce(messages, raw, failure, provider, projectId, modelOptions);
+            return retryOnce(userId, messages, raw, failure, provider, projectId, modelOptions);
         }
     }
 
-    private String complete(AiProvider provider,
+    private String complete(Long userId,
+                            AiProvider provider,
                             List<LlmMessage> messages,
                             AiModelOptions modelOptions,
                             Long projectId) {
-        String raw = llmRouter.route(provider).complete(SYSTEM_PROMPT, messages, modelOptions);
+        String raw = llmRouter.route(provider, userId).complete(SYSTEM_PROMPT, messages, modelOptions);
         log.info("의사결정 완료: provider={}, model={}, projectId={}, rawLength={}",
                 provider, modelOptions.model(), projectId, raw == null ? 0 : raw.length());
         log.debug("의사결정 응답 미리보기: {}", preview(raw));
@@ -335,7 +342,8 @@ public class DecisionAgentService {
      * 요청한 작업은 경고 하나 없이 증발했다. 실패를 실패로 닫아야 호출부가 태스크를 FAILED 로
      * 전이시키고(SSE 로 FE 가 즉시 인지) 사용자도 다시 시도할 수 있다.</p>
      */
-    private AgentPlan retryOnce(List<LlmMessage> messages,
+    private AgentPlan retryOnce(Long userId,
+                                List<LlmMessage> messages,
                                 String failedRaw,
                                 RuntimeException failure,
                                 AiProvider provider,
@@ -347,7 +355,7 @@ public class DecisionAgentService {
         List<LlmMessage> repairMessages = new ArrayList<>(messages);
         repairMessages.add(new LlmMessage("user", repairPrompt(failedRaw, failure)));
 
-        String raw = complete(provider, repairMessages, modelOptions, projectId);
+        String raw = complete(userId, provider, repairMessages, modelOptions, projectId);
         try {
             AgentPlan plan = parse(raw, provider, projectId, modelOptions);
             log.info("의사결정 응답 재시도 성공: provider={} projectId={}", provider, projectId);

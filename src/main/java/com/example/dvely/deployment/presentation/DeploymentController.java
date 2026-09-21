@@ -167,8 +167,9 @@ public class DeploymentController {
     @Operation(
             summary = "배포 실패 원인 분석 실행",
             description = "실패(FAILED)한 배포의 GitHub Actions 로그를 수집해 원인을 분석합니다. " +
-                          "이미 저장된 분석이 있으면 LLM을 다시 호출하지 않고 그대로 반환합니다(멱등). " +
-                          "신규 분석은 로그 수집과 LLM 호출로 인해 응답까지 약 15~30초가 걸릴 수 있습니다. " +
+                          "이미 저장된 분석이 있으면 다시 분석하지 않고 그대로 반환합니다(멱등). " +
+                          "분석은 로그 패턴 기반 룰 분석이며 LLM을 호출하지 않습니다. " +
+                          "신규 분석은 GitHub 로그 수집 때문에 응답까지 수 초가 걸릴 수 있습니다. " +
                           "대상이 FAILED가 아니면 409를 반환합니다."
     )
     @PostMapping("/api/v1/deployments/{deploymentId}/failure-analysis")
@@ -181,7 +182,7 @@ public class DeploymentController {
 
     @Operation(
             summary = "배포 실패 원인 분석 조회",
-            description = "저장된 분석 결과만 반환합니다(부작용 없음, LLM/GitHub 호출 없음). " +
+            description = "저장된 분석 결과만 반환합니다(부작용 없음, GitHub 호출 없음). " +
                           "아직 분석을 실행한 적이 없으면 404를 반환하며, 이 경우 실행 API(POST)를 호출해야 합니다."
     )
     @GetMapping("/api/v1/deployments/{deploymentId}/failure-analysis")

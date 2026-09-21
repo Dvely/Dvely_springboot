@@ -1,7 +1,6 @@
 package com.example.dvely.agent.infrastructure.llm;
 
 import com.example.dvely.agent.application.port.out.LlmMessage;
-import com.example.dvely.agent.application.port.out.LlmPort;
 import com.example.dvely.agent.domain.value.AiModelOptions;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
@@ -24,7 +23,7 @@ import org.springframework.stereotype.Component;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class GlmClient implements LlmPort {
+public class GlmClient {
 
     /** Used when the configured endpoint cannot be parsed for a host. */
     static final String PROVIDER_NAME = "GLM";
@@ -32,10 +31,13 @@ public class GlmClient implements LlmPort {
     private final AiProperties aiProperties;
     private final LlmUsageRecorder llmUsageRecorder;
 
-    @Override
-    public String complete(String systemPrompt, List<LlmMessage> messages, AiModelOptions modelOptions) {
+    /** The key is the caller's own — see {@link ClaudeClient#complete} for why it is a parameter. */
+    public String complete(String systemPrompt,
+                           List<LlmMessage> messages,
+                           AiModelOptions modelOptions,
+                           String apiKey) {
         OpenAiCompatibleChat.Completion completion =
-                OpenAiCompatibleChat.complete(endpoint(aiProperties), systemPrompt, messages, modelOptions);
+                OpenAiCompatibleChat.complete(endpoint(aiProperties, apiKey), systemPrompt, messages, modelOptions);
         llmUsageRecorder.record(AiProvider.GLM, completion.model(), completion.usage());
         return completion.content();
     }
@@ -44,11 +46,12 @@ public class GlmClient implements LlmPort {
      * Shared with {@link GlmToolClient} so the two cannot drift apart in which URL they post to or
      * which headers they send.
      */
-    static OpenAiCompatibleChat.Endpoint endpoint(AiProperties aiProperties) {
+    static OpenAiCompatibleChat.Endpoint endpoint(AiProperties aiProperties, String apiKey) {
         AiProperties.Glm config = aiProperties.getGlm();
         return new OpenAiCompatibleChat.Endpoint(
                 providerName(config.getBaseUrl()),
                 config.getBaseUrl(),
+                apiKey,
                 config,
                 reasoningStyle(config.getBaseUrl()),
                 attributionHeaders(config),

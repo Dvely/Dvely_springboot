@@ -3,8 +3,6 @@ package com.example.dvely.deployment.application.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -12,11 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.service.BuildFailureAnalyzer;
-import com.example.dvely.agent.domain.value.AiProvider;
-import com.example.dvely.agent.infrastructure.config.AiProperties;
-import com.example.dvely.agent.infrastructure.llm.LlmRouter;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -30,7 +24,6 @@ import com.example.dvely.deployment.domain.repository.DeploymentFailureAnalysisR
 import com.example.dvely.deployment.domain.repository.DeploymentHistoryRepository;
 import com.example.dvely.deployment.domain.value.AnalysisSource;
 import com.example.dvely.deployment.domain.value.DeployTargetType;
-import com.example.dvely.agent.application.port.out.LlmPort;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
@@ -38,7 +31,9 @@ import com.example.dvely.project.domain.value.ProjectStatus;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
+import java.lang.reflect.Field;
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
@@ -48,6 +43,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -60,10 +56,7 @@ class DeploymentFailureAnalysisServiceTest {
     private final UserRepository userRepository = mock(UserRepository.class);
     private final AuthCommandService authCommandService = mock(AuthCommandService.class);
     private final GithubActionsPort githubActionsPort = mock(GithubActionsPort.class);
-    private final LlmRouter llmRouter = mock(LlmRouter.class);
     private final BuildFailureAnalyzer buildFailureAnalyzer = mock(BuildFailureAnalyzer.class);
-    private final AiProperties aiProperties = new AiProperties();
-    private final LlmPort llmPort = mock(LlmPort.class);
 
     private final DeploymentFailureAnalysisService service = new DeploymentFailureAnalysisService(
             deploymentHistoryRepository,
@@ -72,14 +65,13 @@ class DeploymentFailureAnalysisServiceTest {
             userRepository,
             authCommandService,
             githubActionsPort,
-            llmRouter,
-            buildFailureAnalyzer,
-            aiProperties
+            buildFailureAnalyzer
     );
 
     @Test
-    void analyzeReturnsCachedResultWithoutCallingLlmOrGithub() {
+    void analyzeReturnsCachedResultWithoutCallingGithubOrAnalyzer() {
         stubOwnedHistory(failedHistoryWithRunId());
+        // 서버 키 LLM 호출을 걷어내기 전에 저장된 행 — 여전히 그대로 읽혀야 한다.
         DeploymentFailureAnalysis cached = new DeploymentFailureAnalysis(
                 10L, 51L, 1L, AnalysisSource.LLM, "이미 분석된 요약", "이미 저장된 발췌", "이미 저장된 수정안",
                 "ANTHROPIC", "claude-opus-4-5-20251101", LocalDateTime.now()
@@ -90,7 +82,7 @@ class DeploymentFailureAnalysisServiceTest {
 
         assertThat(result.summary()).isEqualTo("이미 분석된 요약");
         assertThat(result.analysisSource()).isEqualTo("LLM");
-        verifyNoInteractions(githubActionsPort, llmRouter, buildFailureAnalyzer);
+        verifyNoInteractions(githubActionsPort, buildFailureAnalyzer);
         verify(analysisRepository, never()).save(any());
     }
 
@@ -103,7 +95,7 @@ class DeploymentFailureAnalysisServiceTest {
         assertThatThrownBy(() -> service.analyze(1L, 51L))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("IN_PROGRESS");
-        verifyNoInteractions(githubActionsPort, llmRouter);
+        verifyNoInteractions(githubActionsPort, buildFailureAnalyzer);
     }
 
     @Test
@@ -117,118 +109,78 @@ class DeploymentFailureAnalysisServiceTest {
     }
 
     @Test
-    void analyzeSucceedsWithLlmJsonAndRecordsProviderAndModel() {
-        stubOwnedHistory(failedHistoryWithRunId());
-        when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
-        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
-        when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
-                new GithubActionsPort.DeploymentLogs(901L, List.of(), "npm ERR! missing script: build")
-        );
-        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList(), any())).thenReturn(
-                "{\"summary\": \"빌드 스크립트가 없습니다.\", \"suggestedFix\": \"package.json에 build 스크립트를 추가하세요.\"}"
-        );
-        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
-                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
-
-        DeploymentFailureAnalysisResult result = service.analyze(1L, 51L);
-
-        assertThat(result.analysisSource()).isEqualTo("LLM");
-        assertThat(result.summary()).isEqualTo("빌드 스크립트가 없습니다.");
-        assertThat(result.suggestedFix()).isEqualTo("package.json에 build 스크립트를 추가하세요.");
-        verifyNoInteractions(buildFailureAnalyzer);
-    }
-
-    // ── U8 8-5: 제공자·모델을 코드에 박지 않는다 ──────────────────────────────────────────
-
-    @Test
-    void followsTheDeploymentsDefaultProviderInsteadOfPinningAnthropic() {
-        // 이 한 경로만 ANTHROPIC + 그 제공자의 최상위 모델로 박혀 있었다. 12,000자 로그를 한 번
-        // 요약하는 데 쓸 근거가 없었고, default-provider(GLM)와도 어긋났다.
-        stubLlmAnalysis("{\"summary\":\"요약\",\"suggestedFix\":\"수정\"}");
-        ArgumentCaptor<DeploymentFailureAnalysis> saved =
-                ArgumentCaptor.forClass(DeploymentFailureAnalysis.class);
-
-        service.analyze(1L, 51L);
-
-        verify(analysisRepository).save(saved.capture());
-        assertThat(saved.getValue().getProvider()).isEqualTo("GLM");
-        assertThat(saved.getValue().getModel()).isEqualTo("z-ai/glm-4.6");
-        verify(llmRouter).route(AiProvider.GLM);
-    }
-
-    @Test
-    void canBePinnedBackToAnthropicByConfigurationWhenAnalysisQualityDrops() {
-        // 품질이 떨어지면 실패 분석 자체가 쓸모없어진다. 되돌리는 길은 재배포가 아니라 설정이다.
-        aiProperties.getFailureAnalysis().setProvider(AiProvider.ANTHROPIC);
-        aiProperties.getFailureAnalysis().setModel("claude-opus-4-5-20251101");
-        stubLlmAnalysis("{\"summary\":\"요약\",\"suggestedFix\":\"수정\"}");
-        ArgumentCaptor<DeploymentFailureAnalysis> saved =
-                ArgumentCaptor.forClass(DeploymentFailureAnalysis.class);
-
-        service.analyze(1L, 51L);
-
-        verify(analysisRepository).save(saved.capture());
-        assertThat(saved.getValue().getProvider()).isEqualTo("ANTHROPIC");
-        assertThat(saved.getValue().getModel()).isEqualTo("claude-opus-4-5-20251101");
-        verify(llmRouter).route(AiProvider.ANTHROPIC);
-    }
-
-    private void stubLlmAnalysis(String json) {
-        stubOwnedHistory(failedHistoryWithRunId());
-        when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
-        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
-        when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
-                new GithubActionsPort.DeploymentLogs(901L, List.of(), "npm ERR! build failed")
-        );
-        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList(), any())).thenReturn(json);
-        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
-                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
-    }
-
-    @Test
-    void analyzeFallsBackToRuleBasedWhenLlmThrows() {
+    void analyzeIsRuleBasedAndRecordsNeitherProviderNorModel() {
         stubOwnedHistory(failedHistoryWithRunId());
         when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
                 new GithubActionsPort.DeploymentLogs(901L, List.of(), "cannot find module 'react'")
         );
-        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList(), any())).thenThrow(new IllegalStateException("Claude API 응답이 비어있습니다"));
-        when(buildFailureAnalyzer.analyze(any())).thenReturn(new BuildFailureAnalyzer.Analysis(
-                "빌드에 필요한 모듈을 찾지 못했습니다.", "cannot find module 'react'", "dependency를 다시 설치하세요."
-        ));
-        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
-                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
+        stubRuleBasedAnalysis();
+        stubSaveEchoesWithId();
+        ArgumentCaptor<DeploymentFailureAnalysis> saved =
+                ArgumentCaptor.forClass(DeploymentFailureAnalysis.class);
 
         DeploymentFailureAnalysisResult result = service.analyze(1L, 51L);
 
         assertThat(result.analysisSource()).isEqualTo("RULE_BASED");
         assertThat(result.summary()).isEqualTo("빌드에 필요한 모듈을 찾지 못했습니다.");
         assertThat(result.suggestedFix()).isEqualTo("dependency를 다시 설치하세요.");
+        // 모델이 관여하지 않은 분석이므로 어느 제공자·모델로 만들었는지 남길 것이 없다.
+        verify(analysisRepository).save(saved.capture());
+        assertThat(saved.getValue().getProvider()).isNull();
+        assertThat(saved.getValue().getModel()).isNull();
     }
 
+    // ── #364: 서버 키 없이도 실패 분석이 돌아온다 ────────────────────────────────────────
+
     @Test
-    void analyzeFallsBackToRuleBasedWhenLlmResponseIsNotParseableJson() {
+    void analyzeReturnsARuleBasedAnalysisWithNoLlmCollaboratorAtAll() {
+        // 인수 조건: LLM·AI 설정 협력자를 아예 만들지 않은 서비스(= 서버 API 키가 없는 서비스)가
+        // 정상 응답을 낸다. 목이 아니라 실제 BuildFailureAnalyzer 를 써서 룰이 진짜로 돈다는 것까지 본다.
+        DeploymentFailureAnalysisService keyless = new DeploymentFailureAnalysisService(
+                deploymentHistoryRepository,
+                analysisRepository,
+                projectRepository,
+                userRepository,
+                authCommandService,
+                githubActionsPort,
+                new BuildFailureAnalyzer()
+        );
         stubOwnedHistory(failedHistoryWithRunId());
         when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
-                new GithubActionsPort.DeploymentLogs(901L, List.of(), "some log text")
+                new GithubActionsPort.DeploymentLogs(901L, List.of(), "Error: Cannot find module 'react'")
         );
-        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList(), any())).thenReturn("this is not json at all");
-        when(buildFailureAnalyzer.analyze(any())).thenReturn(new BuildFailureAnalyzer.Analysis(
-                "프로젝트 빌드가 완료되지 않았습니다.", "some log text", "로그를 확인하세요."
-        ));
-        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
-                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
+        stubSaveEchoesWithId();
 
-        DeploymentFailureAnalysisResult result = service.analyze(1L, 51L);
+        DeploymentFailureAnalysisResult result = keyless.analyze(1L, 51L);
 
         assertThat(result.analysisSource()).isEqualTo("RULE_BASED");
+        assertThat(result.summary()).isEqualTo("빌드에 필요한 모듈을 찾지 못했습니다.");
+        assertThat(result.suggestedFix()).isNotBlank();
+        assertThat(result.logExcerpt()).contains("Cannot find module 'react'");
+    }
+
+    @Test
+    void theServiceHoldsNoLlmOrAiConfigurationDependency() {
+        // 서버 키 호출이 조용히 되살아나는 것을 막는 구조 가드. 의존을 다시 주입하면 여기서 깨진다.
+        // 클래스 리터럴이 아니라 이름으로 비교한다 — LLM 쪽 타입이 이름이 바뀌거나 사라져도 이 테스트가
+        // 컴파일 오류로 같이 무너지지 않고, 그 자리에 새로 생긴 llm 패키지 타입도 똑같이 걸러낸다.
+        Class<?> service = DeploymentFailureAnalysisService.class;
+        List<Class<?>> dependencyTypes = Stream.concat(
+                Arrays.stream(service.getDeclaredConstructors())
+                        .flatMap(constructor -> Arrays.stream(constructor.getParameterTypes())),
+                Arrays.stream(service.getDeclaredFields()).map(Field::getType)
+        ).toList();
+
+        assertThat(dependencyTypes)
+                .extracting(Class::getName)
+                .noneMatch(name -> name.startsWith("com.example.dvely.agent.infrastructure.llm.")
+                        || name.endsWith(".LlmRouter")
+                        || name.endsWith(".LlmPort")
+                        || name.endsWith(".AiProperties"));
     }
 
     @Test
@@ -240,12 +192,8 @@ class DeploymentFailureAnalysisServiceTest {
         );
         stubOwnedHistory(history);
         when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
-        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList(), any())).thenReturn(
-                "{\"summary\": \"트리거 실패\", \"suggestedFix\": \"다시 시도하세요.\"}"
-        );
-        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
-                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
+        stubRuleBasedAnalysis();
+        stubSaveEchoesWithId();
 
         DeploymentFailureAnalysisResult result = service.analyze(1L, 51L);
 
@@ -264,12 +212,8 @@ class DeploymentFailureAnalysisServiceTest {
         String logText = noise + "npm ERR! critical failure marker\n" + noise;
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L))
                 .thenReturn(new GithubActionsPort.DeploymentLogs(901L, List.of(), logText));
-        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList(), any())).thenReturn(
-                "{\"summary\": \"실패\", \"suggestedFix\": \"수정\"}"
-        );
-        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
-                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
+        stubRuleBasedAnalysis();
+        stubSaveEchoesWithId();
 
         DeploymentFailureAnalysisResult result = service.analyze(1L, 51L);
 
@@ -286,17 +230,14 @@ class DeploymentFailureAnalysisServiceTest {
         when(analysisRepository.findByHistoryId(51L))
                 .thenReturn(Optional.empty())
                 .thenReturn(Optional.of(new DeploymentFailureAnalysis(
-                        10L, 51L, 2L, AnalysisSource.LLM, "다른 요청이 저장한 요약", "발췌", "수정안",
-                        "ANTHROPIC", "claude-opus-4-5-20251101", LocalDateTime.now()
+                        10L, 51L, 2L, AnalysisSource.RULE_BASED, "다른 요청이 저장한 요약", "발췌", "수정안",
+                        null, null, LocalDateTime.now()
                 )));
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
                 new GithubActionsPort.DeploymentLogs(901L, List.of(), "some log")
         );
-        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList(), any())).thenReturn(
-                "{\"summary\": \"이 요청의 요약\", \"suggestedFix\": \"이 요청의 수정안\"}"
-        );
+        stubRuleBasedAnalysis();
         when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
                 .thenThrow(new DataIntegrityViolationException("duplicate key"));
 
@@ -318,7 +259,7 @@ class DeploymentFailureAnalysisServiceTest {
         DeploymentFailureAnalysisResult result = service.getAnalysis(1L, 51L);
 
         assertThat(result.summary()).isEqualTo("저장된 요약");
-        verifyNoInteractions(githubActionsPort, llmRouter, buildFailureAnalyzer);
+        verifyNoInteractions(githubActionsPort, buildFailureAnalyzer);
     }
 
     @Test
@@ -333,13 +274,10 @@ class DeploymentFailureAnalysisServiceTest {
     // ── F1: in-flight lock ───────────────────────────────────────────────────
 
     @Test
-    void concurrentAnalyzeCallsForTheSameHistoryOnlyInvokeTheLlmOnce() throws Exception {
+    void concurrentAnalyzeCallsForTheSameHistoryOnlyFetchGithubLogsOnce() throws Exception {
         stubOwnedHistory(failedHistoryWithRunId());
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
-        when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
-                new GithubActionsPort.DeploymentLogs(901L, List.of(), "some log")
-        );
-        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
+        stubRuleBasedAnalysis();
 
         // Stateful fake instead of a one-shot stub: the whole point is to prove the *second*
         // caller sees the *first* caller's saved row via the double-checked cache, so
@@ -352,31 +290,31 @@ class DeploymentFailureAnalysisServiceTest {
             return saved;
         });
 
-        AtomicInteger llmCallCount = new AtomicInteger();
-        CountDownLatch llmEntered = new CountDownLatch(1);
-        CountDownLatch releaseLlm = new CountDownLatch(1);
-        when(llmPort.complete(any(), anyList(), any())).thenAnswer(invocation -> {
-            llmCallCount.incrementAndGet();
-            llmEntered.countDown();
-            assertThat(releaseLlm.await(5, TimeUnit.SECONDS)).isTrue();
-            return "{\"summary\": \"동시성 테스트 요약\", \"suggestedFix\": \"수정안\"}";
+        AtomicInteger logFetchCount = new AtomicInteger();
+        CountDownLatch logFetchEntered = new CountDownLatch(1);
+        CountDownLatch releaseLogFetch = new CountDownLatch(1);
+        when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenAnswer(invocation -> {
+            logFetchCount.incrementAndGet();
+            logFetchEntered.countDown();
+            assertThat(releaseLogFetch.await(5, TimeUnit.SECONDS)).isTrue();
+            return new GithubActionsPort.DeploymentLogs(901L, List.of(), "some log");
         });
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             Future<DeploymentFailureAnalysisResult> first = pool.submit(() -> service.analyze(1L, 51L));
-            // Deterministically wait until the first call is inside the (mocked) LLM call —
+            // Deterministically wait until the first call is inside the (mocked) log fetch —
             // i.e. holding the per-history lock — before starting the second, so the second is
             // guaranteed to hit the lock-wait + double-check path rather than racing in by luck.
-            assertThat(llmEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(logFetchEntered.await(5, TimeUnit.SECONDS)).isTrue();
             Future<DeploymentFailureAnalysisResult> second = pool.submit(() -> service.analyze(1L, 51L));
             Thread.sleep(200); // let the second call physically reach the blocked lock
-            releaseLlm.countDown();
+            releaseLogFetch.countDown();
 
             DeploymentFailureAnalysisResult firstResult = first.get(5, TimeUnit.SECONDS);
             DeploymentFailureAnalysisResult secondResult = second.get(5, TimeUnit.SECONDS);
 
-            assertThat(llmCallCount.get()).isEqualTo(1);
+            assertThat(logFetchCount.get()).isEqualTo(1);
             assertThat(secondResult.summary()).isEqualTo(firstResult.summary());
         } finally {
             pool.shutdownNow();
@@ -392,8 +330,7 @@ class DeploymentFailureAnalysisServiceTest {
     private static final String FAKE_AWS_KEY_ID = "AKIA" + "ABCDEFGHIJKLMNOP";
 
     @Test
-    @SuppressWarnings("unchecked")
-    void secretsInLogsAreRedactedBeforeStorageAndBeforeReachingTheLlm() {
+    void secretsInLogsAreRedactedBeforeStorageAndBeforeReachingTheAnalyzer() {
         stubOwnedHistory(failedHistoryWithRunId());
         when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
@@ -408,13 +345,9 @@ class DeploymentFailureAnalysisServiceTest {
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
                 new GithubActionsPort.DeploymentLogs(901L, List.of(), secretLaden)
         );
-        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
-        ArgumentCaptor<List<LlmMessage>> messagesCaptor = ArgumentCaptor.forClass(List.class);
-        when(llmPort.complete(any(), messagesCaptor.capture(), any())).thenReturn(
-                "{\"summary\": \"실패\", \"suggestedFix\": \"수정\"}"
-        );
-        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
-                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
+        ArgumentCaptor<String> analyzedInput = ArgumentCaptor.forClass(String.class);
+        when(buildFailureAnalyzer.analyze(analyzedInput.capture())).thenReturn(ruleBasedAnalysis());
+        stubSaveEchoesWithId();
 
         DeploymentFailureAnalysisResult result = service.analyze(1L, 51L);
 
@@ -426,8 +359,7 @@ class DeploymentFailureAnalysisServiceTest {
                 .doesNotContain("Bearer abcdef1234567890zzzz")
                 .contains("***REDACTED***");
 
-        String sentToLlm = messagesCaptor.getValue().get(0).content();
-        assertThat(sentToLlm)
+        assertThat(analyzedInput.getValue())
                 .doesNotContain(FAKE_GITHUB_TOKEN)
                 .contains("***REDACTED***");
     }
@@ -446,50 +378,31 @@ class DeploymentFailureAnalysisServiceTest {
         when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
         when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L))
                 .thenThrow(new RuntimeException("GitHub API rate limit exceeded"));
-        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList(), any())).thenReturn(
-                "{\"summary\": \"요약\", \"suggestedFix\": \"수정\"}"
-        );
-        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
-                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
+        stubRuleBasedAnalysis();
+        stubSaveEchoesWithId();
 
         DeploymentFailureAnalysisResult result = service.analyze(1L, 51L);
 
         assertThat(result.logExcerpt()).contains("이전 실행 오류 메시지");
-        assertThat(result.analysisSource()).isEqualTo("LLM");
-    }
-
-    // ── F4: LLM timeout falls back to rule-based ─────────────────────────────
-
-    @Test
-    void analyzeFallsBackToRuleBasedWhenLlmCallExceedsTheTimeout() {
-        service.setLlmTimeoutSecondsForTesting(1);
-        stubOwnedHistory(failedHistoryWithRunId());
-        when(analysisRepository.findByHistoryId(51L)).thenReturn(Optional.empty());
-        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
-        when(githubActionsPort.getJobLogs("user-token", "octo/repo", 901L)).thenReturn(
-                new GithubActionsPort.DeploymentLogs(901L, List.of(), "some log")
-        );
-        when(llmRouter.route(aiProperties.failureAnalysisProvider())).thenReturn(llmPort);
-        when(llmPort.complete(any(), anyList(), any())).thenAnswer(invocation -> {
-            // Sleeps far longer than the 1-second test timeout above; orTimeout must win the
-            // race and hand control to the rule-based fallback rather than waiting on this.
-            Thread.sleep(3000);
-            return "{\"summary\": \"너무 늦은 응답\", \"suggestedFix\": \"무시되어야 함\"}";
-        });
-        when(buildFailureAnalyzer.analyze(any())).thenReturn(new BuildFailureAnalyzer.Analysis(
-                "타임아웃으로 인한 룰 기반 요약", "some log", "타임아웃 후 제안"
-        ));
-        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
-                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
-
-        DeploymentFailureAnalysisResult result = service.analyze(1L, 51L);
-
         assertThat(result.analysisSource()).isEqualTo("RULE_BASED");
-        assertThat(result.summary()).isEqualTo("타임아웃으로 인한 룰 기반 요약");
     }
 
     // ── fixtures ─────────────────────────────────────────────────────────────
+
+    private static BuildFailureAnalyzer.Analysis ruleBasedAnalysis() {
+        return new BuildFailureAnalyzer.Analysis(
+                "빌드에 필요한 모듈을 찾지 못했습니다.", "cannot find module 'react'", "dependency를 다시 설치하세요."
+        );
+    }
+
+    private void stubRuleBasedAnalysis() {
+        when(buildFailureAnalyzer.analyze(any())).thenReturn(ruleBasedAnalysis());
+    }
+
+    private void stubSaveEchoesWithId() {
+        when(analysisRepository.save(any(DeploymentFailureAnalysis.class)))
+                .thenAnswer(invocation -> withId(invocation.getArgument(0), 1L));
+    }
 
     private void stubOwnedHistory(DeploymentHistory history) {
         when(deploymentHistoryRepository.findById(51L)).thenReturn(Optional.of(history));

@@ -5,6 +5,7 @@ import com.example.dvely.agent.application.exception.AgentIterationLimitExceptio
 import com.example.dvely.agent.application.exception.AgentTokenBudgetExceededException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
 import com.example.dvely.agent.application.port.out.LlmToolPort;
+import com.example.dvely.agent.infrastructure.llm.LlmToolRouter;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
 import com.example.dvely.agent.application.port.out.ToolCall;
 import com.example.dvely.agent.application.port.out.ToolDefinition;
@@ -13,9 +14,6 @@ import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.codingagent.CodingAgentWorkspaceBridge;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
-import com.example.dvely.agent.infrastructure.llm.ClaudeToolClient;
-import com.example.dvely.agent.infrastructure.llm.GlmToolClient;
-import com.example.dvely.agent.infrastructure.llm.OpenAiToolClient;
 import com.example.dvely.common.exception.LlmProviderException;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewRuntimeLauncher;
@@ -64,9 +62,7 @@ public class CodeAgentService {
     // How many recent tool calls to keep as the failure's log excerpt when the round budget runs out.
     private static final int PROGRESS_TRACE_TAIL = 12;
 
-    private final ClaudeToolClient        claudeToolClient;
-    private final OpenAiToolClient        openAiToolClient;
-    private final GlmToolClient           glmToolClient;
+    private final LlmToolRouter           llmToolRouter;
     private final DockerContainerService  dockerService;
     private final PreviewSessionService   previewSessionService;
     private final PreviewRuntimeLauncher   previewRuntimeLauncher;
@@ -210,11 +206,12 @@ public class CodeAgentService {
             // OpenAI-shaped tool_calls, so the transcript built here is identical down to the
             // message keys. A second copy would only be a copy that has to stay in step.
             String summary = switch (provider) {
-                case ANTHROPIC -> runClaudeLoop(instruction, containerId, modelOptions);
+                case ANTHROPIC -> runClaudeLoop(
+                        llmToolRouter.route(provider, userId), instruction, containerId, modelOptions);
                 case OPENAI -> runOpenAiCompatibleLoop(
-                        openAiToolClient, "OpenAI", instruction, containerId, modelOptions);
+                        llmToolRouter.route(provider, userId), "OpenAI", instruction, containerId, modelOptions);
                 case GLM -> runOpenAiCompatibleLoop(
-                        glmToolClient, "GLM", instruction, containerId, modelOptions);
+                        llmToolRouter.route(provider, userId), "GLM", instruction, containerId, modelOptions);
                 // A coding agent does not share this loop: it brings its own container and edits a
                 // bind-mounted host checkout, while everything here drives tools inside the running
                 // preview container. The bridge carries the project across and back, so the rest of
@@ -345,7 +342,10 @@ public class CodeAgentService {
     public record CodeResult(String previewUrl, String summary) {}
 
     // ── Claude 루프 ──────────────────────────────────────────────────────────
-    private String runClaudeLoop(String instruction, String containerId, AiModelOptions modelOptions) {
+    private String runClaudeLoop(LlmToolPort toolClient,
+                                 String instruction,
+                                 String containerId,
+                                 AiModelOptions modelOptions) {
         int maxIterations = maxIterations();
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", instruction));
@@ -353,7 +353,7 @@ public class CodeAgentService {
 
         for (int i = 0; i < maxIterations; i++) {
             log.info("[CodeAgent/Claude] LLM 호출 (round {}/{})", i + 1, maxIterations);
-            LlmToolResponse response = claudeToolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS, modelOptions);
+            LlmToolResponse response = toolClient.completeWithTools(SYSTEM_PROMPT, messages, TOOLS, modelOptions);
 
             messages.add(Map.of("role", "assistant", "content", response.contentBlocks()));
 

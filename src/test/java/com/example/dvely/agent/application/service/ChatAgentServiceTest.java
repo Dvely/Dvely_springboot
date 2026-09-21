@@ -28,6 +28,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 @ExtendWith(MockitoExtension.class)
 class ChatAgentServiceTest {
 
+    // The task owner: ChatAgentService takes the caller's id from the stored task, so the router
+    // stub below only matches when that id is carried through unchanged.
+    private static final Long USER_ID = 1L;
+
     @Mock
     private LlmRouter llmRouter;
 
@@ -50,7 +54,7 @@ class ChatAgentServiceTest {
         ChatAgentService service = new ChatAgentService(llmRouter, agentMessageService, taskStore);
         AgentStep step = new AgentStep(AgentType.CHAT, Map.of("instruction", "휴지통 보관 정책을 알려줘"));
         AgentTask task = new AgentTask(
-                "task-1", 1L, 11L, 21L, TaskStatus.RUNNING, null, null, null, null, Instant.now()
+                "task-1", USER_ID, 11L, 21L, TaskStatus.RUNNING, null, null, null, null, Instant.now()
         );
         List<LlmMessage> history = List.of(
                 new LlmMessage("user", "휴지통 정책이 뭐야?"),
@@ -58,7 +62,7 @@ class ChatAgentServiceTest {
         );
         when(taskStore.get("task-1")).thenReturn(task);
         when(agentMessageService.getConversationContext(21L)).thenReturn(history);
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
+        when(llmRouter.route(AiProvider.ANTHROPIC, USER_ID)).thenReturn(llmPort);
         when(llmPort.complete(any(), anyList(), any())).thenReturn("휴지통 보관 기간은 7일입니다.");
 
         var result = service.execute(step, AiProvider.ANTHROPIC, "task-1");
@@ -82,7 +86,7 @@ class ChatAgentServiceTest {
         ChatAgentService service = new ChatAgentService(llmRouter, agentMessageService, taskStore);
         AgentStep step = new AgentStep(AgentType.CHAT, Map.of("instruction", "휴지통 보관 정책을 알려줘"));
         AgentTask task = new AgentTask(
-                "task-2", 1L, 11L, 21L, TaskStatus.RUNNING, null, null, null, null, Instant.now()
+                "task-2", USER_ID, 11L, 21L, TaskStatus.RUNNING, null, null, null, null, Instant.now()
         );
         LlmMessage earlierUser = new LlmMessage("user", "이 프로젝트는 뭐하는 앱이야?");
         LlmMessage earlierAssistant = new LlmMessage("assistant", "할 일 관리 앱입니다.");
@@ -94,7 +98,7 @@ class ChatAgentServiceTest {
         );
         when(taskStore.get("task-2")).thenReturn(task);
         when(agentMessageService.getConversationContext(21L)).thenReturn(history);
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
+        when(llmRouter.route(AiProvider.ANTHROPIC, USER_ID)).thenReturn(llmPort);
         when(llmPort.complete(any(), anyList(), any())).thenReturn("휴지통 보관 기간은 7일입니다.");
 
         service.execute(step, AiProvider.ANTHROPIC, "task-2");
@@ -114,10 +118,10 @@ class ChatAgentServiceTest {
         ChatAgentService service = new ChatAgentService(llmRouter, agentMessageService, taskStore);
         AgentStep step = new AgentStep(AgentType.CHAT, Map.of("instruction", "안녕 잘 지내?"));
         AgentTask task = new AgentTask(
-                "task-2", 1L, null, null, TaskStatus.RUNNING, null, null, null, null, Instant.now()
+                "task-2", USER_ID, null, null, TaskStatus.RUNNING, null, null, null, null, Instant.now()
         );
         when(taskStore.get("task-2")).thenReturn(task);
-        when(llmRouter.route(AiProvider.OPENAI)).thenReturn(llmPort);
+        when(llmRouter.route(AiProvider.OPENAI, USER_ID)).thenReturn(llmPort);
         when(llmPort.complete(any(), anyList(), any())).thenReturn("네, 잘 지내고 있어요!");
 
         var result = service.execute(step, AiProvider.OPENAI, "task-2");
@@ -138,10 +142,10 @@ class ChatAgentServiceTest {
         ChatAgentService service = new ChatAgentService(llmRouter, agentMessageService, taskStore);
         AgentStep step = new AgentStep(AgentType.CHAT, Map.of("instruction", "질문"));
         AgentTask task = new AgentTask(
-                "task-3", 1L, null, null, TaskStatus.RUNNING, null, null, null, null, Instant.now()
+                "task-3", USER_ID, null, null, TaskStatus.RUNNING, null, null, null, null, Instant.now()
         );
         when(taskStore.get("task-3")).thenReturn(task);
-        when(llmRouter.route(AiProvider.ANTHROPIC)).thenReturn(llmPort);
+        when(llmRouter.route(AiProvider.ANTHROPIC, USER_ID)).thenReturn(llmPort);
         when(llmPort.complete(any(), anyList(), any())).thenThrow(new IllegalStateException("Claude API 응답이 비어있습니다"));
 
         org.junit.jupiter.api.Assertions.assertThrows(

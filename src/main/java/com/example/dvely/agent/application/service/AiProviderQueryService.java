@@ -28,11 +28,18 @@ public class AiProviderQueryService {
             AiProvider provider, String defaultModel, List<String> models, List<String> thinkingModels) {}
 
     public List<ProviderView> availableProviders(Long userId) {
+        if (userId == null) {
+            return List.of();
+        }
+        Set<String> registered = credentialQueryService.list(userId).stream()
+                .map(AiProviderCredentialResult::provider)
+                .collect(Collectors.toSet());
+
         List<ProviderView> views = new ArrayList<>();
-        addIfConfigured(views, AiProvider.ANTHROPIC, aiProperties.getAnthropic());
-        addIfConfigured(views, AiProvider.OPENAI, aiProperties.getOpenai());
-        addIfConfigured(views, AiProvider.GLM, aiProperties.getGlm());
-        addCodingAgents(views, userId);
+        addIfRegistered(views, AiProvider.ANTHROPIC, aiProperties.getAnthropic(), registered);
+        addIfRegistered(views, AiProvider.OPENAI, aiProperties.getOpenai(), registered);
+        addIfRegistered(views, AiProvider.GLM, aiProperties.getGlm(), registered);
+        addCodingAgents(views, registered);
         return views;
     }
 
@@ -47,14 +54,7 @@ public class AiProviderQueryService {
      * list is the honest answer — a placeholder would invite a UI to render a chooser that changes
      * nothing.</p>
      */
-    private void addCodingAgents(List<ProviderView> out, Long userId) {
-        if (userId == null) {
-            return;
-        }
-        Set<String> registered = credentialQueryService.list(userId).stream()
-                .map(AiProviderCredentialResult::provider)
-                .collect(Collectors.toSet());
-
+    private void addCodingAgents(List<ProviderView> out, Set<String> registered) {
         for (AiProvider agent : List.of(AiProvider.CLAUDE_CODE, AiProvider.CODEX)) {
             if (registered.contains(agent.credentialVendor().name())) {
                 out.add(new ProviderView(agent, null, List.of(), List.of()));
@@ -62,8 +62,19 @@ public class AiProviderQueryService {
         }
     }
 
-    private void addIfConfigured(List<ProviderView> out, AiProvider provider, AiProperties.Provider config) {
-        if (config.getApiKey() == null || config.getApiKey().isBlank()) {
+    /**
+     * A vendor is offered when <b>the caller has registered its key</b>, never because the
+     * deployment configured one — it no longer configures any (#364).
+     *
+     * <p>The model lists still come from configuration: which models may be named and which of them
+     * think is a catalogue the deployment curates, and it is not a secret. Only whose key pays
+     * moved to the user.</p>
+     */
+    private void addIfRegistered(List<ProviderView> out,
+                                 AiProvider provider,
+                                 AiProperties.Provider config,
+                                 Set<String> registered) {
+        if (!registered.contains(provider.name())) {
             return;
         }
         out.add(new ProviderView(provider, config.getModel(), models(config), config.getThinkingModels()));

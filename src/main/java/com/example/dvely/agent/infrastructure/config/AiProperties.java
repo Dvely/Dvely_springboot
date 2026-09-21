@@ -16,7 +16,6 @@ public class AiProperties {
     private Glm glm = new Glm();
     private Retry retry = new Retry();
     private CodeAgent codeAgent = new CodeAgent();
-    private FailureAnalysis failureAnalysis = new FailureAnalysis();
 
     /**
      * 도구를 쓰지 않는 한 번짜리 완성 호출의 출력 상한(Anthropic {@code max_tokens}).
@@ -31,23 +30,19 @@ public class AiProperties {
     private int completionMaxTokens = 4096;
 
     /**
-     * 요청이 제공자를 지정하지 않을 때 쓰는 기본 제공자. 배포가 유효한 키를 가진 것으로 맞춘다 —
-     * 하드코딩된 기본이 크레딧 없는 제공자를 가리키면 지정 안 한 모든 요청이 실패한다(그 문제로
-     * ANTHROPIC 고정을 걷어냄). 기본은 GLM(OpenRouter 경유) 이다.
-     */
-    private AiProvider defaultProvider = AiProvider.GLM;
-
-    /**
      * Settings shared by every provider. Clients may now ask for a specific model and for extended
      * thinking, so each provider needs to declare what it will actually accept — an unrestricted
      * model parameter would let a request name any model at all, including ones that do not exist
-     * or cost far more per call than the deployment budgeted for.
+     * or cost far more per call than the caller expects to be billed for.
+     *
+     * <p>No {@code apiKey} here, deliberately. The deployment holds no vendor key: every call is
+     * signed with the calling user's own credential, looked up by
+     * {@code UserAiKeyResolver} (#364). What is left is a catalogue — which models may be named,
+     * which of them think — and that is not a secret.</p>
      */
     @Getter
     @Setter
     public abstract static class Provider {
-
-        private String apiKey;
 
         /** Model used when a request does not name one. Always accepted, whatever the lists say. */
         private String model;
@@ -208,42 +203,6 @@ public class AiProperties {
          * ({@link com.example.dvely.agent.application.exception.AgentTokenBudgetExceededException}).</p>
          */
         private long maxTaskTokens = 1_000_000;
-    }
-
-    /**
-     * 배포 실패 로그 요약 전용 설정.
-     *
-     * <p>이 호출은 제공자가 {@code ANTHROPIC} 으로, 모델이 그 제공자의 기본값(최상위 모델)로
-     * 하드코딩돼 있었다. {@link #defaultProvider} 는 GLM 인데 이 한 경로만 그것을 무시했고,
-     * 12,000자 로그를 한 번 요약하는 데 최상위 모델을 쓸 근거도 없었다.</p>
-     *
-     * <p>다만 <b>품질이 떨어지면 실패 분석 자체가 쓸모없어진다.</b> 그래서 코드에 새 값을 박는
-     * 대신 설정으로 뺐다 — 분석이 나빠지면 {@code provider: ANTHROPIC} 과 그 모델명을 도로 적어
-     * 배포만으로 되돌릴 수 있다.</p>
-     */
-    @Getter
-    @Setter
-    public static class FailureAnalysis {
-
-        /** 비우면 {@link AiProperties#defaultProvider} 를 따른다. */
-        private AiProvider provider;
-
-        /** 비우면 제공자의 기본 모델을 쓴다. */
-        private String model = "";
-
-        public AiProvider providerOr(AiProvider fallback) {
-            return provider == null ? fallback : provider;
-        }
-
-        /** {@code AiModelOptions.model} 에 그대로 들어간다 — null 이면 제공자 기본 모델이 선택된다. */
-        public String modelOrNull() {
-            return model == null || model.isBlank() ? null : model.trim();
-        }
-    }
-
-    /** 실패 분석이 실제로 쓸 제공자. 전용 설정이 없으면 배포의 기본 제공자를 따른다. */
-    public AiProvider failureAnalysisProvider() {
-        return failureAnalysis.providerOr(defaultProvider);
     }
 
     /** 제공자별 설정 블록. 코딩 에이전트는 자체 설정이 없으므로 조용히 돌려주지 않고 던진다. */

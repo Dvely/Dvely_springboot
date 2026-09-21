@@ -2,7 +2,6 @@ package com.example.dvely.chat.application.command;
 
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.domain.value.AiProvider;
-import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.chat.application.result.ConversationResult;
 import com.example.dvely.chat.application.result.MessageResult;
 import com.example.dvely.chat.domain.exception.ConversationNotFoundException;
@@ -32,7 +31,6 @@ public class ChatCommandService {
     private final ProjectRepository projectRepository;
     private final AgentOrchestrator agentOrchestrator;
     private final AsyncDecisionRunner asyncDecisionRunner;
-    private final AiProperties aiProperties;
 
     @Transactional
     public ConversationResult createConversation(Long userId, Long projectId) {
@@ -104,7 +102,13 @@ public class ChatCommandService {
     public MessageResult sendMessage(Long userId, Long conversationId, String content, AiProvider requestedProvider) {
         Conversation conversation = conversationRepository.findByIdAndUserIdAndDeletedFalse(conversationId, userId)
                 .orElseThrow(() -> new ConversationNotFoundException(conversationId, userId));
-        AiProvider provider = requestedProvider != null ? requestedProvider : aiProperties.getDefaultProvider();
+        // 예전에는 여기서 서버 기본 제공자로 떨어졌다. 그 한 줄이 "제공자를 안 적은 요청은 운영자
+        // 키로 실행된다"는 뜻이었고, 공개 운영에서는 로그인한 누구나 운영자 계정에 과금할 수 있는
+        // 경로였다(#364). 이제 누구의 키로 돌지 모르는 요청은 실행하지 않는다.
+        if (requestedProvider == null) {
+            throw new IllegalArgumentException(
+                    "aiProvider 는 필수입니다. 본인 키가 등록된 제공자를 지정해주세요.");
+        }
 
         // Decision(LLM 호출)은 오래 걸린다. 요청 스레드에서 기다리면 FE 가 타임아웃(Network Error)
         // 나므로, PENDING 태스크를 열어 taskId 만 먼저 응답하고 Decision→제출은 백그라운드로 넘긴다.
@@ -124,7 +128,7 @@ public class ChatCommandService {
             conversationRepository.save(conversation);
         }
 
-        dispatchDecisionAfterCommit(taskId, userId, conversationId, projectId, provider);
+        dispatchDecisionAfterCommit(taskId, userId, conversationId, projectId, requestedProvider);
         return toMessageResult(message, taskId);
     }
 
