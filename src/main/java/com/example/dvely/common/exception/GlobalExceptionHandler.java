@@ -107,6 +107,13 @@ public class GlobalExceptionHandler {
     }
 
     // 403 - GitHub App 이 저장소에 접근 권한 없음 (App 설정에서 저장소 접근 허용 필요)
+    @ExceptionHandler(GithubAppNotInstalledException.class)
+    public ResponseEntity<ApiResponse<Void>> handleGithubAppNotInstalled(GithubAppNotInstalledException e) {
+        log.warn("GitHub App 미설치: {}", e.getMessage());
+        return ResponseEntity.status(ErrorCode.GITHUB_APP_NOT_INSTALLED.getStatus())
+                .body(ApiResponse.error(ErrorCode.GITHUB_APP_NOT_INSTALLED, e.getMessage()));
+    }
+
     @ExceptionHandler(GithubRepositoryAccessDeniedException.class)
     public ResponseEntity<ApiResponse<Void>> handleGithubRepoAccessDenied(GithubRepositoryAccessDeniedException e) {
         log.warn("GitHub repository access denied: {}", e.getMessage());

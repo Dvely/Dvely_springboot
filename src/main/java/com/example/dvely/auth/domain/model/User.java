@@ -76,6 +76,12 @@ public class User {
      * 이 비운 뒤) 180일 수명이 지난 경우.
      */
     public boolean needsGithubAppReauthorization() {
+        // 설치부터 안 한 사용자는 "재인증" 이 아니라 "설치" 가 필요하다. 여기서 true 를 주면
+        // 화면이 재인증 다이얼로그를 띄우고, 그 버튼이 부르는 경로는 설치를 전제하므로 403 만
+        // 돌려준다 — 눌러도 같은 자리로 돌아오는 고리가 된다(#367, 운영에서 7회 반복 관측).
+        if (!hasGithubAppInstalled()) {
+            return false;
+        }
         if (githubUserRefreshToken == null) {
             return true;
         }
