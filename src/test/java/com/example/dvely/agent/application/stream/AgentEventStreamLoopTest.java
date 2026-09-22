@@ -47,7 +47,7 @@ class AgentEventStreamLoopTest {
                 null, null, null, null, Instant.now()));
         eventBus = new AgentEventBus();
         executor = new AsyncConfig().agentEventExecutor(1);
-        streamService = new AgentEventStreamService(taskStore, eventBus, executor);
+        streamService = new AgentEventStreamService(taskStore, eventBus, executor, 15_000L);
     }
 
     @AfterEach

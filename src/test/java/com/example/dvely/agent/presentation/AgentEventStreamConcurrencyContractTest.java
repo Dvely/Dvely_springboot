@@ -90,7 +90,7 @@ class AgentEventStreamConcurrencyContractTest {
         eventBus = new AgentEventBus();
         executor = new AsyncConfig().agentEventExecutor(50);
         AgentEventStreamService streamService =
-                new AgentEventStreamService(taskStore, eventBus, executor);
+                new AgentEventStreamService(taskStore, eventBus, executor, 15_000L);
 
         mockMvc = MockMvcBuilders.standaloneSetup(new AgentController(
                         mock(AgentFacade.class),

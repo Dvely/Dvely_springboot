@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpMethod;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Regression coverage for {@link GlobalExceptionHandler}.
@@ -40,7 +42,8 @@ class GlobalExceptionHandlerTest {
         // the exception -> HTTP status mapping.
         mockMvc = MockMvcBuilders.standaloneSetup(
                         new PathVariableController(), new QueryParamController(),
-                        new ConcurrentDeleteController(), new ConflictController())
+                        new ConcurrentDeleteController(), new ConflictController(),
+                        new MissingPathController())
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -53,6 +56,17 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.code").value("BAD_REQUEST"))
                 .andExpect(jsonPath("$.message").value("'projectId' 파라미터의 값 'abc'이(가) 올바른 형식(Long)이 아닙니다"));
+    }
+
+    @Test
+    void 매핑되지_않은_경로는_500_이_아니라_404_다() throws Exception {
+        // #372: 핸들러가 없으면 catch-all Exception 핸들러가 삼켜 500 이 나갔다. 미인증 요청은
+        // 시큐리티가 먼저 401 을 내서 안 드러나고, 인증된 호출에서만 드러난다 — 그래서 오래
+        // 남아 있었고 실제로 사람을 오도했다(클라이언트 경로 오타를 서버 장애로 읽었다).
+        mockMvc.perform(get("/contract/missing"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.code").value("NOT_FOUND"));
     }
 
     @Test
@@ -139,6 +153,21 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/contract/conflict")
         Long conflict() {
             throw new IllegalStateException("이미 처리된 상태입니다");
+        }
+    }
+
+    /**
+     * 실제로는 {@code ResourceHttpRequestHandler} 가 던지는 예외다. standalone MockMvc 에는 정적
+     * 리소스 핸들러가 없어 같은 경로로 재현할 수 없으므로, 같은 예외를 던져 advice 가 그것을
+     * 가로채는지를 본다 — 이 버그의 본질이 "catch-all 에 먹혔다" 였으므로 확인할 것도 그것이다.
+     */
+    @RestController
+    private static class MissingPathController {
+
+        @GetMapping("/contract/missing")
+        Long missing() throws NoResourceFoundException {
+            throw new NoResourceFoundException(
+                    HttpMethod.GET, "api/v1/agent/ai-credentials", "No static resource.");
         }
     }
 }

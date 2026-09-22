@@ -284,6 +284,13 @@ qeploy:
     # 남긴다 — 이력 조회는 계속 동작한다. 0 이하로 두지 말 것(그러면 방금 끝난 태스크를 지운다).
     retention-days: ${QEPLOY_AGENT_RETENTION_DAYS:90}
     retention-sweep-interval-ms: ${QEPLOY_AGENT_RETENTION_SWEEP_INTERVAL_MS:3600000}
+    # SSE 스트림의 유휴 하트비트(#370). 보낼 이벤트가 없어도 이 주기로 주석 프레임을 써서
+    # 응답이 계속 흐르게 한다. 없으면 "보낼 이벤트가 없는 재연결"이 5분 상한이 찰 때까지 단
+    # 1바이트도 안 써서, 중간 프록시가 업스트림이 응답 헤더를 안 준다고 보고 끊는다(운영에서
+    # nginx 가 60초에 504 를 냈다). nginx proxy_read_timeout(3600초)과 Cloudflare 의 오리진
+    # 응답 대기(약 100초) 모두보다 충분히 짧아야 한다.
+    stream:
+      heartbeat-interval-ms: ${QEPLOY_AGENT_STREAM_HEARTBEAT_INTERVAL_MS:15000}
   deployment:
     worker:
       poll-interval-ms: ${QEPLOY_DEPLOYMENT_WORKER_POLL_INTERVAL_MS:1000}

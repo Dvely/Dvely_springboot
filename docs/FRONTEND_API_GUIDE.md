@@ -226,7 +226,11 @@ GET /api/v1/agent/tasks/{taskId}/events?afterEventId={마지막으로 받은 ID}
 GET /api/v1/agent/tasks/{taskId}/events/stream?afterEventId=0
 Accept: text/event-stream
 ```
-서버가 1초 간격으로 DB의 신규 이벤트를 push합니다(`event: {type}`, `id: {eventId}`, `data: {AgentTaskEventResponse JSON}`). 상태가 `DONE`/`CANCELLED`가 되면 서버가 스트림을 자동 종료합니다(스트림 자체의 상한은 5분). `@RawApiResponse`이므로 envelope로 감싸지지 않습니다. taskId가 없거나 소유자가 아니면 404입니다.
+서버가 1초 간격으로 DB의 신규 이벤트를 push합니다(`event: {type}`, `id: {eventId}`, `data: {AgentTaskEventResponse JSON}`). 상태가 `DONE`/`CANCELLED`가 되면 서버가 스트림을 자동 종료합니다(스트림 자체의 상한은 5분).
+
+**주석 프레임(하트비트)**: 스트림을 열자마자 `:hb\n\n` 한 줄이 먼저 나가고, 이후 보낼 이벤트가 없으면 15초마다 같은 줄이 반복됩니다(`QEPLOY_AGENT_STREAM_HEARTBEAT_INTERVAL_MS`). `data:` 줄이 없으므로 **이벤트가 아니며 무시하면 됩니다** — 표준 SSE 주석입니다.
+
+이것이 필요한 이유: `afterEventId`가 이미 최신 커서인 재연결은 보낼 이벤트가 없어 서버가 아무것도 쓰지 않습니다. 그러면 **응답 헤더조차 나가지 않아** 중간 프록시가 "업스트림이 응답을 안 준다"고 보고 스스로 끊습니다 — 운영에서 nginx가 60초마다 504를 냈고 클라이언트가 폴링으로 강등됐습니다(#370). 여는 즉시 쓰는 첫 프레임이 응답 헤더를 내보냅니다. `@RawApiResponse`이므로 envelope로 감싸지지 않습니다. taskId가 없거나 소유자가 아니면 404입니다.
 
 ### 3.7 Secret 마스킹
 
