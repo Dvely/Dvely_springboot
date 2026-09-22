@@ -147,6 +147,10 @@ public class ResultApprovalGate {
                 ApprovalType.RESULT,
                 "[결과 반영] " + resultSummary
         ));
+        // 승인 대상 작업물(preview 브랜치 커밋)이 이 컨테이너 안에만 있으므로, 사람이 답할
+        // 시간만큼 세션을 붙들어 둔다. 이것이 없으면 프리뷰를 열지 않는 사용자에게는 TTL 이
+        // 갱신되지 않아 30분에 회수되고, 승인을 눌러도 반영할 것이 남지 않는다(#376).
+        previewSessionService.holdForApproval(taskId);
         log.info("[ResultApprovalGate] 결과 승인 게이트 발동 | taskId={} approvalId={} projectId={}",
                 taskId, approval.getId(), projectId);
         agentMessageService.appendAssistant(
