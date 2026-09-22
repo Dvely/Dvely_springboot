@@ -14,6 +14,7 @@ import org.springframework.web.bind.MissingRequestHeaderException;
 import com.example.dvely.template.application.exception.TemplateCatalogUnavailableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @Slf4j
@@ -213,6 +214,21 @@ public class GlobalExceptionHandler {
         log.error("Preview environment unavailable: {}", e.getMessage(), e);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(ApiResponse.error(ErrorCode.PREVIEW_ENVIRONMENT_UNAVAILABLE, e.getMessage()));
+    }
+
+    // 404 - 매핑되지 않은 경로
+    // 이 핸들러가 없으면 아래 catch-all 이 삼켜 500 이 나간다. 미인증 요청은 시큐리티가 먼저
+    // 401 을 내서 안 드러나고, 인증된 호출에서만 오타 경로가 500 이 된다 — 그래서 오래 남아
+    // 있었고, 실제로 사람을 오도했다(#372: 클라이언트가 경로를 잘못 써서 받은 500 을 "서버가
+    // 터졌다"로 읽고 서버 로그를 뒤졌다). 404 였다면 "경로가 틀렸다"로 바로 읽혔을 것이다.
+    //
+    // 스택을 error 로 남기지 않는 것도 의도다. 클라이언트 오타는 서버 결함이 아니므로 로그에
+    // 스택을 쌓을 이유가 없고, 쌓으면 진짜 500 이 묻힌다.
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNoResource(NoResourceFoundException e) {
+        log.warn("No handler for path: {}", e.getResourcePath());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ApiResponse.error(ErrorCode.NOT_FOUND));
     }
 
     // 500 - 예상치 못한 오류
