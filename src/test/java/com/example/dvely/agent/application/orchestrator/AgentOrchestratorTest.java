@@ -35,6 +35,8 @@ import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.model.ProjectApprovalPolicy;
 import com.example.dvely.project.domain.repository.ProjectApprovalPolicyRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -231,6 +233,39 @@ class AgentOrchestratorTest {
     }
 
     // ── Track Z (#56): resumeAfterResult — WAITING_RESULT_APPROVAL -> QUEUED resume gate ──────
+
+    @Test
+    void 계획_승인_대기는_프리뷰_회수_정리의_대상이_아니다() {
+        // #380 에서 가장 위험한 실수. WAITING_APPROVAL(계획 승인)은 CODE 실행 '전' 이라 프리뷰가
+        // 아예 없다. 상태 검사를 느슨하게 두면 "프리뷰가 없다" 는 조건에 모든 계획 승인이 걸려
+        // 즉시 취소된다 — 사용자가 승인 버튼을 누르기도 전에 작업이 사라진다.
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                messageService,
+                mock(InputWaitStore.class)
+        );
+        when(taskStore.lockTask("task-1")).thenReturn(new AgentTask(
+                "task-1", 1L, 11L, 21L, TaskStatus.WAITING_APPROVAL,
+                null, null, null, null, Instant.now()));
+        // 취소가 '성공할 수 있는' 상태로 만들어 둔다. 이렇게 해야 이 테스트가 통과할 때 그 이유가
+        // "상태 검사가 막았다" 하나로 좁혀진다 — 스텁을 비워 두면 cancelTaskCascade 가 false 를
+        // 돌려주는 바람에 상태 검사를 지워도 그대로 통과하는, 아무것도 증명하지 않는 테스트가 된다.
+        when(taskStore.cancel("task-1", 1L)).thenReturn(true);
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1")).thenReturn(List.of());
+
+        boolean closed = orchestrator.abandonApprovalTaskWithLostPreview("task-1", Duration.ofHours(6));
+
+        assertThat(closed).isFalse();
+        verify(taskStore, never()).cancel("task-1", 1L);
+        verifyNoInteractions(messageService);
+    }
 
     @Test
     void resumeAfterResultRequeuesAWaitingResultApprovalTask() {
