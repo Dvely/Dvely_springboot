@@ -87,7 +87,7 @@ class RepositoryBindingGateTest {
 
         gate.requestIfRequired(plan, 0, "task-1", 1L, 11L);
 
-        verify(previewSessionService).holdForBindingApproval("task-1");
+        verify(previewSessionService).holdForApproval("task-1");
     }
 
     @Test

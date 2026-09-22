@@ -26,7 +26,7 @@ public class PreviewProperties {
      * 붙들면 디스크가 찬다. 이 시간이 지나 회수되면 승인은
      * {@code ApprovalCommandService} 가 사용자에게 사유를 말하며 닫는다.</p>
      */
-    private Duration bindingApprovalHold = Duration.ofHours(6);
+    private Duration approvalHold = Duration.ofHours(6);
 
     /**
      * 게이트웨이가 소유권 쿠키를 요구할지 (Issue #77 G2).

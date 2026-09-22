@@ -159,7 +159,11 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
     }
 
     /**
-     * 저장소 연결 승인이 열린 태스크의 세션 만료를 뒤로 미룬다.
+     * 사람의 승인을 기다리는 태스크의 세션 만료를 뒤로 미룬다.
+     *
+     * <p>승인 종류를 가리지 않는다. 2026-09-22 까지는 저장소 연결 승인에만 걸려 있었는데,
+     * 결과 반영 승인에서 같은 사고가 그대로 재현됐다(#376: dev 에서 결과 승인 대기 진입
+     * 정확히 30분 뒤 세션이 EXPIRED). 잃는 것도 같다 — 둘 다 push 전 단계다.</p>
      *
      * <p>TTL 은 게이트웨이 접근마다 {@code touch} 로 갱신되는데, 승인 카드만 보고 결정하는
      * 사용자는 프리뷰를 한 번도 열지 않는다. 그러면 사람이 답하기를 기다리는 동안 아무도 세션을
@@ -170,16 +174,16 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
      * 갱신되고 있는 경우 그 갱신을 이 호출이 되돌리면 안 된다.</p>
      */
     @Transactional
-    public void holdForBindingApproval(String taskId) {
+    public void holdForApproval(String taskId) {
         repository.findByTaskIdAndStatus(taskId, PreviewSessionStatus.ACTIVE.name())
                 .ifPresent(session -> {
-                    LocalDateTime until = LocalDateTime.now().plus(properties.getBindingApprovalHold());
+                    LocalDateTime until = LocalDateTime.now().plus(properties.getApprovalHold());
                     if (!until.isAfter(session.getExpiresAt())) {
                         return;
                     }
                     session.touch(until);
                     repository.save(session);
-                    log.info("[PreviewSession] 저장소 연결 승인 대기로 만료 연장: taskId={} until={}", taskId, until);
+                    log.info("[PreviewSession] 승인 대기로 만료 연장: taskId={} until={}", taskId, until);
                 });
     }
 
@@ -386,7 +390,7 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
      * 접근이 있었으니 만료를 미룬다 — 단, <em>앞당기지는 않는다.</em>
      *
      * <p>예전에는 {@code nextExpiry()} 를 그대로 넣었다. 그러면 이미 걸려 있는 더 먼 만료가
-     * {@code now + ttl} 로 되돌아간다. {@link #holdForBindingApproval} 이 준 유예가 정확히 그
+     * {@code now + ttl} 로 되돌아간다. {@link #holdForApproval} 이 준 유예가 정확히 그
      * 피해자였다 — 게이트가 승인을 열며 유예를 걸어도, 바로 뒤에 FE 가 프리뷰를 자동으로 띄우면서
      * 게이트웨이 접근이 한 번 일어나 유예가 통째로 지워졌다. 유예는 프리뷰를 한 번도 열지 않았을
      * 때만 살아남는 셈이었다(2026-08-18 운영 실측: 유예 로그는 12:13:34 에 찍혔는데 만료는

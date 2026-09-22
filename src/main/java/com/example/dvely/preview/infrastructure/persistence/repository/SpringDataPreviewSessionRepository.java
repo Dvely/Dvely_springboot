@@ -62,7 +62,7 @@ public interface SpringDataPreviewSessionRepository extends JpaRepository<Previe
      * 하나만 조건에 맞고 나머지는 0 행으로 끝난다.</p>
      *
      * <p>{@code expiresAt} 은 호출부가 이미 정한 값을 그대로 받는다 — 유예({@code
-     * holdForBindingApproval})가 준 더 먼 만료를 앞당기지 않기 위한 비교는 호출부에 남는다.
+     * holdForApproval})가 준 더 먼 만료를 앞당기지 않기 위한 비교는 호출부에 남는다.
      * {@code updatedAt} 은 명시적으로 넣는다: 벌크 UPDATE 는 {@code @UpdateTimestamp} 를 거치지
      * 않으므로 안 넣으면 이 경로에서만 갱신 시각이 멈춘다.</p>
      */

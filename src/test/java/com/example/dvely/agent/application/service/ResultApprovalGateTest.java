@@ -120,6 +120,26 @@ class ResultApprovalGateTest {
     }
 
     @Test
+    void holdsThePreviewSessionSoItSurvivesTheWaitForAnAnswer() {
+        // 이 승인의 작업물(preview 브랜치 커밋)은 아직 GitHub 어디에도 없고 컨테이너 안에만 있다.
+        // 승인 카드만 보고 결정하는 사용자는 프리뷰를 열지 않으므로 TTL 을 갱신하는 접근이 한 번도
+        // 일어나지 않고, 기본 30분에 회수되면 승인해도 반영할 것이 남지 않는다.
+        //
+        // #376: 저장소 연결 승인에는 이 hold 가 2026-08-18 사고 뒤에 들어갔는데 결과 승인에는
+        // 없었고, 2026-09-22 dev 에서 그대로 재현됐다 — 결과 승인 대기 진입 정확히 30분 뒤
+        // preview_sessions 가 EXPIRED 가 됐다.
+        AgentPlan plan = codePlan();
+        stubBoundPolicyOnProject();
+        stubPreviewSessionAndUser();
+        when(taskStore.get("task-1")).thenReturn(task(TaskStatus.RUNNING, "preview-url", "FAQ 페이지 추가"));
+        when(approvalRepository.save(any(Approval.class))).thenReturn(approval(501L));
+
+        gate.requestIfRequired(plan, 0, "task-1", 1L, 11L);
+
+        verify(previewSessionService).holdForApproval("task-1");
+    }
+
+    @Test
     void approvalLabelUsesOnlyTheFirstLineOfAMultiParagraphCodeSummary() {
         // CODE 요약은 여러 문단짜리 마크다운 리포트다. 그대로 넣으면 승인창 라벨이 본문이 되고,
         // approvals.summary(VARCHAR 500)를 넘겨 insert 가 깨진다(2026-08-15 dev 실측 20회).

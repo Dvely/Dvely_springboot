@@ -403,7 +403,7 @@ class PreviewSessionServiceTest {
     // ── 저장소 연결 승인 유예 ──────────────────────────────────────────────────────────
 
     @Test
-    void bindingApprovalHoldPushesTheExpiryOut() {
+    void approvalHoldPushesTheExpiryOut() {
         SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
         PreviewSessionService service = new PreviewSessionService(
                 repository, mock(DockerContainerService.class), mock(TaskStore.class),
@@ -415,7 +415,7 @@ class PreviewSessionServiceTest {
         when(repository.save(any(PreviewSessionEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
-        service.holdForBindingApproval("task-1");
+        service.holdForApproval("task-1");
 
         assertThat(session.getExpiresAt()).isAfter(LocalDateTime.now().plusHours(5));
     }
