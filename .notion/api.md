@@ -597,7 +597,7 @@ Base path: `/api/v1/agent`
 | Method | Path | 기능 |
 |---|---|---|
 | GET | `/api/v1/agent/tasks/{taskId}/events` | event ID 기반 polling |
-| GET | `/api/v1/agent/tasks/{taskId}/events/stream` | 영속 이벤트 SSE |
+| GET | `/api/v1/agent/tasks/{taskId}/events/stream` | 영속 이벤트 SSE. 여는 즉시 주석 프레임 `:hb` 를 쓰고 유휴 시 15초마다 반복한다(#370 — 이것이 없으면 보낼 이벤트가 없는 재연결이 응답 헤더를 못 내보내 프록시에 끊긴다). `data:` 가 없으므로 이벤트가 아니다 |
 | POST | `/api/v1/agent/tasks/{taskId}/retry` | 실패 task 수동 재시도. `pendingApprovalId`가 non-null이면 항상 `409`(먼저 그 승인을 처리해야 함). `retryable:true`일 때만 호출할 것 |
 
 ### 9.3 실제 Agent 동작

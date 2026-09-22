@@ -77,6 +77,13 @@ class RetentionSweepTest {
 
     @Test
     void 배치_반복이_0_으로_수렴한다() {
+        // 이 스윕은 delivery_id 접두사를 가리지 않고 CUTOFF 이전의 terminal 행을 전부 지운다.
+        // 반면 @BeforeEach 가 지우는 것은 'retention-test-%' 뿐이다 — 다른 웹훅 테스트가 남긴
+        // 오래된 terminal 행이 있으면 total 이 7 을 넘어 이 단언이 실행 순서에 따라 깨진다
+        // (실제로 깨졌다: expected 7 but was 15). 먼저 비워서 이 테스트가 넣은 것만 세게 한다.
+        // 어차피 아래 루프가 그 행들을 지우므로, 비우는 시점만 앞당기는 것이지 파괴 범위는 같다.
+        drainSweepableDeliveries();
+
         for (int i = 0; i < 7; i++) {
             insertDelivery("COMPLETED", LocalDateTime.now().minusDays(30));
         }
@@ -93,6 +100,13 @@ class RetentionSweepTest {
 
         assertThat(total).isEqualTo(7);
         assertThat(guard).isLessThan(50);
+    }
+
+    private void drainSweepableDeliveries() {
+        int guard = 0;
+        while (webhookDeliveryRepository.deleteTerminalBatch(CUTOFF, 100) > 0 && ++guard < 100) {
+            // 남은 것이 없을 때까지
+        }
     }
 
     // ---------------------------------------------------------------------
