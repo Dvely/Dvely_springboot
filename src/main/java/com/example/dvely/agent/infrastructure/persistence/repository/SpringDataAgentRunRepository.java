@@ -232,6 +232,18 @@ public interface SpringDataAgentRunRepository extends JpaRepository<AgentRunEnti
             @Param("before") LocalDateTime before
     );
 
+    // 결과 승인 대기 태스크 전부. 위 둘과 달리 시간 조건이 없다 — 이 후보를 거르는 것은 나이가
+    // 아니라 "프리뷰가 아직 살아 있는가" 이고, 그 판정은 preview 쪽이 한다(LostPreviewApprovalSweeper).
+    // WAITING_APPROVAL 을 넣지 않는 것이 중요하다: 계획 승인은 CODE 실행 전이라 프리뷰가 아예
+    // 없고, 같이 묶으면 모든 계획 승인이 즉시 취소된다.
+    @Query("""
+            select run.taskId
+            from AgentRunEntity run
+            where run.status = :status
+            order by run.updatedAt asc
+            """)
+    List<String> findResultApprovalWaitingTaskIds(@Param("status") String status);
+
     // 시작되지 않은 채 방치된 PENDING 태스크 후보. ChatCommandService 의 비동기 Decision 은
     // createPending 으로 PENDING 태스크를 먼저 커밋한 뒤 백그라운드에서 계획을 확정한다 —
     // 그 사이에 프로세스가 죽으면(배포 재기동 등) 태스크가 계획 없이 PENDING 으로 남고, 워커는

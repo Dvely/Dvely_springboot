@@ -434,6 +434,14 @@ public class TaskStore {
      * 상태 재검사로 조용히 no-op 되는 것으로 끝난다.
      */
     @Transactional(readOnly = true)
+    /**
+     * 결과 승인을 기다리는 태스크 전부. {@code LostPreviewApprovalSweeper} 가 이 중에서 프리뷰가
+     * 이미 회수된 것을 골라낸다 — 나이로 거르지 않으므로 여기서는 시간 조건을 두지 않는다.
+     */
+    public List<String> findResultApprovalWaitingTaskIds() {
+        return runRepository.findResultApprovalWaitingTaskIds(TaskStatus.WAITING_RESULT_APPROVAL.name());
+    }
+
     public List<String> findAbandonedApprovalTaskIds(Duration ttl) {
         return runRepository.findAbandonedApprovalTaskIds(
                 AWAITING_DECISION_STATUSES,
