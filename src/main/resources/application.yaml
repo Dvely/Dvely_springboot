@@ -281,6 +281,11 @@ qeploy:
       # 스윕이 오히려 기능을 망가뜨린다. 0 이하로 두면 스윕이 꺼진다.
       abandon-ttl: ${QEPLOY_AGENT_APPROVAL_ABANDON_TTL:7d}
       abandon-sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_ABANDON_SWEEP_INTERVAL_MS:3600000}
+      # LostPreviewApprovalSweeper(#380): 프리뷰가 회수돼 승인할 대상이 사라진 결과 승인 대기
+      # 태스크를 닫는다. abandon-ttl(7일)과 역할이 다르다 — 저쪽은 결정이 오지 않는 것을, 이쪽은
+      # 결정할 것이 없어진 것을 닫는다. 주기는 preview.approval-hold 보다 훨씬 짧아야 사용자가
+      # 죽은 카드를 오래 보지 않는다.
+      lost-preview-sweep-interval-ms: ${QEPLOY_AGENT_APPROVAL_LOST_PREVIEW_SWEEP_INTERVAL_MS:300000}
     # AgentRunRetentionScheduler (#338): 끝난 지 이만큼 지난 태스크의 plan_json · failure_log 를
     # 비우고 진행 이벤트를 지운다. run 행 자체는 preview_sessions · project_changes 의 FK 때문에
     # 남긴다 — 이력 조회는 계속 동작한다. 0 이하로 두지 말 것(그러면 방금 끝난 태스크를 지운다).

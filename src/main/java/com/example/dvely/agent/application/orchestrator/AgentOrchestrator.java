@@ -1,6 +1,7 @@
 package com.example.dvely.agent.application.orchestrator;
 
 import com.example.dvely.chat.domain.value.ChatMessageKind;
+import java.time.Duration;
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.dto.AgentSubmission;
@@ -329,6 +330,50 @@ public class AgentOrchestrator {
                 + "회귀 신호입니다. taskId={}", taskId);
         agentMessageService.appendAssistant(task.conversationId(), "지연된 승인 처리를 복구해 작업을 시작합니다.",
                 ChatMessageKind.TASK_PROGRESS, taskId);
+    }
+
+    /**
+     * 프리뷰가 이미 회수된 결과 승인 대기 태스크를 닫는다. {@code LostPreviewApprovalSweeper} 가
+     * 후보마다 부른다.
+     *
+     * <p>승인 대상 작업물은 컨테이너 안에만 있다. 컨테이너가 사라지면 승인해도 반영할 것이 없는데,
+     * 승인은 {@code PENDING} 으로 남아 카드가 계속 떠 있었다 — 사용자는 <b>누르면 실패하는 버튼</b>을
+     * 보고 있었다(#380).</p>
+     *
+     * <p>{@link #abandonStaleApprovalTask} 와 같은 잠금 규율(태스크 행 잠금 → 상태 재검사)을 쓴다.
+     * 다만 {@code WAITING_APPROVAL} 은 받지 않는다 — 계획 승인은 CODE 실행 전이라 프리뷰가 아예
+     * 없고, 그것까지 이 경로로 들이면 모든 계획 승인이 즉시 취소된다.</p>
+     *
+     * <p>사유에 시간을 숫자로 적는 것은 의도다. "오래 방치되어" 는 사용자가 다음번에 대비할 수
+     * 없지만 "6시간 동안" 은 할 수 있다. 값은 {@code preview.approval-hold} 에서 오므로 설정을
+     * 바꿔도 문구가 어긋나지 않는다.</p>
+     */
+    @Transactional
+    public boolean abandonApprovalTaskWithLostPreview(String taskId, Duration hold) {
+        AgentTask task = taskStore.lockTask(taskId);
+        if (task.status() != TaskStatus.WAITING_RESULT_APPROVAL) {
+            return false; // 스캔과 잠금 사이에 누군가 결정했다 — 정상적인 no-op
+        }
+        if (!cancelTaskCascade(taskId, task.ownerUserId())) {
+            return false;
+        }
+        log.info("[AgentOrchestrator] 프리뷰가 회수된 승인 대기 태스크를 정리했습니다. taskId={}", taskId);
+        agentMessageService.appendAssistant(
+                task.conversationId(),
+                describeHold(hold) + " 동안 결정이 없어 프리뷰가 정리되었고, 이 작업을 종료했습니다.\n"
+                        + "변경 내용은 남아 있지 않습니다. 필요하면 다시 요청해주세요.",
+                ChatMessageKind.TASK_CANCELLED,
+                taskId
+        );
+        return true;
+    }
+
+    private String describeHold(Duration hold) {
+        if (hold == null || hold.isZero() || hold.isNegative()) {
+            return "한동안";
+        }
+        long hours = hold.toHours();
+        return hours > 0 ? hours + "시간" : Math.max(1, hold.toMinutes()) + "분";
     }
 
     /**
