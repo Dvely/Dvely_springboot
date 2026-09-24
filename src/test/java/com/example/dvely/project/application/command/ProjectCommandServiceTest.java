@@ -108,7 +108,7 @@ class ProjectCommandServiceTest {
         // 정규화 전 값으로 물으면 이 스텁이 비어 있어 생성이 실패한다.
         when(templateCatalogPort.findById("e-commerce")).thenReturn(Optional.of(
                 new Template("e-commerce", "이커머스", "설명", List.of(), "vanilla",
-                        "index.html", List.of(), "demo", "src")));
+                        "index.html", List.of(), "demo", "thumb", "src")));
         when(projectRepository.save(any(Project.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         ProjectDetailResult result = projectCommandService.createProject(

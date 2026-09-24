@@ -168,7 +168,7 @@ class CodeAgentServiceTest {
                         "landing-minimal", "미니멀 랜딩", "설명", List.of("landing"), "vanilla",
                         "index.html",
                         List.of(new Template.ContentHint("hero.title", "index.html", "히어로 대제목")),
-                        "https://demo", "https://src.tar.gz")));
+                        "https://demo", "https://thumb.jpg", "https://src.tar.gz")));
         when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn", toolCall("call-1", "execute_command", Map.of("command", "ls"))));
         when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("index.html");
