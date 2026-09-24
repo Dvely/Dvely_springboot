@@ -155,4 +155,49 @@ class ProvisionedServerStatusWorkerTest {
                 "abcdefghijklmnopqrstuvwxyz1234567890ABCD", null, null, null, null, null,
                 CloudConnectionStatus.CONNECTED, LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now());
     }
+    /** 부트 타임아웃 상황을 만든다. EIP 는 beginProvisioning 전에 붙으므로 이 시점에 반드시 있다. */
+    private ProvisionedServer timedOutWithEip(String allocationId) {
+        ProvisionedServer server = provisioning(LocalDateTime.now().minusMinutes(21));
+        if (allocationId != null) {
+            server.assignElasticIp(allocationId);
+        }
+        stubBatch(server);
+        when(ec2.describe(any(), eq("i-123"))).thenReturn(new Ec2InstanceStatus("running", "ec2-host"));
+        when(healthChecker.isHealthy("ec2-host", 8080)).thenReturn(false);
+        when(serverRepository.claimBootTimeout(anyLong())).thenReturn(true);
+        return server;
+    }
+
+    @Test
+    void 부트_타임아웃이_EIP_도_놓는다() {
+        // #344 9-4. 인스턴스가 종료돼도 EIP 는 연결만 풀리고 할당은 남아 계속 과금된다. 이 경로에
+        // release 가 없어서 부트 타임아웃마다 유휴 EIP 가 남았다.
+        timedOutWithEip("eipalloc-1");
+
+        worker.pollProvisioning();
+
+        verify(ec2).releaseElasticIp(any(), eq("eipalloc-1"));
+    }
+
+    @Test
+    void terminate_가_실패해도_EIP_는_놓는다() {
+        // 둘은 독립한 best-effort 다. terminate 실패로 EIP 까지 새면 과금이 두 겹으로 남는다.
+        timedOutWithEip("eipalloc-1");
+        org.mockito.Mockito.doThrow(new RuntimeException("InvalidInstanceID.NotFound"))
+                .when(ec2).terminate(any(), eq("i-123"));
+
+        worker.pollProvisioning();
+
+        verify(ec2).releaseElasticIp(any(), eq("eipalloc-1"));
+    }
+
+    @Test
+    void EIP_가_없으면_release_를_부르지_않는다() {
+        // null 을 그대로 넘기면 AWS 호출이 InvalidAllocationID 로 실패하고 로그만 더럽힌다.
+        timedOutWithEip(null);
+
+        worker.pollProvisioning();
+
+        verify(ec2, org.mockito.Mockito.never()).releaseElasticIp(any(), any());
+    }
 }

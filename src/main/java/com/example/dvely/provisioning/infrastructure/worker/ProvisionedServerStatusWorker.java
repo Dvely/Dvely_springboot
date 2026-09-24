@@ -92,7 +92,7 @@ public class ProvisionedServerStatusWorker {
             }
             // terminate 하기 전에 부트 로그를 떠 둔다 — 인스턴스가 사라지면 왜 안 떴는지 볼 길이 없어진다.
             captureBootDiagnostics(connection.get(), server);
-            safeTerminate(connection.get(), server.getInstanceId());
+            safeTerminateAndReleaseEip(connection.get(), server);
             server.markFailed(ProvisionFailureCode.PROVIDER_ERROR,
                     "제한 시간 안에 앱이 기동하지 않았습니다(포트 " + server.getPort() + " 응답 없음).");
             serverRepository.save(server);
@@ -120,11 +120,37 @@ public class ProvisionedServerStatusWorker {
         }
     }
 
-    private void safeTerminate(CloudConnection connection, String instanceId) {
+    /**
+     * 인스턴스를 끄고 <b>EIP 도 함께 놓는다</b>(#344 9-4).
+     *
+     * <p>EIP 는 {@code beginProvisioning} <b>전에</b> 할당·연결된다({@code BackendDeployRunner}) — 즉
+     * 부트 타임아웃 시점에는 반드시 존재한다. 그리고 인스턴스가 종료돼도 <b>연결만 풀리고 할당은 남아
+     * 계속 과금된다.</b> 이 경로에 release 가 없어서, 부트 타임아웃마다 유휴 EIP 가 남았다.</p>
+     *
+     * <p>{@code OrphanElasticIpSweeper} 가 받쳐 주지만 그것에 의존하면 안 된다. 그 스윕은 같은 연결에
+     * 인플라이트 배포(QUEUED/BUILDING/PROVISIONING)가 하나라도 있으면 <b>그 연결을 통째로 건너뛴다</b>
+     * (아직 연결 전인 EIP 를 오회수하지 않으려는 안전장치다). 그래서 노출이 스윕 주기보다 길어질 수
+     * 있다 — 배포가 잦은 연결일수록 길어진다. 여기서 즉시 놓으면 스윕은 본래 역할인 안전망으로만 남는다.</p>
+     *
+     * <p>둘 다 best-effort 다. terminate 실패는 아직 켜져 있는 인스턴스라 {@code error} 로, EIP release
+     * 실패는 유휴 과금이라 {@code warn} 으로 남긴다 — 정상 종료 경로
+     * ({@code ServerProvisioningCommandService})와 같은 등급·문구를 쓴다.</p>
+     */
+    private void safeTerminateAndReleaseEip(CloudConnection connection, ProvisionedServer server) {
         try {
-            ec2.terminate(connection, instanceId);
+            ec2.terminate(connection, server.getInstanceId());
         } catch (RuntimeException e) {
-            log.error("타임아웃 terminate 실패(수동 정리 필요): instanceId={} 원인={}", instanceId, e.toString());
+            log.error("타임아웃 terminate 실패(수동 정리 필요): instanceId={} 원인={}",
+                    server.getInstanceId(), e.toString());
+        }
+        if (server.getElasticIpAllocationId() == null) {
+            return;
+        }
+        try {
+            ec2.releaseElasticIp(connection, server.getElasticIpAllocationId());
+        } catch (RuntimeException e) {
+            log.warn("타임아웃 후 EIP release 실패(수동 정리 필요, 유휴 EIP 과금 주의): allocationId={} 원인={}",
+                    server.getElasticIpAllocationId(), e.getMessage());
         }
     }
 }
