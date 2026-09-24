@@ -269,4 +269,45 @@ class ServerHealthMonitorWorkerTest {
                 e.action() == com.example.dvely.audit.domain.value.AuditAction.SERVER_RECOVERY_ATTEMPTED
                         && e.outcome() == com.example.dvely.audit.domain.value.AuditOutcome.FAILED));
     }
+    @Test
+    void 프로브는_병렬로_돈다() throws Exception {
+        // #344 9-5. 전에는 배치를 직렬로 돌아, 서버당 TCP 2초 + HTTP 5초가 모두 타임아웃에 걸리면
+        // 50대에 최악 250초 동안 스케줄러 스레드를 붙들었다. 하필 그 조건이 "서버들이 실제로 죽어
+        // 있을 때" 라 가장 빨라야 할 때 가장 느렸다.
+        //
+        // 벽시계 임계값으로 재지 않는다 — 부하에 따라 흔들려 아무것도 증명하지 못하는 테스트가 된다.
+        // 대신 프로브들이 서로를 기다리게 한다: 모두 도착해야 latch 가 0 이 되므로, 직렬이면 첫
+        // 프로브가 타임아웃까지 기다렸다가 false 를 보고 끝난다. 병렬이면 즉시 모인다.
+        int servers = 4;
+        java.util.concurrent.CountDownLatch arrived = new java.util.concurrent.CountDownLatch(servers);
+        java.util.concurrent.atomic.AtomicBoolean allArrivedTogether =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
+        when(serverRepository.findByStatus(eq(ServerStatus.RUNNING), anyInt())).thenReturn(
+                java.util.stream.IntStream.rangeClosed(1, servers)
+                        .mapToObj(this::runningWithId)
+                        .toList());
+        when(healthChecker.isHealthy(org.mockito.ArgumentMatchers.anyString(), anyInt())).thenAnswer(call -> {
+            arrived.countDown();
+            if (!arrived.await(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                allArrivedTogether.set(false);   // 나 말고 아무도 안 왔다 = 직렬
+            }
+            return true;
+        });
+
+        worker.monitorRunningServers();
+
+        org.assertj.core.api.Assertions.assertThat(allArrivedTogether.get())
+                .as("프로브 %d건이 동시에 떠야 한다 — 직렬이면 서로를 기다리다 타임아웃한다", servers)
+                .isTrue();
+        // 그리고 모든 서버의 판정이 기록돼야 한다(병렬화가 결과를 잃지 않았다).
+        for (int id = 1; id <= servers; id++) {
+            verify(serverRepository).recordHealth((long) id, true);
+        }
+    }
+
+    private ProvisionedServer runningWithId(int id) {
+        LocalDateTime now = LocalDateTime.now();
+        return new ProvisionedServer((long) id, 7L, "t3.micro", ServerStatus.RUNNING,
+                5L, "i-" + id, "10.0.0." + id, 8080, null, null, null, now, now);
+    }
 }

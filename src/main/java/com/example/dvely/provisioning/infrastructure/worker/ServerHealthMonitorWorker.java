@@ -15,6 +15,11 @@ import com.example.dvely.provisioning.infrastructure.HttpHealthProbe;
 import com.example.dvely.provisioning.infrastructure.SsmRunCommandClient;
 import com.example.dvely.provisioning.infrastructure.TcpHealthChecker;
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -66,18 +71,75 @@ public class ServerHealthMonitorWorker {
     @Value("${qeploy.provisioning.recovery-settle-ms:120000}")
     private long recoverySettleMs = 120000;
 
+    /**
+     * 프로브는 <b>병렬</b>로, 판정·기록은 <b>직렬</b>로 한다(#344 9-5).
+     *
+     * <p>전에는 배치 전체를 직렬로 돌았다. 서버당 TCP 2초 + HTTP(연결 2초 + 요청 3초)가 모두 타임아웃에
+     * 걸리면 50대 x 5초 = <b>최악 250초</b> 동안 스케줄러 스레드 하나를 붙들었다. 주기가 60초이므로 그
+     * 사이 자기 다음 실행이 밀리고, 같은 풀을 쓰는 다른 워커도 굶는다. 그리고 이 워커가 느려지는 조건이
+     * 바로 <b>서버들이 실제로 죽어 있을 때</b>다 — 가장 빨라야 할 때 가장 느렸다.</p>
+     *
+     * <p>프로브는 DB 를 만지지 않는 순수 I/O 라 병렬화가 안전하다. 반면 판정·기록은 직렬로 남긴다 —
+     * 복구 경로가 SSM 호출과 원자 claim 을 하고, 동시 실행으로 얻을 것이 없다(복구는 2회 연속 무응답 +
+     * 에피소드당 1회라 드물다).</p>
+     *
+     * <p>가상 스레드를 쓴다. 프로브는 전부 블로킹 I/O 대기라 플랫폼 스레드를 점유할 이유가 없고,
+     * {@code close()} 가 모든 작업의 완료를 기다려 주기 경계가 흐려지지 않는다. 한 배치가 최대
+     * {@code BATCH}(50)개이므로 동시성이 그 이상으로 커지지 않는다.</p>
+     */
     @Scheduled(fixedDelayString = "${qeploy.provisioning.health-monitor-interval-ms:60000}")
     public void monitorRunningServers() {
-        for (ProvisionedServer server : serverRepository.findByStatus(ServerStatus.RUNNING, BATCH)) {
-            if (server.getPublicHost() == null || server.getPublicHost().isBlank()) {
-                continue;   // 주소가 없으면 확인할 수 없다(정상 RUNNING 이면 항상 있음)
+        List<ProvisionedServer> servers = serverRepository.findByStatus(ServerStatus.RUNNING, BATCH).stream()
+                // 주소가 없으면 확인할 수 없다(정상 RUNNING 이면 항상 있음)
+                .filter(server -> server.getPublicHost() != null && !server.getPublicHost().isBlank())
+                .toList();
+        if (servers.isEmpty()) {
+            return;
+        }
+        Map<Long, Boolean> probed = probeInParallel(servers);
+        for (ProvisionedServer server : servers) {
+            Boolean healthy = probed.get(server.getId());
+            if (healthy == null) {
+                continue;   // 프로브가 실패했다 — 기록을 건너뛰어 직전 판정을 흔들지 않는다(다음 주기 재시도)
             }
             try {
-                // 포트가 열렸는지(TCP=프로세스 살아있음) + 앱이 기능적 이상을 명시적으로 보고하지 않는지
-                // (HTTP /api/health 5xx). TCP 만으로는 앱이 뜬 채 DB 등에 못 붙는 경우를 못 잡았다(#3).
-                // 5xx 만 이상으로 보므로, 헬스 엔드포인트 없는 앱은 기존 TCP 판정 그대로다.
-                boolean healthy = healthChecker.isHealthy(server.getPublicHost(), server.getPort())
-                        && !httpHealthProbe.reportsUnhealthy(server.getPublicHost(), server.getPort());
+                applyHealth(server, healthy);
+            } catch (RuntimeException e) {
+                // 이 서버만 건너뛰고 다음 주기에 다시 본다.
+                log.warn("서버 헬스 모니터 실패(다음 주기 재시도): serverId={} 원인={}", server.getId(), e.toString());
+            }
+        }
+    }
+
+    private Map<Long, Boolean> probeInParallel(List<ProvisionedServer> servers) {
+        Map<Long, Boolean> results = new ConcurrentHashMap<>();
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (ProvisionedServer server : servers) {
+                pool.execute(() -> {
+                    try {
+                        results.put(server.getId(), probe(server));
+                    } catch (RuntimeException e) {
+                        // 한 대의 실패가 배치를 멈추지 않게 한다 — 다른 스윕들과 같은 격리 원칙이다.
+                        log.warn("서버 헬스 프로브 실패(다음 주기 재시도): serverId={} 원인={}",
+                                server.getId(), e.toString());
+                    }
+                });
+            }
+        }   // close() 가 모든 프로브의 완료를 기다린다
+        return results;
+    }
+
+    /**
+     * 포트가 열렸는지(TCP=프로세스 살아있음) + 앱이 기능적 이상을 명시적으로 보고하지 않는지
+     * (HTTP /api/health 5xx). TCP 만으로는 앱이 뜬 채 DB 등에 못 붙는 경우를 못 잡았다(#3).
+     * 5xx 만 이상으로 보므로, 헬스 엔드포인트 없는 앱은 기존 TCP 판정 그대로다.
+     */
+    private boolean probe(ProvisionedServer server) {
+        return healthChecker.isHealthy(server.getPublicHost(), server.getPort())
+                && !httpHealthProbe.reportsUnhealthy(server.getPublicHost(), server.getPort());
+    }
+
+    private void applyHealth(ProvisionedServer server, boolean healthy) {
                 Boolean previous = server.getHealthy();   // fetch 시점 DB 값(디바운스·복구 판정용)
                 // 헬스는 targeted UPDATE 로만 쓴다 — 전체-엔티티 저장을 하지 않아, 다중 인스턴스에서 각자
                 // 헬스체크·기록해도 lost-update 가 없고 교체 워커의 저장과 충돌하지 않는다.
@@ -103,11 +165,6 @@ public class ServerHealthMonitorWorker {
                         attemptRecoveryIfDue(server, previous);
                     }
                 }
-            } catch (RuntimeException e) {
-                // 이 서버만 건너뛰고 다음 주기에 다시 본다.
-                log.warn("서버 헬스 모니터 실패(다음 주기 재시도): serverId={} 원인={}", server.getId(), e.toString());
-            }
-        }
     }
 
     /**
