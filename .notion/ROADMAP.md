@@ -10,6 +10,20 @@
 
 ## 1. 현재 상태
 
+- 2026-09-23: **승인 대기 중 작업물이 사라지던 데이터 유실을 막고, 남은 승인을 닫는다 — main 배포 완료(#376 PR #379, #380 PR #382)**.
+  발단은 전날 SSE 검증용으로 돌린 태스크가 **결과 승인 대기 진입 정확히 30분 뒤 프리뷰째 사라진 것**이다. 프리뷰 TTL 은 게이트웨이 접근마다만 `touch` 되는데, 승인 카드만 보는 사용자는 프리뷰를 열지 않는다. 저장소 연결 승인에는 2026-08-18 사고 뒤 hold 가 들어갔지만 **결과 반영 승인에는 없었다** — 같은 사고가 경로만 바꿔 남아 있었다.
+
+  **#376** `holdForBindingApproval` → `holdForApproval` 로 일반화해 `ResultApprovalGate` 에서도 부른다. 설정 키도 `preview.approval-hold` 로 맞췄다(운영·dev 어느 쪽도 이 환경변수를 설정하지 않는 것을 서버에서 확인하고 바꿨다).
+
+  **#380** `LostPreviewApprovalSweeper` 가 `WAITING_RESULT_APPROVAL` 중 살아 있는 프리뷰가 없는 것을 닫는다. `PreviewProperties` javadoc 이 "회수되면 `ApprovalCommandService` 가 사유를 말하며 닫는다"고 적고 있었지만 **그런 코드가 없었다** — 같은 문단의 다른 문장도 같은 이유로 틀려 있었다. 이제 참이 된다.
+  후보를 `WAITING_RESULT_APPROVAL` 로만 좁히는 것이 핵심이다. **`WAITING_APPROVAL`(계획 승인)은 CODE 실행 전이라 프리뷰가 아예 없어서, 같이 묶으면 모든 계획 승인이 즉시 취소된다.**
+
+  **검증은 전부 실태스크가 남긴 상태로 했다.** hold → 만료 → 정리가 한 태스크(`8aba2099528a`)에 이어져 담겼다 — 승인 진입 15:32:39 에 `expires_at` 이 21:32:39(정확히 +6시간)로 밀리고, 16:11 게이트웨이 접근에도 `keepFurther` 가 만료를 앞당기지 않았고, 21:32:57 에 `EXPIRED`, 21:34:51 에 스윕이 닫으며 "6시간 동안…" 문구를 남겼다. **인위적으로 조건을 만들려던 계획(dev hold 를 5분으로)은 no-op 함정을 품고 있었다** — hold 는 만료를 뒤로만 미루므로 `hold < TTL` 이면 아무 일도 안 일어난다. 실제 사용을 기다린 편이 더 나은 증거였다.
+
+  **#372**(인증된 호출에서 없는 경로가 404 대신 500) 도 운영에서 확인했다. 시큐리티에 `"/api/v1/previews/**"` 가 `permitAll` 이라 **인증 없이도** 미매핑 경로가 `NoResourceFoundException` 까지 간다 — `GET /api/v1/previews` → 404 `NOT_FOUND`, 로그는 `WARN` 한 줄, `Unexpected error` 0건.
+
+  **남은 운영 이슈 하나는 우리 코드가 아니다.** Cloudflare 가 이 존에 대해 한국 사용자를 점점 먼 엣지로 보낸다 — 아침 HKG 0.120s → SEA 0.32s → **LAX 평균 1.037s(최대 2.951s)**. 같은 회선에서 `cloudflare.com` 은 ICN 을 주고, 오리진 직접은 5/5 가 0.29~0.33s 로 평평하다. **Tiered Cache(대시보드)가 미적용이다.** `HTML 캐시는 건드리면 안 된다` — 배포가 트리 통째 교체라 엣지의 옛 `index.html` 이 이미 지워진 해시 자산을 가리킨다. 순서는 ①Tiered Cache ②배포가 구버전 자산을 잠시 남기도록 ③그 뒤 HTML 캐시 검토다.
+
 - 2026-09-22: **운영 느림·끊김의 원인을 구간별 실측으로 규명하고 셋 다 고쳤다 — main 배포 완료(#370 #372, PR #374)**.
   시작은 "서버가 느려졌다 빨라졌다" 였다. 구간을 갈라 재니 **오리진은 20/20 편차 ±10ms 로 평평**한데(load 0.08) Cloudflare 경유만 0.085~1.43s 로 튀었다 — 앱도 JVM 도 아니었다.
 
@@ -315,9 +329,11 @@
 이후 백로그(단위 편성 전, `BACKLOG_STATUS.md` Backlog 참고):
 
 - `BI-163~165` Project Settings 나머지(Version Policy/Deployment Defaults/Domain) — **다음 단위 1순위**
-- **Issue #115** — 프리뷰 serve 프로세스 종료 실패(`pkill -f 'npx serve'`가 실제 cmdline `npm exec serve …`/`node …/.bin/serve …`를 못 잡고 자기 셸만 SIGTERM). 포트 3000이 점유된 채 새 serve가 랜덤 포트로 조용히 떠서 **낡은 빌드가 계속 서빙**된다. 인접 결함: `DockerContainerService.exec`가 종료코드를 안 읽어 빌드 실패가 조용히 성공으로 넘어감. **신뢰성 영향이 커 프리뷰 계열 1순위 후보**
-- **Issue #116** — Next/Vue CLI/SvelteKit/Gatsby/Astro/Nuxt는 config가 있으면 배포 워크플로가 `::warning::`만 내고 커밋된 base가 이긴다(`DeployWorkflowTemplate:222/242/277/302/328`, Nuxt는 주입 지점 자체 없음). 커스텀 도메인 연결 시 자산 404. Vite·CRA는 CLI/homepage 덮어쓰기로 안전
-- **Issue #117** — 라우터 basename을 배포용 base로 고정한 앱(`basename={import.meta.env.BASE_URL}`)은 프리뷰에서 자산이 다 로드돼도 빈 화면. accessToken 회전 때문에 basename을 프리뷰 URL에 맞출 수 없어 구조적이며, 완전 해법은 프리뷰 전용 오리진 분리 + base 중립화
+- ~~**Issue #115** 프리뷰 serve 프로세스 종료 실패~~ — **완료(2026-08-25 close)**. 인접 결함이던 `DockerContainerService.exec` 종료코드 미확인도 `execWithExitCode` 분리로 해소됐다
+- ~~**Issue #116** Next/Vue CLI/SvelteKit/Gatsby/Astro/Nuxt base 주입~~ — **완료(2026-09-10 close)**
+- ~~**Issue #117** 라우터 basename 고정 앱이 프리뷰에서 빈 화면~~ — **완료(2026-09-10 close)**
+
+> ⚠️ 위 셋은 **2026-09-24 에 확인해 보니 이미 닫혀 있었는데 이 절만 "1순위 후보" 로 남아 있었다.** 같은 형태가 같은 날 한 번 더 있었다 — #367·#370·#372·#376 이 main 에 반영된 뒤에도 열려 있었다(`Closes #N` 이 `develop` 대상 PR 에 있으면 GitHub 이 자동으로 닫지 않는다). **develop-first 흐름에서는 릴리스 뒤 이슈를 수동으로 닫고 이 절도 같이 손대야 한다.** 원장이 끝난 일을 1순위로 가리키면 다음 세션이 그걸 다시 판다.
 - EPIC 18 운영 지표(BI-196~201), Preview 런타임 확장(BI-079·085~087·090~092), 도메인 확장(BI-141·142), AWS/GCP 실배포(BI-130·131 — IaC 설계 선행)
 - BI-195 후속 분리분(EPIC 17, `.agent-team/04-architecture/ad-audit-log-design.md` §9 분할 근거): GitHub App 설치 권한 재검토·축소, G5 컨테이너 `/tmp/.git-credentials` 평문 개선 — 보안 성격이라 `U-sec`에 인접하며, 아직 이슈 미신설(착수 전 범위·우선순위를 사용자와 확인)
 
