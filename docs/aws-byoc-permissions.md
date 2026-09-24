@@ -173,7 +173,8 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
       "Action": ["ecr:CreateRepository", "ecr:DescribeRepositories", "ecr:DeleteRepository",
                  "ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload",
                  "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage",
-                 "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+                 "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
+                 "ecr:PutLifecyclePolicy"],
       "Resource": "arn:aws:ecr:*:*:repository/qeploy-app-*"   // 이미지 저장소 qeploy-app-{projectId}
       // DOCKER 배포의 image-transfer=ECR 경로 전용: 컨트롤 플레인이 이미지를 ECR 로 push 한다.
       // buildx(buildkit)는 push 전에 매니페스트를 HEAD 로 확인하므로 read 권한(BatchGetImage,
