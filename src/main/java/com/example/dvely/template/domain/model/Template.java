@@ -8,8 +8,12 @@ import java.util.List;
  * 정본은 이 서버가 아니라 템플릿 저장소(qeploy-templates)가 발행하는 catalog.json 이다. 서버는
  * 그것을 읽어 나를 뿐 소스를 들지 않는다 — 템플릿 변경 주기와 서버 배포 주기를 묶지 않기 위해서다.
  *
- * @param demoUrl   고르기 전에 조작해보는 데모. FE 갤러리가 iframe 으로 띄운다
- * @param sourceUrl 씨앗 tarball. 첫 CODE 스텝에서 컨테이너가 받아 /workspace/app 에 푼다
+ * @param demoUrl      고르기 전에 조작해보는 데모. FE 갤러리가 iframe 으로 띄운다
+ * @param thumbnailUrl 목록 카드용 썸네일. 템플릿 저장소 CI 가 데모를 찍어 만든다.
+ *                     <b>nullable</b> — 카탈로그는 Pages 에서 실시간으로 받아오므로, 썸네일을
+ *                     내보내기 전에 발행된 카탈로그에는 이 필드가 없다. 필수로 두면 발행 순서에
+ *                     따라 템플릿 API 전체가 깨진다
+ * @param sourceUrl    씨앗 tarball. 첫 CODE 스텝에서 컨테이너가 받아 /workspace/app 에 푼다
  */
 public record Template(
         String id,
@@ -20,6 +24,7 @@ public record Template(
         String entry,
         List<ContentHint> contentHints,
         String demoUrl,
+        String thumbnailUrl,
         String sourceUrl
 ) {
 

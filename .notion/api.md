@@ -1238,12 +1238,17 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
     "tags": ["landing", "one-page", "product"],
     "stack": "vanilla",
     "demoUrl": "https://dvely.github.io/qeploy-templates/t/landing-minimal/",
+    "thumbnailUrl": "https://dvely.github.io/qeploy-templates/t/landing-minimal/thumbnail.jpg",
     "contentHints": [
       { "key": "hero.title", "where": "index.html", "desc": "히어로 대제목 — 한 문장으로 무엇인지" }
     ]
   }
 ]
 ```
+
+`thumbnailUrl` 은 **목록 카드용**이고 `demoUrl` 은 **고른 하나를 조작해보는 용도**다. 17종을 동시에 iframe 으로 올리면 데모 이미지 총량(24MB)이 한 번에 가므로, 목록은 썸네일만 받고 iframe 은 항상 한 개만 띄우는 것이 의도된 사용이다. 썸네일은 템플릿 저장소 CI 가 발행할 데모를 그대로 찍어 만든다 — 손으로 커밋하면 템플릿을 고칠 때 어긋난다.
+
+`thumbnailUrl` 은 **nullable** 이다. 카탈로그는 Pages 에서 실시간으로 받아오므로 썸네일 발행 전 카탈로그에는 이 필드가 없다 — 필수로 두면 발행 순서에 따라 이 API 전체가 깨진다.
 
 `demoUrl` 은 **iframe 으로 띄울 수 있다.** GitHub Pages 는 정상 문서에 `X-Frame-Options` 도 `CSP frame-ancestors` 도 보내지 않는다(2026-09-10 실측). 고르기 전에 조작해보게 하는 것이 이 필드의 목적이다.
 

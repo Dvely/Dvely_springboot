@@ -24,6 +24,9 @@ public record TemplateResponse(
         @Schema(description = "고르기 전에 조작해보는 데모 URL. iframe 으로 띄울 수 있다")
         String demoUrl,
 
+        @Schema(description = "목록 카드용 썸네일 URL. 아직 발행되지 않은 카탈로그에서는 null 일 수 있다")
+        String thumbnailUrl,
+
         @Schema(description = "바꿔도 되는 '내용'이 어디인지에 대한 템플릿 자신의 선언")
         List<ContentHintResponse> contentHints
 ) {
@@ -54,6 +57,7 @@ public record TemplateResponse(
                 template.tags() == null ? List.of() : template.tags(),
                 template.stack(),
                 template.demoUrl(),
+                template.thumbnailUrl(),
                 hints
         );
     }
