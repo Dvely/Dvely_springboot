@@ -30,7 +30,7 @@ class TemplateCatalogGuardTest {
     void passesKnownTemplate() {
         when(templateCatalogPort.findById("landing-minimal")).thenReturn(Optional.of(
                 new Template("landing-minimal", "미니멀 랜딩", "설명", List.of(), "vanilla",
-                        "index.html", List.of(), "demo", "src")));
+                        "index.html", List.of(), "demo", "thumb", "src")));
 
         assertThatCode(() -> guard().ensureExists("landing-minimal")).doesNotThrowAnyException();
     }

@@ -185,7 +185,9 @@ public class BackendDeployRunner {
             instanceId = launchWithRetry(connection, spec);
 
             // 안정 주소(EIP) 연결 — 자동할당 public IP 는 stop·재배포마다 바뀌어 도메인이 깨진다.
-            // 종료 시 release 는 terminate 정리가 담당한다(server.elasticIpAllocationId 로).
+            // 종료 시 release 는 terminate 정리가 담당한다(server.elasticIpAllocationId 로) — 정상 종료
+            // (ServerProvisioningCommandService)와 부트 타임아웃(ProvisionedServerStatusWorker) 둘 다.
+            // 후자에는 #344 9-4 까지 release 가 없어서 타임아웃마다 유휴 EIP 가 남았다.
             Ec2Provisioner.ElasticIp eip = ec2.allocateAndAssociateElasticIp(
                     connection, instanceId, "qeploy-backend-" + projectId);
             eipAllocationId = eip.allocationId();

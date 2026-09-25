@@ -181,6 +181,10 @@ public class CloudConnectionRequirementsService {
                 "Docker 이미지 전송을 ECR 모드로 켠 경우에만 ECR 권한(ecr:CreateRepository, "
                         + "ecr:GetAuthorizationToken, ecr:DeleteRepository 및 이미지 push 액션)을 추가하세요. 기본 S3 "
                         + "모드는 필요 없습니다.",
+                "ECR 모드라면 ecr:PutLifecyclePolicy 도 함께 넣어주세요. 배포는 항상 :latest 로 push 하므로 "
+                        + "직전 이미지가 태그를 잃고 남습니다 — 이 권한이 없으면 만료 정책을 걸 수 없어 이미지가 "
+                        + "계속 쌓이고 ECR 스토리지 비용이 시간에 비례해 늘어납니다. 없어도 배포는 성공하지만 "
+                        + "정리가 안 됩니다.",
                 platformNote
         ).filter(java.util.Objects::nonNull).toList();
     }

@@ -51,7 +51,7 @@ class TemplateSeedingServiceTest {
 
     private Template template(String sourceUrl) {
         return new Template("landing-minimal", "미니멀 랜딩", "설명", List.of("landing"), "vanilla",
-                "index.html", List.of(), "https://demo", sourceUrl);
+                "index.html", List.of(), "https://demo", "https://thumb.jpg", sourceUrl);
     }
 
     @Test

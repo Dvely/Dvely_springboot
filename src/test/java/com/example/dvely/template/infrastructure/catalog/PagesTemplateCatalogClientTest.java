@@ -74,6 +74,41 @@ class PagesTemplateCatalogClientTest {
     }
 
     @Test
+    @DisplayName("썸네일을 아직 내보내지 않은 카탈로그도 그대로 읽는다 — thumbnailUrl 은 null 이 된다")
+    void toleratesCatalogWithoutThumbnailUrl() {
+        // 카탈로그는 Pages 에서 실시간으로 받아온다. 썸네일을 내보내는 템플릿 저장소 변경이
+        // 발행되기 전에는 이 필드가 없는데, 그때 템플릿 API 전체가 깨지면 안 된다.
+        // 위 CATALOG 상수가 정확히 그 상태(thumbnailUrl 없음)다.
+        Fixture f = fixture(Duration.ofMinutes(10));
+        f.server().expect(requestTo(URL)).andRespond(withSuccess(CATALOG, MediaType.APPLICATION_JSON));
+
+        List<Template> templates = f.client().findAll();
+
+        assertThat(templates).hasSize(1);
+        assertThat(templates.getFirst().thumbnailUrl()).isNull();
+        // 나머지 필드는 그대로여야 한다 — 없는 필드 하나가 문서 전체의 파싱을 망치지 않는다.
+        assertThat(templates.getFirst().demoUrl()).isEqualTo("https://example.test/t/landing-minimal/");
+        f.server().verify();
+    }
+
+    @Test
+    @DisplayName("썸네일이 있는 카탈로그는 그 주소를 그대로 통과시킨다")
+    void passesThumbnailUrlThrough() {
+        String withThumbnail = CATALOG.replace(
+                "\"demoUrl\": \"https://example.test/t/landing-minimal/\"",
+                "\"demoUrl\": \"https://example.test/t/landing-minimal/\",\n"
+                        + "          \"thumbnailUrl\": \"https://example.test/t/landing-minimal/thumbnail.jpg\"");
+        Fixture f = fixture(Duration.ofMinutes(10));
+        f.server().expect(requestTo(URL)).andRespond(withSuccess(withThumbnail, MediaType.APPLICATION_JSON));
+
+        List<Template> templates = f.client().findAll();
+
+        assertThat(templates.getFirst().thumbnailUrl())
+                .isEqualTo("https://example.test/t/landing-minimal/thumbnail.jpg");
+        f.server().verify();
+    }
+
+    @Test
     @DisplayName("갱신 주기 안에서는 다시 읽지 않는다")
     void cachesWithinRefreshInterval() {
         Fixture f = fixture(Duration.ofMinutes(10));

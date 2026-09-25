@@ -19,7 +19,9 @@ public class TemplateController {
 
     @Operation(
             summary = "템플릿 목록 조회",
-            description = "고를 수 있는 템플릿 전체를 반환합니다. demoUrl 은 iframe 으로 띄워 조작해볼 수 있습니다."
+            description = "고를 수 있는 템플릿 전체를 반환합니다. 목록 카드에는 thumbnailUrl 을 쓰고, "
+                          + "고른 하나만 demoUrl 을 iframe 으로 띄워 조작해보게 하는 것이 의도된 사용입니다 "
+                          + "(17종을 동시에 iframe 으로 올리면 데모 이미지 총량이 한 번에 갑니다)."
     )
     @GetMapping("/api/v1/templates")
     public List<TemplateResponse> getTemplates() {
