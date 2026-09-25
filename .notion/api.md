@@ -581,7 +581,9 @@ Base path: `/api/v1/agent`
 
 결과 필드:
 
-- `previewUrl`
+- ~~`previewUrl`~~ — **폐기 예정 (#392).** CODE 스텝이 끝난 시점 주소의 **스냅샷**(`agent_run.preview_url`)이다. `POST /preview-sessions/{id}/access` 가 accessToken 을 회전시켜 이전 주소를 죽이므로(#77 G4), 사용자가 프리뷰를 한 번 연 뒤부터 **404** 다. 이 컬럼은 프리뷰가 회수돼도 지워지지 않아서, 값이 있다는 것이 **지금 살아 있다는 뜻도 아니다**. 열 수 있는 주소는 `access` 응답의 것 하나뿐이다
+- `previewCreated` (#392): 이 태스크에 프리뷰가 **만들어졌는지**. 위 컬럼이 비어 있지 않으면 `true`(공백 문자열은 `false`로 본다). `previewUrl` 의 유무만 필요한 소비자가 주소까지 들고 가지 않도록 분리했다.
+  이름이 `previewReady`가 아닌 이유: 근거 컬럼이 회수 시 지워지지 않으므로 **`true`가 "지금 볼 수 있다"를 뜻하지 않는다.** 지금 상태는 `GET /projects/{id}/preview-session` 의 `status` 가 말한다
 - `summary`
 - `error`
 - `question`

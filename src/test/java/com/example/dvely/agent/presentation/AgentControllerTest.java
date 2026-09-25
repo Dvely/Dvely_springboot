@@ -238,4 +238,47 @@ class AgentControllerTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("입력을 기다리는");
     }
+
+    // ── #392: previewUrl 은 회전으로 죽는 스냅샷이라 폐기 예정 — previewCreated 를 새로 낸다 ────────
+
+    @Test
+    void getTaskStatusReportsPreviewCreatedWhenTheTaskHasAPreviewUrl() {
+        // FE 는 지금 previewUrl 이 비었는지로 폴링을 멈춘다. 그 판단에 주소가 필요하지 않다 —
+        // 주소를 들고 가면 회전 뒤 404 를 잡는다(#391 에서 승인 메시지가 실제로 그랬다).
+        when(taskStore.getOwned("task-1", 1L)).thenReturn(new AgentTask(
+                "task-1", 1L, 11L, 21L, TaskStatus.DONE,
+                "https://qeploy.com/api/v1/previews/sess/token/", "요약", null, null, Instant.now()
+        ));
+
+        TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
+
+        assertThat(response.previewCreated()).isTrue();
+        // 옛 필드는 아직 같이 나간다 — FE 가 옮길 기간이다(#392 1단계).
+        assertThat(response.previewUrl()).isEqualTo("https://qeploy.com/api/v1/previews/sess/token/");
+    }
+
+    @Test
+    void getTaskStatusReportsPreviewNotCreatedWhenThereIsNoPreviewUrl() {
+        when(taskStore.getOwned("task-1", 1L)).thenReturn(new AgentTask(
+                "task-1", 1L, 11L, 21L, TaskStatus.RUNNING, null, null, null, null, Instant.now()
+        ));
+
+        TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
+
+        assertThat(response.previewCreated()).isFalse();
+        assertThat(response.previewUrl()).isNull();
+    }
+
+    @Test
+    void getTaskStatusTreatsABlankPreviewUrlAsNoPreview() {
+        // 빈 문자열이 true 로 새면 FE 는 프리뷰가 생겼다고 믿고 폴링을 멈춘 뒤 아무것도 못 연다.
+        // 옛 FE 코드가 previewUrl?.trim() 으로 공백을 걸러냈던 것과 같은 판단을 서버가 한다.
+        when(taskStore.getOwned("task-1", 1L)).thenReturn(new AgentTask(
+                "task-1", 1L, 11L, 21L, TaskStatus.RUNNING, "   ", null, null, null, Instant.now()
+        ));
+
+        TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
+
+        assertThat(response.previewCreated()).isFalse();
+    }
 }
