@@ -25,31 +25,37 @@
 
 ## 1. 사람만 할 수 있는 것
 
-### 1-1. Let's Encrypt 인증서 발급 — 준비는 끝났고 한 줄 남았다
+### 1-1. Let's Encrypt 인증서 — **완료 (2026-09-25)**
 
-서버에 준비를 다 해뒀다. 발급만 권한 밖이다(`DNS / Domain / Cert Changes`).
-
-```bash
-ssh dvely 'sudo certbot certonly --webroot -w /var/www/certbot -d qeploy.com \
-  --agree-tos --register-unsafely-without-email --non-interactive --no-eff-email'
+```
+issuer=Let's Encrypt CN=YE2 · subject=CN=qeploy.com · 만료 2026-12-24
+nginx qeploy.com:443 블록이 /etc/letsencrypt/live/qeploy.com/ 을 쓴다
+certbot renew --dry-run  →  성공
+deploy hook  /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh  설치
 ```
 
-**이미 되어 있는 것**: `certbot 2.9.0` 설치, webroot `/var/www/certbot`, nginx 의 80·443 두 블록에
-`location ^~ /.well-known/acme-challenge/` 추가, Cloudflare 경유로 챌린지 파일이 실제로 서빙되는 것까지
-확인. 백업은 `dvely.bak-le-20260925-112403`.
+**성공 판정**: 검증 켠 상태로 오리진에 HTTPS 가 붙는다(`--resolve` 로 3/3 200). 전에는 `code=000` 이었다.
+Cloudflare 경유도 교체 뒤 그대로 정상(5/5).
 
-**이메일을 안 넣었다.** 사용자 이메일을 외부 서비스에 등록하는 것을 대신 판단하지 않았다 — 그 대가로
-**만료 알림을 못 받는다.** 원하면 `--register-unsafely-without-email` 을 `-m <메일>` 로 바꿔 실행하거나
-나중에 `certbot update_account` 로 추가한다. 자동 갱신 타이머는 설치와 함께 붙는다.
+**이제 가능해진 것**: Cloudflare 가 불안정할 때 **DNS 를 grey cloud 로 돌려 우회**할 수 있다. 전에는
+오리진 인증서가 Cloudflare Origin CA 라 그렇게 하면 전 사용자 HTTPS 가 깨졌다. orange cloud 로 두어도
+무해하다(Full/strict 가 공개 신뢰 인증서를 그대로 받는다).
 
-**왜 필요한가**: 지금 오리진 인증서는 **Cloudflare Origin CA** 라 브라우저가 신뢰하지 않는다
-(`issuer=CloudFlare Origin SSL Certificate Authority`, 검증 켜고 접속하면 `code=000`). 그래서 Cloudflare 가
-불안정할 때 **DNS 를 grey cloud 로 돌려 우회하는 것이 지금은 불가능하다** — 전 사용자 HTTPS 가 깨진다.
-공개 신뢰 인증서를 깔아 두면 그 우회가 1클릭이 된다. Cloudflare 를 계속 orange cloud 로 둬도 무해하다
-(Full/strict 모드가 공개 신뢰 인증서를 그대로 받는다).
+**되돌리려면** `ssl_certificate` 두 줄을 `/etc/ssl/cloudflare/dvely-origin.{pem,key}` 로 바꾸면 된다 —
+옛 인증서는 지우지 않았다. 백업: `dvely.bak-swap-20260925-202903`.
 
-**발급 후 남은 일**(내가 할 수 있다): `ssl_certificate` 를 LE 경로로 교체 → `nginx -t` → reload →
-**검증 켠 상태로 오리진에 HTTPS 가 붙는지** 확인. 그게 되면 성공이다.
+> **여기서 두 가지를 배웠다.**
+>
+> **① 장애가 자기 해결책을 막는다.** 첫 발급 시도가 **522** 로 실패했다 — Cloudflare 가 오리진에 닿지
+> 못해서, HTTP-01 챌린지도 닿지 못했다. 엣지가 불안정할 때 쓰려고 만드는 우회로를, 바로 그 불안정
+> 때문에 만들 수 없었다. 경로가 건강한 창을 확인한 뒤에야 성공했다. **비상 대비는 평시에 해 둬야 한다.**
+>
+> **② `server` 직속 `return` 은 location 매칭보다 먼저 실행된다.** 80 포트 블록이 이랬는데
+> ACME location 을 통째로 삼켰다(평문 HTTP 챌린지가 301). `return` 은 rewrite 단계라 location 선택보다
+> 앞선다. `location /` 로 내려야 `^~` 접두사 매칭이 이긴다. **이 수정은 90일마다 도는 자동 갱신에도
+> 필요하다** — 안 고쳤으면 갱신이 조용히 실패했을 것이다.
+>
+> 만료 알림은 받지 않는다(이메일 없이 등록). 필요하면 `certbot update_account -m <메일>`.
 
 ### 1-2. Cloudflare — 이번에는 건드리지 않기로 했다
 
