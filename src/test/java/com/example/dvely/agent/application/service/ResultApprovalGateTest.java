@@ -98,6 +98,31 @@ class ResultApprovalGateTest {
     }
 
     @Test
+    void 승인_메시지에_preview_주소를_넣지_않는다() {
+        // #391. 여기 들어가던 것은 태스크의 previewUrl 인데, 사용자가 화면에서 프리뷰를 여는 것이 곧
+        // POST /preview-sessions/{id}/access 이고 그 호출이 accessToken 을 회전시켜 이전 주소를 죽인다.
+        // 즉 이 링크는 사용자가 프리뷰를 여는 순간 404 가 되고, 대화 이력은 남으므로 영구히 죽은
+        // 링크가 된다. 2026-09-25 dev 에서 실제로 이 링크가 404 를 냈다.
+        AgentPlan plan = codePlan();
+        stubBoundPolicyOnProject();
+        stubPreviewSessionAndUser();
+        when(taskStore.get("task-1")).thenReturn(task(TaskStatus.RUNNING, "https://preview.qeploy.test/s/tok/", "요약"));
+        when(approvalRepository.save(any(Approval.class))).thenReturn(approval(501L));
+
+        gate.requestIfRequired(plan, 0, "task-1", 1L, 11L);
+
+        org.mockito.ArgumentCaptor<String> captor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(agentMessageService).appendAssistant(eq(21L), captor.capture(),
+                eq(ChatMessageKind.APPROVAL_REQUESTED), eq("task-1"));
+        assertThat(captor.getValue())
+                .doesNotContain("https://preview.qeploy.test/s/tok/")
+                .doesNotContain("- preview: ")
+                .doesNotContain("/api/v1/previews/");
+        // 승인 자체를 가리키는 정보는 남아야 한다 — 링크만 빼는 것이다.
+        assertThat(captor.getValue()).contains("501").contains("RESULT");
+    }
+
+    @Test
     void approvalRowCarriesResultTypeAndTaskSummary() {
         AgentPlan plan = codePlan();
         stubBoundPolicyOnProject();

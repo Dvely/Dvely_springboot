@@ -110,7 +110,7 @@ class RepositoryBindingGateTest {
     }
 
     @Test
-    void chatMessageShowsThePreviewUrlAndTheDefaultRepositoryName() {
+    void chatMessageShowsTheDefaultRepositoryNameButNeverThePreviewUrl() {
         AgentPlan plan = codePlan();
         stubNotBoundProject("my-project");
         stubPreviewSession();
@@ -125,9 +125,13 @@ class RepositoryBindingGateTest {
         // The name shown here is the one an empty approve body falls back to, so the user must
         // see exactly what they will get if they just press approve.
         assertThat(captor.getValue())
-                .contains("https://preview.qeploy.test/session-1/")
                 .contains("my-project")
                 .contains("501");
+        // #391: preview 주소는 넣지 않는다. 사용자가 화면에서 프리뷰를 여는 것이 곧 access 발급이고
+        // 그것이 accessToken 을 회전시켜 이 주소를 죽인다 — 대화 이력에 영구히 죽은 링크가 남는다.
+        assertThat(captor.getValue())
+                .doesNotContain("https://preview.qeploy.test/session-1/")
+                .doesNotContain("- preview: ");
     }
 
     @Test
@@ -223,7 +227,7 @@ class RepositoryBindingGateTest {
     }
 
     @Test
-    void firesWithoutAPreviewUrlWhenTheTaskHasNotRecordedOne() {
+    void firesEvenWhenTheTaskHasNotRecordedAPreviewUrl() {
         AgentPlan plan = codePlan();
         stubNotBoundProject("my-project");
         stubPreviewSession();
