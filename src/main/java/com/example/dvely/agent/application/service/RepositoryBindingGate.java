@@ -105,7 +105,7 @@ public class RepositoryBindingGate {
                 taskId, approval.getId(), projectId);
         agentMessageService.appendAssistant(
                 task == null ? null : task.conversationId(),
-                buildGateMessage(task == null ? null : task.previewUrl(), approval, candidate)
+                buildGateMessage(approval, candidate)
         ,
                 ChatMessageKind.APPROVAL_REQUESTED, taskId);
         return true;
@@ -124,11 +124,11 @@ public class RepositoryBindingGate {
         return true;
     }
 
-    private String buildGateMessage(String previewUrl, Approval approval, String candidate) {
+    /** preview 주소를 본문에 넣지 않는 이유는 {@code ResultApprovalGate} 의 같은 메서드 주석에 있다(#391). */
+    private String buildGateMessage(Approval approval, String candidate) {
         return "작업물이 준비됐는데 이 프로젝트에는 아직 GitHub 저장소가 연결되어 있지 않습니다.\n"
                 + "지금 연결하지 않으면 프리뷰가 만료될 때 작업물이 사라집니다.\n"
                 + "승인하면 저장소를 만들어 연결하고 현재 작업물을 preview 브랜치에 올립니다.\n"
-                + (previewUrl == null ? "" : "- preview: " + previewUrl + "\n")
                 + "- 저장소 이름(기본값): " + candidate + " — 승인할 때 다른 이름을 보낼 수 있습니다.\n"
                 + "- [" + approval.getId() + "] REPOSITORY_BINDING: " + approval.getSummary();
     }

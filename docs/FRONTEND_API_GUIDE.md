@@ -480,7 +480,9 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 
 #### 프리뷰가 만들어지는 두 경로
 
-1. **작업 결과 프리뷰**(기존): Agent CODE 스텝이 내부적으로 생성하며, `previewUrl`은 `GET /api/v1/agent/tasks/{taskId}` 응답에서 얻습니다. 별도 생성 API는 없습니다.
+1. **작업 결과 프리뷰**(기존): Agent CODE 스텝이 내부적으로 생성합니다. 별도 생성 API는 없고, 세션 식별자는 `GET /api/v1/agent/tasks/{taskId}` 응답에서 얻습니다.
+
+   ⚠️ **그 응답의 `previewUrl`을 iframe에 걸지 마세요.** `POST /preview-sessions/{sessionId}/access`가 accessToken을 회전시키므로(G4, #77), 사용자가 프리뷰를 한 번 열면 **그 이전에 받은 주소는 즉시 404**가 됩니다 — 태스크 응답의 `previewUrl`도 포함입니다. iframe에 넣을 주소는 **항상 `access` 응답의 것**입니다(아래 4번 예시). 두 응답이 같은 `previewUrl` 이름을 쓰고 하나만 유효하다는 것이 실제로 사고를 냈습니다(2026-09-25, 승인 메시지에 박혀 있던 그 주소를 눌러 404 — 그래서 메시지에서 주소를 뺐습니다, #391).
 2. **현재 상태 프리뷰**(신규): 작업 지시 없이 `POST /api/v1/projects/{id}/preview-session`으로 띄웁니다. `preview` 브랜치를 그대로 clone → (build 스크립트가 있으면) 빌드 → 서빙하므로, 저장소를 막 연결한 직후에도 배포 전에 현재 화면을 볼 수 있습니다.
 
 두 종류 모두 같은 게이트웨이로 서빙되고 같은 TTL(기본 30분, `qeploy.preview.ttl`)로 회수되며, 프리뷰를 보는 동안에는 접근할 때마다 만료가 연장됩니다.

@@ -155,7 +155,7 @@ public class ResultApprovalGate {
                 taskId, approval.getId(), projectId);
         agentMessageService.appendAssistant(
                 task == null ? null : task.conversationId(),
-                buildGateMessage(task == null ? null : task.previewUrl(), approval)
+                buildGateMessage(approval)
         ,
                 ChatMessageKind.APPROVAL_REQUESTED, taskId);
         return true;
@@ -221,10 +221,18 @@ public class ResultApprovalGate {
         return user;
     }
 
-    private String buildGateMessage(String previewUrl, Approval approval) {
+    /**
+     * <b>preview 주소를 본문에 넣지 않는다(#391).</b> 여기 들어가는 것은 태스크의 {@code previewUrl}
+     * 인데, 사용자가 화면에서 프리뷰를 여는 것이 곧 {@code POST /preview-sessions/{id}/access} 이고
+     * 그 호출이 accessToken 을 회전시켜 <b>이전 주소를 죽인다</b>(G4, #77). 즉 이 링크는 사용자가
+     * 프리뷰를 여는 순간 404 가 되고, 대화 이력은 남으므로 <b>영구히 죽은 링크</b>가 된다.
+     *
+     * <p>안내조차 남기지 않은 이유: 승인 카드가 이미 화면에 프리뷰와 함께 뜬다. 주소도 안내도
+     * 중복이고, 주소는 거기에 해롭기까지 했다.</p>
+     */
+    private String buildGateMessage(Approval approval) {
         return "작업 결과가 preview에 준비되었습니다. 미리보기와 변경 내역을 확인해 주세요.\n"
                 + "승인하면 현재 preview 상태 전체가 main에 반영됩니다. 거절하면 preview에만 남습니다.\n"
-                + "- preview: " + previewUrl + "\n"
                 + "- [" + approval.getId() + "] RESULT: " + approval.getSummary();
     }
 }
