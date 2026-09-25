@@ -141,6 +141,9 @@ public class AgentController {
                 task.taskId(),
                 task.status(),
                 task.previewUrl(),
+                // previewUrl 은 회전으로 죽는 스냅샷이라 폐기 예정이다(#392). 그 값의 유무만
+                // 필요한 소비자가 주소까지 들고 가지 않도록 불리언을 따로 낸다.
+                task.previewUrl() != null && !task.previewUrl().isBlank(),
                 task.summary(),
                 task.error(),
                 task.question(),
