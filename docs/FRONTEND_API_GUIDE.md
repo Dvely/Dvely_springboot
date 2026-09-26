@@ -338,7 +338,7 @@ Accept: text/event-stream
 | 메서드 | 경로 | 용도 | 요청 | 응답(핵심 필드) | 주요 에러 |
 |---|---|---|---|---|---|
 | POST | `/decision` | 자연어 요청 분석 → 실행 계획 수립 + 비동기 제출 | `{ content, aiProvider(ANTHROPIC\|OPENAI\|GLM\|CLAUDE_CODE\|CODEX), projectId?, conversationId?, model?, thinking? }` | `{ steps[], reasoning, aiProvider, taskId, status, approvalIds }` | 400, 401, 429/502/503(AI 제공자) |
-| GET | `/tasks/{taskId}` | 태스크 상태 조회 | - | `{ taskId, status, previewUrl, summary, error, question, failureLog, suggestedFix, attempt, maxAttempts, retryable, pendingApprovalId }` | 404 |
+| GET | `/tasks/{taskId}` | 태스크 상태 조회 | - | `{ taskId, status, ~~previewUrl~~, previewCreated, summary, error, question, failureLog, suggestedFix, attempt, maxAttempts, retryable, pendingApprovalId }` | 404 |
 | GET | `/tasks/{taskId}/events` | 영속 이벤트 목록(증분) | query: `afterEventId`(기본 0) | `[{ eventId, taskId, type, status, message, createdAt }]` | 404 |
 | GET | `/tasks/{taskId}/events/stream` | SSE 이벤트 스트림 | query: `afterEventId` | `text/event-stream`(`@RawApiResponse`) | 404(emitter null) |
 | POST | `/tasks/{taskId}/input` | `WAITING_INPUT` 상태의 태스크에 사용자 입력 제출 | `{ value }` | 204 | 400(WAITING_INPUT 아님), 404 |
@@ -475,14 +475,24 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 | GET | `/api/v1/preview-sessions/{sessionId}/status` | 컨테이너 실행 여부·리소스 사용량 조회(p95 ~1.5초 — 폴링은 5초 이상 권장) | Bearer | `{ sessionId, projectId, taskId, sessionStatus(ACTIVE\|PROVISIONING\|CLOSED\|EXPIRED\|FAILED), containerRunning, oomKilled, exitCode, startedAt, expiresAt, resources{ memoryUsageBytes, memoryLimitBytes, memoryUsagePercent, cpuPercent } }`(resources는 미실행/조회 3초 초과 시 null) |
 | GET | `/api/v1/preview-sessions/{sessionId}/logs` | 컨테이너 stdout/stderr 텍스트 조회(영속화 안 됨) | Bearer | `{ sessionId, containerRunning, logText }`(query: `tail`(기본 200, [1,2000] 클램프), `sinceSeconds`) |
 
-`ProjectPreviewSession` = `{ sessionId, projectId, taskId, status(ACTIVE|PROVISIONING|FAILED), previewUrl, expiresAt, failureReason }`
-— `previewUrl`은 **`status=ACTIVE`일 때만** 값이 있습니다(준비 전 주소는 게이트웨이가 404로 막습니다). `taskId`가 `null`이면 프로젝트 단위로 띄운 "현재 상태" 프리뷰, 값이 있으면 그 Agent 작업이 만든 프리뷰입니다.
+`ProjectPreviewSession` = `{ sessionId, projectId, taskId, status(ACTIVE|PROVISIONING|FAILED), ~~previewUrl~~, expiresAt, failureReason }`
+— `taskId`가 `null`이면 프로젝트 단위로 띄운 "현재 상태" 프리뷰, 값이 있으면 그 Agent 작업이 만든 프리뷰입니다.
+
+> ⚠️ **이 응답의 `previewUrl`도 쓰지 마세요 — 제거 예정입니다(#392).** 이 값은 회전과 함께 갱신되므로 **낡지는 않습니다.** 대신 **쿠키가 없으면 열리지 않습니다** — 문서 탐색에는 접근 쿠키가 필요하고(#77 G2) 그것은 `access` 호출만 발급합니다. 그래서 실패가 404가 아니라 **401**로 납니다.
+>
+> **dev 에서 시험하면 반드시 통과합니다.** `require-access-cookie`가 dev 는 `false`, 운영은 `true`입니다 — dev 에서 이 주소를 iframe 에 넣으면 열리고 **운영에서만 401**입니다.
 
 #### 프리뷰가 만들어지는 두 경로
 
 1. **작업 결과 프리뷰**(기존): Agent CODE 스텝이 내부적으로 생성합니다. 별도 생성 API는 없고, 세션 식별자는 `GET /api/v1/agent/tasks/{taskId}` 응답에서 얻습니다.
 
-   ⚠️ **그 응답의 `previewUrl`을 iframe에 걸지 마세요.** `POST /preview-sessions/{sessionId}/access`가 accessToken을 회전시키므로(G4, #77), 사용자가 프리뷰를 한 번 열면 **그 이전에 받은 주소는 즉시 404**가 됩니다 — 태스크 응답의 `previewUrl`도 포함입니다. iframe에 넣을 주소는 **항상 `access` 응답의 것**입니다(아래 4번 예시). 두 응답이 같은 `previewUrl` 이름을 쓰고 하나만 유효하다는 것이 실제로 사고를 냈습니다(2026-09-25, 승인 메시지에 박혀 있던 그 주소를 눌러 404 — 그래서 메시지에서 주소를 뺐습니다, #391).
+   ⚠️ **그 응답의 `previewUrl`을 iframe에 걸지 마세요 — 폐기 예정입니다(#392).** `POST /preview-sessions/{sessionId}/access`가 accessToken을 회전시키므로(G4, #77), 사용자가 프리뷰를 한 번 열면 **그 이전에 받은 주소는 즉시 404**가 됩니다 — 태스크 응답의 `previewUrl`도 포함입니다. iframe에 넣을 주소는 **항상 `access` 응답의 것**입니다(아래 4번 예시).
+
+   실제로 사고를 냈습니다(2026-09-25). 승인 메시지에 박혀 있던 그 주소를 눌러 404 — 그래서 메시지에서 주소를 뺐습니다(#391).
+
+   **"프리뷰가 만들어졌는지"만 필요하면 `previewCreated`(boolean)를 쓰세요(#392).** 폴링을 멈출 신호로 `previewUrl`이 비었는지 보던 자리를 이 값으로 바꿉니다 — 판단에 주소가 필요하지 않고, 주소를 들고 가면 회전 뒤 404를 잡습니다.
+
+   이름이 `previewReady`가 아니라 `previewCreated`인 것에 이유가 있습니다. 근거가 되는 컬럼(`agent_run.preview_url`)은 **프리뷰가 회수돼도 지워지지 않으므로**, `true`가 "지금 볼 수 있다"를 뜻하지 않습니다. 지금 상태는 `GET /projects/{projectId}/preview-session`의 `status`가 말합니다.
 2. **현재 상태 프리뷰**(신규): 작업 지시 없이 `POST /api/v1/projects/{id}/preview-session`으로 띄웁니다. `preview` 브랜치를 그대로 clone → (build 스크립트가 있으면) 빌드 → 서빙하므로, 저장소를 막 연결한 직후에도 배포 전에 현재 화면을 볼 수 있습니다.
 
 두 종류 모두 같은 게이트웨이로 서빙되고 같은 TTL(기본 30분, `qeploy.preview.ttl`)로 회수되며, 프리뷰를 보는 동안에는 접근할 때마다 만료가 연장됩니다.

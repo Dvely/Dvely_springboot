@@ -233,6 +233,10 @@ qeploy:
       url: ${QEPLOY_TEMPLATE_CATALOG_URL:https://dvely.github.io/qeploy-templates/catalog.json}
       refresh-interval: ${QEPLOY_TEMPLATE_CATALOG_REFRESH_INTERVAL:10m}
       request-timeout: ${QEPLOY_TEMPLATE_CATALOG_REQUEST_TIMEOUT:5s}
+      # 재시작 직후 네트워크가 죽어 있을 때 DB 스냅샷을 복원해도 되는 최대 나이 (#395).
+      # 이보다 낡으면 복원하지 않고 503 을 낸다 — 너무 낡은 목록은 이미 없어진 템플릿을
+      # 고르게 만들고, 그러면 "고를 때는 200, 만들 때는 실패"가 된다.
+      snapshot-max-age: ${QEPLOY_TEMPLATE_CATALOG_SNAPSHOT_MAX_AGE:24h}
 
   # 컨테이너가 남기고 간 도커 찌꺼기(고아 볼륨 · dangling 이미지 · 오래된 빌드 캐시) 정리.
   # 컨테이너는 지워도 그것들은 남는다 — dev 에서 컨테이너 0 개인데 볼륨 2.2GB + 빌드 캐시 6.5GB 가
