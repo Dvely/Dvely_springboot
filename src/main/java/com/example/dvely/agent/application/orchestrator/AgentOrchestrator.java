@@ -302,6 +302,60 @@ public class AgentOrchestrator {
     }
 
     /**
+     * 이 태스크가 기다리는 PENDING 승인이 {@code REPOSITORY_BINDING} 인가 (#401).
+     *
+     * <p>스윕은 상태로 후보를 고르는데 {@code RepositoryBindingGate} 도 {@code RESULT} 와 같은
+     * {@code WAITING_RESULT_APPROVAL} 을 쓴다({@code RepositoryBindingGate} 참조) — 상태만으로는
+     * 둘을 가를 수 없어서 승인 타입을 봐야 한다.</p>
+     *
+     * <p>잠금 읽기를 쓰는 이유는 {@link #cancelTaskCascade} 와 같다. 호출자가 태스크 행을 이미
+     * 잠갔더라도 비잠금 읽기는 이 트랜잭션이 먼저 고정한 스냅샷을 재사용하므로, 그 사이 커밋된
+     * 결정을 놓칠 수 있다.</p>
+     */
+    private boolean isAwaitingRepositoryBinding(AgentTask task) {
+        // WAITING_RESULT_APPROVAL 에서만 본다. 아래 마침 경로가 쓰는 전이가 그 상태를 요구하므로,
+        // 다른 상태에서 이 분기를 타면 전이가 거절되고(false) 태스크가 매 스윕마다 같은 자리에서
+        // 실패해 영구히 안 닫힌다. REPOSITORY_BINDING 승인은 RepositoryBindingGate 가
+        // markWaitingResultApproval 과 함께 만들므로 실제로 다른 상태에 놓일 일은 없지만,
+        // "없을 일"에 의존해 조용히 갇히는 경로를 만들지 않는다.
+        if (task.status() != TaskStatus.WAITING_RESULT_APPROVAL) {
+            return false;
+        }
+        return approvalRepository.findByTaskIdOrderByIdAscForUpdate(task.taskId()).stream()
+                .filter(approval -> approval.getStatus() == ApprovalStatus.PENDING)
+                .anyMatch(approval -> approval.getType() == ApprovalType.REPOSITORY_BINDING);
+    }
+
+    /**
+     * 저장소 연결을 묻고 있던 태스크를 <b>취소하지 않고</b> 마친다 (#401).
+     *
+     * <p>{@code REPOSITORY_BINDING} 승인은 실행을 막는 게이트가 아니다. CODE 작업은 이미 성공했고
+     * 그 결과를 저장소에 남길지만 묻는다. 그래서 {@code ApprovalCommandService} 의 거절 경로와
+     * 프리뷰 만료 경로가 둘 다 {@link #declineAfterResult} 로 <b>작업을 마친다</b> — 그쪽 주석이
+     * 이유를 적고 있다: "{@code cancelTaskCascade} 를 태우면 멀쩡히 끝난 작업이 {@code CANCELLED}
+     * 로 뒤집힌다".</p>
+     *
+     * <p>스윕은 그 구분 없이 {@code cancelTaskCascade} 를 태우고 있었다. 같은 조건(프리뷰 회수)을
+     * 사용자가 눌렀을 때와 스윕이 먼저 도달했을 때 다르게 처리하던 것이다.</p>
+     *
+     * <p>승인 카드는 닫는다. 열린 채 두면 누르면 실패하는 버튼이 남고, 그것을 없애는 것이
+     * {@code LostPreviewApprovalSweeper}(#380) 의 본래 목적이다.</p>
+     *
+     * @return 정리했으면 {@code true}. 상태 전이가 거절되면 {@code false} — 그 사이 누군가 결정했다
+     */
+    private boolean finishTaskWithoutRepositoryBinding(String taskId, String resumeReason) {
+        approvalRepository.findByTaskIdOrderByIdAscForUpdate(taskId).stream()
+                .filter(approval -> approval.getStatus() == ApprovalStatus.PENDING)
+                .forEach(approval -> {
+                    approval.cancel();
+                    approvalRepository.save(approval);
+                });
+        // 승인 경로와 같은 전이를 쓴다. resumeAfterResult 를 쓰면 승인하지 않았는데 스트림에
+        // RESULT_APPROVED 가 찍힌다 — declineAfterResult 가 전이는 같고 이벤트만 다른 짝이다.
+        return taskStore.resumeAfterResultDecline(taskId, resumeReason);
+    }
+
+    /**
      * ADR-Y2 (#55) — the sweep's actual lock-and-reverify step, invoked per candidate by {@code
      * StuckApprovalSweeper}. Uses the exact same lock order as the plan-approve path above (task
      * row first, then a *locking* read of every approval), so a still-in-flight approve() call for
@@ -354,6 +408,24 @@ public class AgentOrchestrator {
         if (task.status() != TaskStatus.WAITING_RESULT_APPROVAL) {
             return false; // 스캔과 잠금 사이에 누군가 결정했다 — 정상적인 no-op
         }
+        // 저장소 연결을 묻고 있던 태스크는 취소하지 않는다 (#401). CODE 작업은 이미 성공했고,
+        // 사용자가 직접 거절했을 때·승인했지만 프리뷰가 없을 때 둘 다 작업을 마치는 쪽으로 간다.
+        if (isAwaitingRepositoryBinding(task)) {
+            if (!finishTaskWithoutRepositoryBinding(
+                    taskId, "프리뷰가 만료되어 저장소를 연결하지 못한 채 작업을 마칩니다.")) {
+                return false;
+            }
+            log.info("[AgentOrchestrator] 프리뷰가 회수된 저장소 연결 대기 태스크를 마쳤습니다. taskId={}", taskId);
+            agentMessageService.appendAssistant(
+                    task.conversationId(),
+                    describeHold(hold) + " 동안 결정이 없어 프리뷰가 정리되었고, 저장소를 연결하지 못한 채"
+                            + " 이 작업을 마쳤습니다.\n"
+                            + "같은 내용을 다시 요청하면 새로 만들어 연결할 수 있습니다.",
+                    ChatMessageKind.TASK_CANCELLED,
+                    taskId
+            );
+            return true;
+        }
         if (!cancelTaskCascade(taskId, task.ownerUserId())) {
             return false;
         }
@@ -397,6 +469,22 @@ public class AgentOrchestrator {
         if (task.status() != TaskStatus.WAITING_APPROVAL
                 && task.status() != TaskStatus.WAITING_RESULT_APPROVAL) {
             return false; // 스캔과 잠금 사이에 누군가 결정했다 — 정상적인 no-op
+        }
+        // 프리뷰 회수 스윕과 같은 구분 (#401) — 저장소 연결 대기는 취소가 아니라 마침이다.
+        if (isAwaitingRepositoryBinding(task)) {
+            if (!finishTaskWithoutRepositoryBinding(
+                    taskId, "저장소 연결이 결정되지 않아 연결하지 못한 채 작업을 마칩니다.")) {
+                return false;
+            }
+            log.info("[AgentOrchestrator] 방치된 저장소 연결 대기 태스크를 마쳤습니다. taskId={}", taskId);
+            agentMessageService.appendAssistant(
+                    task.conversationId(),
+                    "오랫동안 결정되지 않아 저장소를 연결하지 못한 채 이 작업을 마쳤습니다.\n"
+                            + "나중에 연결하려면 프로젝트 설정에서 저장소를 연결하거나 배포를 요청해주세요.",
+                    ChatMessageKind.TASK_CANCELLED,
+                    taskId
+            );
+            return true;
         }
         if (!cancelTaskCascade(taskId, task.ownerUserId())) {
             return false;
