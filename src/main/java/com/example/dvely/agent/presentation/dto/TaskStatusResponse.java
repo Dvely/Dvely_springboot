@@ -29,23 +29,6 @@ public record TaskStatusResponse(
         TaskStatus status,
 
         @Schema(description = """
-                **이 주소를 열지 마세요. 폐기 예정입니다(#392) — previewCreated 를 쓰세요.**
-
-                이 값은 CODE 스텝이 끝난 시점의 주소를 그대로 담은 **스냅샷**이다(`agent_run.preview_url`).
-                사용자가 화면에서 프리뷰를 여는 것이 곧 `POST /preview-sessions/{id}/access` 호출이고, 그
-                호출은 accessToken 을 **회전시켜 이전 주소를 죽인다**(#77 G4). 그래서 여기 담긴 주소는
-                프리뷰를 한 번 연 뒤부터 404 다. 게다가 이 컬럼은 프리뷰가 회수돼도 지워지지 않으므로,
-                값이 있다는 것이 **지금 살아 있다는 뜻도 아니다**.
-
-                열 수 있는 주소는 `POST /preview-sessions/{id}/access` 응답의 previewUrl **하나뿐**이다.
-                "프리뷰가 만들어졌는지"만 알고 싶으면 아래 previewCreated 를 본다.
-                """,
-                example = "https://qeploy.com/api/v1/previews/101/token/", nullable = true,
-                deprecated = true)
-        @Deprecated(since = "#392")
-        String previewUrl,
-
-        @Schema(description = """
                 이 태스크에 프리뷰가 **만들어졌는지** (#392). CODE 스텝이 프리뷰를 띄우면 true 가 된다.
 
                 이름이 "ready" 가 아니라 "created" 인 것에 이유가 있다 — 근거가 되는 컬럼은 프리뷰가

@@ -4,6 +4,18 @@ import com.example.dvely.preview.application.result.ProjectPreviewSessionResult;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.LocalDateTime;
 
+/**
+ * 프로젝트의 현재 프리뷰 세션.
+ *
+ * <p><b>프리뷰 주소는 여기에 없다</b>(#392). 예전에는 {@code previewUrl} 이 있었는데 이름이 access
+ * 응답의 것과 같아서, 읽는 쪽이 계약도 같다고 가정했다. 이 값은 회전과 함께 갱신되므로 낡지는
+ * 않았지만 <b>쿠키 없이는 열리지 않았다</b> — 문서 탐색에는 접근 쿠키가 필요하고(#77 G2) 그것은
+ * {@code POST /preview-sessions/&#123;id&#125;/access} 만 발급한다. 그래서 실패가 404 가 아니라
+ * 401 로 났다.</p>
+ *
+ * <p>지금 볼 수 있는지는 {@code status} 가 말하고, 열 주소는 access 가 준다. 이 응답이 주소를 들고
+ * 있을 이유가 없다.</p>
+ */
 @Schema(description = "프로젝트의 현재 프리뷰 세션")
 public record ProjectPreviewSessionResponse(
 
@@ -21,11 +33,6 @@ public record ProjectPreviewSessionResponse(
                 example = "PROVISIONING")
         String status,
 
-        @Schema(description = "프리뷰 주소. status=ACTIVE 일 때만 값이 있고, 그 외에는 null "
-                + "(준비가 끝나기 전 주소는 게이트웨이가 404로 응답한다)",
-                nullable = true, example = "https://qeploy.com/api/v1/previews/3f1a.../abcdef.../")
-        String previewUrl,
-
         @Schema(description = "이 시각이 지나면 컨테이너가 회수된다. 프리뷰를 열어두고 보는 동안에는 접근할 때마다 연장된다")
         LocalDateTime expiresAt,
 
@@ -40,7 +47,6 @@ public record ProjectPreviewSessionResponse(
                 result.projectId(),
                 result.taskId(),
                 result.status(),
-                result.previewUrl(),
                 result.expiresAt(),
                 result.failureReason()
         );

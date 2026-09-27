@@ -140,9 +140,9 @@ public class AgentController {
         return ResponseEntity.ok(new TaskStatusResponse(
                 task.taskId(),
                 task.status(),
-                task.previewUrl(),
-                // previewUrl 은 회전으로 죽는 스냅샷이라 폐기 예정이다(#392). 그 값의 유무만
-                // 필요한 소비자가 주소까지 들고 가지 않도록 불리언을 따로 낸다.
+                // 주소가 아니라 유무만 낸다 (#392 3단계). previewUrl 은 회전으로 죽는 스냅샷이었고,
+                // 그 값을 그대로 내보내는 동안 이 응답을 믿은 쪽이 404 를 잡았다(#391).
+                // 컬럼은 남는다 — 이 불리언의 근거다.
                 task.previewUrl() != null && !task.previewUrl().isBlank(),
                 task.summary(),
                 task.error(),
