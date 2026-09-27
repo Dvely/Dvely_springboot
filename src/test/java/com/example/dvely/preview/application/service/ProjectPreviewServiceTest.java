@@ -130,7 +130,6 @@ class ProjectPreviewServiceTest {
         ProjectPreviewSessionResult result = service.findCurrent(PROJECT_ID, USER_ID).orElseThrow();
 
         assertThat(result.status()).isEqualTo(PreviewSessionStatus.PROVISIONING.name());
-        assertThat(result.previewUrl()).isNull();
         assertThat(result.taskId()).isNull();
     }
 
@@ -144,7 +143,9 @@ class ProjectPreviewServiceTest {
         ProvisionOutcome outcome = service.provision(PROJECT_ID, USER_ID, false);
 
         assertThat(outcome.started()).isFalse();
-        assertThat(outcome.session().previewUrl()).isNotNull();
+        // 붙었다는 것을 이제 주소 유무가 아니라 상태와 세션 ID 로 본다 (#392 3단계).
+        assertThat(outcome.session().status()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
+        assertThat(outcome.session().sessionId()).isEqualTo(active.getId());
         verify(dockerService, never()).createAndStartContainer(any(), any(), anyString(), any(), any(), any(), anyLong());
         verify(provisioner, never()).provision(anyString());
     }
@@ -213,8 +214,6 @@ class ProjectPreviewServiceTest {
         assertThat(outcome.started()).isTrue();
         assertThat(outcome.session().status()).isEqualTo(PreviewSessionStatus.PROVISIONING.name());
         assertThat(outcome.session().taskId()).isNull();
-        // 준비가 끝나기 전 주소는 게이트웨이가 열어주지 않으므로 내려주지 않는다.
-        assertThat(outcome.session().previewUrl()).isNull();
         verify(provisioner).provision(savedSession().getId());
     }
 

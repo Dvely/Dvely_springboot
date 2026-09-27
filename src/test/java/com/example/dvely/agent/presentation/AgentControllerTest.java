@@ -239,7 +239,7 @@ class AgentControllerTest {
                 .hasMessageContaining("입력을 기다리는");
     }
 
-    // ── #392: previewUrl 은 회전으로 죽는 스냅샷이라 폐기 예정 — previewCreated 를 새로 낸다 ────────
+    // ── #392: 태스크 응답은 주소가 아니라 유무만 낸다 (3단계에서 previewUrl 제거 완료) ──────────
 
     @Test
     void getTaskStatusReportsPreviewCreatedWhenTheTaskHasAPreviewUrl() {
@@ -253,8 +253,6 @@ class AgentControllerTest {
         TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
 
         assertThat(response.previewCreated()).isTrue();
-        // 옛 필드는 아직 같이 나간다 — FE 가 옮길 기간이다(#392 1단계).
-        assertThat(response.previewUrl()).isEqualTo("https://qeploy.com/api/v1/previews/sess/token/");
     }
 
     @Test
@@ -266,7 +264,6 @@ class AgentControllerTest {
         TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
 
         assertThat(response.previewCreated()).isFalse();
-        assertThat(response.previewUrl()).isNull();
     }
 
     @Test
