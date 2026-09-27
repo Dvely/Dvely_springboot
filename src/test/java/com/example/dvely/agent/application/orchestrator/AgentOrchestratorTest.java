@@ -1159,4 +1159,130 @@ class AgentOrchestratorTest {
         assertThat(orchestrator.supplyInput("task-1", 1L, 21L, "react")).isFalse();
         verify(messageService, never()).appendAssistant(any(), any(), any(), any());
     }
+
+    // ── #401: 저장소 연결 대기는 스윕이 취소하지 않고 마친다 ──────────────────────────────────
+
+    /** 이 테스트들이 공유하는 조립. 취소가 '성공할 수 있는' 상태로 둬서 통과 이유를 하나로 좁힌다. */
+    private record BindingSweepFixture(
+            AgentOrchestrator orchestrator,
+            TaskStore taskStore,
+            ApprovalRepository approvalRepository,
+            AgentMessageService messageService,
+            Approval approval
+    ) {}
+
+    private BindingSweepFixture bindingSweepFixture(ApprovalType type, TaskStatus status) {
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                approvalRepository,
+                messageService,
+                mock(InputWaitStore.class)
+        );
+        Approval approval = new Approval(
+                91L, 1L, 11L, 21L, "task-1", type,
+                ApprovalStatus.PENDING, "[저장소 연결] my-app", LocalDateTime.now(), null
+        );
+        when(taskStore.lockTask("task-1")).thenReturn(new AgentTask(
+                "task-1", 1L, 11L, 21L, status, null, null, null, null, Instant.now()));
+        // 두 경로가 모두 '성공할 수 있게' 스텁한다 — 이렇게 해야 통과 이유가 "타입 분기가 갈랐다"
+        // 하나로 좁혀진다. 한쪽만 성공하게 두면 분기를 지워도 그대로 통과하는 테스트가 된다.
+        when(taskStore.cancel("task-1", 1L)).thenReturn(true);
+        when(taskStore.resumeAfterResultDecline(eq("task-1"), anyString())).thenReturn(true);
+        when(approvalRepository.findByTaskIdOrderByIdAscForUpdate("task-1"))
+                .thenReturn(List.of(approval));
+        return new BindingSweepFixture(
+                orchestrator, taskStore, approvalRepository, messageService, approval);
+    }
+
+    @Test
+    void 프리뷰가_회수된_저장소_연결_대기는_취소가_아니라_마침이다() {
+        // ApprovalCommandService 가 이미 적어둔 것: "cancelTaskCascade 를 태우면 멀쩡히 끝난
+        // 작업이 CANCELLED 로 뒤집힌다". REPOSITORY_BINDING 은 실행 게이트가 아니라 이미 성공한
+        // CODE 작업물을 저장소에 남길지 묻는 것이므로, 프리뷰가 사라져도 작업은 성공으로 끝나야
+        // 한다. 스윕이 그 구분 없이 취소하고 있었다(#380 에서 놓쳤다).
+        BindingSweepFixture f = bindingSweepFixture(
+                ApprovalType.REPOSITORY_BINDING, TaskStatus.WAITING_RESULT_APPROVAL);
+
+        boolean handled = f.orchestrator().abandonApprovalTaskWithLostPreview(
+                "task-1", Duration.ofHours(6));
+
+        assertThat(handled).isTrue();
+        // 핵심 단정: 태스크를 취소하지 않는다.
+        verify(f.taskStore(), never()).cancel("task-1", 1L);
+        verify(f.taskStore()).resumeAfterResultDecline(eq("task-1"), anyString());
+        // 승인 카드는 닫는다 — 누르면 실패하는 버튼을 남기지 않는 것이 #380 의 본래 목적이다.
+        assertThat(f.approval().getStatus()).isEqualTo(ApprovalStatus.CANCELLED);
+        verify(f.approvalRepository()).save(f.approval());
+    }
+
+    @Test
+    void 프리뷰가_회수된_결과_승인_대기는_지금처럼_취소된다() {
+        // 회귀 방지. 위 분기가 RESULT 까지 삼키면 반영되지 않은 작업이 성공으로 끝난 것처럼 남는다.
+        BindingSweepFixture f = bindingSweepFixture(
+                ApprovalType.RESULT, TaskStatus.WAITING_RESULT_APPROVAL);
+
+        boolean handled = f.orchestrator().abandonApprovalTaskWithLostPreview(
+                "task-1", Duration.ofHours(6));
+
+        assertThat(handled).isTrue();
+        verify(f.taskStore()).cancel("task-1", 1L);
+        verify(f.taskStore(), never()).resumeAfterResultDecline(anyString(), anyString());
+        assertThat(f.approval().getStatus()).isEqualTo(ApprovalStatus.CANCELLED);
+    }
+
+    @Test
+    void 저장소_연결_대기_마침_메시지는_변경이_사라졌다고_말하지_않는다() {
+        // RESULT 쪽 문구("변경 내용은 남아 있지 않습니다")를 그대로 쓰면 과하게 말한다. 사용자는
+        // 애초에 저장소에 남기지 않기로 한 상태에서 정상적으로 끝난 작업을 보고 있다.
+        BindingSweepFixture f = bindingSweepFixture(
+                ApprovalType.REPOSITORY_BINDING, TaskStatus.WAITING_RESULT_APPROVAL);
+
+        f.orchestrator().abandonApprovalTaskWithLostPreview("task-1", Duration.ofHours(6));
+
+        ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
+        verify(f.messageService()).appendAssistant(
+                eq(21L), message.capture(), eq(ChatMessageKind.TASK_CANCELLED), eq("task-1"));
+        assertThat(message.getValue())
+                .doesNotContain("변경 내용은 남아 있지 않습니다")
+                .contains("저장소를 연결하지 못한 채")
+                // hold 를 숫자로 말하는 것은 유지한다 — "오래" 는 사용자가 대비할 수 없다.
+                .contains("6시간");
+    }
+
+    @Test
+    void 방치된_저장소_연결_대기도_취소가_아니라_마침이다() {
+        // 7일 스윕(AbandonedApprovalSweeper)도 같은 구분을 해야 한다. 프리뷰 스윕만 고치면
+        // 같은 버그가 경로만 바꿔 남는다 — #376 에서 겪은 것과 같은 모양이다.
+        BindingSweepFixture f = bindingSweepFixture(
+                ApprovalType.REPOSITORY_BINDING, TaskStatus.WAITING_RESULT_APPROVAL);
+
+        boolean handled = f.orchestrator().abandonStaleApprovalTask("task-1");
+
+        assertThat(handled).isTrue();
+        verify(f.taskStore(), never()).cancel("task-1", 1L);
+        verify(f.taskStore()).resumeAfterResultDecline(eq("task-1"), anyString());
+        assertThat(f.approval().getStatus()).isEqualTo(ApprovalStatus.CANCELLED);
+    }
+
+    @Test
+    void 방치된_계획_승인은_저장소_분기를_타지_않고_취소된다() {
+        // WAITING_APPROVAL 에서는 마침 전이가 거절되므로, 그 상태로 분기를 타면 태스크가 매 스윕마다
+        // 같은 자리에서 실패해 영구히 안 닫힌다. 상태 가드가 그것을 막는다.
+        // (계획 승인에 REPOSITORY_BINDING 이 달릴 일은 없지만, "없을 일" 에 의존해 갇히는 경로를
+        //  만들지 않는다.)
+        BindingSweepFixture f = bindingSweepFixture(
+                ApprovalType.REPOSITORY_BINDING, TaskStatus.WAITING_APPROVAL);
+
+        boolean handled = f.orchestrator().abandonStaleApprovalTask("task-1");
+
+        assertThat(handled).isTrue();
+        verify(f.taskStore()).cancel("task-1", 1L);
+        verify(f.taskStore(), never()).resumeAfterResultDecline(anyString(), anyString());
+    }
 }

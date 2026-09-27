@@ -184,7 +184,7 @@ Agent가 수행하는 부수효과 작업(코드 생성/수정, 배포, 도메�
 
 - ②와 **같은 지점**(마지막 CODE step 직후)에서 평가되며, 프로젝트가 아직 저장소 미연결(NOT_BOUND)일 때 ② 대신 발동합니다. ②가 "이 preview를 main에 반영할까?"를 묻는다면 ③은 "저장소를 만들어 연결할까?"를 묻습니다.
 - **왜 필요한가**: 미연결 프로젝트의 CODE 결과물은 preview 컨테이너에만 존재하고, 컨테이너는 TTL(기본 30분)로 삭제됩니다. 이 게이트가 없으면 프리뷰가 만료되는 순간 작업물이 영구 소실됩니다.
-- 발동하면 task가 ②와 동일하게 `WAITING_RESULT_APPROVAL`로 전이하고, 타입 `REPOSITORY_BINDING`인 승인 1건이 `PENDING`으로 생성됩니다. 승인 ID를 얻는 방법도 ②와 같습니다(`pendingApprovalId`). 채팅 메시지에는 기본 저장소 이름 후보(프로젝트 이름 기반)와 preview URL이 함께 안내됩니다.
+- 발동하면 task가 ②와 동일하게 `WAITING_RESULT_APPROVAL`로 전이하고, 타입 `REPOSITORY_BINDING`인 승인 1건이 `PENDING`으로 생성됩니다. 승인 ID를 얻는 방법도 ②와 같습니다(`pendingApprovalId`). 채팅 메시지에는 기본 저장소 이름 후보(프로젝트 이름 기반)가 안내됩니다 — **preview URL은 담기지 않습니다**(#391: 회전으로 죽는 주소였습니다. 프리뷰는 `access` 응답의 주소로 여세요).
 - 이 타입만 **승인 정책으로 끌 수 없습니다.** 다른 타입은 끄면 "사람 확인 없이 그대로 진행"이라는 대안 동작이 있지만, 이 게이트는 끌 경우의 대안이 "작업물을 버린다"뿐이라 정책 스위치를 두지 않았습니다. `GET /projects/{id}/settings/chat`에도 대응 필드가 없습니다.
 - **승인 화면 구성**: 승인 조회 응답(`GET /approvals/{id}`, `GET /projects/{id}/approvals`)의 **`input` 필드**로 입력 UI를 그립니다. `input`이 `null`이면 단순 승인/거절 버튼만, 값이 있으면 `defaultValue`를 채운 입력 필드를 함께 그리고 승인 시 그 값을 `field` 이름으로 본문에 실어 보냅니다. 저장소 이름 기본값을 `summary`("[저장소 연결] my-repo")에서 접두사를 잘라 쓰지 마세요 — 그 문구는 표시용이라 언제든 바뀝니다.
 
@@ -215,11 +215,13 @@ GET /api/v1/agent/tasks/{taskId}
 ```
 `status`가 `DONE`/`FAILED`/`CANCELLED`가 될 때까지 주기적으로 호출합니다. `WAITING_INPUT` 상태이면 `question` 필드를 사용자에게 보여주고 `POST /api/v1/agent/tasks/{taskId}/input`으로 응답을 제출해야 다음 단계로 진행됩니다. `WAITING_RESULT_APPROVAL` 상태이면(§3.5②③) `pendingApprovalId`(§4.5)로 얻은 승인 ID를 `POST /api/v1/approvals/{pendingApprovalId}/approve` 또는 `/reject`로 처리해야 다음 단계로 진행됩니다. 이 상태는 `RESULT`와 `REPOSITORY_BINDING` 두 게이트가 공유하므로, 어느 쪽인지는 승인의 `type`으로 구분하세요(§3.5③은 approve에 선택적 본문을 받고 reject해도 task가 취소되지 않습니다).
 
+결정하지 않고 오래 두면 **서버가 정리합니다.** 프리뷰가 회수되면(기본 6시간 hold 후) 또는 오래 방치되면(7일) 승인이 `CANCELLED`로 닫히고 task가 끝납니다. 이때 **어느 게이트였는지에 따라 task 결말이 다릅니다** — `RESULT`는 `CANCELLED`, `REPOSITORY_BINDING`은 **취소가 아니라 정상 종료**입니다(#401). 두 경우 모두 안내 메시지가 대화에 남습니다.
+
 **이벤트 조회(증분)**
 ```
 GET /api/v1/agent/tasks/{taskId}/events?afterEventId={마지막으로 받은 ID}
 ```
-`type`은 `CREATED | WAITING_APPROVAL | QUEUED | STARTED | RETRY_QUEUED | LEASE_RECOVERED | RECOVERY_EXHAUSTED | WAITING_RESULT_APPROVAL | RESULT_APPROVED | RESULT_DECLINED | WAITING_INPUT | INPUT_RECEIVED | COMPLETED | FAILED | CANCELLED` 중 하나입니다. 매번 전체를 다시 받지 않고 `eventId`만 이어서 조회할 수 있습니다. `WAITING_RESULT_APPROVAL`은 결과/저장소 연결 승인 대기 진입, `RESULT_APPROVED`는 그 승인 완료 후 재개 이벤트입니다. `RESULT_DECLINED`는 **거절했지만 task는 계속 진행되는** 경우 — 현재는 저장소 연결 승인 거절(§3.5③) 하나뿐입니다. RESULT 승인 거절(§3.5②)은 task가 취소되므로 별도 타입 없이 기존 `CANCELLED`로 기록됩니다(계획 승인 거절과 동일 시맨틱).
+`type`은 `CREATED | WAITING_APPROVAL | QUEUED | STARTED | RETRY_QUEUED | LEASE_RECOVERED | RECOVERY_EXHAUSTED | WAITING_RESULT_APPROVAL | RESULT_APPROVED | RESULT_DECLINED | WAITING_INPUT | INPUT_RECEIVED | COMPLETED | FAILED | CANCELLED` 중 하나입니다. 매번 전체를 다시 받지 않고 `eventId`만 이어서 조회할 수 있습니다. `WAITING_RESULT_APPROVAL`은 결과/저장소 연결 승인 대기 진입, `RESULT_APPROVED`는 그 승인 완료 후 재개 이벤트입니다. `RESULT_DECLINED`는 **결정이 거절/불가였지만 task는 계속 진행되는** 경우입니다. 세 자리에서 나옵니다 — ⑴ 저장소 연결 승인 거절(§3.5③), ⑵ 저장소 연결 승인을 승인했지만 프리뷰가 이미 만료된 경우, ⑶ **저장소 연결 승인이 결정되지 않은 채 프리뷰가 회수되거나 오래 방치돼 서버가 정리한 경우**(#401). 세 경우 모두 승인 카드는 닫히고 **task는 취소되지 않습니다** — CODE 작업은 이미 성공했고 저장소에 남길지만 묻던 것이기 때문입니다. RESULT 승인 거절(§3.5②)은 task가 취소되므로 별도 타입 없이 기존 `CANCELLED`로 기록됩니다(계획 승인 거절과 동일 시맨틱).
 
 **SSE(실시간)**
 ```
