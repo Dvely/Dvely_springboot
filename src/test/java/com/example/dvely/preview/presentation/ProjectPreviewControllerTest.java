@@ -36,15 +36,16 @@ class ProjectPreviewControllerTest {
     @Test
     void anActivePreviewComesBackWithTheUrlToOpen() {
         ProjectPreviewService service = mock(ProjectPreviewService.class);
-        when(service.findCurrent(11L, 1L)).thenReturn(Optional.of(result(
-                PreviewSessionStatus.ACTIVE, "https://qeploy.test/api/v1/previews/s/t/", null)));
+        when(service.findCurrent(11L, 1L)).thenReturn(Optional.of(result(PreviewSessionStatus.ACTIVE, null)));
 
         ResponseEntity<ProjectPreviewSessionResponse> response =
                 new ProjectPreviewController(service).getCurrent(1L, 11L);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isNotNull();
-        assertThat(response.getBody().previewUrl()).isEqualTo("https://qeploy.test/api/v1/previews/s/t/");
+        // 주소는 더 이상 이 응답에 없다 (#392 3단계) — 볼 수 있는지는 status 가 말한다.
+        assertThat(response.getBody().status()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
+        assertThat(response.getBody().sessionId()).isEqualTo("session-1");
     }
 
     @Test
@@ -53,15 +54,15 @@ class ProjectPreviewControllerTest {
         ProjectPreviewController controller = new ProjectPreviewController(service);
 
         when(service.provision(11L, 1L, false)).thenReturn(new ProvisionOutcome(
-                result(PreviewSessionStatus.ACTIVE, "https://qeploy.test/api/v1/previews/s/t/", null), false));
+                result(PreviewSessionStatus.ACTIVE, null), false));
         assertThat(controller.provision(1L, 11L, false).getStatusCode()).isEqualTo(HttpStatus.OK);
 
         when(service.provision(11L, 1L, false)).thenReturn(new ProvisionOutcome(
-                result(PreviewSessionStatus.PROVISIONING, null, null), true));
+                result(PreviewSessionStatus.PROVISIONING, null), true));
         ResponseEntity<ProjectPreviewSessionResponse> accepted = controller.provision(1L, 11L, false);
         assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
         assertThat(accepted.getBody()).isNotNull();
-        assertThat(accepted.getBody().previewUrl()).isNull();
+        assertThat(accepted.getBody().status()).isEqualTo(PreviewSessionStatus.PROVISIONING.name());
     }
 
     /** force=true 는 그대로 서비스에 전달되고(강제 리빌드) 결과는 준비 시작(202)이다. */
@@ -69,7 +70,7 @@ class ProjectPreviewControllerTest {
     void forceRebuildIsForwardedAndAccepted() {
         ProjectPreviewService service = mock(ProjectPreviewService.class);
         when(service.provision(11L, 1L, true)).thenReturn(new ProvisionOutcome(
-                result(PreviewSessionStatus.PROVISIONING, null, null), true));
+                result(PreviewSessionStatus.PROVISIONING, null), true));
 
         ResponseEntity<ProjectPreviewSessionResponse> response =
                 new ProjectPreviewController(service).provision(1L, 11L, true);
@@ -81,7 +82,7 @@ class ProjectPreviewControllerTest {
     void aFailedPreviewCarriesItsReasonToTheClient() {
         ProjectPreviewService service = mock(ProjectPreviewService.class);
         when(service.findCurrent(11L, 1L)).thenReturn(Optional.of(result(
-                PreviewSessionStatus.FAILED, null, "npm ERR! Missing script: \"build\"")));
+                PreviewSessionStatus.FAILED, "npm ERR! Missing script: \"build\"")));
 
         ResponseEntity<ProjectPreviewSessionResponse> response =
                 new ProjectPreviewController(service).getCurrent(1L, 11L);
@@ -92,10 +93,9 @@ class ProjectPreviewControllerTest {
     }
 
     private ProjectPreviewSessionResult result(PreviewSessionStatus status,
-                                               String previewUrl,
                                                String failureReason) {
         return new ProjectPreviewSessionResult(
-                "session-1", 11L, null, status.name(), previewUrl,
+                "session-1", 11L, null, status.name(),
                 LocalDateTime.now().plusMinutes(30), failureReason);
     }
 }

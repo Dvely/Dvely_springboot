@@ -184,7 +184,7 @@ Agent가 수행하는 부수효과 작업(코드 생성/수정, 배포, 도메�
 
 - ②와 **같은 지점**(마지막 CODE step 직후)에서 평가되며, 프로젝트가 아직 저장소 미연결(NOT_BOUND)일 때 ② 대신 발동합니다. ②가 "이 preview를 main에 반영할까?"를 묻는다면 ③은 "저장소를 만들어 연결할까?"를 묻습니다.
 - **왜 필요한가**: 미연결 프로젝트의 CODE 결과물은 preview 컨테이너에만 존재하고, 컨테이너는 TTL(기본 30분)로 삭제됩니다. 이 게이트가 없으면 프리뷰가 만료되는 순간 작업물이 영구 소실됩니다.
-- 발동하면 task가 ②와 동일하게 `WAITING_RESULT_APPROVAL`로 전이하고, 타입 `REPOSITORY_BINDING`인 승인 1건이 `PENDING`으로 생성됩니다. 승인 ID를 얻는 방법도 ②와 같습니다(`pendingApprovalId`). 채팅 메시지에는 기본 저장소 이름 후보(프로젝트 이름 기반)와 preview URL이 함께 안내됩니다.
+- 발동하면 task가 ②와 동일하게 `WAITING_RESULT_APPROVAL`로 전이하고, 타입 `REPOSITORY_BINDING`인 승인 1건이 `PENDING`으로 생성됩니다. 승인 ID를 얻는 방법도 ②와 같습니다(`pendingApprovalId`). 채팅 메시지에는 기본 저장소 이름 후보(프로젝트 이름 기반)가 안내됩니다 — **preview URL은 담기지 않습니다**(#391: 회전으로 죽는 주소였습니다. 프리뷰는 `access` 응답의 주소로 여세요).
 - 이 타입만 **승인 정책으로 끌 수 없습니다.** 다른 타입은 끄면 "사람 확인 없이 그대로 진행"이라는 대안 동작이 있지만, 이 게이트는 끌 경우의 대안이 "작업물을 버린다"뿐이라 정책 스위치를 두지 않았습니다. `GET /projects/{id}/settings/chat`에도 대응 필드가 없습니다.
 - **승인 화면 구성**: 승인 조회 응답(`GET /approvals/{id}`, `GET /projects/{id}/approvals`)의 **`input` 필드**로 입력 UI를 그립니다. `input`이 `null`이면 단순 승인/거절 버튼만, 값이 있으면 `defaultValue`를 채운 입력 필드를 함께 그리고 승인 시 그 값을 `field` 이름으로 본문에 실어 보냅니다. 저장소 이름 기본값을 `summary`("[저장소 연결] my-repo")에서 접두사를 잘라 쓰지 마세요 — 그 문구는 표시용이라 언제든 바뀝니다.
 
@@ -215,11 +215,13 @@ GET /api/v1/agent/tasks/{taskId}
 ```
 `status`가 `DONE`/`FAILED`/`CANCELLED`가 될 때까지 주기적으로 호출합니다. `WAITING_INPUT` 상태이면 `question` 필드를 사용자에게 보여주고 `POST /api/v1/agent/tasks/{taskId}/input`으로 응답을 제출해야 다음 단계로 진행됩니다. `WAITING_RESULT_APPROVAL` 상태이면(§3.5②③) `pendingApprovalId`(§4.5)로 얻은 승인 ID를 `POST /api/v1/approvals/{pendingApprovalId}/approve` 또는 `/reject`로 처리해야 다음 단계로 진행됩니다. 이 상태는 `RESULT`와 `REPOSITORY_BINDING` 두 게이트가 공유하므로, 어느 쪽인지는 승인의 `type`으로 구분하세요(§3.5③은 approve에 선택적 본문을 받고 reject해도 task가 취소되지 않습니다).
 
+결정하지 않고 오래 두면 **서버가 정리합니다.** 프리뷰가 회수되면(기본 6시간 hold 후) 또는 오래 방치되면(7일) 승인이 `CANCELLED`로 닫히고 task가 끝납니다. 이때 **어느 게이트였는지에 따라 task 결말이 다릅니다** — `RESULT`는 `CANCELLED`, `REPOSITORY_BINDING`은 **취소가 아니라 정상 종료**입니다(#401). 두 경우 모두 안내 메시지가 대화에 남습니다.
+
 **이벤트 조회(증분)**
 ```
 GET /api/v1/agent/tasks/{taskId}/events?afterEventId={마지막으로 받은 ID}
 ```
-`type`은 `CREATED | WAITING_APPROVAL | QUEUED | STARTED | RETRY_QUEUED | LEASE_RECOVERED | RECOVERY_EXHAUSTED | WAITING_RESULT_APPROVAL | RESULT_APPROVED | RESULT_DECLINED | WAITING_INPUT | INPUT_RECEIVED | COMPLETED | FAILED | CANCELLED` 중 하나입니다. 매번 전체를 다시 받지 않고 `eventId`만 이어서 조회할 수 있습니다. `WAITING_RESULT_APPROVAL`은 결과/저장소 연결 승인 대기 진입, `RESULT_APPROVED`는 그 승인 완료 후 재개 이벤트입니다. `RESULT_DECLINED`는 **거절했지만 task는 계속 진행되는** 경우 — 현재는 저장소 연결 승인 거절(§3.5③) 하나뿐입니다. RESULT 승인 거절(§3.5②)은 task가 취소되므로 별도 타입 없이 기존 `CANCELLED`로 기록됩니다(계획 승인 거절과 동일 시맨틱).
+`type`은 `CREATED | WAITING_APPROVAL | QUEUED | STARTED | RETRY_QUEUED | LEASE_RECOVERED | RECOVERY_EXHAUSTED | WAITING_RESULT_APPROVAL | RESULT_APPROVED | RESULT_DECLINED | WAITING_INPUT | INPUT_RECEIVED | COMPLETED | FAILED | CANCELLED` 중 하나입니다. 매번 전체를 다시 받지 않고 `eventId`만 이어서 조회할 수 있습니다. `WAITING_RESULT_APPROVAL`은 결과/저장소 연결 승인 대기 진입, `RESULT_APPROVED`는 그 승인 완료 후 재개 이벤트입니다. `RESULT_DECLINED`는 **결정이 거절/불가였지만 task는 계속 진행되는** 경우입니다. 세 자리에서 나옵니다 — ⑴ 저장소 연결 승인 거절(§3.5③), ⑵ 저장소 연결 승인을 승인했지만 프리뷰가 이미 만료된 경우, ⑶ **저장소 연결 승인이 결정되지 않은 채 프리뷰가 회수되거나 오래 방치돼 서버가 정리한 경우**(#401). 세 경우 모두 승인 카드는 닫히고 **task는 취소되지 않습니다** — CODE 작업은 이미 성공했고 저장소에 남길지만 묻던 것이기 때문입니다. RESULT 승인 거절(§3.5②)은 task가 취소되므로 별도 타입 없이 기존 `CANCELLED`로 기록됩니다(계획 승인 거절과 동일 시맨틱).
 
 **SSE(실시간)**
 ```
@@ -338,7 +340,7 @@ Accept: text/event-stream
 | 메서드 | 경로 | 용도 | 요청 | 응답(핵심 필드) | 주요 에러 |
 |---|---|---|---|---|---|
 | POST | `/decision` | 자연어 요청 분석 → 실행 계획 수립 + 비동기 제출 | `{ content, aiProvider(ANTHROPIC\|OPENAI\|GLM\|CLAUDE_CODE\|CODEX), projectId?, conversationId?, model?, thinking? }` | `{ steps[], reasoning, aiProvider, taskId, status, approvalIds }` | 400, 401, 429/502/503(AI 제공자) |
-| GET | `/tasks/{taskId}` | 태스크 상태 조회 | - | `{ taskId, status, ~~previewUrl~~, previewCreated, summary, error, question, failureLog, suggestedFix, attempt, maxAttempts, retryable, pendingApprovalId }` | 404 |
+| GET | `/tasks/{taskId}` | 태스크 상태 조회 | - | `{ taskId, status, previewCreated, summary, error, question, failureLog, suggestedFix, attempt, maxAttempts, retryable, pendingApprovalId }` | 404 |
 | GET | `/tasks/{taskId}/events` | 영속 이벤트 목록(증분) | query: `afterEventId`(기본 0) | `[{ eventId, taskId, type, status, message, createdAt }]` | 404 |
 | GET | `/tasks/{taskId}/events/stream` | SSE 이벤트 스트림 | query: `afterEventId` | `text/event-stream`(`@RawApiResponse`) | 404(emitter null) |
 | POST | `/tasks/{taskId}/input` | `WAITING_INPUT` 상태의 태스크에 사용자 입력 제출 | `{ value }` | 204 | 400(WAITING_INPUT 아님), 404 |
@@ -475,22 +477,24 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 | GET | `/api/v1/preview-sessions/{sessionId}/status` | 컨테이너 실행 여부·리소스 사용량 조회(p95 ~1.5초 — 폴링은 5초 이상 권장) | Bearer | `{ sessionId, projectId, taskId, sessionStatus(ACTIVE\|PROVISIONING\|CLOSED\|EXPIRED\|FAILED), containerRunning, oomKilled, exitCode, startedAt, expiresAt, resources{ memoryUsageBytes, memoryLimitBytes, memoryUsagePercent, cpuPercent } }`(resources는 미실행/조회 3초 초과 시 null) |
 | GET | `/api/v1/preview-sessions/{sessionId}/logs` | 컨테이너 stdout/stderr 텍스트 조회(영속화 안 됨) | Bearer | `{ sessionId, containerRunning, logText }`(query: `tail`(기본 200, [1,2000] 클램프), `sinceSeconds`) |
 
-`ProjectPreviewSession` = `{ sessionId, projectId, taskId, status(ACTIVE|PROVISIONING|FAILED), ~~previewUrl~~, expiresAt, failureReason }`
+`ProjectPreviewSession` = `{ sessionId, projectId, taskId, status(ACTIVE|PROVISIONING|FAILED), expiresAt, failureReason }`
 — `taskId`가 `null`이면 프로젝트 단위로 띄운 "현재 상태" 프리뷰, 값이 있으면 그 Agent 작업이 만든 프리뷰입니다.
 
-> ⚠️ **이 응답의 `previewUrl`도 쓰지 마세요 — 제거 예정입니다(#392).** 이 값은 회전과 함께 갱신되므로 **낡지는 않습니다.** 대신 **쿠키가 없으면 열리지 않습니다** — 문서 탐색에는 접근 쿠키가 필요하고(#77 G2) 그것은 `access` 호출만 발급합니다. 그래서 실패가 404가 아니라 **401**로 납니다.
+> **프리뷰 주소는 이 응답에 없습니다(#392 완료).** 예전에는 `previewUrl`이 있었는데, 이름이 `access` 응답의 것과 같아서 읽는 쪽이 계약도 같다고 가정했습니다. 이 값은 회전과 함께 갱신되므로 **낡지는 않았지만 쿠키 없이는 열리지 않았습니다** — 문서 탐색에는 접근 쿠키가 필요하고(#77 G2) 그것은 `access` 호출만 발급합니다. 그래서 실패가 404가 아니라 **401**로 났습니다.
 >
-> **dev 에서 시험하면 반드시 통과합니다.** `require-access-cookie`가 dev 는 `false`, 운영은 `true`입니다 — dev 에서 이 주소를 iframe 에 넣으면 열리고 **운영에서만 401**입니다.
+> 게다가 **dev 에서 시험하면 반드시 통과했습니다.** `require-access-cookie`가 dev 는 `false`, 운영은 `true`라서, dev 에서 iframe 에 넣으면 열리고 **운영에서만 401**이었습니다.
+>
+> 지금 볼 수 있는지는 `status`가 말하고, 열 주소는 `access`가 줍니다.
 
 #### 프리뷰가 만들어지는 두 경로
 
 1. **작업 결과 프리뷰**(기존): Agent CODE 스텝이 내부적으로 생성합니다. 별도 생성 API는 없고, 세션 식별자는 `GET /api/v1/agent/tasks/{taskId}` 응답에서 얻습니다.
 
-   ⚠️ **그 응답의 `previewUrl`을 iframe에 걸지 마세요 — 폐기 예정입니다(#392).** `POST /preview-sessions/{sessionId}/access`가 accessToken을 회전시키므로(G4, #77), 사용자가 프리뷰를 한 번 열면 **그 이전에 받은 주소는 즉시 404**가 됩니다 — 태스크 응답의 `previewUrl`도 포함입니다. iframe에 넣을 주소는 **항상 `access` 응답의 것**입니다(아래 4번 예시).
+   **이 응답은 프리뷰 주소를 주지 않습니다(#392 완료).** 대신 `previewCreated`(boolean)가 있습니다 — 프리뷰가 만들어졌는지만 말합니다. iframe에 넣을 주소는 **항상 `access` 응답의 것**입니다(아래 4번 예시).
 
-   실제로 사고를 냈습니다(2026-09-25). 승인 메시지에 박혀 있던 그 주소를 눌러 404 — 그래서 메시지에서 주소를 뺐습니다(#391).
+   예전에는 여기에 `previewUrl`이 있었고 **실제로 사고를 냈습니다**(2026-09-25). `POST /preview-sessions/{sessionId}/access`가 accessToken을 회전시키므로(G4, #77), 사용자가 프리뷰를 한 번 열면 그 이전에 받은 주소는 즉시 404입니다. 승인 메시지에 박혀 있던 그 주소를 눌러 404가 났고 — 대화 이력은 남으므로 **영구히 죽은 링크**였습니다. 먼저 메시지에서 주소를 뺐고(#391), 이제 응답에서도 뺐습니다.
 
-   **"프리뷰가 만들어졌는지"만 필요하면 `previewCreated`(boolean)를 쓰세요(#392).** 폴링을 멈출 신호로 `previewUrl`이 비었는지 보던 자리를 이 값으로 바꿉니다 — 판단에 주소가 필요하지 않고, 주소를 들고 가면 회전 뒤 404를 잡습니다.
+   `previewCreated`는 **폴링을 멈출 신호**로 쓰기에 맞습니다. 판단에 주소가 필요하지 않고, 주소를 들고 가면 회전 뒤 404를 잡습니다. 공백 문자열은 서버가 `false`로 접어 주므로 `.trim()`이 필요 없습니다.
 
    이름이 `previewReady`가 아니라 `previewCreated`인 것에 이유가 있습니다. 근거가 되는 컬럼(`agent_run.preview_url`)은 **프리뷰가 회수돼도 지워지지 않으므로**, `true`가 "지금 볼 수 있다"를 뜻하지 않습니다. 지금 상태는 `GET /projects/{projectId}/preview-session`의 `status`가 말합니다.
 2. **현재 상태 프리뷰**(신규): 작업 지시 없이 `POST /api/v1/projects/{id}/preview-session`으로 띄웁니다. `preview` 브랜치를 그대로 clone → (build 스크립트가 있으면) 빌드 → 서빙하므로, 저장소를 막 연결한 직후에도 배포 전에 현재 화면을 볼 수 있습니다.
@@ -514,7 +518,7 @@ const { previewUrl } = await postPreviewAccess(sessionId);
 setIframeSrc(previewUrl);   // ← 반드시 이 응답의 previewUrl 을 사용
 ```
 
-- **이 호출은 accessToken을 회전시킵니다.** 응답의 `previewUrl`이 유일하게 유효한 주소이고, 이전에 받은 주소(작업 응답의 `previewUrl` 포함)는 즉시 404가 됩니다. 채팅 기록·브라우저 히스토리로 흘러나간 예전 주소를 닫기 위한 동작입니다.
+- **이 호출은 accessToken을 회전시킵니다.** 응답의 `previewUrl`이 **유일하게 유효한 주소**이고, 이전에 이 엔드포인트에서 받은 주소는 즉시 404가 됩니다. (예전에는 작업 응답과 세션 응답도 같은 이름의 주소를 줬고 그것이 함정이었습니다 — #392 로 둘 다 제거했습니다.) 채팅 기록·브라우저 히스토리로 흘러나간 예전 주소를 닫기 위한 동작입니다.
 - 쿠키는 `HttpOnly`이며 `Path=/api/v1/previews/{sessionId}/`로 좁혀져 있어 FE가 값을 다룰 일은 없습니다. 새 탭으로 열어도 같은 브라우저이므로 그대로 동작합니다.
 - 프리뷰를 다시 열거나 새로고침할 때마다 이 호출을 앞에 두면 됩니다(비용이 낮고, 만료 걱정도 사라집니다).
 - 401을 받으면 권한이 만료·회전된 것이므로 다시 발급받아 `previewUrl`을 갱신하세요.
