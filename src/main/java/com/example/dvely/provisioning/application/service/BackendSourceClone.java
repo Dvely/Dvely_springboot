@@ -1,6 +1,7 @@
 package com.example.dvely.provisioning.application.service;
 
 import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
+import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService.ExecResult;
 import com.example.dvely.auth.application.command.AuthCommandService;
@@ -28,6 +29,7 @@ public class BackendSourceClone {
     private static final String GIT_NO_PROMPT = "GIT_TERMINAL_PROMPT=0 ";
 
     private final DockerContainerService dockerService;
+    private final ContainerGitCredentials gitCredentials;
     private final UserRepository userRepository;
     private final AuthCommandService authCommandService;
 
@@ -43,20 +45,17 @@ public class BackendSourceClone {
         String username = user.getUsername();
 
         // 토큰을 URL·명령줄에 넣지 않는다(프로세스 목록·로그 유출 방지) — credential helper 파일에만.
+        // 그 파일은 clone 이 끝나면 지운다 (#413) — 예전에는 컨테이너 수명 내내 남았다.
         dockerService.exec(containerId, "apk add --no-cache git openjdk21 2>/dev/null || true");
-        String cred = "https://" + username + ":" + userToken + "@github.com";
-        String credB64 = Base64.getEncoder().encodeToString(cred.getBytes(StandardCharsets.UTF_8));
-        dockerService.exec(containerId,
-                "node -e \"require('fs').writeFileSync('/tmp/.git-credentials', Buffer.from('"
-                        + credB64 + "', 'base64').toString('utf8'))\"");
-        dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
         dockerService.exec(containerId, "mkdir -p /workspace");
-        // 운영 배포는 기본 브랜치(main 등)를 받는다 — 프리뷰(preview 브랜치)와 다르다.
-        ExecResult clone = dockerService.execWithExitCode(containerId,
-                GIT_NO_PROMPT + "git clone --depth 1 https://github.com/" + sourceRepo + ".git " + APP_DIR);
-        if (!clone.succeeded()) {
-            throw new BackendBuildException("소스 clone 실패: " + tail(clone.output()));
-        }
+        gitCredentials.withCredentials(containerId, username, userToken, () -> {
+            // 운영 배포는 기본 브랜치(main 등)를 받는다 — 프리뷰(preview 브랜치)와 다르다.
+            ExecResult clone = dockerService.execWithExitCode(containerId,
+                    GIT_NO_PROMPT + "git clone --depth 1 https://github.com/" + sourceRepo + ".git " + APP_DIR);
+            if (!clone.succeeded()) {
+                throw new BackendBuildException("소스 clone 실패: " + tail(clone.output()));
+            }
+        });
     }
 
     /**

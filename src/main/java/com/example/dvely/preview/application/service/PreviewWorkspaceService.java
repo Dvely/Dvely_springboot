@@ -1,6 +1,7 @@
 package com.example.dvely.preview.application.service;
 
 import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
+import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
@@ -38,6 +39,7 @@ public class PreviewWorkspaceService {
     private static final String BUILD_LOG_PATH = "/tmp/qeploy-build.log";
 
     private final DockerContainerService dockerService;
+    private final ContainerGitCredentials gitCredentials;
     private final ProjectRepository projectRepository;
     private final UserRepository userRepository;
     private final AuthCommandService authCommandService;
@@ -81,14 +83,25 @@ public class PreviewWorkspaceService {
 
         // git credential 파일 작성 — 토큰이 명령줄에 노출되지 않게 base64 로 파일에만 쓴다.
         dockerService.installPackages(containerId, "git");
-        String cred = "https://" + username + ":" + userToken + "@github.com";
-        String credB64 = Base64.getEncoder().encodeToString(cred.getBytes(StandardCharsets.UTF_8));
-        dockerService.exec(containerId,
-                "node -e \"require('fs').writeFileSync('/tmp/.git-credentials', Buffer.from('" + credB64 + "', 'base64').toString('utf8'))\"");
-        dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
         dockerService.exec(containerId, "git config --global user.email 'agent@qeploy.com'");
         dockerService.exec(containerId, "git config --global user.name 'Qeploy Agent'");
 
+        // 자격은 git 작업 구간에만 둔다 (#413). 특히 아래 npm install 은 이 블록 '밖' 이다 —
+        // 의존성의 postinstall 스크립트가 임의 코드를 돌리는 지점이라, 자격이 살아 있는 동안
+        // 그것을 돌리면 정확히 그때 토큰을 읽을 수 있다. git 은 자격이 필요하고 npm 은 아니다.
+        gitCredentials.withCredentials(containerId, username, userToken,
+                () -> syncRepository(containerId, sourceRepo, cloneUrl));
+
+        // clone 후 의존성 설치 — 자격이 지워진 뒤다.
+        String pkgJson = dockerService.exec(containerId, "[ -f " + APP_DIR + "/package.json ] && echo yes || echo no").trim();
+        if ("yes".equals(pkgJson)) {
+            log.info("[PreviewWorkspace] npm install 실행");
+            dockerService.exec(containerId, "cd " + APP_DIR + " && npm install");
+        }
+    }
+
+    /** clone·fetch·checkout — 인증이 필요한 구간. {@code withCredentials} 안에서만 불린다. */
+    private void syncRepository(String containerId, String sourceRepo, String cloneUrl) {
         String appExists = dockerService.exec(containerId, "[ -d " + APP_DIR + "/.git ] && echo yes || echo no").trim();
 
         if ("yes".equals(appExists)) {
@@ -117,13 +130,6 @@ public class PreviewWorkspaceService {
                 "cd " + APP_DIR + " && "
                         + "(git show-ref --verify --quiet refs/remotes/origin/preview "
                         + "&& git checkout -B preview origin/preview || git checkout -B preview)");
-
-        // clone 후 의존성 설치
-        String pkgJson = dockerService.exec(containerId, "[ -f " + APP_DIR + "/package.json ] && echo yes || echo no").trim();
-        if ("yes".equals(pkgJson)) {
-            log.info("[PreviewWorkspace] npm install 실행");
-            dockerService.exec(containerId, "cd " + APP_DIR + " && npm install");
-        }
     }
 
     /**

@@ -2,6 +2,7 @@ package com.example.dvely.preview.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService.ExecResult;
 import com.example.dvely.preview.domain.value.PreviewRuntimeType;
@@ -87,7 +88,7 @@ class PreviewBackendRuntimeIntegrationTest {
         writeFile(APP_DIR + "/server.js", serverJs);
 
         String marker = "hello-be-" + System.nanoTime();
-        PreviewWorkspaceService workspace = new PreviewWorkspaceService(dockerService, null, null, null);
+        PreviewWorkspaceService workspace = new PreviewWorkspaceService(dockerService, new ContainerGitCredentials(dockerService), null, null, null);
 
         workspace.startNodeServer(containerId, "node server.js",
                 List.of("MARKER=" + marker, "PORT=3000"));

@@ -12,6 +12,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService.ExecResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,7 +29,7 @@ class PreviewBranchPushServiceTest {
     @BeforeEach
     void setUp() {
         dockerService = mock(DockerContainerService.class);
-        service = new PreviewBranchPushService(dockerService);
+        service = new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService));
         // .git 이 없는 상태 → init 경로를 탄다.
         lenient().when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
         lenient().when(dockerService.exec(eq(CONTAINER_ID), contains("/.git ]"))).thenReturn("no");
@@ -112,7 +113,7 @@ class PreviewBranchPushServiceTest {
      */
     @Test
     void installingGitIsAllowedToFail() {
-        service = new PreviewBranchPushService(dockerService);
+        service = new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService));
 
         assertThatCode(this::push).doesNotThrowAnyException();
 

@@ -16,6 +16,7 @@ import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.domain.value.AgentType;
+import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.audit.application.AuditEvent;
@@ -74,7 +75,7 @@ class DeployAgentServiceTest {
                 projectRepository,
                 deploymentFacade,
                 mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 auditRecorder
         );
         Project project = boundProject();
@@ -162,7 +163,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService), auditRecorder
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)), auditRecorder
         );
         when(previewSessionService.findByTaskId("task123"))
                 .thenReturn(Optional.of(new PreviewSessionInfo(
@@ -218,7 +219,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -266,7 +267,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -314,7 +315,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -363,7 +364,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -407,7 +408,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project project = boundProject();
@@ -445,7 +446,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project project = boundProject();
@@ -482,7 +483,7 @@ class DeployAgentServiceTest {
                 projectRepository,
                 deploymentFacade,
                 mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
@@ -523,7 +524,7 @@ class DeployAgentServiceTest {
                 projectRepository,
                 deploymentFacade,
                 mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
