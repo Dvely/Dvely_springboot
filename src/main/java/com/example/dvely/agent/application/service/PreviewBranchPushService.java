@@ -1,6 +1,7 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
+import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -23,6 +24,7 @@ import org.springframework.stereotype.Service;
 public class PreviewBranchPushService {
 
     private final DockerContainerService dockerService;
+    private final ContainerGitCredentials gitCredentials;
 
     /**
      * @param isNew 이 컨테이너에 재사용할 .git 이 없어 새로 init 해야 하면 true. 시작용 .gitignore 를
@@ -38,12 +40,18 @@ public class PreviewBranchPushService {
         // apk 는 이미 git 이 있거나 이미지가 alpine 이 아닐 수 있어 실패를 허용한다. 정말 git 이
         // 없으면 아래 strict 명령들이 대신 드러낸다.
         dockerService.installPackages(containerId, "git");
-        writeGitCredentials(containerId, username, userToken);
-        dockerService.exec(containerId, "git config --global credential.helper 'store --file /tmp/.git-credentials'");
         dockerService.exec(containerId, "git config --global user.email 'agent@qeploy.com'");
         dockerService.exec(containerId, "git config --global user.name 'Qeploy Agent'");
 
         requireAppDir(containerId);
+
+        // 자격은 이 블록 안에만 존재한다 (#413). 예외로 끝나도 finally 가 지운다 — 예전에는
+        // 컨테이너 수명 내내 남아서, 같은 컨테이너에서 도는 앱 코드와 npm 의존성이 읽을 수 있었다.
+        gitCredentials.withCredentials(containerId, username, userToken, () ->
+                pushWithCredentials(containerId, repoFullName, isNew, taskId));
+    }
+
+    private void pushWithCredentials(String containerId, String repoFullName, boolean isNew, String taskId) {
 
         String remoteUrl = "https://github.com/" + repoFullName + ".git";
         boolean hasGit = "yes".equals(
@@ -95,13 +103,6 @@ public class PreviewBranchPushService {
         String tail = output.length() > 500 ? output.substring(output.length() - 500) : output;
         throw new IllegalStateException(
                 "preview 브랜치에 올리지 못했습니다(" + step + ", exitCode=" + result.exitCode() + "): " + tail);
-    }
-
-    private void writeGitCredentials(String containerId, String username, String userToken) {
-        String cred = "https://" + username + ":" + userToken + "@github.com";
-        String b64  = Base64.getEncoder().encodeToString(cred.getBytes(StandardCharsets.UTF_8));
-        dockerService.exec(containerId,
-                "node -e \"require('fs').writeFileSync('/tmp/.git-credentials', Buffer.from('" + b64 + "', 'base64').toString('utf8'))\"");
     }
 
     /**

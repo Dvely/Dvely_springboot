@@ -9,6 +9,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.repository.UserRepository;
@@ -23,6 +24,7 @@ class PreviewWorkspaceServiceTest {
     private final DockerContainerService dockerService = mock(DockerContainerService.class);
     private final PreviewWorkspaceService service = new PreviewWorkspaceService(
             dockerService,
+            new ContainerGitCredentials(dockerService),
             mock(ProjectRepository.class),
             mock(UserRepository.class),
             mock(AuthCommandService.class)
@@ -127,7 +129,7 @@ class PreviewWorkspaceServiceTest {
         ProjectRepository projects = mock(ProjectRepository.class);
         UserRepository users = mock(UserRepository.class);
         PreviewWorkspaceService target =
-                new PreviewWorkspaceService(docker, projects, users, mock(AuthCommandService.class));
+                new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker), projects, users, mock(AuthCommandService.class));
 
         when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
         when(users.findById(7L)).thenReturn(java.util.Optional.of(tokenUser()));
@@ -160,7 +162,7 @@ class PreviewWorkspaceServiceTest {
         ProjectRepository projects = mock(ProjectRepository.class);
         UserRepository users = mock(UserRepository.class);
         PreviewWorkspaceService target =
-                new PreviewWorkspaceService(docker, projects, users, mock(AuthCommandService.class));
+                new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker), projects, users, mock(AuthCommandService.class));
         when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
         when(users.findById(7L)).thenReturn(java.util.Optional.of(tokenUser()));
         // exec 결과에 .trim() 을 부르는 지점이 여러 곳이라 기본값을 준다.

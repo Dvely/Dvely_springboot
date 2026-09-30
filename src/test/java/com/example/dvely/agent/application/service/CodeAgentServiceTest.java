@@ -25,6 +25,7 @@ import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.codingagent.CodingAgentWorkspaceBridge;
+import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.LlmToolRouter;
 import com.example.dvely.auth.application.command.AuthCommandService;
@@ -89,7 +90,8 @@ class CodeAgentServiceTest {
         // 뿐 CODE 스텝의 관찰 가능한 동작 그대로이고(같은 dockerService.exec 명령), 이 테스트들이
         // 지키려는 것도 "빌드 안 된 워크스페이스를 서빙하지 않는다"는 그 동작이다.
         PreviewWorkspaceService previewWorkspaceService = new PreviewWorkspaceService(
-                dockerService, projectRepository, userRepository, authCommandService);
+                dockerService, new ContainerGitCredentials(dockerService),
+                projectRepository, userRepository, authCommandService);
         // 이 테스트들은 projectId=null 로 실행하므로 런처는 정적 serve 로 라우팅한다(런타임 설정은
         // 프로젝트 단위라 null 이면 조회하지 않는다). 그래서 실제 런처 + 실물 워크스페이스를 써
         // "빌드 안 된 워크스페이스를 서빙하지 않는다"는 기존 동작을 그대로 검증한다.

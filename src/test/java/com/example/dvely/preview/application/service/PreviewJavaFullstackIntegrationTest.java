@@ -2,6 +2,7 @@ package com.example.dvely.preview.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.model.Capability;
@@ -78,7 +79,7 @@ class PreviewJavaFullstackIntegrationTest {
         dockerService.exec(containerId, "chmod 644 /tmp/fe/index.html");
 
         // 실제 메서드로 내부 nginx 를 3000 에 띄운다.
-        PreviewWorkspaceService workspace = new PreviewWorkspaceService(dockerService, null, null, null);
+        PreviewWorkspaceService workspace = new PreviewWorkspaceService(dockerService, new ContainerGitCredentials(dockerService), null, null, null);
         workspace.startInternalNginxRouter(containerId, "/api", "/tmp/fe");
 
         // (2) 3000/api/* → BE, 3000/ → FE.
