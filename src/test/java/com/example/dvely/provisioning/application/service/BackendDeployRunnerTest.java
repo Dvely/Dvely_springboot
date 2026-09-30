@@ -10,13 +10,15 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.cloudconnection.domain.value.CloudProvider;
-import com.example.dvely.environment.domain.repository.EnvironmentVariableRepository;
+import com.example.dvely.environment.application.port.in.EnvironmentValueResolver;
+import com.example.dvely.environment.domain.value.EnvironmentScope;
 import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepository;
@@ -56,7 +58,7 @@ class BackendDeployRunnerTest {
     @Mock private Ec2InstanceRoleProvisioner roleProvisioner;
     @Mock private Ec2Provisioner ec2;
     @Mock private ProvisionedDatabaseRepository databaseRepository;
-    @Mock private EnvironmentVariableRepository environmentVariableRepository;
+    @Mock private EnvironmentValueResolver environmentValueResolver;
     @Mock private Ec2ProvisioningProperties ec2Properties;
     @Mock private FrontendOriginPort frontendOriginPort;
 
@@ -78,7 +80,7 @@ class BackendDeployRunnerTest {
         when(s3.bucketNameFor(any())).thenReturn("qeploy-artifacts-x");
         when(s3.jarKeyFor(PROJECT)).thenReturn("10/app.jar");
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
-        when(environmentVariableRepository.findByProjectIdOrderByScopeAscKeyAsc(PROJECT)).thenReturn(List.of());
+        when(environmentValueResolver.resolve(PROJECT, EnvironmentScope.PRODUCTION)).thenReturn(Map.of());
         when(roleProvisioner.ensureInstanceProfile(any(), eq(PROJECT), anyString(), anyBoolean())).thenReturn("qeploy-instance-10");
         when(ec2.ensureSecurityGroup(any(), eq(8080))).thenReturn("sg-1");
         when(ssm.latestAmazonLinux2023Ami(any())).thenReturn("ami-1");
@@ -205,7 +207,7 @@ class BackendDeployRunnerTest {
         when(s3.bucketNameFor(any())).thenReturn("qeploy-artifacts-x");
         when(s3.jarKeyFor(PROJECT)).thenReturn("10/app.jar");
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
-        when(environmentVariableRepository.findByProjectIdOrderByScopeAscKeyAsc(PROJECT)).thenReturn(List.of());
+        when(environmentValueResolver.resolve(PROJECT, EnvironmentScope.PRODUCTION)).thenReturn(Map.of());
         when(ec2.ensureSecurityGroup(any(), eq(8080))).thenReturn("sg-1");
         when(ssm.latestAmazonLinux2023Ami(any())).thenReturn("ami-1");
         when(ec2.launch(any(), any())).thenReturn("i-lab-1");
@@ -227,5 +229,56 @@ class BackendDeployRunnerTest {
                 "ap-northeast-2", null, "ACCESS_KEY", "AKIA1234567890ABCDEF",
                 "abcdefghijklmnopqrstuvwxyz1234567890ABCD", null, null, null, null, null,
                 CloudConnectionStatus.CONNECTED, LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now());
+    }
+
+    // ── #415: 배포는 PRODUCTION 스코프만 주입한다 ─────────────────────────────────────────
+
+    /**
+     * 사용자 지정 env 가 DB 자동값·SERVER_PORT 를 덮는 우선순위를 고정한다.
+     *
+     * <p>이 순서가 뒤집히면 사용자가 정한 값이 자동값에 먹힌다 — 프리뷰 쪽
+     * {@code PreviewEnvComposer} 와 같은 우선순위여야 두 환경의 동작이 갈리지 않는다.</p>
+     */
+    @Test
+    void userProductionEnvOverridesAutoValues() throws IOException {
+        Path jar = Files.createTempFile("test-app", ".jar");
+        stubHappyPath(jar);
+        when(ec2.launch(any(), any())).thenReturn("i-env");
+        when(environmentValueResolver.resolve(PROJECT, EnvironmentScope.PRODUCTION))
+                .thenReturn(Map.of("SERVER_PORT", "9999", "MY_KEY", "prod-value"));
+
+        runner.deploy(building());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, String>> envCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(ssm).putAll(any(), eq(PROJECT), envCaptor.capture());
+        assertThat(envCaptor.getValue())
+                .containsEntry("MY_KEY", "prod-value")
+                .containsEntry("SERVER_PORT", "9999");   // 자동값 8080 을 덮는다
+    }
+
+    /**
+     * <b>PREVIEW 스코프는 배포에 들어가지 않는다</b> (#415).
+     *
+     * <p>예전에는 리포지토리를 직접 부르며 {@code findByProjectIdOrderByScopeAscKeyAsc} 로 전
+     * 스코프를 가져왔다. 그래서 사용자가 프리뷰용으로만 둔 값(테스트 키·mock 주소·{@code DEBUG})이
+     * 운영 서버에 그대로 주입됐다. <b>오류가 나지 않아 조용히 일어난다</b> — 사용자는 스코프를 나눠
+     * 저장했으므로 분리됐다고 믿는다.</p>
+     *
+     * <p>이 테스트는 스코프를 <b>인자로 단정</b>한다. 반환값만 보면 "resolve 를 부르긴 한다" 까지만
+     * 알 수 있고, 어떤 스코프로 불렀는지는 모른다 — 전 스코프를 가져오는 구현도 그 단정을
+     * 통과한다.</p>
+     */
+    @Test
+    void deployAsksOnlyForProductionScopeNeverPreview() throws IOException {
+        Path jar = Files.createTempFile("test-app", ".jar");
+        stubHappyPath(jar);
+        when(ec2.launch(any(), any())).thenReturn("i-scope");
+
+        runner.deploy(building());
+
+        verify(environmentValueResolver).resolve(PROJECT, EnvironmentScope.PRODUCTION);
+        verify(environmentValueResolver, never()).resolve(eq(PROJECT), eq(EnvironmentScope.PREVIEW));
+        verifyNoMoreInteractions(environmentValueResolver);
     }
 }
