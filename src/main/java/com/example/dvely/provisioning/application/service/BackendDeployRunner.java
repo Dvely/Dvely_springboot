@@ -2,8 +2,8 @@ package com.example.dvely.provisioning.application.service;
 
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
-import com.example.dvely.environment.domain.model.EnvironmentVariable;
-import com.example.dvely.environment.domain.repository.EnvironmentVariableRepository;
+import com.example.dvely.environment.application.port.in.EnvironmentValueResolver;
+import com.example.dvely.environment.domain.value.EnvironmentScope;
 import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
@@ -56,7 +56,7 @@ public class BackendDeployRunner {
     private final Ec2InstanceRoleProvisioner roleProvisioner;
     private final Ec2Provisioner ec2;
     private final ProvisionedDatabaseRepository databaseRepository;
-    private final EnvironmentVariableRepository environmentVariableRepository;
+    private final EnvironmentValueResolver environmentValueResolver;
     private final FrontendOriginPort frontendOriginPort;
     private final Ec2ProvisioningProperties ec2Properties;
 
@@ -276,9 +276,18 @@ public class BackendDeployRunner {
             env.put("QEPLOY_ALLOWED_ORIGINS", String.join(",", origins));
         }
 
-        for (EnvironmentVariable v : environmentVariableRepository.findByProjectIdOrderByScopeAscKeyAsc(projectId)) {
-            env.put(v.getKey(), v.getValue());   // 사용자 지정 env 가 우선(뒤에 넣어 덮어씀)
-        }
+        // 사용자 지정 env 가 우선(뒤에 넣어 덮어씀).
+        //
+        // PRODUCTION 스코프만 가져온다 (#415). 예전에는 리포지토리를 직접 부르면서
+        // findByProjectIdOrderByScopeAscKeyAsc 로 전 스코프를 가져왔고, 그래서 사용자가
+        // 프리뷰용으로만 둔 값(테스트 키·mock 주소·DEBUG 플래그)이 운영 서버에 그대로
+        // 주입됐다. 오류가 나지 않아 조용히 일어나는 종류다 — 사용자는 스코프를 나눠
+        // 저장했으므로 분리됐다고 믿는다.
+        //
+        // port 를 타는 것도 의도다. 리포지토리를 직접 부르면 `resolve()` 를 grep 해도
+        // 이 경로가 안 걸려서 "배포는 연결 안 됨" 으로 읽힌다 — 실제로는 "연결됐지만
+        // 잘못 연결됨" 이었고, 두 상태가 같은 관측값을 냈다(#411 에서 그렇게 오판했다).
+        env.putAll(environmentValueResolver.resolve(projectId, EnvironmentScope.PRODUCTION));
         return env;
     }
 

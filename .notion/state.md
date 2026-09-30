@@ -185,7 +185,7 @@
 - `secret`은 `true → false`로 되돌릴 수 없음(400)
 - 변경 이력은 값 자체를 저장하지 않고 CREATED/UPDATED/DELETED 액션과 `valueChanged` 플래그만 append-only로 기록(secret 값을 이력에서 유추할 수 있는 경로 차단)
 - 동일 (프로젝트, scope, key) 조합 중복 생성은 409
-- `EnvironmentValueResolver`는 애플리케이션 내부 port로 존재하며 HTTP로 노출되지 않는다. 당시에는 Preview/Deployment 어디에도 연결되지 않았다 — **그 뒤 프리뷰 주입은 완료됐다**(`PreviewRuntimeLauncher` → `PreviewEnvComposer`). **배포 주입은 여전히 없다**(§3.0 참고)
+- `EnvironmentValueResolver`는 애플리케이션 내부 port로 존재하며 HTTP로 노출되지 않는다. 당시에는 Preview/Deployment 어디에도 연결되지 않았다 — **그 뒤 프리뷰·배포 주입 모두 완료됐다** — 프리뷰는 `PreviewEnvComposer`, 배포는 `BackendDeployRunner.assembleEnv`(§3.0 참고)
 - 리뷰에서 확정된 5건 수정 완료(값 미저장 이력 설계로 secret 값 유추 경로 차단 포함)
 
 ## 2.16 Preview 운영 API + 컨테이너 격리 정책 — ROADMAP U4 (Issue #42 / PR #47, 2026-07-18 병합)
@@ -480,16 +480,22 @@ BACKLOG BI-081(외부 공개 URL 차단) 중 G1 — 컨테이너 호스트 포�
 >
 > 실행 우선순위와 단위 분할은 `.notion/ROADMAP.md` 를 따른다. 사람 손이 필요한 것과 막힌 지점은 `docs/pending-actions.md` 가 따로 관리한다.
 
-## 3.0 지금 가장 실질적인 구멍 — 배포에 환경변수가 주입되지 않는다
+## 3.0 환경변수 스코프 — 수정 완료 (#415)
 
-`EnvironmentScope` 는 `PREVIEW`·`PRODUCTION` 둘인데 **`PRODUCTION` 을 resolve 하는 코드가 0곳이다.**
+> **여기에 내가 틀린 것을 적었다가 고쳤다.** 2026-09-30 감사(#411)에서 "`PRODUCTION` 주입이 아예 없다"고 썼다. `resolve()` 호출을 grep 했더니 프리뷰 한 곳뿐이어서 그렇게 결론냈다. **틀렸다** — 배포에도 주입은 있었고, port 를 우회해 리포지토리를 직접 부르기 때문에 그 grep 에 안 걸린 것이다.
+>
+> 실제 버그는 더 나빴다. `BackendDeployRunner` 가 `findByProjectIdOrderByScopeAscKeyAsc` 로 **전 스코프**를 가져와서, 사용자가 프리뷰용으로만 둔 값(테스트 키·mock 주소·`DEBUG`)이 **운영 서버에 주입**됐다. 오류가 나지 않아 조용히 일어나는 종류다 — 사용자는 스코프를 나눠 저장했으므로 분리됐다고 믿는다.
+>
+> **교훈**: "연결 안 됨"과 "연결됐지만 잘못 연결됨"이 같은 관측값(`resolve()` grep 0건)을 냈다. port 를 우회한 것이 버그를 숨겼다.
 
-```
-resolve() 호출 전부:  PreviewEnvComposer:44  →  EnvironmentScope.PREVIEW
-EnvironmentScope.PRODUCTION 등장:  EnvironmentValueResolver javadoc 1곳뿐
-```
+지금 상태:
 
-모델·CRUD·이력·암호화·마스킹(§2.15)은 다 되고 **프리뷰 주입도 된다**(§3.5 참고). 그런데 사용자가 `PRODUCTION` 스코프로 저장한 값은 **아무 데도 들어가지 않는다 — 저장은 되고 효과가 없다.** 반쯤 만든 기능이라 다른 미구현 항목과 성격이 다르다.
+| 경로 | 스코프 | 구현 |
+|---|---|---|
+| 프리뷰 컨테이너 | `PREVIEW` | `PreviewRuntimeLauncher` → `PreviewEnvComposer` → `resolve(projectId, PREVIEW)` |
+| 배포(EC2 백엔드) | `PRODUCTION` | `BackendDeployRunner.assembleEnv` → `resolve(projectId, PRODUCTION)` → SSM SecureString → 호스트 `.env` |
+
+양쪽 모두 **DB 자동값·포트를 먼저 깔고 사용자 값으로 덮는** 같은 우선순위를 쓴다. 회귀 테스트가 스코프를 **인자로 단정**한다 — 반환값만 보면 "resolve 를 부르긴 한다"까지만 알 수 있고 어떤 스코프인지는 모르기 때문이다.
 
 ## 3.1 프로젝트 Import — **미구현 (범위 밖)**
 
@@ -521,12 +527,12 @@ CHAT Agent 와 `ChatAgentService` 는 완료(§2.14). 남은 것:
 
 - ~~정적 사이트 외 backend/fullstack/API/DB 실행~~ → **완료.** `RUNTIME_SETUP`·`BACKEND_DEPLOY` AgentType, `PreviewRuntimeDetector`/`PreviewRuntimeConfigService`/`PreviewRuntimeLauncher`, DB 프로비저닝 워커
 - ~~Environment 값의 **프리뷰** 주입~~ → **완료.** `PreviewRuntimeLauncher` → `PreviewEnvComposer` 가 DB 자동값을 깔고 사용자 `PREVIEW` env 로 덮고 `PORT=3000` 을 강제한다. 값은 명령 문자열이 아니라 exec 의 env 로만 전달된다(`execWithEnv`) — 그래야 `DB_PASSWORD` 가 로그·예외에 안 남는다
-- **Environment 값의 배포 주입 — 미구현.** §3.0 참고
+- ~~Environment 값의 배포 주입~~ → **완료.** `BackendDeployRunner.assembleEnv` → `resolve(projectId, PRODUCTION)` → SSM SecureString. 스코프 누출은 #415 로 수정(§3.0 참고)
 - **dependency/build/image cache 정책 — 미구현**
 
 ## 3.6 Environment / Secrets 런타임 연결 — ROADMAP U3 이후
 
-모델·CRUD·이력·암호화·마스킹 완료(§2.15). 남은 것은 **배포 주입 하나**이고 §3.0 으로 옮겼다. 프리뷰 주입은 끝났다.
+모델·CRUD·이력·암호화·마스킹 완료(§2.15). **프리뷰·배포 주입 모두 완료** — §3.0 의 표 참고. 남은 항목은 없다.
 
 ## 3.7 Repository Settings 후속 — **남은 항목 없음**
 
@@ -605,9 +611,9 @@ Docker preview 성공률, 배포 성공률, build 실패 해결률, Agent intent
 
 - ~~실 API 키 등 민감정보의 env 이관~~ → **완료(#365).** `application-{dev,prod}.yml` 에 벤더 `api-key` 가 없다(남은 `--with-api-key` 는 codex CLI 의 argv 이고 키가 아니다). AI 실행은 BYOK 전용이고 `getApiKey()` 호출은 전부 `aiaccount` 안에 있다
 - ~~추적/로그 민감정보 정리~~ → **대부분 완료.** `common/security/SecretRedactor`, 비밀 담는 엔티티에 `toString` 금지, docker-java 명령 덤프를 WARN 으로 고정
-- **미착수이고 이슈도 없는 것 두 개** (`BACKLOG_STATUS.md` BI-195 후속분):
-  - GitHub App 설치 권한 재검토·축소
-  - 컨테이너 `/tmp/.git-credentials` **평문** 개선 (G5)
+- **미착수 두 개** (`BACKLOG_STATUS.md` BI-195 후속분, 2026-09-30 이슈 신설):
+  - **#414** GitHub App 설치 권한 확인·최소화 — 현재 권한 목록이 저장소에 없다(대시보드에만 있다). AWS IAM 은 `docs/aws-byoc-permissions.md` 로 관리하는데 GitHub App 은 그렇지 않은 비대칭이 있다. 축소는 **기존 설치의 재승인을 요구**하므로 사용자 판단이 따른다
+  - **#413** 프리뷰 컨테이너의 `/tmp/.git-credentials` **평문** (G5) — installation 토큰이 아니라 **사용자 OAuth 액세스 토큰**이고, 지우지 않으며, 그 컨테이너가 `npm install` 로 받은 의존성과 앱 코드를 돌린다. 게다가 `qeploy.preview.egress.enabled` 가 **기본 `false`** 라(코딩 에이전트 쪽은 `true`) 밖으로 보내는 것을 막는 것이 없다
 
 
 ---
@@ -920,7 +926,7 @@ Docker preview 성공률, 배포 성공률, build 실패 해결률, Agent intent
 남은 연결(§3.0·§3.5 참고):
 
 - ~~Environment/Secrets 값의 Docker **Preview** 주입~~ → **완료**(`PreviewEnvComposer`)
-- Environment/Secrets 값의 **Deployment** 주입 — 여전히 없다
+- ~~Environment/Secrets 값의 **Deployment** 주입~~ → **완료**(`BackendDeployRunner.assembleEnv`, 스코프 누출은 #415 로 수정)
 
 외부 공개 URL 차단(BI-081)은 G1(컨테이너 포트 노출, §2.26)과 게이트웨이 인가 강화(G2/G4, Issue #77, §2.30)까지 완료했다.
 
