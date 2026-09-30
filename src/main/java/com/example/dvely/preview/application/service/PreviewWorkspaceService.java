@@ -71,7 +71,7 @@ public class PreviewWorkspaceService {
 
         // clone URL 에 토큰을 넣지 않는다.
         //
-        // 자격 증명은 아래 credential helper 가 이미 공급하므로 URL 에 넣을 이유가 없고, 넣으면 두
+        // 자격 증명은 인라인 credential helper 가 exec env 에서 공급하므로 URL 에 넣을 이유가 없고, 넣으면 두
         // 곳으로 샌다. 하나는 컨테이너의 프로세스 목록이다 — 이 컨테이너는 에이전트가 만든 코드를
         // 실행하는 곳이라, 그 코드가 clone 중에 ps 를 읽으면 사용자의 GitHub 토큰을 그대로
         // 가져갈 수 있다. 다른 하나는 서버 로그다 — DockerContainerService#exec 가 명령 전문을
@@ -86,13 +86,11 @@ public class PreviewWorkspaceService {
         dockerService.exec(containerId, "git config --global user.email 'agent@qeploy.com'");
         dockerService.exec(containerId, "git config --global user.name 'Qeploy Agent'");
 
-        // 자격은 git 작업 구간에만 둔다 (#413). 특히 아래 npm install 은 이 블록 '밖' 이다 —
-        // 의존성의 postinstall 스크립트가 임의 코드를 돌리는 지점이라, 자격이 살아 있는 동안
-        // 그것을 돌리면 정확히 그때 토큰을 읽을 수 있다. git 은 자격이 필요하고 npm 은 아니다.
-        gitCredentials.withCredentials(containerId, username, userToken,
-                () -> syncRepository(containerId, sourceRepo, cloneUrl));
+        // 자격은 인증이 필요한 git 명령에만 붙는다 (#413). 파일을 두지 않으므로 아래 npm install
+        // 에는 토큰이 닿을 경로가 없다 — 의존성의 postinstall 이 임의 코드를 돌리는 지점이다.
+        syncRepository(containerId, sourceRepo, cloneUrl, username, userToken);
 
-        // clone 후 의존성 설치 — 자격이 지워진 뒤다.
+        // clone 후 의존성 설치 — 자격이 닿지 않는다.
         String pkgJson = dockerService.exec(containerId, "[ -f " + APP_DIR + "/package.json ] && echo yes || echo no").trim();
         if ("yes".equals(pkgJson)) {
             log.info("[PreviewWorkspace] npm install 실행");
@@ -100,8 +98,15 @@ public class PreviewWorkspaceService {
         }
     }
 
-    /** clone·fetch·checkout — 인증이 필요한 구간. {@code withCredentials} 안에서만 불린다. */
-    private void syncRepository(String containerId, String sourceRepo, String cloneUrl) {
+    /**
+     * clone·fetch·checkout.
+     *
+     * <p>네 명령만 자격이 필요하다 — clone 둘, fetch 둘. {@code remote get-url}·{@code show-ref}·
+     * {@code checkout} 은 로컬 작업이라 토큰이 닿지 않는다. 붙은 자리가 곧 "여기서 토큰이
+     * 필요하다"는 표시다.</p>
+     */
+    private void syncRepository(String containerId, String sourceRepo, String cloneUrl,
+                                String username, String userToken) {
         String appExists = dockerService.exec(containerId, "[ -d " + APP_DIR + "/.git ] && echo yes || echo no").trim();
 
         if ("yes".equals(appExists)) {
@@ -111,20 +116,23 @@ public class PreviewWorkspaceService {
             if (!currentRemote.contains(sourceRepo)) {
                 // 다른 repo → 삭제 후 재clone
                 dockerService.exec(containerId, "rm -rf " + APP_DIR);
-                dockerService.exec(containerId, GIT_NO_PROMPT + "git clone " + cloneUrl + " " + APP_DIR);
+                gitCredentials.exec(containerId, username, userToken,
+                        GIT_NO_PROMPT + "git clone " + cloneUrl + " " + APP_DIR);
                 log.info("[PreviewWorkspace] 다른 repo 감지, 재clone: {}", sourceRepo);
             } else {
-                dockerService.exec(containerId, "cd " + APP_DIR + " && git fetch origin");
+                gitCredentials.exec(containerId, username, userToken,
+                        "cd " + APP_DIR + " && git fetch origin");
                 log.info("[PreviewWorkspace] 기존 repo fetch: {}", sourceRepo);
             }
         } else {
             // 처음 clone
             dockerService.exec(containerId, "mkdir -p /workspace");
-            dockerService.exec(containerId, GIT_NO_PROMPT + "git clone " + cloneUrl + " " + APP_DIR);
+            gitCredentials.exec(containerId, username, userToken,
+                    GIT_NO_PROMPT + "git clone " + cloneUrl + " " + APP_DIR);
             log.info("[PreviewWorkspace] 저장소 clone 완료: {}", sourceRepo);
         }
 
-        dockerService.exec(containerId,
+        gitCredentials.exec(containerId, username, userToken,
                 "cd " + APP_DIR + " && git fetch origin preview 2>/dev/null || true");
         dockerService.exec(containerId,
                 "cd " + APP_DIR + " && "

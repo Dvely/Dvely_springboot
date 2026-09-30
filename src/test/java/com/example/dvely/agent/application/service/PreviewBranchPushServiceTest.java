@@ -32,6 +32,9 @@ class PreviewBranchPushServiceTest {
         service = new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService));
         // .git 이 없는 상태 → init 경로를 탄다.
         lenient().when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
+        lenient().when(dockerService.execWithExitCode(eq(CONTAINER_ID), anyString(),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         lenient().when(dockerService.exec(eq(CONTAINER_ID), contains("/.git ]"))).thenReturn("no");
         // 작업물은 /workspace/app 에 있다(정상 상태). 없는 경우는 아래 전용 테스트가 다룬다.
         lenient().when(dockerService.exec(eq(CONTAINER_ID), contains("[ -d /workspace/app ]"))).thenReturn("yes");
@@ -49,7 +52,7 @@ class PreviewBranchPushServiceTest {
      */
     @Test
     void aFailedPushIsNotReportedAsSuccess() {
-        when(dockerService.execWithExitCode(eq(CONTAINER_ID), contains("git push")))
+        when(dockerService.execWithExitCode(eq(CONTAINER_ID), contains("push -u origin preview"), org.mockito.ArgumentMatchers.any()))
                 .thenReturn(new ExecResult(128, "remote: Permission to octo/app.git denied"));
 
         assertThatThrownBy(() -> push())
@@ -64,7 +67,7 @@ class PreviewBranchPushServiceTest {
      */
     @Test
     void theFailureMessageNeverCarriesTheToken() {
-        when(dockerService.execWithExitCode(eq(CONTAINER_ID), contains("git push")))
+        when(dockerService.execWithExitCode(eq(CONTAINER_ID), contains("push -u origin preview"), org.mockito.ArgumentMatchers.any()))
                 .thenReturn(new ExecResult(128, "fatal: Authentication failed"));
 
         assertThatThrownBy(() -> push())
@@ -104,7 +107,10 @@ class PreviewBranchPushServiceTest {
         verify(dockerService).execWithExitCode(eq(CONTAINER_ID), contains("git init -b preview"));
         verify(dockerService).execWithExitCode(eq(CONTAINER_ID), contains("git remote add origin"));
         verify(dockerService).execWithExitCode(eq(CONTAINER_ID), contains("git add -A"));
-        verify(dockerService).execWithExitCode(eq(CONTAINER_ID), contains("git push -u origin preview"));
+        // authed() 가 `git push` 를 `git -c credential.helper=... push` 로 쪼갠다 — 부분문자열이
+        // 달라지므로 서브커맨드로 맞춘다 (#413).
+        verify(dockerService).execWithExitCode(eq(CONTAINER_ID),
+                contains("push -u origin preview"), org.mockito.ArgumentMatchers.any());
     }
 
     /**

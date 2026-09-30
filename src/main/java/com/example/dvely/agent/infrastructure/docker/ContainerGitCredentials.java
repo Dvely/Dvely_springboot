@@ -1,95 +1,111 @@
 package com.example.dvely.agent.infrastructure.docker;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /**
- * 컨테이너 안에서 git 인증이 필요한 구간에만 자격 파일을 두고, 끝나면 지운다 (#413).
+ * 컨테이너 안 git 인증을 <b>파일 없이</b> 공급한다 (#413).
  *
- * <h2>왜 이 클래스가 있나</h2>
+ * <h2>무엇이 문제였나</h2>
  * 세 곳(프리뷰 워크스페이스 clone, preview 브랜치 push, 백엔드 배포 clone)이 각자
- * {@code /tmp/.git-credentials} 를 쓰고 <b>아무도 지우지 않았다</b>. 그 파일에는
- * <b>사용자의 GitHub OAuth 액세스 토큰이 평문으로</b> 들어 있고, 컨테이너 수명(TTL 기본 30분,
- * 접근마다 연장, 승인 hold 로 최대 6시간) 내내 남았다.
+ * {@code /tmp/.git-credentials} 에 <b>사용자의 GitHub OAuth 액세스 토큰을 평문으로</b> 쓰고
+ * 아무도 지우지 않았다. 컨테이너 수명(TTL 기본 30분, 접근마다 연장, 승인 hold 로 최대 6시간)
+ * 내내 남았고, 그 컨테이너는 {@code npm install} 로 받은 의존성과 에이전트가 쓴 앱 코드를 돈다.
+ * 파일을 쓰는 uid 와 앱을 돌리는 uid 가 같아서({@code node}) 그 코드가 읽을 수 있었다.
  *
- * <p>그 컨테이너는 {@code npm install} 로 받은 의존성과 에이전트가 쓴 앱 코드를 돈다. 파일을
- * 쓰는 uid 와 앱을 돌리는 uid 가 같다({@code node}) — 그래서 그 코드가
- * {@code cat /tmp/.git-credentials} 로 읽을 수 있었다. 게다가
- * {@code qeploy.preview.egress.enabled} 가 기본 {@code false} 라(코딩 에이전트 쪽은 {@code true})
- * 읽은 값을 밖으로 보내는 것을 막는 것도 없다.</p>
+ * <p>1차로 자격 수명을 git 작업 구간으로 좁혔다(PR #418). 이제 <b>파일 자체를 없앤다.</b></p>
  *
- * <h2>왜 write/clear 를 따로 내놓지 않나</h2>
- * 세 곳이 각자 지우게 하면 한 곳을 잊는다 — 애초에 세 곳이 모두 잊어서 이 이슈가 생겼다.
- * {@link #withCredentials} 하나만 내놓아서 <b>정리를 건너뛸 방법이 없게</b> 한다. git 작업이
- * 예외로 끝나도 {@code finally} 가 지운다.
+ * <h2>어떻게 파일 없이 공급하나</h2>
+ * git 의 {@code credential.helper} 는 {@code !} 로 시작하면 셸 명령으로 실행된다. 그 명령이
+ * 환경변수를 읽어 {@code username}/{@code password} 를 표준출력에 내면 git 이 그것을 쓴다.
  *
- * <h2>남는 창</h2>
- * git 작업이 도는 동안(초 단위)에는 파일이 존재한다. 그 구간을 없애려면 파일을 아예 두지 않고
- * {@code credential.helper} 를 env 기반 인라인 헬퍼로 바꿔야 하는데, 그것이 실제로 인증되는지는
- * 실 컨테이너에서만 확인된다 — 틀리면 clone·push 가 전부 깨진다. 검증할 수 있는 것부터 한다.
- * 후속은 #413 코멘트 참고.
+ * <pre>
+ * git -c credential.helper='!f() { printf "username=%s\npassword=%s\n" "$U" "$T"; }; f' fetch ...
+ * </pre>
+ *
+ * <p>토큰은 {@link DockerContainerService#execWithExitCode(String, String, List)} 의 env 로만
+ * 간다 — 그 메서드가 env 를 명령 문자열이 아니라 {@code ExecCreateCmd#withEnv} 로 넘기므로,
+ * {@code log.debug("Docker exec: {}", command)} 와 예외 메시지에는 토큰이 남지 않는다. 헬퍼
+ * 문자열은 홑따옴표 안이라 바깥 셸이 {@code $U}/{@code $T} 를 건드리지 않고, git 이 띄우는
+ * 안쪽 셸에서만 펼쳐진다.</p>
+ *
+ * <h2>실측으로 확인했다</h2>
+ * 토큰 없이도 확인할 수 있는 지점이 있다 — {@code git credential fill} 은 헬퍼를 불러 해석된
+ * 자격을 찍는다. {@code node:20-alpine} + git 2.52 컨테이너에서 env 로만 토큰을 넘겨
+ * {@code username}/{@code password} 가 그대로 나오는 것을 봤다(전역 helper 가 없는 상태에서).
+ * 인용·env 전파·git 의 {@code !} 셸 호출이 이 변경의 유일한 위험이었고 그것을 없앴다.
+ *
+ * <h2>남는 것</h2>
+ * 토큰이 도는 동안 git 프로세스의 {@code /proc/<pid>/environ} 은 같은 uid 가 읽을 수 있다.
+ * 파일과 달리 <b>그 명령이 끝나면 사라진다</b>. 더 좁히려면 사용자 토큰을 installation
+ * 토큰으로 바꿔야 한다(#414 와 함께 볼 것).
  */
-@Slf4j
 @Component
 @RequiredArgsConstructor
 public class ContainerGitCredentials {
 
-    /** git 이 읽는 자격 파일. helper 설정과 이 경로가 함께 움직여야 한다. */
-    private static final String CREDENTIALS_FILE = "/tmp/.git-credentials";
+    /** 헬퍼가 읽을 env 이름. 값은 명령 문자열이 아니라 exec 의 env 로만 전달된다. */
+    private static final String USER_VAR = "QEPLOY_GIT_USER";
+    private static final String TOKEN_VAR = "QEPLOY_GIT_TOKEN";
+
+    /**
+     * git 이 셸로 실행하는 인라인 credential helper.
+     *
+     * <p>홑따옴표를 쓰지 않는다 — 이 문자열 전체가 바깥 명령의 홑따옴표 안에 들어가므로, 안에
+     * 홑따옴표가 있으면 인용이 깨진다. {@code printf} 의 {@code \n} 은 두 글자로 들어가
+     * printf 가 해석한다.</p>
+     */
+    private static final String INLINE_HELPER =
+            "!f() { printf \"username=%s\\npassword=%s\\n\" \"$" + USER_VAR + "\" \"$" + TOKEN_VAR + "\"; }; f";
 
     private final DockerContainerService dockerService;
 
     /**
-     * git 작업을 자격이 있는 구간 안에서 돌린다. 끝나면 — 예외로 끝나도 — 자격을 지운다.
+     * git 명령에 자격을 붙인다. 인증이 필요한 명령(clone·fetch·push)에만 쓴다.
      *
-     * @param username GitHub 사용자명. 토큰과 함께 자격 파일에만 들어간다
-     * @param userToken 사용자 GitHub OAuth 액세스 토큰. <b>명령줄·로그에 넣지 않는다</b>
-     * @param gitWork clone·fetch·push 등 인증이 필요한 작업
+     * <p>{@code git} 으로 시작하는 명령의 그 자리에 {@code -c credential.helper=...} 를 끼운다.
+     * 자격이 필요 없는 명령({@code init}·{@code add}·{@code commit})에는 붙이지 않는다 — 붙여도
+     * 무해하지만, 붙은 자리가 곧 "여기서 토큰이 필요하다"는 표시여야 읽는 사람이 범위를 안다.</p>
+     *
+     * <p><b>명령 형태가 바뀐다.</b> {@code git clone ...} 이 {@code git -c credential.helper=... clone ...}
+     * 이 되므로 {@code "git clone"} 같은 부분문자열이 더는 연속하지 않는다. 명령을 문자열로
+     * 매칭하는 코드·테스트가 있으면 서브커맨드({@code " clone "}, {@code "push -u origin"})로
+     * 맞춰야 한다 — 이 변경에서 테스트 다섯 곳이 그렇게 걸렸다.</p>
+     *
+     * @param gitCommand {@code git} 으로 시작하거나 {@code cd X && git ...} 형태의 명령
      */
-    public void withCredentials(String containerId, String username, String userToken, Runnable gitWork) {
-        write(containerId, username, userToken);
-        try {
-            gitWork.run();
-        } finally {
-            clear(containerId);
+    public String authed(String gitCommand) {
+        int at = gitCommand.indexOf("git ");
+        if (at < 0) {
+            throw new IllegalArgumentException("git 명령이 아닙니다: " + gitCommand);
         }
+        return gitCommand.substring(0, at)
+                + "git -c credential.helper='" + INLINE_HELPER + "' "
+                + gitCommand.substring(at + "git ".length());
     }
 
     /**
-     * 자격 파일을 쓰고 helper 를 걸어둔다.
+     * 토큰을 담은 exec env. {@link #authed} 로 감싼 명령과 반드시 함께 넘긴다.
      *
-     * <p>토큰을 base64 로 감아 파일에만 쓰는 것은 원래 의도를 유지한다 — 명령줄에 평문 토큰이
-     * 들어가면 {@code ps} 와 docker exec 로그에 남는다. base64 는 암호화가 아니라 <b>명령줄
-     * 노출을 줄이는 것</b>이고, 파일 잔존 문제는 {@link #clear} 가 맡는다.</p>
+     * <p>둘 중 하나만 쓰면 조용히 실패한다 — env 없이 헬퍼만 있으면 빈 자격을 내고, 헬퍼 없이
+     * env 만 있으면 git 이 그 값을 볼 이유가 없다. 그래서 호출부가 둘을 같이 쓰는지
+     * {@code ContainerGitCredentialsTest} 가 지킨다.</p>
      */
-    private void write(String containerId, String username, String userToken) {
-        String cred = "https://" + username + ":" + userToken + "@github.com";
-        String b64 = Base64.getEncoder().encodeToString(cred.getBytes(StandardCharsets.UTF_8));
-        dockerService.exec(containerId,
-                "node -e \"require('fs').writeFileSync('" + CREDENTIALS_FILE
-                        + "', Buffer.from('" + b64 + "', 'base64').toString('utf8'))\"");
-        dockerService.exec(containerId,
-                "git config --global credential.helper 'store --file " + CREDENTIALS_FILE + "'");
+    public List<String> env(String username, String userToken) {
+        return List.of(USER_VAR + "=" + username, TOKEN_VAR + "=" + userToken);
     }
 
     /**
-     * 자격을 지운다. 실패해도 던지지 않는다 — 여기서 던지면 git 작업의 실제 실패 원인을 덮는다.
+     * 자격이 필요한 git 명령을 돌린다. 성공 여부는 호출부가 판단한다.
      *
-     * <p>helper 설정도 함께 푼다. 파일만 지우면 설정이 없는 파일을 가리킨 채 남고, 그 상태에서
-     * 인증이 필요한 명령은 <b>프롬프트 없이 조용히 실패</b>한다 — 다음 사람이 원인을 찾기
-     * 어려워진다. 둘을 함께 되돌려 "자격이 없다"는 상태를 명확히 만든다.</p>
+     * <p>이 메서드를 쓰면 {@link #authed}·{@link #env} 를 따로 조합할 일이 없다 — 한쪽만 쓰는
+     * 실수를 구조적으로 막는다.</p>
      */
-    private void clear(String containerId) {
-        try {
-            dockerService.exec(containerId,
-                    "rm -f " + CREDENTIALS_FILE + " && git config --global --unset credential.helper");
-        } catch (Exception e) {
-            // 컨테이너가 이미 죽었으면 지울 것도 없다. 그 외의 실패는 남겨서 보이게 한다.
-            log.warn("[ContainerGitCredentials] 자격 정리 실패 — 컨테이너에 파일이 남을 수 있습니다. containerId={}",
-                    containerId, e);
-        }
+    public DockerContainerService.ExecResult exec(String containerId,
+                                                  String username,
+                                                  String userToken,
+                                                  String gitCommand) {
+        return dockerService.execWithExitCode(containerId, authed(gitCommand), env(username, userToken));
     }
 }
