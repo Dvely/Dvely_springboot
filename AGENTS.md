@@ -89,3 +89,4 @@ ls src/main/resources/db/migration | sort -V | tail -1
 - `qeploy-mcp-cli-design.md` — 에이전트 연동(MCP 서버·CLI). BYOK 와 호출 방향이 반대다
 - `multi-stack-deploy-design.md` · `backend-domain-binding-design.md` — 배포·도메인 설계
 - `aws-byoc-permissions.md` — 사용자 AWS 계정에 필요한 IAM
+- `github-app-permissions.md` — GitHub App 이 필요로 하는 최소 권한(코드에서 도출). 현재 실제 요구 수준은 대시보드에만 있어 빈 칸으로 둠
