@@ -185,7 +185,7 @@
 - `secret`은 `true → false`로 되돌릴 수 없음(400)
 - 변경 이력은 값 자체를 저장하지 않고 CREATED/UPDATED/DELETED 액션과 `valueChanged` 플래그만 append-only로 기록(secret 값을 이력에서 유추할 수 있는 경로 차단)
 - 동일 (프로젝트, scope, key) 조합 중복 생성은 409
-- `EnvironmentValueResolver`는 애플리케이션 내부 port로 존재하며 HTTP로 노출되지 않는다 — Docker Preview/Deployment 워크플로에 실제 주입하는 연결은 아직 없다(§3.5 참고)
+- `EnvironmentValueResolver`는 애플리케이션 내부 port로 존재하며 HTTP로 노출되지 않는다. 당시에는 Preview/Deployment 어디에도 연결되지 않았다 — **그 뒤 프리뷰 주입은 완료됐다**(`PreviewRuntimeLauncher` → `PreviewEnvComposer`). **배포 주입은 여전히 없다**(§3.0 참고)
 - 리뷰에서 확정된 5건 수정 완료(값 미저장 이력 설계로 secret 값 유추 경로 차단 포함)
 
 ## 2.16 Preview 운영 API + 컨테이너 격리 정책 — ROADMAP U4 (Issue #42 / PR #47, 2026-07-18 병합)
@@ -337,14 +337,14 @@ BACKLOG BI-081(외부 공개 URL 차단) 중 G1 — 컨테이너 호스트 포�
 
 - 결함: `DockerContainerService`가 호스트 포트를 `Ports.Binding.bindPort(0)`(HostIp 미지정)으로 바인딩해, Docker가 이를 `0.0.0.0` + IPv6 `::` 전체 인터페이스에 퍼블리시했다. 게이트웨이(`/api/v1/previews/{sessionId}/{accessToken}/**`)를 거치지 않고 호스트의 동적 포트에 직접 접속하면 인증 로직이 없는 컨테이너 내부 정적 서버(`npx serve`)에 그대로 도달할 수 있었다(감사 `.agent-team/01-reverse/preview-exposure-audit.md` G1).
 - 수정: 바인딩을 `Ports.Binding.bindIpAndPort("127.0.0.1", 0)`으로 전환해 HostIp를 loopback으로 명시(포트는 여전히 0=동적 할당). 컨테이너 내부 포트(3000)와 포트 퍼블리시 자체는 유지 — `PreviewGatewayService`가 이미 `127.0.0.1:hostPort`로만 프록시하므로 정상 경로(게이트웨이 접근)는 무영향.
-- 범위: G1(컨테이너 포트 노출)만. 게이트웨이가 accessToken 일치 검사 하나로만 인가하고 세션 소유권·JWT를 검증하지 않는 **G2**, accessToken 회전·폐기가 없어 유출 시 TTL 동안(접근할 때마다 touch로 연장) 재사용 가능한 **G4**는 **Issue #77**로 분리해 미착수로 남겼다 — 무헤더 accessToken이 iframe 임베딩을 위한 의도된 설계라 수정 시 FE(`Dvely_FE_test`) 조율이 필요하다(§3.5 참고).
+- 범위: G1(컨테이너 포트 노출)만. 게이트웨이가 accessToken 일치 검사 하나로만 인가하고 세션 소유권·JWT를 검증하지 않는 **G2**, accessToken 회전·폐기가 없어 유출 시 TTL 동안(접근할 때마다 touch로 연장) 재사용 가능한 **G4**는 **Issue #77**로 분리해 당시에는 미착수로 남겼다 — 무헤더 accessToken이 iframe 임베딩을 위한 의도된 설계라 수정 시 FE 조율이 필요했다. **그 뒤 #77 은 완료·종료됐다**(소유권 쿠키 G2 + accessToken 회전 G4, §2.30).
 - 검증: 실 Docker 통합 테스트 2건(최초 생성 시 단일 loopback 바인딩 / restart로 포트가 재할당된 뒤에도 loopback 유지 + 포트 변경 자체를 단언) + mock 단위 테스트 1건 신설. 리뷰(Thomas, **APPROVE** — `.agent-team/10-review/ae-preview-exposure-review.md`)가 뮤테이션 실험(수정을 되돌려 신규 테스트 3건 모두 red 확인)과 별도 실 Docker 재현(loopback 접속 성공/호스트 LAN IP 접속 거부, `docker exec` 경유 npm install 등 아웃바운드·bridge egress NAT 무영향)으로 회귀 가드 실효성과 정상 경로 무회귀를 재확인.
 - 운영 전제: 게이트웨이(Spring)와 Docker 데몬이 **동일 호스트**여야 한다는 기존 전제(`PreviewGatewayService`가 이미 `127.0.0.1`로 프록시)를 이번 변경이 코드로 명시적으로 강제하게 되었다(신규 제약 아님). 멀티호스트/원격 Docker로 전환할 경우 이 loopback 바인딩과 게이트웨이 프록시 대상을 함께 재검토해야 한다.
 - 테스트: **644 tests, 0 failures**(기존 641 + 신규 3). Flyway V1~V30 연속(스키마 변경 없음).
 
 운영 한계:
 
-- G2(게이트웨이 소유권·JWT 미검증 + `permitAll`)·G4(accessToken 회전·폐기 없음)는 Issue #77로 남아 있다(§3.5 참고).
+- ~~G2(게이트웨이 소유권·JWT 미검증 + `permitAll`)·G4(accessToken 회전·폐기 없음)~~ → **Issue #77 로 완료·종료**(§2.30). 이 절이 쓰인 시점의 한계이고 지금은 해소됐다.
 
 ---
 
@@ -476,112 +476,139 @@ BACKLOG BI-081(외부 공개 URL 차단) 중 G1 — 컨테이너 호스트 포�
 
 # 3. 해야 할 것
 
-> 아래 항목은 여전히 PRD 대비 미구현이다. 실행 우선순위와 단위(Unit) 분할은 `.notion/ROADMAP.md`를 따른다. 각 소제목에 매핑되는 ROADMAP 단위를 표기했다.
+> **2026-09-30 전면 대조.** 이 절의 절반이 **이미 끝난 일을 미구현으로 적고 있었다**(Issue #411). 이 문서를 믿고 착수하면 있는 것을 다시 만든다. 그래서 항목마다 **어떻게 확인했는지**를 함께 적었다 — 다음 사람이 문서만 믿지 말고 대조할 수 있게.
+>
+> 실행 우선순위와 단위 분할은 `.notion/ROADMAP.md` 를 따른다. 사람 손이 필요한 것과 막힌 지점은 `docs/pending-actions.md` 가 따로 관리한다.
 
-## 3.1 프로젝트 Import
+## 3.0 지금 가장 실질적인 구멍 — 배포에 환경변수가 주입되지 않는다
 
-- ZIP 업로드 API
-- zip-slip, 파일 크기, 확장자, 악성 파일 검사
-- ZIP 압축 해제와 프로젝트 유형 분석
-- ZIP import 후 저장소 연결 흐름
-- GitHub 레포 가져오기 확인/진행 상태
-- import Job과 실패 복구
+`EnvironmentScope` 는 `PREVIEW`·`PRODUCTION` 둘인데 **`PRODUCTION` 을 resolve 하는 코드가 0곳이다.**
 
-`BACKLOG_STATUS.md`에서는 현재 제품 흐름(GitHub App + Agent 기반 생성/수정) 기준으로 MVP 범위 밖 Removed 항목으로 정리되어 있다. ROADMAP에는 아직 단위로 편성하지 않았다.
+```
+resolve() 호출 전부:  PreviewEnvComposer:44  →  EnvironmentScope.PREVIEW
+EnvironmentScope.PRODUCTION 등장:  EnvironmentValueResolver javadoc 1곳뿐
+```
 
-## 3.2 Change와 승인 확장
+모델·CRUD·이력·암호화·마스킹(§2.15)은 다 되고 **프리뷰 주입도 된다**(§3.5 참고). 그런데 사용자가 `PRODUCTION` 스코프로 저장한 값은 **아무 데도 들어가지 않는다 — 저장은 되고 효과가 없다.** 반쯤 만든 기능이라 다른 미구현 항목과 성격이 다르다.
 
-- Deployment/Domain/Infra Approval의 UI 연동 마감 범위 확인
-- 승인/거절 이력의 노출 방식 확장
-- Project Settings의 승인 On/Off 정책 확장(General/Release Policy 등과 연동)
+## 3.1 프로젝트 Import — **미구현 (범위 밖)**
 
-## 3.3 영속 Job 확장
+ZIP 업로드/검사/해제/유형 분석, GitHub 레포 가져오기 진행 상태, import Job.
 
-- Import, deployment, domain health까지 AgentRun과 동일한 공통 Job 모델로 통합
-- 여러 서버 인스턴스 간 상태 공유 시나리오 확대 테스트
+**확인**: `ZipInputStream`·zip-slip 관련 코드 0건. `BACKLOG_STATUS.md` 에서 현재 제품 흐름(GitHub App + Agent 생성/수정) 기준 **Removed** 로 정리돼 있고 ROADMAP 단위로도 편성되지 않았다. 되살릴 때 재설계가 필요하다.
 
-## 3.4 AI Workspace 백엔드 연결 — ROADMAP U2 (`danto/agent-chat`)
+## 3.2 Change와 승인 확장 — **대부분 완료, 남은 것은 범위 미정**
 
-CHAT Agent 구현과 `ChatAgentService` 신설은 완료했다(§2.14 참고). 남은 항목:
+- ~~승인 On/Off 정책~~ → **완료.** 플래그 5개(`change`·`deployment`·`domain`·`infra`·`result`ApprovalRequired). `GET`/`PATCH /{projectId}/settings/chat`
+- ~~승인/거절 이력 노출~~ → **완료.** `GET /projects/{id}/approvals`, `GET /approvals/{approvalId}`
+- 남은 것: "UI 연동 마감 범위", "노출 방식 확장" 은 **무엇을 더 할지 문서가 말하지 않는다.** 범위를 적지 않으면 착수할 수 없다 — FE 와 계약을 맞출 때 정한다
 
-- 프로젝트별 Chat 지침과 응답 상세도 (`ChatAgentService`는 현재 프로젝트 구분 없는 고정 system prompt만 사용한다)
+## 3.3 영속 Job 확장 — **미구현**
 
-## 3.5 Preview 운영/실행 확장 — ROADMAP U4 (`danto/preview-ops`)
+Import·deployment·domain health 를 AgentRun 과 같은 **공통 Job 모델로 통합**하는 것.
 
-컨테이너 상태/로그 조회 API와 BI-194 격리 정책 기본기(메모리/CPU/pids/capability/네트워크)는 완료했다(§2.16 참고). 컨테이너 호스트 포트의 외부 노출 차단(BI-081/G1)도 완료했다(Issue #76, §2.26 참고). 게이트웨이 인가 강화(G2 소유권 쿠키·G4 accessToken 회전)도 완료했다(Issue #77, §2.30 참고 — FE 연동 `Dvely_FE` PR #30도 머지·배포 완료). 남은 항목:
+**확인**: 도메인별 Job 만 있다(`CloudConnectionVerificationJob`). 공통 모델은 없다. 다만 워커 리스 규율은 이미 도메인별로 확립돼 있어(멱등이면 claim 불필요, 비멱등 AWS 면 status-CAS/행리스) **통합의 이득이 무엇인지 먼저 적어야** 한다.
 
-- dependency/build/image cache 정책
-- Environment/Secrets 값의 Docker Preview/Deployment 런타임 실제 주입(§2.15의 `EnvironmentValueResolver`는 아직 HTTP·워크플로 어디에도 연결되지 않음)
-- 정적 사이트 외 backend/fullstack/API/DB 프로젝트 실행
+## 3.4 AI Workspace 백엔드 연결 — ROADMAP U2
+
+CHAT Agent 와 `ChatAgentService` 는 완료(§2.14). 남은 것:
+
+- **프로젝트별 Chat 지침 — 미구현.** `ChatAgentService.SYSTEM_PROMPT` 가 `static final` 고정이고 `projectId` 를 받지 않는다
+
+## 3.5 Preview 운영/실행 확장 — ROADMAP U4
+
+완료분: 컨테이너 상태/로그 API, BI-194 격리(메모리/CPU/pids/capability/네트워크), 호스트 포트 외부 노출 차단(BI-081 G1, #76), 게이트웨이 인가(G2 소유권 쿠키·G4 accessToken 회전, #77).
+
+- ~~정적 사이트 외 backend/fullstack/API/DB 실행~~ → **완료.** `RUNTIME_SETUP`·`BACKEND_DEPLOY` AgentType, `PreviewRuntimeDetector`/`PreviewRuntimeConfigService`/`PreviewRuntimeLauncher`, DB 프로비저닝 워커
+- ~~Environment 값의 **프리뷰** 주입~~ → **완료.** `PreviewRuntimeLauncher` → `PreviewEnvComposer` 가 DB 자동값을 깔고 사용자 `PREVIEW` env 로 덮고 `PORT=3000` 을 강제한다. 값은 명령 문자열이 아니라 exec 의 env 로만 전달된다(`execWithEnv`) — 그래야 `DB_PASSWORD` 가 로그·예외에 안 남는다
+- **Environment 값의 배포 주입 — 미구현.** §3.0 참고
+- **dependency/build/image cache 정책 — 미구현**
 
 ## 3.6 Environment / Secrets 런타임 연결 — ROADMAP U3 이후
 
-모델·CRUD·이력·암호화·마스킹은 완료했다(§2.15 참고, ROADMAP U3). 남은 항목은 §3.5의 "Environment/Secrets 값의 런타임 실제 주입"으로 이관했다.
+모델·CRUD·이력·암호화·마스킹 완료(§2.15). 남은 것은 **배포 주입 하나**이고 §3.0 으로 옮겼다. 프리뷰 주입은 끝났다.
 
-## 3.7 Repository Settings 후속 — ROADMAP U5 이후
+## 3.7 Repository Settings 후속 — **남은 항목 없음**
 
-Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, ROADMAP U5). 동시 쓰기 lost-update 해소도 완료했다(Issue #45, §2.20 참고). 남은 항목은 없다.
+조회·연결 해제 API 완료(§2.17), 동시 쓰기 lost-update 해소 완료(#45, §2.20). `GET /{projectId}/settings/repository` 있다.
 
-## 3.8 Project Settings 나머지 영역
+## 3.8 Project Settings 나머지 영역 — **일부 완료**
 
-- General: 설명 등 추가 필드
-- Version & Release Policy Settings API
-- Deployment Defaults Settings API
-- Domain Settings API
-- Cost & Budget Settings API
-- Danger Zone 전체 정책
+- ~~Cost & Budget Settings API~~ → **완료.** `GET`/`PUT`/`DELETE /{projectId}/settings/cost-budget`
+- **Domain Settings API — "미구현" 이 아니다.** 프로젝트 설정 경로에는 없지만 도메인 관리 자체는 `DomainBindingController`(`GET`/`POST /projects/{id}/domains`, `GET`/`DELETE /domains/{id}`, 검증 가이드·검증 실행)와 `DomainTlsController` 로 있다. 남은 것은 **설정 화면용 계약을 따로 둘지**의 결정이다
+- **Version & Release Policy Settings API — 미구현.** `settings/` 경로에 0건
+- **Deployment Defaults Settings API — 미구현.** `settings/` 경로에 0건
+- General "설명 등 추가 필드", Danger Zone "전체 정책" — `PATCH /{projectId}`·`DELETE /{projectId}` 가 이미 있고 **무엇이 더 필요한지 문서가 말하지 않는다.** 범위부터 적어야 한다
 
 ## 3.9 배포 실패 복구 후속 — ROADMAP U6 이후
 
-배포 실패 원인 분석과 재시도 API는 완료했다(§2.18 참고, ROADMAP U6). 남은 항목:
+원인 분석·재시도 API 완료(§2.18). 남은 것:
 
-- 배포 취소 API
-- 동일 프로젝트 동시 배포에 대한 queue 직렬화
+- **배포 취소 API — 미구현.** `cancelled` 는 GitHub workflow 의 결과값으로만 등장하고 취소 엔드포인트는 없다
+- **동일 프로젝트 동시 배포 직렬화 — 미구현.** 락·큐 없음
 
 ## 3.10 인프라 설정 후속 — ROADMAP U7 이후
 
-인프라 설정 저장(4개 provider-중립 enum)과 INFRA_OPERATION standalone 승인 연동은 완료했다(§2.19 참고, ROADMAP U7). 남은 항목:
+설정 저장(4개 provider-중립 enum)과 INFRA_OPERATION standalone 승인 완료(§2.19).
 
-- 실제 AWS/GCP 프로비저닝 연결(§3.11 참고)
-- tier-to-instance 매핑 정의(EPIC 15 Cloud-Ops에서 결정 예정)
-- 오토스케일링/로드밸런서/DB 설정(BI-125~127)은 `BACKLOG_STATUS.md` Removed 지침에 따라 범위 밖으로 유지
+- ~~실제 AWS/GCP 프로비저닝 연결~~ → **완료.** §3.11 참고
+- **tier↔인스턴스 매핑 — 미구현**(예: MEDIUM ↔ t3.medium/e2-medium)
+- 오토스케일링/로드밸런서/DB 설정(BI-125~127)은 `BACKLOG_STATUS.md` Removed 에 따라 범위 밖
 
-## 3.11 AWS/GCP 실제 배포
+## 3.11 AWS/GCP 실제 배포 — **대부분 완료**
 
-- AWS/GCP deployment adapter
-- IaC plan/apply와 상태 저장
-- 오토스케일링/로드밸런서/DB 설정(BI-125~127, `BACKLOG_STATUS.md` Removed — IaC 설계 단계에서 재정의 예정)
-- cloud 기본 URL 수집
-- 배포 로그와 장애 상태
+> **이 절이 가장 크게 틀려 있었다.** "인프라 설정과 비용 추정은 완료했지만 이 둘을 실제 클라우드 리소스로 만드는 프로비저닝 자체는 아직 없다" 고 적혀 있었다. **아니다.**
 
-인프라 설정 저장(§2.19)과 비용 추정(§2.21)은 완료했지만, 이 둘을 실제 클라우드 리소스로 만드는 프로비저닝 자체는 아직 없다. `STATUS_CHECK`(§2.22)가 이 사실을 매번 명시적으로 알린다.
+**확인 — 프로비저닝 워커 9개가 돈다.**
 
-## 3.12 비용/운영 확장
+```
+RdsProvisionStatusWorker          ProvisionedDatabaseExpiryWorker
+BackendDeployWorker               DockerDbProvisionStatusWorker
+ProvisionedServerStatusWorker     OrphanCloudFrontSweeper
+ServerHealthMonitorWorker         OrphanElasticIpSweeper
+CdnDeletionReaper
+```
 
-- provider 가격 API 연동(현재는 정적 코드 상수 가격표, §2.21 참고) 기반 실시간 비용
-- 예산 초과 시 알림/경고 발송(현재는 상태 필드만 계산, 알림 채널 없음)
-- 서버 스펙 변경(RESOURCE_SCALING/AUTOSCALING_CHANGE, §2.22에서 감지·거부만 구현됨)
-- 미사용 리소스 정리(RESOURCE_CLEANUP, §2.22에서 감지·거부만 구현됨)
-- 위 모두 실제 프로비저닝(§3.11)이 선행되어야 의미가 생긴다
+- ~~AWS deployment adapter~~ → **완료.** `Ec2Provisioner`, `BackendDeployRunner`, `ServerProvisioningCommandService`, S3+CloudFront+ACM
+- ~~cloud 기본 URL 수집~~ → **완료.** `Ec2Provisioner`
+- ~~배포 로그와 장애 상태~~ → **완료.** `DeploymentLogsResult`, `DeploymentFailureAnalysisService`
+- **GCP adapter — 미구현** (AWS 만 있다)
+- **IaC plan/apply 와 상태 저장 — 미구현.** terraform·cloudformation 0건. 지금은 SDK 직접 호출이다
+- 오토스케일링/로드밸런서/DB 설정(BI-125~127) — Removed, IaC 설계 단계에서 재정의
 
-## 3.13 도메인 확장
+## 3.12 비용/운영 확장 — **미구현 (선행 조건은 이미 충족됐다)**
 
-- HTTPS 인증서 자동 갱신 모니터링
-- www/apex redirect 정책
-- 도메인 변경 API
-- AWS/GCP deployment target 연결
-- 실제 구매형 도메인 registrar 연동
+- **provider 가격 API 연동 — 미구현.** 지금은 정적 코드 상수 가격표(§2.21)
+- **예산 초과 알림/경고 발송 — 미구현.** `BudgetStatus` 로 상태만 계산하고 알림 채널이 없다
+- **서버 스펙 변경(RESOURCE_SCALING/AUTOSCALING_CHANGE) 실행 — 미구현.** §2.22 에서 감지·거부만
+- **미사용 리소스 정리(RESOURCE_CLEANUP) 실행 — 미구현.** 같음
 
-## 3.14 운영 지표 (EPIC 18)
+> 이전 문서는 "위 모두 실제 프로비저닝(§3.11)이 선행되어야 의미가 생긴다" 고 적었다. **그 선행 조건은 이미 충족됐다** — §3.11 참고. 이제 이 항목들은 스스로의 이유로 착수 가능하다.
 
-- Docker preview 성공률, 배포 성공률, build 실패 해결률
-- Agent intent 정확도, 도메인 연결 성공률, cloud 비용 예측 오차
-- 위 지표 수집을 위한 event/metric 저장
+## 3.13 도메인 확장 — **일부 완료**
 
-## 3.15 보안 — ROADMAP U-sec (`danto/security`, 민감·사용자 승인 후 착수)
+- ~~AWS deployment target 연결~~ → **완료.** `GET /api/v1/domains/hosting-targets`, S3+CloudFront(`S3CdnProvisionWorker`), EC2 백엔드
+- **도메인 변경 API — 미구현.** `POST`(연결)·`DELETE`(해제)만 있고 변경 경로가 없다
+- **www/apex redirect 정책 — 미구현**
+- **registrar 구매 연동 — 미구현**
+- **HTTPS 인증서 갱신 모니터링 — 범위 확인 필요.** ACM 은 자동 갱신하므로 "무엇을 모니터링할지" 가 먼저다. 관리형 서브도메인 쪽은 Cloudflare 프록시 때문에 GH Pages 가 인증서를 못 받는 구조적 문제가 따로 있다(#154)
 
-- 실 API 키 등 민감정보의 환경변수(env) 이관
-- 추적/로그에 남은 민감정보 정리
+## 3.14 운영 지표 (EPIC 18) — **미구현**
+
+Docker preview 성공률, 배포 성공률, build 실패 해결률, Agent intent 정확도, 도메인 연결 성공률, 비용 예측 오차, 그리고 이 지표를 담을 event/metric 저장.
+
+**확인**: Micrometer·`MeterRegistry` 0건. 지금은 로그만 있다.
+
+> **의사결정 품질을 재는 장치가 없는 것이 여기 걸린다.** "되묻기(CLARIFY)가 옳게 떴는지", "계획이 맞았는지" 를 재는 것이 없어서, decision 모델이나 프롬프트를 바꿔도 **좋아졌는지 알 방법이 없다.**
+
+## 3.15 보안 — ROADMAP U-sec — **대부분 완료**
+
+- ~~실 API 키 등 민감정보의 env 이관~~ → **완료(#365).** `application-{dev,prod}.yml` 에 벤더 `api-key` 가 없다(남은 `--with-api-key` 는 codex CLI 의 argv 이고 키가 아니다). AI 실행은 BYOK 전용이고 `getApiKey()` 호출은 전부 `aiaccount` 안에 있다
+- ~~추적/로그 민감정보 정리~~ → **대부분 완료.** `common/security/SecretRedactor`, 비밀 담는 엔티티에 `toString` 금지, docker-java 명령 덤프를 WARN 으로 고정
+- **미착수이고 이슈도 없는 것 두 개** (`BACKLOG_STATUS.md` BI-195 후속분):
+  - GitHub App 설치 권한 재검토·축소
+  - 컨테이너 `/tmp/.git-credentials` **평문** 개선 (G5)
+
 
 ---
 
@@ -674,7 +701,7 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 - 실행 중인 Docker/GitHub 외부 명령은 즉시 강제 종료하지 않고 step 경계에서 취소를 반영한다.
 - DB queue는 at-least-once 실행이므로 외부 adapter의 idempotency 보강이 계속 필요하다.
-- gateway는 정적 preview 중심이며 websocket/backend preview는 후속 확장 대상이다(§3.5).
+- gateway는 당시 정적 preview 중심이었다. **backend preview 는 그 뒤 완료됐다**(`RUNTIME_SETUP`·`BACKEND_DEPLOY`, `PreviewRuntimeDetector`/`ConfigService`/`Launcher`). websocket 은 확인하지 않았다(§3.5).
 - 외부 공개 URL 차단(BI-081)은 G1(컨테이너 포트 노출, §2.26)에 이어 게이트웨이 인가 강화(G2/G4, Issue #77, §2.30)까지 완료했다.
 
 ## 4.4 P1: Deployment 정확성
@@ -890,9 +917,10 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 적용: §2.15, §2.16, §2.17 참고.
 
-남은 연결(§3.5~§3.6 참고):
+남은 연결(§3.0·§3.5 참고):
 
-- Environment/Secrets 값의 Docker Preview/Deployment 실제 주입
+- ~~Environment/Secrets 값의 Docker **Preview** 주입~~ → **완료**(`PreviewEnvComposer`)
+- Environment/Secrets 값의 **Deployment** 주입 — 여전히 없다
 
 외부 공개 URL 차단(BI-081)은 G1(컨테이너 포트 노출, §2.26)과 게이트웨이 인가 강화(G2/G4, Issue #77, §2.30)까지 완료했다.
 
@@ -904,8 +932,8 @@ Repository Settings 조회와 연결 해제 API는 완료했다(§2.17 참고, R
 
 남은 연결:
 
-- 배포 취소 API, 동일 프로젝트 queue 직렬화(§3.9)
-- 실제 AWS/GCP 프로비저닝과 인프라 설정 연결(§3.10, §3.11)
+- 배포 취소 API, 동일 프로젝트 queue 직렬화(§3.9) — 여전히 없다
+- ~~실제 AWS 프로비저닝과 인프라 설정 연결~~ → **완료**(워커 9개, §3.11). **GCP adapter 와 IaC plan/apply 는 여전히 없다**
 
 ## 4.15 P1: Project 동시 쓰기 lost-update 해소 (Issue #45)
 
