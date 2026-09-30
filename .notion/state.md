@@ -613,8 +613,10 @@ Docker preview 성공률, 배포 성공률, build 실패 해결률, Agent intent
 - ~~추적/로그 민감정보 정리~~ → **대부분 완료.** `common/security/SecretRedactor`, 비밀 담는 엔티티에 `toString` 금지, docker-java 명령 덤프를 WARN 으로 고정
 - **미착수 두 개** (`BACKLOG_STATUS.md` BI-195 후속분, 2026-09-30 이슈 신설):
   - **#414** GitHub App 설치 권한 확인·최소화 — 현재 권한 목록이 저장소에 없다(대시보드에만 있다). AWS IAM 은 `docs/aws-byoc-permissions.md` 로 관리하는데 GitHub App 은 그렇지 않은 비대칭이 있다. 축소는 **기존 설치의 재승인을 요구**하므로 사용자 판단이 따른다
-  - **#413** 프리뷰 컨테이너의 `/tmp/.git-credentials` **평문** (G5) — **부분 완료**. 자격 수명을 git 작업 구간으로 좁혔다(`ContainerGitCredentials.withCredentials`, 세 호출 지점 전부). 특히 `npm install` 은 그 블록 **밖**으로 옮겼다 — 의존성 postinstall 이 임의 코드를 돌리는 지점이라 자격이 살아 있는 동안 돌리면 안 된다.
-    **남은 것**: git 작업이 도는 초 단위 구간에는 파일이 존재한다. 없애려면 `credential.helper` 를 env 기반 인라인으로 바꿔야 하는데 실 컨테이너에서만 검증된다. 그리고 토큰이 여전히 **installation 토큰이 아니라 사용자 OAuth 액세스 토큰**이고, `qeploy.preview.egress.enabled` 가 **기본 `false`** 다(코딩 에이전트 쪽은 `true`)
+  - **#413** 프리뷰 컨테이너의 `/tmp/.git-credentials` **평문** (G5) — **자격 파일을 없앴다.** `credential.helper` 를 git 의 `!` 셸 헬퍼로 두고 토큰을 **exec env 로만** 넘긴다(`ContainerGitCredentials`). 파일이 없으므로 컨테이너에 남을 것도 없고, `npm install` 에는 토큰이 닿을 경로가 없다.
+    **실측으로 확인했다**: `node:20-alpine` + git 2.52 에서 `git credential fill` 이 env 만으로 `username`/`password` 를 해석하는 것을 봤다(전역 helper 없는 상태). 인용·env 전파·git 의 `!` 셸 호출이 유일한 위험이었고 그것을 없앴다.
+    ⚠️ `authed()` 가 `git clone` 을 `git -c credential.helper=... clone` 으로 **쪼갠다.** 명령을 문자열로 매칭하는 코드·테스트는 서브커맨드로 맞춰야 한다.
+    **남은 것 둘**: 토큰이 여전히 **installation 토큰이 아니라 사용자 OAuth 액세스 토큰**이다(#414 와 함께 볼 것). 그리고 `qeploy.preview.egress.enabled` 가 **기본 `false`** 다(코딩 에이전트 쪽은 `true`) — 의도인지 누락인지 미판단
 
 
 ---

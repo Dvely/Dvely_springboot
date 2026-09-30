@@ -137,13 +137,18 @@ class PreviewWorkspaceServiceTest {
         // exec 결과에 .trim() 을 부르는 지점이 여러 곳이라 기본값을 준다.
         when(docker.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
         when(docker.exec(eq(CONTAINER_ID), contains("/.git ]"))).thenReturn("no");
+        // clone·fetch 는 자격이 필요해 env 를 함께 넘기는 3-인자 exec 로 간다 (#413).
+        when(docker.execWithExitCode(eq(CONTAINER_ID), anyString(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
 
         target.prepareProject(CONTAINER_ID, 7L, 11L);
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(docker, org.mockito.Mockito.atLeastOnce()).exec(eq(CONTAINER_ID), captor.capture());
+        verify(docker, org.mockito.Mockito.atLeastOnce())
+                .execWithExitCode(eq(CONTAINER_ID), captor.capture(), org.mockito.ArgumentMatchers.any());
         var cloneCommands = captor.getAllValues().stream()
-                .filter(command -> command.contains("git clone"))
+                // authed() 가 `git clone` 을 `git -c credential.helper=... clone` 으로 쪼갠다 (#413).
+                .filter(command -> command.contains(" clone "))
                 .toList();
 
         assertThat(cloneCommands).isNotEmpty();
@@ -156,8 +161,10 @@ class PreviewWorkspaceServiceTest {
     }
 
     @Test
-    void credentialsAreWrittenToAFileNotPassedAsArguments() {
-        // 토큰은 base64 로 감싸 파일에만 들어가야 한다. 이 명령 자체에는 평문 토큰이 없다.
+    void credentialsGoThroughExecEnvAndNeverIntoAFile() {
+        // 예전 불변식은 "토큰은 base64 로 감싸 파일에만 들어간다" 였다. 그 파일이 컨테이너 수명
+        // 내내 남아 같은 uid 로 도는 앱 코드가 읽을 수 있었던 것이 #413 이다. 이제 파일을 아예
+        // 만들지 않고 exec env 로만 넘긴다 — 명령 문자열에도, 파일에도 토큰이 없다.
         DockerContainerService docker = mock(DockerContainerService.class);
         ProjectRepository projects = mock(ProjectRepository.class);
         UserRepository users = mock(UserRepository.class);
@@ -168,14 +175,28 @@ class PreviewWorkspaceServiceTest {
         // exec 결과에 .trim() 을 부르는 지점이 여러 곳이라 기본값을 준다.
         when(docker.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
         when(docker.exec(eq(CONTAINER_ID), contains("/.git ]"))).thenReturn("no");
+        when(docker.execWithExitCode(eq(CONTAINER_ID), anyString(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
 
         target.prepareProject(CONTAINER_ID, 7L, 11L);
 
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(docker, org.mockito.Mockito.atLeastOnce()).exec(eq(CONTAINER_ID), captor.capture());
-        assertThat(captor.getAllValues()).noneSatisfy(command -> assertThat(command).contains(TOKEN));
-        assertThat(captor.getAllValues())
-                .anySatisfy(command -> assertThat(command).contains("credential.helper"));
+        ArgumentCaptor<String> plain = ArgumentCaptor.forClass(String.class);
+        verify(docker, org.mockito.Mockito.atLeastOnce()).exec(eq(CONTAINER_ID), plain.capture());
+        ArgumentCaptor<String> authed = ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.List<String>> env = ArgumentCaptor.forClass(java.util.List.class);
+        verify(docker, org.mockito.Mockito.atLeastOnce())
+                .execWithExitCode(eq(CONTAINER_ID), authed.capture(), env.capture());
+
+        // 어느 명령에도 토큰이 없다 — 자격 없는 것도, 자격 붙은 것도.
+        assertThat(plain.getAllValues()).noneSatisfy(c -> assertThat(c).contains(TOKEN));
+        assertThat(authed.getAllValues()).noneSatisfy(c -> assertThat(c).contains(TOKEN));
+        // 자격 파일을 만드는 명령이 없다.
+        assertThat(plain.getAllValues())
+                .noneSatisfy(c -> assertThat(c).contains("/tmp/.git-credentials"));
+        // 토큰은 env 로만 간다.
+        assertThat(env.getAllValues())
+                .anySatisfy(e -> assertThat(e).contains("QEPLOY_GIT_TOKEN=" + TOKEN));
     }
 
     @Test

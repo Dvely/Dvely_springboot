@@ -57,6 +57,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -125,7 +128,13 @@ class DeployAgentServiceTest {
                 "cd /workspace/app && git diff --cached --quiet || "
                         + "git commit -m 'feat: apply Qeploy Agent task task123'"
         );
-        verify(dockerService).execWithExitCode("container-1", "cd /workspace/app && git push -u origin preview");
+        // push 는 자격이 필요해 env 를 함께 넘기는 3-인자 exec 로 가고, authed() 가 `git push` 를
+        // `git -c credential.helper=... push` 로 쪼갠다 (#413). 명령 전문 대신 서브커맨드로 맞춘다.
+        verify(dockerService).execWithExitCode(eq("container-1"),
+                contains("cd /workspace/app && git -c credential.helper="),
+                org.mockito.ArgumentMatchers.any());
+        verify(dockerService).execWithExitCode(eq("container-1"),
+                contains("push -u origin preview"), org.mockito.ArgumentMatchers.any());
         verify(dockerService, never()).execWithExitCode(anyString(), contains("--force"));
         verify(dockerService, never()).execWithExitCode(anyString(), contains("origin main"));
         verify(deploymentFacade).deploy(
@@ -150,6 +159,9 @@ class DeployAgentServiceTest {
         // push 의 각 단계는 이제 종료 코드를 본다(PreviewBranchPushService#execOrThrow).
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
@@ -208,6 +220,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -256,6 +271,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -303,6 +321,9 @@ class DeployAgentServiceTest {
         // push 의 각 단계는 이제 종료 코드를 본다(PreviewBranchPushService#execOrThrow).
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
@@ -353,6 +374,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -397,6 +421,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -434,6 +461,9 @@ class DeployAgentServiceTest {
         // push 의 각 단계는 이제 종료 코드를 본다(PreviewBranchPushService#execOrThrow).
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
