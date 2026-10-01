@@ -10,6 +10,29 @@
 
 ## 1. 현재 상태
 
+- 2026-10-01: **컨테이너 git 자격을 파일에서 env 로 옮기고, 배포 스코프 누출을 막고, 로그 신호 두 개를 바로잡았다 — main 배포 완료(#413 PR #418·#419, #414 PR #420, #415 PR #416, AiProvider 주석 PR #421 → 릴리스 `340e8a7`). `#423`·`#425` 는 develop**.
+
+  **#415** `BackendDeployRunner` 가 `findByProjectIdOrderByScopeAscKeyAsc(projectId)` 로 **모든 스코프**를 끌어와 PREVIEW 변수가 운영 배포에 섞여 들어갔다. `EnvironmentValueResolver.resolve(projectId, PRODUCTION)` 로 바꿨다. **내가 처음 쓴 진단이 틀렸다** — `state.md` §3 에 "`PRODUCTION` 주입이 아예 없다"고 적었는데(`resolve()` grep 하나로), 주입은 있고 **포트를 우회**하고 있었다. "연결되지 않았다"와 "연결됐지만 틀렸다"가 같은 관측으로 보인다.
+
+  **#413** 컨테이너 안의 `/tmp/.git-credentials` 를 없애고 env + 인라인 credential helper 로만 넘긴다. git 의 `credential.helper` 가 `!` 로 시작하면 **셸 명령으로 실행**되므로 env 를 읽을 수 있다 — 파일이 필요 없다. 프리뷰 컨테이너는 사용자 코드를 돌리므로(`npm install` 의 postinstall) 거기 남는 자격 파일은 그 코드가 읽을 수 있다. `npm install` 을 자격 구간 **밖으로** 뺀 것도 같은 이유다.
+  `authed()` 가 `git clone` → `git -c credential.helper='…' clone` 으로 바꾸므로 **`"git clone"` 이 더는 연속된 부분문자열이 아니다** — 리터럴을 보던 테스트 5개가 깨졌다. 호출부 16곳에는 목이 아니라 **진짜 `ContainerGitCredentials`** 를 줬다(목은 람다를 건너뛰어 아무것도 안 지킨다).
+  FE 세션과 dev 에서 함께 검증했다(10:27~10:36) — 프리뷰 SHA `661bdc8ecfbc` → `5a2b65672a4e`, 감사 로그 29→30, 실제 컨테이너에 자격 파일 없음, `exitCode=128` 0건, FE 가 프리뷰 DOM 에서 `© 2026 오늘의 할 일` 렌더를 확인(= "성공했는데 결과가 빈" 경우가 아니다).
+  **관측 장치가 먼저 고장 났다.** `^qeploy-preview-[0-9a-f]` 로 컨테이너를 골랐는데 `e` 가 16진수라 `qeploy-preview-egress`(프록시)가 걸렸다. 5분간 그것을 보며 `cred=없음` 을 185번 찍었다 — **넓은 필터는 0건이 아니라 그럴듯한 값을 계속 낸다.** 진짜 컨테이너는 `exciting_hertz` 였고, FE 의 지적으로 `docker ps` 전체를 보고서야 알았다.
+
+  **#421** "GLM 은 엄밀히는 BYOK 가 아니다"라고 답했는데 **틀렸다.** 근거로 삼은 `AiProvider` enum 주석이 낡은 것이었고, 사용자가 "A도 내 키 올려놓은 형식일텐데"로 되짚어 줬다. `UserAiKeyResolver:38` 이 "서버 키로 도는 경로는 없습니다"라고 적고 있다(`#365` 가 서버 키 경로를 없앴다). 주석을 고쳤다.
+
+  **#423** SSE 를 보던 브라우저가 떠나면 `AsyncRequestNotUsableException` 이 catch-all 에 걸려 `ERROR Unexpected error` + 스택트레이스로 남았다. 실측하니 **dev ERROR 2건이 전부 이것**이고 운영은 3건 중 1건이다(나머지 둘은 `WebhookService` 의 낙관적 락 재시도로 의도된 기록). **정상 동작이 ERROR 를 만들면 ERROR 수를 건강 신호로 쓸 수 없다** — 이 세션이 줄곧 그렇게 써 왔다.
+  반환형 `void` 가 핵심이다. 이 예외는 "응답을 더 쓸 수 없다"는 뜻이라 `ResponseEntity` 를 돌려주면 죽은 응답에 쓰려다 2차 실패를 낸다. Tomcat 의 `ClientAbortException` 은 **넣지 않았다** — 원인 체인 안에서만 보였고 단독으로 온 적이 없어, 넣으면 관측하지 않은 경로를 위한 추측 코드가 된다.
+  **결함이 로그 레벨이므로 테스트도 로그를 본다**(`ListAppender`). 되돌림을 두 방향으로 했다 — 핸들러를 빼면 content 단정이(500 본문), 레벨만 `ERROR` 로 바꾸면 로그 단정이 각각 잡는다. 조용화가 번지지 않았음은 반대 방향으로 따로 묶었다(끊김 아닌 예외는 여전히 ERROR + 500).
+
+  **#425 는 `#413` 이 만든 드리프트다.** `application.yaml` 의 `com.github.dockerjava.core.command: WARN` 핀 주석이 "코딩 에이전트는 env 를 비웠고 남은 것은 프리뷰 DB 비밀번호"라고 말하는데, 이제 **GitHub 토큰도 그 env 를 탄다.** 누출은 없다 — 우리 로거는 `command` 만 찍고, 핀이 docker-java 의 reflection 덤프를 막는다. 즉 **설정 한 줄이 비밀을 막고 있고** 그것을 지키는 것은 `AGENTS.md` 의 "풀지 말 것" 한 문장뿐이었다.
+  `DockerJavaLoggerPinTest` 를 넣었다. **`isDebugEnabled()` 가 false 인지만 보는 검사는 아무것도 증명하지 않는다** — 기본 INFO 에서는 핀이 없어도 false 다. 그래서 상위 로거를 DEBUG 로 내려 위협 상황을 만들고 자식이 조용한지 본다. `CodingAgentContainerRunner` 는 같은 위험을 **반대로**(파일 스테이징) 막는다는 교차 참조도 남겼다 — 둘 다 근거가 있다.
+
+  **곁가지**: `ResultApprovalGate` 의 TTL hold 가 `#376` 에서 들어간 것을 dev 로그로 재확인했다(태스크 `590afc5140b7`, 10:35:02 → `until=16:35:02`). 내 메모가 "결과 승인에는 hold 가 없다"로 낡아 있어 고쳤다.
+  `OrphanCloudFrontSweeper` 가 `connectionId=2` 로 **매시간** 403(`security token ... is expired`)을 WARN 으로 남긴다. 구조는 정상이다(연결별 try/catch, 다음 주기 재시도). 그 연결의 자격이 만료된 임시 자격이고, `findAllByProvider` 가 `CloudConnectionStatus` 를 **거르지 않는다** — 못 쓰는 연결이 영구 소음을 만든다. 연결 2의 실제 상태 확인은 DB 자격이 필요해 멈췄다.
+
+  **남은 것** — Cloudflare 세 단계는 여전히 대시보드·콘솔 작업이다. `#401` 의 `REPOSITORY_BINDING` 화면 문구는 미검증(저장소 미연결 프로젝트 + 6시간 대기가 필요). `#413` 의 installation 토큰 범위 축소(= `#414` 축소의 선행 조건, `getRepositoryAccessToken:304` 이 사용자 토큰을 우선하고 installation 으로 폴백한다)와 `#414` 의 대시보드 칸은 남았다.
+
 - 2026-09-30: **`previewUrl` 이름 충돌을 3단계로 끝내고, 성공한 작업이 취소로 뒤집히던 것을 고쳤다 — main 배포 완료(#392 PR #403, #401 PR #402, 릴리스 PR #404 `bdb0967`). `#405`(이력 백필, V66)는 develop**.
 
   **#392** 같은 `previewUrl` 이름이 세 응답에 있고 계약이 셋이었다 — access 는 최신이고 열리고, 세션 응답은 최신이지만 쿠키 없이는 **401**, 태스크 응답은 낡은 스냅샷이라 회전 뒤 **404**. 착수 전 내 가정("하나만 유효하고 나머지는 낡는다")이 틀렸다. 세션 응답은 `grantAccess` 가 `rotateAccess` 로 저장된 `publicUrl` 을 갱신하므로 낡지 않는다. **"같은 이름, 서로 다른 계약 셋"** 이 정확한 정리다.
