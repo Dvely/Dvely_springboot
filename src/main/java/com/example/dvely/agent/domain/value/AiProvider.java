@@ -21,8 +21,9 @@ import io.swagger.v3.oas.annotations.media.Schema;
  */
 @Schema(description = """
         사용할 AI 제공자.
-        ANTHROPIC = Claude, OPENAI = GPT, GLM = OpenRouter 경유 GLM (배포 설정 키로 동작),
-        CLAUDE_CODE = Claude Code CLI, CODEX = Codex CLI (사용자 본인 API 키로 동작하는 코딩 에이전트)
+        ANTHROPIC = Claude, OPENAI = GPT, GLM = OpenRouter 경유 GLM,
+        CLAUDE_CODE = Claude Code CLI, CODEX = Codex CLI (코딩 에이전트)
+        전부 사용자 본인 API 키로 동작한다 — 서버 키로 도는 경로는 없다(#365).
         """)
 public enum AiProvider {
 
