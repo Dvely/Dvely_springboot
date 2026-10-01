@@ -241,6 +241,11 @@ class GlobalExceptionHandlerTest {
     /**
      * SSE 스트림을 보던 클라이언트가 떠난 상태를 재현한다. 실제로는 비동기 응답 래퍼가 쓰기
      * 시점에 던지지만, 여기서 볼 것은 advice 가 그것을 가로채는지뿐이므로 같은 예외를 던진다.
+     *
+     * <p>메시지는 dev 에서 실제로 관측한 것이다. 같은 예외가 두 문구로 온다 —
+     * {@code "Servlet container error notification for disconnected client"} 와 아래 것이다.
+     * 핸들러는 <b>타입</b>으로 잡으므로 둘 다 걸리지만, 여기에 지어낸 문구를 두면 나중에
+     * 그 문구로 로그를 뒤지는 사람이 아무것도 못 찾는다.</p>
      */
     @RestController
     private static class ClientGoneController {
@@ -248,7 +253,7 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/contract/client-gone")
         Long clientGone() throws AsyncRequestNotUsableException {
             throw new AsyncRequestNotUsableException(
-                    "ServletOutputStream failed to write: java.io.IOException: Broken pipe");
+                    "ServletResponse failed to flushBuffer: java.io.IOException: Broken pipe");
         }
     }
 
