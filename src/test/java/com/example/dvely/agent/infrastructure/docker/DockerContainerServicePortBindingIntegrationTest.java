@@ -12,6 +12,7 @@ import com.github.dockerjava.okhttp.OkDockerHttpClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 /**
  * Issue #76 (BI-081/G1) 의 후신 — 실제 데몬을 상대로 프리뷰 컨테이너의 <b>노출면</b>을 지킨다.
@@ -27,6 +28,12 @@ import org.junit.jupiter.api.Test;
  * <p>Docker 데몬과 {@code node:20-alpine} 이 필요하다 — 프리뷰 경로 전체가 그것을 전제하므로
  * 별도 skip 을 두지 않는다.</p>
  */
+// 실행 중인 Docker 데몬을 요구한다. AGENTS.md 규약("Docker를 요구하는 통합 테스트는 기본 skip이고
+// -Ddocker.it=true로만 켠다")을 이 테스트만 따르지 않아서, 데몬이 꺼진 로컬에서 skip 이 아니라
+// "Failed create socket with path /var/run/docker.sock" 로 실패했다. 다른 변경을 하던 중에 그 실패가
+// 뜨면 자기 변경이 깨뜨린 것으로 읽힌다 — 실제로 그렇게 한 번 의심했다(주석 한 줄만 바꾼 커밋에서).
+//   ./gradlew test --tests "*DockerContainerServicePortBindingIntegrationTest" -Ddocker.it=true
+@EnabledIfSystemProperty(named = "docker.it", matches = "true")
 class DockerContainerServicePortBindingIntegrationTest {
 
     private static final ExposedPort CONTAINER_PORT_3000 = ExposedPort.tcp(3000);
