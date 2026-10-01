@@ -91,6 +91,17 @@ public class ContainerGitCredentials {
      * <p>둘 중 하나만 쓰면 조용히 실패한다 — env 없이 헬퍼만 있으면 빈 자격을 내고, 헬퍼 없이
      * env 만 있으면 git 이 그 값을 볼 이유가 없다. 그래서 호출부가 둘을 같이 쓰는지
      * {@code ContainerGitCredentialsTest} 가 지킨다.</p>
+     *
+     * <p><b>이 값은 로그 설정 한 줄에 의존해 보호된다.</b> docker-java 3.7.1 은 명령 객체의 모든
+     * 필드를 DEBUG 로 reflection 덤프하므로, env 에 실린 토큰도 그 대상이다. {@code
+     * application.yaml} 이 {@code com.github.dockerjava.core.command} 를 WARN 으로 못박아
+     * 막는다 — 그 줄을 풀면 토큰이 평문으로 로그에 남는다. 우리 쪽 로거는 안전하다({@code
+     * DockerContainerService} 는 command 만 찍고 env 는 찍지 않는다).</p>
+     *
+     * <p>같은 위험을 {@code CodingAgentContainerRunner} 는 반대로 막는다 — env 를 아예 쓰지 않고
+     * 파일 스테이징으로 넘긴다. 여기서 env 를 고른 것은 프리뷰 컨테이너가 사용자 코드를
+     * 실행하기 때문이다({@code npm install} 의 postinstall 포함): 컨테이너 안에 남는 자격 파일은
+     * 그 코드가 읽을 수 있고, env 는 읽을 수 없다. 그 트레이드오프가 #413 의 결론이다.</p>
      */
     public List<String> env(String username, String userToken) {
         return List.of(USER_VAR + "=" + username, TOKEN_VAR + "=" + userToken);
