@@ -70,7 +70,7 @@ ls src/main/resources/db/migration | sort -V | tail -1
 
 - `application-local.yml`, `*.pem`, `.env*`는 gitignore. 커밋 전 diff에 키 패턴이 없는지 확인한다
 - 로그·예외 메시지·응답 DTO에 비밀을 넣지 않는다. 비밀을 담는 엔티티/도메인에는 **`toString`을 두지 않는다**(Lombok `@ToString`·`@Data` 금지)
-- docker-java는 명령 객체의 모든 필드를 DEBUG 로그로 reflection 덤프한다. 그래서 `application.yaml`이 `com.github.dockerjava.core.command`를 WARN으로 고정하고 있다 — **풀지 말 것**
+- docker-java는 명령 객체의 모든 필드를 DEBUG 로그로 reflection 덤프한다. 그래서 `application.yaml`이 `com.github.dockerjava.core.command`를 WARN으로 고정하고 있다 — **풀지 말 것**. 그 env에는 프리뷰 DB 비밀번호와 GitHub 토큰(`ContainerGitCredentials`)이 실린다. `DockerJavaLoggerPinTest`가 상위 로거를 DEBUG로 내려놓고 자식이 조용한지 확인하므로, 풀면 테스트가 깨진다
 
 ### 4. 외부 AI 연동은 BYOK만
 
