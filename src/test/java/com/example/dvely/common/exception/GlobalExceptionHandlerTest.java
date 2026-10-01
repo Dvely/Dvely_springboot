@@ -1,11 +1,19 @@
 package com.example.dvely.common.exception;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpMethod;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.web.servlet.MockMvc;
@@ -15,6 +23,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
@@ -43,7 +52,8 @@ class GlobalExceptionHandlerTest {
         mockMvc = MockMvcBuilders.standaloneSetup(
                         new PathVariableController(), new QueryParamController(),
                         new ConcurrentDeleteController(), new ConflictController(),
-                        new MissingPathController())
+                        new MissingPathController(), new ClientGoneController(),
+                        new UnexpectedErrorController())
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -120,6 +130,63 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.message").value("이미 처리된 상태입니다"));
     }
 
+    @Test
+    void 클라이언트가_응답_도중_끊으면_ERROR_로_남지_않는다() throws Exception {
+        // #423: SSE(/agent/tasks/{id}/events) 를 보던 브라우저가 떠나면 Spring 이
+        // AsyncRequestNotUsableException 을 던진다. 전용 핸들러가 없으면 맨 아래 catch-all 이
+        // 받아 "ERROR Unexpected error" + 스택트레이스로 남겼다 — 정상 동작인데 ERROR 다.
+        //
+        // 그래서 확인할 것은 HTTP 상태가 아니라 "무엇이 기록됐는가" 다. 결함이 로그 레벨이었으니
+        // 로그를 보지 않는 테스트는 이 수정이 되돌려져도 통과한다.
+        List<ILoggingEvent> logs = capturingAdviceLogs(() ->
+                mockMvc.perform(get("/contract/client-gone"))
+                        // 응답을 더 쓸 수 없는 상태이므로 본문이 비어야 한다. catch-all 이
+                        // 받았다면 여기에 INTERNAL_SERVER_ERROR 본문이 들어온다.
+                        .andExpect(content().string("")));
+
+        assertThat(logs).noneMatch(event -> event.getLevel() == Level.ERROR);
+        assertThat(logs).anyMatch(event -> event.getLevel() == Level.DEBUG
+                && event.getFormattedMessage().contains("연결을 끊었습니다"));
+    }
+
+    @Test
+    void 끊김이_아닌_예외는_여전히_ERROR_와_500_이다() throws Exception {
+        // 위의 조용화가 넓게 번지지 않았음을 반대 방향에서 고정한다. 되돌림 검증으로는 이걸
+        // 잡을 수 없다 — catch-all 을 지워도 위 테스트는 그대로 통과하기 때문이다.
+        List<ILoggingEvent> logs = capturingAdviceLogs(() ->
+                mockMvc.perform(get("/contract/boom"))
+                        .andExpect(status().isInternalServerError())
+                        .andExpect(jsonPath("$.code").value("INTERNAL_SERVER_ERROR")));
+
+        assertThat(logs).anyMatch(event -> event.getLevel() == Level.ERROR);
+    }
+
+    /**
+     * advice 로거에 {@link ListAppender} 를 달고 호출을 실행한 뒤 기록된 이벤트를 돌려준다.
+     *
+     * <p>레벨을 DEBUG 로 내리는 것이 필요하다 — 조용해진 그 한 줄이 DEBUG 라서 기본 레벨에서는
+     * 버려지고, 그러면 "ERROR 가 없다"와 "아무것도 기록되지 않았다"를 구별할 수 없다.</p>
+     */
+    private List<ILoggingEvent> capturingAdviceLogs(MvcCall call) throws Exception {
+        Logger logbackLogger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        Level original = logbackLogger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logbackLogger.addAppender(appender);
+        logbackLogger.setLevel(Level.DEBUG);
+        try {
+            call.run();
+            return List.copyOf(appender.list);
+        } finally {
+            logbackLogger.setLevel(original);
+            logbackLogger.detachAppender(appender);
+        }
+    }
+
+    private interface MvcCall {
+        void run() throws Exception;
+    }
+
     @RestController
     private static class PathVariableController {
 
@@ -168,6 +235,29 @@ class GlobalExceptionHandlerTest {
         Long missing() throws NoResourceFoundException {
             throw new NoResourceFoundException(
                     HttpMethod.GET, "api/v1/agent/ai-credentials", "No static resource.");
+        }
+    }
+
+    /**
+     * SSE 스트림을 보던 클라이언트가 떠난 상태를 재현한다. 실제로는 비동기 응답 래퍼가 쓰기
+     * 시점에 던지지만, 여기서 볼 것은 advice 가 그것을 가로채는지뿐이므로 같은 예외를 던진다.
+     */
+    @RestController
+    private static class ClientGoneController {
+
+        @GetMapping("/contract/client-gone")
+        Long clientGone() throws AsyncRequestNotUsableException {
+            throw new AsyncRequestNotUsableException(
+                    "ServletOutputStream failed to write: java.io.IOException: Broken pipe");
+        }
+    }
+
+    @RestController
+    private static class UnexpectedErrorController {
+
+        @GetMapping("/contract/boom")
+        Long boom() {
+            throw new RuntimeException("정말로 예상치 못한 오류");
         }
     }
 }

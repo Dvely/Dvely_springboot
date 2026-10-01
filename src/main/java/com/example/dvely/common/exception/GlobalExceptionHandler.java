@@ -14,6 +14,7 @@ import org.springframework.web.bind.MissingRequestHeaderException;
 import com.example.dvely.template.application.exception.TemplateCatalogUnavailableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
@@ -229,6 +230,34 @@ public class GlobalExceptionHandler {
         log.warn("No handler for path: {}", e.getResourcePath());
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ApiResponse.error(ErrorCode.NOT_FOUND));
+    }
+
+    /**
+     * 클라이언트가 응답 도중 연결을 끊은 경우 (#423). <b>서버 결함이 아니다.</b>
+     *
+     * <p>SSE 스트림에서 브라우저가 탭을 닫거나 새로고침하면 Spring 이 이 예외를 던진다
+     * ({@code ServletResponse failed to flushBuffer: java.io.IOException: Broken pipe}). 전용
+     * 핸들러가 없어 아래 catch-all 로 떨어졌고, {@code ERROR Unexpected error} + 스택트레이스로
+     * 기록됐다.</p>
+     *
+     * <p>그것이 문제인 이유는 <b>ERROR 수를 배포 건강 신호로 쓰기 때문</b>이다. 실측하니 dev 의
+     * ERROR 2건이 <b>전부</b> 이것이었고(운영은 3건 중 1건), FE 개발 환경이 주기적으로 내려가며
+     * 계속 쌓는다. 정상 동작이 ERROR 를 만들면 그 신호로 진짜 결함을 찾을 수 없다.</p>
+     *
+     * <h2>반환형이 {@code void} 인 것이 핵심이다</h2>
+     * 이 예외가 뜻하는 것은 <b>응답을 더 쓸 수 없다</b>는 것이다. {@code ResponseEntity} 를
+     * 돌려주면 Spring 이 그것을 죽은 응답에 쓰려다 <b>2차 실패</b>를 낸다. {@code void} 를
+     * 반환하면 "응답은 처리됐다"로 보고 아무것도 쓰지 않는다.
+     *
+     * <h2>{@code ClientAbortException} 은 넣지 않았다</h2>
+     * Tomcat 의 그 예외도 로그에 보이지만 <b>이 예외의 원인 체인 안</b>이고, 단독으로 핸들러까지
+     * 온 적은 관측되지 않았다. 넣으면 Tomcat 클래스에 직접 의존하게 되고 관측하지 않은 경로를
+     * 위한 추측 코드가 된다. 단독으로 나타나면 그때 넣는다.
+     */
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void handleClientDisconnected(AsyncRequestNotUsableException e) {
+        // 스택을 남기지 않는다 — 원인은 메시지 한 줄로 충분하고, 쌓으면 진짜 오류가 묻힌다.
+        log.debug("클라이언트가 응답 도중 연결을 끊었습니다: {}", e.getMessage());
     }
 
     // 500 - 예상치 못한 오류
