@@ -11,7 +11,9 @@
 
 ## 0. 릴리스 현황 — 2026-10-01 기준
 
-**미릴리스 2건** — `#423`(PR #424) · `#425`(PR #426). 둘 다 로그 신호 수정이라 급하지 않지만, `#423` 은 **ERROR 수를 건강 신호로 쓰는 다음 검증에 영향**을 준다.
+**미릴리스 6커밋** — `#423`(PR #424 수정, #428 #430 테스트) · `#425`(PR #426) · 문서(PR #427, #431).
+
+전부 로그·테스트·문서라 기능 변경이 없다. 다만 `#423` 은 **ERROR 수를 건강 신호로 쓰는 다음 검증에 영향**을 준다 — 운영에 가기 전까지 SSE 끊김이 계속 ERROR 로 쌓인다.
 
 | 릴리스 | 무엇 | 검증 |
 |---|---|---|
@@ -27,6 +29,24 @@
 ---
 
 ## 1. 사람만 할 수 있는 것
+
+### 1-0. GitHub App 에서 `checks` 권한 + `check_run` 구독 제거 — **영향 0** (#414)
+
+실측으로 불필요가 확정됐다(`GET /app`, PR #431). `src/main` 에 Checks API 호출 0건이고 `WebhookEventHandler` 에 `check_run` case 가 없다.
+
+**권한 제거는 즉시 적용되고 재승인이 필요 없다** — 재승인이 필요한 쪽은 추가다. 공지도 UX 도 필요 없다.
+
+```
+GitHub App 설정 → Permissions & events
+  Repository permissions → Checks  →  No access
+  Subscribe to events    → Check run  →  체크 해제
+```
+
+**성공 판정**: `./gradlew test --tests '*GithubAppPermissionProbe*' -Dgithubapp.it=true -i` 를 다시 돌려 `permissions` 에서 `checks` 가, `events` 에서 `check_run` 이 사라진 것을 본다.
+
+### 1-0b. 뒤처진 설치 1개 재승인 (#414)
+
+설치 5개 중 1개가 `administration`·`pages`·`workflows` 없는 옛 범위다. 그 설치는 installation 토큰으로 하는 Pages 발행·저장소 생성/삭제·워크플로 파일 쓰기가 실패한다. 어느 설치인지는 위 probe 가 `installationId` 로 찍는다.
 
 ### 1-1. Let's Encrypt 인증서 — **완료 (2026-09-25)**
 
