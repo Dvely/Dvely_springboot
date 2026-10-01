@@ -101,7 +101,24 @@ GET/POST/PUT /repos/{owner}/{repo}/pages
 
 **두 이슈가 맞물리는 지점**: `#413` 의 남은 항목("installation 토큰으로 좁히기")은 이 폴백을 **뒤집는 것** — installation 을 기본으로, 사용자 토큰을 예외로. 그러면 App 권한 축소가 실제 효과를 갖는다. 순서가 그 반대면 축소해도 사용자 토큰 경로가 남는다.
 
+## ⚠️ 먼저 — App 등록은 환경마다 다르다
+
+**GitHub App 설정은 서버에 붙지 않는다. App 등록에 붙는다.** 그래서 "운영 서버만 조정" 같은 축이 아니고, **쓰이는 등록마다 각각** 조정해야 한다.
+
+그리고 이 저장소는 환경마다 다른 등록을 쓴다. 공개 엔드포인트로 확인한 것(`GET /api/v1/auth/github/url` 은 permitAll 이고 OAuth `client_id` 는 비밀이 아니다):
+
+| 환경 | 공개 OAuth client_id |
+|---|---|
+| dev (`54.251.165.129:8080`) | `Ov23lifhshQ4X2Ozuv1i` |
+| 운영 (`qeploy.com`) | `Ov23liHbLLnaKSjAEt0v` |
+
+**다르다.** `GITHUB_APP_ID`·`GITHUB_APP_PRIVATE_KEY` 도 세 프로파일 모두 환경변수에서 오므로(`application.yaml:156`, dev/prod 가 덮지 않는다) App 등록도 환경별로 갈린다.
+
 ## 현재 요구 수준 — 실측 (2026-10-01, `GET /app`)
+
+> **⚠️ 아래 수치는 `dvely-test-app`(App id `3386167`) 것이다** — `application-local.yml` 이 들고 있는 등록이다. **운영 App 의 현황은 아직 측정되지 않았다.** 운영 수치를 받으려면 그 환경의 App 키로 probe 를 돌려야 한다(운영 박스에서, 또는 대시보드에서 직접 확인).
+>
+> 공개 App 페이지(`https://github.com/apps/<slug>`)로는 권한을 알 수 없다 — GitHub 은 설치 흐름에서만 보여준다. `https://github.com/apps/dvely` 는 존재하지만(200, "About Dvely") 그것이 운영 등록인지는 확인하지 않았다.
 
 ```
 permissions = actions=write, administration=write, checks=write, contents=write,
@@ -133,7 +150,7 @@ events      = [check_run, pull_request, push, workflow_run]
 
 저장소 생성(`POST /user/repos`)·삭제는 **사용자 토큰**이 먼저 쓰이고, 그것이 실패할 때만 installation 토큰으로 떨어진다(아래 "토큰 선택 구조"). 즉 폴백이 실제로 타지 않는다면 `administration` 은 쓰이지 않는다. 떼기 전에 그 폴백 발생 빈도를 재야 한다 — `#413` 의 남은 항목이 이 폴백을 뒤집는 것이므로, 순서상 그쪽이 먼저다.
 
-## 설치별 허용 범위 — 하나가 뒤처져 있다 (실측, `GET /app/installations`)
+## 설치별 허용 범위 — 하나가 뒤처져 있다 (실측, `GET /app/installations`, **`dvely-test-app`**)
 
 설치 **5개**. 그중 **4개**는 위 요구 수준과 같다. **1개는 옛 범위에 머물러 있다**:
 
@@ -168,9 +185,10 @@ actions=write, checks=write, contents=write, metadata=read, pull_requests=write
 1. ~~코드에서 필요 권한 도출~~ → 이 문서
 2. ~~현재 권한·이벤트 확보~~ → **API 로 받았다**(`GithubAppPermissionProbeIntegrationTest`). 대시보드가 필요하지 않았다
 3. ~~차이 표 작성~~ → `checks` + `check_run` 이 불필요로 확정, `administration` 은 폴백 측정 대기
-4. **`checks` + `check_run` 제거** ← 사용자 영향 0(재승인 불필요). 대시보드 작업이므로 사람 손
-5. 뒤처진 설치 1개의 재승인 처리 ← 사용자 판단
-6. `administration` 은 `#413` 의 토큰 폴백 정리 뒤에 다시 본다
+4. **운영 App 등록의 현황 측정** ← 아직 안 됐다. 위 수치는 `dvely-test-app` 것이다
+5. **`checks` + `check_run` 제거** ← 사용자 영향 0(재승인 불필요). **쓰이는 등록마다** 해야 한다(운영·dev·test). 대시보드 작업이므로 사람 손
+6. 뒤처진 설치의 재승인 처리 ← 사용자 판단. 등록별로 다를 수 있다
+7. `administration` 은 `#413` 의 토큰 폴백 정리 뒤에 다시 본다
 
 ## 이 문서를 다시 채우는 방법
 
@@ -178,4 +196,6 @@ actions=write, checks=write, contents=write, metadata=read, pull_requests=write
 ./gradlew test --tests '*GithubAppPermissionProbe*' -Dgithubapp.it=true -i
 ```
 
-기본 비활성이다(실제 App 비공개 키가 필요하고 외부 API 를 읽는다 — CI 에는 키가 없다). 읽기 전용 `GET` 두 번이며 App 설정을 바꾸지 않는다. 권한을 바꾼 뒤에는 이걸 돌려 위 표를 갱신한다 — **요구(`GET /app`)와 허용(`GET /app/installations`)을 둘 다 보는 것이 요점이다.** 하나만 보면 뒤처진 설치를 못 본다.
+기본 비활성이다(실제 App 비공개 키가 필요하고 외부 API 를 읽는다 — CI 에는 키가 없다).
+
+**어느 App 을 읽는지는 활성 프로파일이 정한다.** 기본 프로파일이 `local` 이므로 그냥 돌리면 `application-local.yml` 의 등록(= `dvely-test-app`)을 본다. 운영·dev 수치가 필요하면 **그 환경의 설정으로** 돌려야 한다 — slug 가 출력에 찍히므로 무엇을 봤는지는 항상 확인할 수 있다. 읽기 전용 `GET` 두 번이며 App 설정을 바꾸지 않는다. 권한을 바꾼 뒤에는 이걸 돌려 위 표를 갱신한다 — **요구(`GET /app`)와 허용(`GET /app/installations`)을 둘 다 보는 것이 요점이다.** 하나만 보면 뒤처진 설치를 못 본다.

@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.env.Environment;
 import org.springframework.web.client.RestClient;
 
 /**
@@ -44,6 +45,9 @@ class GithubAppPermissionProbeIntegrationTest {
     @Autowired
     private GithubProperties properties;
 
+    @Autowired
+    private Environment environment;
+
     @Test
     void App_이_요구하는_권한과_설치가_허용한_권한을_받아_적는다() throws Exception {
         assertThat(properties.app().privateKey())
@@ -73,8 +77,14 @@ class GithubAppPermissionProbeIntegrationTest {
 
         assertThat(app).as("GET /app 이 비어 있다").isNotNull();
 
+        // 무엇을 봤는지를 가장 먼저, 가장 크게 찍는다. 이 테스트를 처음 돌렸을 때 나는 출력만 보고
+        // "현재 요구 수준" 이라고 문서에 적었는데, 그것은 로컬 프로파일의 App(= 테스트용 등록)이었다.
+        // App 등록은 환경마다 다르다 — 측정값에 대상이 붙어 있지 않으면 엉뚱한 App 의 수치가 된다.
+        System.out.println("=== 측정 대상 ===");
+        System.out.println("활성 프로파일=" + String.join(",", environment.getActiveProfiles()));
+        System.out.println("app slug=" + app.get("slug") + " app id=" + app.get("id")
+                + "  ← 이 등록의 수치다. 다른 환경 수치가 필요하면 그 환경 설정으로 다시 돌린다");
         System.out.println("=== GET /app — App 이 지금 요구하는 것 ===");
-        System.out.println("slug=" + app.get("slug") + " id=" + app.get("id"));
         System.out.println("permissions=" + sorted(app.get("permissions")));
         System.out.println("events=" + app.get("events"));
 
