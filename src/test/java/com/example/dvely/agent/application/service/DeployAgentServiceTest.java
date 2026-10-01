@@ -16,6 +16,7 @@ import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.domain.value.AgentType;
+import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
 import com.example.dvely.audit.application.AuditEvent;
@@ -56,6 +57,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -74,7 +78,7 @@ class DeployAgentServiceTest {
                 projectRepository,
                 deploymentFacade,
                 mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 auditRecorder
         );
         Project project = boundProject();
@@ -124,7 +128,13 @@ class DeployAgentServiceTest {
                 "cd /workspace/app && git diff --cached --quiet || "
                         + "git commit -m 'feat: apply Qeploy Agent task task123'"
         );
-        verify(dockerService).execWithExitCode("container-1", "cd /workspace/app && git push -u origin preview");
+        // push 는 자격이 필요해 env 를 함께 넘기는 3-인자 exec 로 가고, authed() 가 `git push` 를
+        // `git -c credential.helper=... push` 로 쪼갠다 (#413). 명령 전문 대신 서브커맨드로 맞춘다.
+        verify(dockerService).execWithExitCode(eq("container-1"),
+                contains("cd /workspace/app && git -c credential.helper="),
+                org.mockito.ArgumentMatchers.any());
+        verify(dockerService).execWithExitCode(eq("container-1"),
+                contains("push -u origin preview"), org.mockito.ArgumentMatchers.any());
         verify(dockerService, never()).execWithExitCode(anyString(), contains("--force"));
         verify(dockerService, never()).execWithExitCode(anyString(), contains("origin main"));
         verify(deploymentFacade).deploy(
@@ -150,6 +160,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -162,7 +175,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService), auditRecorder
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)), auditRecorder
         );
         when(previewSessionService.findByTaskId("task123"))
                 .thenReturn(Optional.of(new PreviewSessionInfo(
@@ -207,6 +220,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -218,7 +234,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -255,6 +271,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -266,7 +285,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -303,6 +322,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -314,7 +336,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -352,6 +374,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -363,7 +388,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -396,6 +421,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -407,7 +435,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project project = boundProject();
@@ -434,6 +462,9 @@ class DeployAgentServiceTest {
         // 기본값을 주지 않으면 null 이 돌아와 NPE 가 난다.
         lenient().when(dockerService.execWithExitCode(anyString(), anyString()))
                 .thenReturn(new DockerContainerService.ExecResult(0, ""));
+            lenient().when(dockerService.execWithExitCode(anyString(), anyString(),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
         // PreviewBranchPushService 는 작업물이 /workspace/app 에 있는지 먼저 확인한다.
         lenient().when(dockerService.exec(anyString(), contains("[ -d /workspace/app ]"))).thenReturn("yes");
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
@@ -445,7 +476,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         Project project = boundProject();
@@ -482,7 +513,7 @@ class DeployAgentServiceTest {
                 projectRepository,
                 deploymentFacade,
                 mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
@@ -523,7 +554,7 @@ class DeployAgentServiceTest {
                 projectRepository,
                 deploymentFacade,
                 mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
                 mock(AuditRecorder.class)
         );
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
