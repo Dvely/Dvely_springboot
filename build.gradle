@@ -81,6 +81,10 @@ tasks.named('test') {
 	// 로컬에서 -Ddocker.it=true 로 켤 때만 그 값을 포크된 테스트 JVM 으로 전달해 실측한다.
 	systemProperty 'docker.it', System.getProperty('docker.it', 'false')
 
+	// GithubAppPermissionProbeIntegrationTest 는 실제 GitHub App 비공개 키로 외부 API 를 읽는다.
+	// CI 에는 키가 없고, 있어도 테스트가 외부 상태에 의존하면 안 되므로 기본 비활성이다.
+	systemProperty 'githubapp.it', System.getProperty('githubapp.it', 'false')
+
 	// 웹훅 배달 워커의 폴링 주기를 테스트 동안 사실상 꺼둔다(기본 1000ms → 1시간). 이 워커는 항상 켜진
 	// @Scheduled 빈이라, 통합 테스트가 심은 PENDING/RETRY_WAIT 행을 테스트가 claimPending 으로 집기
 	// 전에 백그라운드에서 가로채 처리해버려 WebhookDeliveryClaimIntegrationTest 가 간헐적으로 실패했다.
