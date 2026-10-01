@@ -32,7 +32,9 @@
 
 ### 1-0. GitHub App 에서 `checks` 권한 + `check_run` 구독 제거 — **영향 0** (#414)
 
-실측으로 불필요가 확정됐다(`GET /app`, PR #431). `src/main` 에 Checks API 호출 0건이고 `WebhookEventHandler` 에 `check_run` case 가 없다.
+불필요의 **근거는 코드**이므로 등록과 무관하게 참이다 — `src/main` 에 Checks API 호출 0건이고 `WebhookEventHandler` 에 `check_run` case 가 없다(PR #431).
+
+**단, App 등록은 환경마다 다르다.** 측정된 수치(`GET /app`)는 `dvely-test-app` 것이고 운영 App 은 아직 측정되지 않았다 — dev 와 운영의 공개 OAuth `client_id` 가 다르다(`Ov23lifhsh…` vs `Ov23liHbLL…`). **쓰이는 등록마다** 끄고, 운영 App 에 애초에 `checks` 가 붙어 있는지부터 확인한다.
 
 **권한 제거는 즉시 적용되고 재승인이 필요 없다** — 재승인이 필요한 쪽은 추가다. 공지도 UX 도 필요 없다.
 
