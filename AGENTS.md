@@ -39,6 +39,7 @@ Qeploy 백엔드. 사용자가 자연어로 웹 프로젝트를 만들고, Docke
 - 로컬 DB 설정은 `src/main/resources/application-local.yml`(gitignore, 실제 키 포함)
 - Docker를 요구하는 통합 테스트는 기본 skip이고 `-Ddocker.it=true`로만 켠다
 - BYOK 코딩 에이전트 실측 테스트는 추가로 `QEPLOY_IT_OPENAI_API_KEY` 환경변수를 요구한다(없으면 skip)
+- GitHub App 권한 실측(`GithubAppPermissionProbeIntegrationTest`)은 `-Dgithubapp.it=true` 로만 켠다. 실제 App 비공개 키로 `GET /app`·`GET /app/installations` 를 읽는다(읽기 전용)
 
 ## 컨벤션 (자세한 건 `.notion/agent.md`)
 

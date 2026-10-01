@@ -2,7 +2,7 @@
 
 > **2026-09-30 작성 (#414).** `docs/aws-byoc-permissions.md` 는 사용자 AWS 계정에 필요한 IAM 을 문서로 관리하는데, **GitHub App 권한은 그런 문서가 없었다.** 권한 선언이 GitHub App 설정(대시보드)에만 있어서, 무엇을 요구하고 있는지 저장소에서 알 수 없었다. 그 비대칭을 없애기 위한 문서다.
 >
-> **여기 적힌 것은 "코드가 실제로 호출하는 것에서 도출한 필요 최소치"다.** 지금 App 이 실제로 요구하는 권한은 **대시보드에서 확인해야** 하고, 그 칸은 비어 있다 — 채우는 것은 사람 손이 필요하다.
+> **여기 적힌 것은 두 가지다** — ①코드가 실제로 호출하는 것에서 도출한 필요 최소치, ②App 이 지금 실제로 요구·허용하고 있는 것. ②는 처음에 "대시보드에만 있다"고 적었는데 **틀렸다**: GitHub API 가 돌려준다(`GET /app`, `GET /app/installations`). `GithubAppPermissionProbeIntegrationTest` 가 그 둘을 받아 찍는다 — `./gradlew test --tests '*GithubAppPermissionProbe*' -Dgithubapp.it=true`.
 
 ## 왜 줄여야 하는가
 
@@ -101,32 +101,81 @@ GET/POST/PUT /repos/{owner}/{repo}/pages
 
 **두 이슈가 맞물리는 지점**: `#413` 의 남은 항목("installation 토큰으로 좁히기")은 이 폴백을 **뒤집는 것** — installation 을 기본으로, 사용자 토큰을 예외로. 그러면 App 권한 축소가 실제 효과를 갖는다. 순서가 그 반대면 축소해도 사용자 토큰 경로가 남는다.
 
-## 대시보드에서 채울 칸 — 아직 비어 있다
+## 현재 요구 수준 — 실측 (2026-10-01, `GET /app`)
 
-**이건 사람 손이 필요하다.** GitHub App 설정 → Permissions & events 에서 아래를 받아 적으면 위 표와 대조할 수 있다.
+```
+permissions = actions=write, administration=write, checks=write, contents=write,
+              metadata=read, pages=write, pull_requests=write, workflows=write
+events      = [check_run, pull_request, push, workflow_run]
+```
 
-| | 현재 요구 수준 | 위 도출치와 차이 |
+| 권한 | 현재 | 도출치 | 차이 |
+|---|---|---|---|
+| Contents | write | Read & write | 일치 |
+| Metadata | read | Read | 일치 |
+| Pull requests | write | Read & write | 일치 |
+| Actions | write | Read & write | 일치 |
+| Pages | write | Read & write | 일치 |
+| Workflows | write | Read & write | 일치 |
+| Administration | write | 폴백 경로에 달림 | **판단 필요** — 아래 |
+| **Checks** | **write** | **없음** | ❌ **불필요** — `src/main` 전체에 Checks API 호출이 0건이다(`/check-runs`·`/check-suites`·`CheckRun` 어느 것도 없음) |
+
+**이벤트 구독**
+
+| 이벤트 | 코드가 다루나 |
+|---|---|
+| `push` · `pull_request` · `workflow_run` | ✅ `WebhookEventHandler:46,50,54` |
+| **`check_run`** | ❌ **처리하지 않는다** — `WebhookEventHandler` 의 `switch` 에 해당 `case` 가 없어 조용히 버려진다 |
+
+`checks` 권한과 `check_run` 구독은 **한 쌍**이다(그 이벤트를 받으려면 그 권한이 필요하다). 둘을 함께 떼는 것이 가장 안전한 첫 축소다 — 호출도 처리도 없으므로 **깨질 코드가 없다**.
+
+### Administration 은 폴백이 실제로 쓰이는지에 달렸다
+
+저장소 생성(`POST /user/repos`)·삭제는 **사용자 토큰**이 먼저 쓰이고, 그것이 실패할 때만 installation 토큰으로 떨어진다(아래 "토큰 선택 구조"). 즉 폴백이 실제로 타지 않는다면 `administration` 은 쓰이지 않는다. 떼기 전에 그 폴백 발생 빈도를 재야 한다 — `#413` 의 남은 항목이 이 폴백을 뒤집는 것이므로, 순서상 그쪽이 먼저다.
+
+## 설치별 허용 범위 — 하나가 뒤처져 있다 (실측, `GET /app/installations`)
+
+설치 **5개**. 그중 **4개**는 위 요구 수준과 같다. **1개는 옛 범위에 머물러 있다**:
+
+```
+actions=write, checks=write, contents=write, metadata=read, pull_requests=write
+→ administration · pages · workflows 가 없다
+```
+
+**이것이 "권한을 넓히면 기존 설치는 재승인까지 옛 범위를 유지한다"의 실물 증거다.** 그 설치에서는 installation 토큰으로 하는 **Pages 발행 · 저장소 생성/삭제 · `.github/workflows/` 파일 쓰기가 실패한다.** 사용자 토큰 경로가 살아 있으면 가려지지만, 폴백으로 떨어지는 순간 드러난다.
+
+(설치 ID·계정명은 여기 적지 않는다 — 필요하면 위 probe 를 다시 돌린다.)
+
+## ⚠️ 방향이 거꾸로 적혀 있었다 — 축소는 재승인이 필요 없다
+
+처음에 이 문서(그리고 `#414`)는 "권한을 줄이면 이미 설치한 사용자가 재승인해야 한다"고 적었다. **반대다.**
+
+| | 적용 시점 | 재승인 |
 |---|---|---|
-| Contents | | |
-| Metadata | | |
-| Pull requests | | |
-| Actions | | |
-| Pages | | |
-| Workflows | | |
-| Administration | | |
-| (그 외 붙어 있는 것) | | |
+| 권한·웹훅 **제거** | **즉시** | **불필요** |
+| 권한 **추가** | 설치별 승인 후 | **필요** — 승인 전까지 그 설치는 옛 범위를 유지한다 |
 
-**Subscribe to events** 도 함께 — 코드가 다루는 것은 `push`·`pull_request`·`workflow_run` 셋이다. 그 외가 구독돼 있으면 불필요한 수신이다.
+([GitHub Docs — Modifying a GitHub App registration](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration) · [Approving updated permissions](https://docs.github.com/en/apps/using-github-apps/approving-updated-permissions-for-a-github-app))
 
-## ⚠️ 축소는 사용자에게 보이는 변경이다
+추가 쪽은 위 "설치별 허용 범위" 에서 **실제로 관측된다** — 5개 중 1개가 아직 옛 범위다.
 
-**GitHub App 권한을 줄이면 이미 설치한 사용자가 재승인해야 한다.** 재승인 전까지 그 사용자의 저장소 작업이 실패할 수 있다.
+**따라서 `checks` + `check_run` 제거는 사용자 영향이 0이다.** 공지도 재승인 UX 도 필요 없다. 축소를 미룰 이유로 재승인을 들 수 없다.
 
-이 저장소에 재승인 처리를 다룬 흔적이 있다(`unhak/github-app-reauthorization` 브랜치). 그 구현을 먼저 읽어 **재승인 UX 가 이미 있는지** 확인하면 축소 실행의 비용이 정해진다. 그 전에는 축소 시점을 정하지 않는다.
+(`unhak/github-app-reauthorization` 브랜치는 **추가** 쪽 — 이미 넓힌 권한을 설치들이 승인하게 만드는 경로다. 뒤처진 설치 1개가 그 UX 를 아직 타지 않았다.)
 
 ## 순서
 
 1. ~~코드에서 필요 권한 도출~~ → 이 문서
-2. **대시보드에서 현재 권한·이벤트 확보** ← 사람 손
-3. 차이 표 작성 (불필요·과한 수준)
-4. 재승인 UX 확인 후 축소 시점 결정 ← 사용자 판단
+2. ~~현재 권한·이벤트 확보~~ → **API 로 받았다**(`GithubAppPermissionProbeIntegrationTest`). 대시보드가 필요하지 않았다
+3. ~~차이 표 작성~~ → `checks` + `check_run` 이 불필요로 확정, `administration` 은 폴백 측정 대기
+4. **`checks` + `check_run` 제거** ← 사용자 영향 0(재승인 불필요). 대시보드 작업이므로 사람 손
+5. 뒤처진 설치 1개의 재승인 처리 ← 사용자 판단
+6. `administration` 은 `#413` 의 토큰 폴백 정리 뒤에 다시 본다
+
+## 이 문서를 다시 채우는 방법
+
+```bash
+./gradlew test --tests '*GithubAppPermissionProbe*' -Dgithubapp.it=true -i
+```
+
+기본 비활성이다(실제 App 비공개 키가 필요하고 외부 API 를 읽는다 — CI 에는 키가 없다). 읽기 전용 `GET` 두 번이며 App 설정을 바꾸지 않는다. 권한을 바꾼 뒤에는 이걸 돌려 위 표를 갱신한다 — **요구(`GET /app`)와 허용(`GET /app/installations`)을 둘 다 보는 것이 요점이다.** 하나만 보면 뒤처진 설치를 못 본다.
