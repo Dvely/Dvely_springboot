@@ -105,14 +105,26 @@ GET/POST/PUT /repos/{owner}/{repo}/pages
 
 **GitHub App 설정은 서버에 붙지 않는다. App 등록에 붙는다.** 그래서 "운영 서버만 조정" 같은 축이 아니고, **쓰이는 등록마다 각각** 조정해야 한다.
 
-그리고 이 저장소는 환경마다 다른 등록을 쓴다. 공개 엔드포인트로 확인한 것(`GET /api/v1/auth/github/url` 은 permitAll 이고 OAuth `client_id` 는 비밀이 아니다):
+그리고 이 저장소는 환경마다 다른 등록을 쓴다. **근거를 종류별로 구분해 둔다** — 이 문단은 한 번 넘겨짚었다가 고친 자리다(처음엔 "환경변수에서 오므로 갈린다"고 썼는데, 환경변수라는 사실은 값이 다르다는 뜻이 아니다).
 
-| 환경 | 공개 OAuth client_id |
+**측정된 것**
+
+| | |
 |---|---|
-| dev (`54.251.165.129:8080`) | `Ov23lifhshQ4X2Ozuv1i` |
-| 운영 (`qeploy.com`) | `Ov23liHbLLnaKSjAEt0v` |
+| 로컬 App 등록 | `dvely-test-app`, App id `3386167` (probe 출력) |
+| dev 가 App 웹훅을 받는다 | `WebhookService: GitHub webhook 수신` — 최근 2026-10-01 10:35(프리뷰 push 가 되돌아온 것) |
+| 저장소별 훅을 만드는 코드 | **없다** — `repos/*/hooks` 호출 0건. App 레벨 웹훅만 쓴다 |
+| 공개 OAuth `client_id` (dev `Ov23lifhsh…` / 운영 `Ov23liHbLL…`) | **다르다** (`GET /api/v1/auth/github/url` 은 permitAll, client_id 는 비밀 아님) |
 
-**다르다.** `GITHUB_APP_ID`·`GITHUB_APP_PRIVATE_KEY` 도 세 프로파일 모두 환경변수에서 오므로(`application.yaml:156`, dev/prod 가 덮지 않는다) App 등록도 환경별로 갈린다.
+OAuth client_id 는 `github.oauth.client-id` 로 **App 과 다른 설정**이다(`github.app.client-id` 가 따로 있다). 그래서 이 차이는 "GitHub 설정이 환경별로 갈려 있다"의 정황이지 App 등록이 다르다는 직접 증거가 아니다.
+
+**추론 (근거는 측정, 결론은 연역)**
+
+GitHub App 등록은 **웹훅 URL 을 하나만** 갖는다. dev 가 App 웹훅을 실제로 받고 있고, 코드가 저장소별 훅을 만들지 않으므로, 그 등록의 단일 URL 은 dev 를 가리킨다. 운영의 배포 상태 추적은 `workflow_run` 웹훅에 의존하고 운영 배포가 동작하므로, **운영은 다른 등록이어야 한다.**
+
+이 연역의 마지막 고리(운영이 웹훅을 받는다)만 직접 관측이 아니라 "운영 배포가 동작한다"에서 온다. 운영 로그를 보면 확정된다.
+
+**어느 쪽이든 결론은 같다** — 설정이 두 등록에 똑같이 들어가 있더라도 **끄는 작업은 등록마다 따로** 해야 한다. GitHub 설정은 전파되지 않는다.
 
 ## 현재 요구 수준 — 실측 (2026-10-01, `GET /app`)
 
