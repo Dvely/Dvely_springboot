@@ -101,36 +101,39 @@ GET/POST/PUT /repos/{owner}/{repo}/pages
 
 **두 이슈가 맞물리는 지점**: `#413` 의 남은 항목("installation 토큰으로 좁히기")은 이 폴백을 **뒤집는 것** — installation 을 기본으로, 사용자 토큰을 예외로. 그러면 App 권한 축소가 실제 효과를 갖는다. 순서가 그 반대면 축소해도 사용자 토큰 경로가 남는다.
 
-## ⚠️ 먼저 — App 등록은 환경마다 다르다
+## App 등록은 둘이다 — 그리고 설정은 동일하다 (실측, 2026-10-04)
 
 **GitHub App 설정은 서버에 붙지 않는다. App 등록에 붙는다.** 그래서 "운영 서버만 조정" 같은 축이 아니고, **쓰이는 등록마다 각각** 조정해야 한다.
 
-그리고 이 저장소는 환경마다 다른 등록을 쓴다. **근거를 종류별로 구분해 둔다** — 이 문단은 한 번 넘겨짚었다가 고친 자리다(처음엔 "환경변수에서 오므로 갈린다"고 썼는데, 환경변수라는 사실은 값이 다르다는 뜻이 아니다).
+대시보드를 직접 읽어 확정했다.
 
-**측정된 것**
+| | dev | 운영 |
+|---|---|---|
+| 등록 | `dvely-test-app` (개인 소유, App id `3386167`) | `dvely-github-app` (**org `Dvely` 소유**) |
+| 웹훅 URL | `http://54.251.165.129/api/v1/webhook/github` | `https://qeploy.com/api/v1/webhook/github` |
+| Repository 권한 (8, metadata 는 mandatory) | `actions=write administration=write checks=write contents=write metadata=read pages=write pull_requests=write workflows=write` | **동일** |
+| 이벤트 (4) | `check_run pull_request push workflow_run` | **동일** |
+| Organization · Account · Enterprise 권한 | **0개** | **0개** |
 
-| | |
-|---|---|
-| 로컬 App 등록 | `dvely-test-app`, App id `3386167` (probe 출력) |
-| dev 가 App 웹훅을 받는다 | `WebhookService: GitHub webhook 수신` — 최근 2026-10-01 10:35(프리뷰 push 가 되돌아온 것) |
-| 저장소별 훅을 만드는 코드 | **없다** — `repos/*/hooks` 호출 0건. App 레벨 웹훅만 쓴다 |
-| 공개 OAuth `client_id` (dev `Ov23lifhsh…` / 운영 `Ov23liHbLL…`) | **다르다** (`GET /api/v1/auth/github/url` 은 permitAll, client_id 는 비밀 아님) |
+**등록은 둘이지만 권한·이벤트 설정은 글자 하나까지 같다.** 두 사실이 동시에 참이다 — 그래서 "같게 처리했으니 한 번만 끄면 된다" 는 성립하지 않는다. **설정은 전파되지 않으므로 끄는 동작은 등록마다 따로** 해야 한다.
 
-OAuth client_id 는 `github.oauth.client-id` 로 **App 과 다른 설정**이다(`github.app.client-id` 가 따로 있다). 그래서 이 차이는 "GitHub 설정이 환경별로 갈려 있다"의 정황이지 App 등록이 다르다는 직접 증거가 아니다.
+등록이 둘이라는 것은 웹훅 URL 이 증명한다. App 등록은 웹훅 URL 을 하나만 갖고, 코드는 저장소별 훅을 만들지 않는다(`repos/*/hooks` 호출 0건) — 그래서 한 등록이 두 환경에 배달할 수 없다.
 
-**추론 (근거는 측정, 결론은 연역)**
+> **앞서 여기 두 번 넘겨짚었다.** ①처음엔 "현재 요구 수준은 대시보드에만 있다"고 적었다(API 가 돌려준다). ②다음엔 "`GITHUB_APP_ID` 가 환경변수에서 오므로 등록도 갈린다"고 적었다 — 환경변수라는 사실은 값이 다르다는 뜻이 아니다. 결론은 맞았지만 근거가 틀렸다. 지금 표는 전부 직접 읽은 값이다.
 
-GitHub App 등록은 **웹훅 URL 을 하나만** 갖는다. dev 가 App 웹훅을 실제로 받고 있고, 코드가 저장소별 훅을 만들지 않으므로, 그 등록의 단일 URL 은 dev 를 가리킨다. 운영의 배포 상태 추적은 `workflow_run` 웹훅에 의존하고 운영 배포가 동작하므로, **운영은 다른 등록이어야 한다.**
+### dev 웹훅이 `http://` 다
 
-이 연역의 마지막 고리(운영이 웹훅을 받는다)만 직접 관측이 아니라 "운영 배포가 동작한다"에서 온다. 운영 로그를 보면 확정된다.
+운영은 `https://` 인데 dev 는 평문이다. 서명(HMAC)이 있어 **위조는 막히지만** 페이로드가 평문으로 인터넷을 건너온다 — 저장소명·브랜치명·커밋 SHA·PR 내용이 노출된다.
 
-**어느 쪽이든 결론은 같다** — 설정이 두 등록에 똑같이 들어가 있더라도 **끄는 작업은 등록마다 따로** 해야 한다. GitHub 설정은 전파되지 않는다.
+**이것은 FE↔BE 구성과 무관하다.** 웹훅은 GitHub 서버에서 dev 박스로 직접 오므로, 프론트가 로컬이든 AWS 안이든 바뀌지 않는다.
 
-## 현재 요구 수준 — 실측 (2026-10-01, `GET /app`)
+고치려면 dev 에 **호스트명 + 인증서 + 443 리스너가 새로 필요하다** — 실측: `https://54.251.165.129` 는 응답이 없고(`000`), `dev.qeploy.com`·`api-dev.qeploy.com` 등 후보 호스트명은 어느 것도 DNS 에 없다. IP 로는 공개 CA 인증서를 받을 수 없다. dev 에 오는 것이 본인 테스트 저장소의 메타데이터뿐이라면 **그냥 두는 것도 합리적인 선택**이고, 바꾸기로 하면 그 비용이 선행 조건이다.
 
-> **⚠️ 아래 수치는 `dvely-test-app`(App id `3386167`) 것이다** — `application-local.yml` 이 들고 있는 등록이다. **운영 App 의 현황은 아직 측정되지 않았다.** 운영 수치를 받으려면 그 환경의 App 키로 probe 를 돌려야 한다(운영 박스에서, 또는 대시보드에서 직접 확인).
+## 현재 요구 수준 — 실측 (두 등록 공통)
+
+> 아래 값은 **두 등록에서 동일하다**(위 표). probe(`GET /app`, `dvely-test-app`)와 대시보드 직접 읽기(두 등록 모두)가 일치한다 — API 와 대시보드가 같은 값을 말한다는 교차 확인도 된 셈이다.
 >
-> 공개 App 페이지(`https://github.com/apps/<slug>`)로는 권한을 알 수 없다 — GitHub 은 설치 흐름에서만 보여준다. `https://github.com/apps/dvely` 는 존재하지만(200, "About Dvely") 그것이 운영 등록인지는 확인하지 않았다.
+> 공개 App 페이지(`https://github.com/apps/<slug>`)로는 권한을 알 수 없다 — GitHub 은 설치 흐름에서만 보여준다.
 
 ```
 permissions = actions=write, administration=write, checks=write, contents=write,
@@ -162,7 +165,7 @@ events      = [check_run, pull_request, push, workflow_run]
 
 저장소 생성(`POST /user/repos`)·삭제는 **사용자 토큰**이 먼저 쓰이고, 그것이 실패할 때만 installation 토큰으로 떨어진다(아래 "토큰 선택 구조"). 즉 폴백이 실제로 타지 않는다면 `administration` 은 쓰이지 않는다. 떼기 전에 그 폴백 발생 빈도를 재야 한다 — `#413` 의 남은 항목이 이 폴백을 뒤집는 것이므로, 순서상 그쪽이 먼저다.
 
-## 설치별 허용 범위 — 하나가 뒤처져 있다 (실측, `GET /app/installations`, **`dvely-test-app`**)
+## 설치별 허용 범위 — 하나가 뒤처져 있다 (실측, `GET /app/installations`, **dev `dvely-test-app` 한정**)
 
 설치 **5개**. 그중 **4개**는 위 요구 수준과 같다. **1개는 옛 범위에 머물러 있다**:
 
@@ -197,10 +200,11 @@ actions=write, checks=write, contents=write, metadata=read, pull_requests=write
 1. ~~코드에서 필요 권한 도출~~ → 이 문서
 2. ~~현재 권한·이벤트 확보~~ → **API 로 받았다**(`GithubAppPermissionProbeIntegrationTest`). 대시보드가 필요하지 않았다
 3. ~~차이 표 작성~~ → `checks` + `check_run` 이 불필요로 확정, `administration` 은 폴백 측정 대기
-4. **운영 App 등록의 현황 측정** ← 아직 안 됐다. 위 수치는 `dvely-test-app` 것이다
-5. **`checks` + `check_run` 제거** ← 사용자 영향 0(재승인 불필요). **쓰이는 등록마다** 해야 한다(운영·dev·test). 대시보드 작업이므로 사람 손
-6. 뒤처진 설치의 재승인 처리 ← 사용자 판단. 등록별로 다를 수 있다
+4. ~~운영 App 등록의 현황 측정~~ → **대시보드 직접 읽기로 확정**. 두 등록의 권한·이벤트가 동일하다
+5. **`checks` + `check_run` 제거** ← 사용자 영향 0(재승인 불필요). **두 등록 각각** 해야 한다 — 설정은 전파되지 않는다
+6. 운영 등록의 설치별 허용 범위 측정 ← 아직. dev 에서 1개가 뒤처져 있었으므로 운영도 봐야 한다
 7. `administration` 은 `#413` 의 토큰 폴백 정리 뒤에 다시 본다
+8. dev 웹훅 `http://` → `https://` 는 호스트명·인증서 비용을 받아들일지의 판단
 
 ## 이 문서를 다시 채우는 방법
 
