@@ -10,6 +10,22 @@
 
 ## 1. 현재 상태
 
+- 2026-10-04: **SSE 끊김 ERROR·docker-java 핀·App 권한 실측을 운영에 올리고, 자격 실패가 조용히 묻히던 것을 고쳤다 — main 배포 완료(#423 #425 #414 → PR #436 `90338cd`). `#429` 는 develop**.
+
+  **#423** SSE 를 보던 브라우저가 떠나면 `AsyncRequestNotUsableException` 이 catch-all 에 걸려 `ERROR Unexpected error` 로 남았다. 반환형 `void` 가 핵심이다 — 이 예외는 "응답을 더 쓸 수 없다" 는 뜻이라 `ResponseEntity` 를 돌려주면 죽은 응답에 쓰려다 2차 실패를 낸다. **결함이 로그 레벨이므로 테스트도 로그를 본다**(`ListAppender`). 그리고 단위 테스트가 증명하지 못하는 것이 하나 남아 있었다 — 죽은 응답에 정말 아무것도 쓰지 않는가. 죽은 응답은 목으로 만들 수 없어서 **실제 Tomcat 에 소켓을 붙이고 `SO_LINGER=0` 으로 RST** 를 보냈다(`ClientDisconnectRealSocketIntegrationTest`). 되돌림 세 방향 전부 확인.
+  **dev 에서 "ERROR 0" 은 증거가 아니었다.** 기저율이 11시간에 2건이고 둘 다 FE 가 앱을 쓰는 창 안이었다 — 끊김이 아예 없었던 것과 구별되지 않는다. dev 에 매달리다 접었고, CI 안에서 영구히 도는 쪽이 더 나은 자리였다.
+
+  **#425 는 `#413` 이 만든 드리프트다.** `com.github.dockerjava.core.command: WARN` 핀 주석이 "남은 것은 프리뷰 DB 비밀번호" 라고 말하는데 **이제 GitHub 토큰도 그 exec env 를 탄다.** 누출은 없다(우리 로거는 command 만 찍고 핀이 reflection 덤프를 막는다) — 즉 **설정 한 줄이 비밀을 막고 있었고** 그걸 지키는 건 `AGENTS.md` 의 한 문장뿐이었다. `DockerJavaLoggerPinTest` 를 넣었다. **`isDebugEnabled()` 가 false 인지만 보는 검사는 아무것도 증명하지 않는다**(기본 INFO 면 핀 없이도 false) — 상위 로거를 DEBUG 로 내려 위협 상황을 만들고 자식이 조용한지 본다.
+
+  **#414** "현재 권한은 대시보드에만 있다" 가 틀렸다 — `GET /app`·`GET /app/installations` 가 돌려준다(`GithubAppPermissionProbeIntegrationTest`, `-Dgithubapp.it=true`). **`checks` 권한 + `check_run` 구독이 불필요로 확정**됐다(`src/main` 에 Checks API 호출 0건, `WebhookEventHandler` 에 `check_run` case 없음). 그리고 이 이슈의 경고가 거꾸로였다 — **권한 제거는 즉시 적용되고 재승인이 필요 없다.** 재승인이 필요한 쪽은 추가다.
+  **App 등록은 둘이고 설정은 동일하다**(대시보드 직접 확인) — dev `dvely-test-app`(개인) / 운영 `dvely-github-app`(org `Dvely`). 웹훅 URL 이 각각 dev·운영을 가리켜 등록이 둘임을 증명하고, 권한 8개·이벤트 4개는 글자 하나까지 같다. **둘이 동시에 참이라 "같게 처리했으니 한 번만 끄면 된다" 가 성립하지 않는다.** 운영 설치는 깨끗하다(8개 전부 허용, 보류 없음, 저장소 2개 한정).
+  **여기서 두 번 넘겨짚었다** — ①"대시보드에만 있다" ②"`GITHUB_APP_ID` 가 환경변수에서 오므로 등록이 갈린다"(환경변수라는 사실은 값이 다르다는 뜻이 아니다). ②는 결론만 맞았다. 사용자가 "운영·개발 똑같이 처리했다" 고 되짚어 준 덕에 다시 쟀다.
+
+  **#429** 저장된 임시 AWS 자격이 만료되면 연결이 영원히 "연결됨" 으로 남고 배포가 전부 403 으로 죽었다. **장치는 이미 양쪽에 있었다** — 분류기(`ExpiredToken → INVALID_CREDENTIAL`)와 표시 자리(FE DTO) 모두. **그 사이가 끊겨 있었다**: 분류기 시그니처가 `StsException` 전용이라 실제 작업의 `CloudFrontException` 이 닿지 못했다. `AwsCredentialFailureReporter` 를 새로 두고 고아 스윕 둘에서 부른다.
+  **두 환경에서 errorCode 가 달랐다** — 로컬 `InvalidClientTokenId`("invalid") / dev `ExpiredToken`("expired"). SDK v2 의 예외 메시지에는 errorCode 가 없어 로그만으로는 알 수 없었고, **하나만 넣었으면 한쪽을 놓쳤다.** dev 검증에서 또 한 번 속았다 — 머지 직후 본 "Deploy 성공" 이 **이전 커밋** 것이었고 앱은 아직 재시작 전이었다(SHA 대조로 잡았다).
+
+  **남은 것**: `#429` A안(임시 자격 입력 거부)은 제품 결정. `checks`+`check_run` 제거는 **두 등록 각각**(영향 0). `#344` 는 9-2 만 남았고 측정 없이 권하지 않는다(제목이 지목한 STS·ECR 은 이미 끝났다). `#332` 는 구현·실측 완료(다만 userns 가 꺼져 있어 컨테이너 uid 1000 = 호스트 `ubuntu`). `#154` 는 코드가 아니라 A/B 결정이 막고 있다. Cloudflare 3단계는 여전히 대시보드·콘솔.
+
 - 2026-10-01: **컨테이너 git 자격을 파일에서 env 로 옮기고, 배포 스코프 누출을 막고, 로그 신호 두 개를 바로잡았다 — main 배포 완료(#413 PR #418·#419, #414 PR #420, #415 PR #416, AiProvider 주석 PR #421 → 릴리스 `340e8a7`). `#423`·`#425` 는 develop**.
 
   **#415** `BackendDeployRunner` 가 `findByProjectIdOrderByScopeAscKeyAsc(projectId)` 로 **모든 스코프**를 끌어와 PREVIEW 변수가 운영 배포에 섞여 들어갔다. `EnvironmentValueResolver.resolve(projectId, PRODUCTION)` 로 바꿨다. **내가 처음 쓴 진단이 틀렸다** — `state.md` §3 에 "`PRODUCTION` 주입이 아예 없다"고 적었는데(`resolve()` grep 하나로), 주입은 있고 **포트를 우회**하고 있었다. "연결되지 않았다"와 "연결됐지만 틀렸다"가 같은 관측으로 보인다.
