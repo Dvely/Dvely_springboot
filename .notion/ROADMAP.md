@@ -10,7 +10,7 @@
 
 ## 1. 현재 상태
 
-- 2026-10-04: **SSE 끊김 ERROR·docker-java 핀·App 권한 실측을 운영에 올리고, 자격 실패가 조용히 묻히던 것을 고쳤다 — main 배포 완료(#423 #425 #414 → PR #436 `90338cd`). `#429` 는 develop**.
+- 2026-10-04: **SSE 끊김 ERROR·docker-java 핀·App 권한 실측을 운영에 올리고, 자격 실패가 조용히 묻히던 것을 고쳤다 — main 배포 완료(#423 #425 #414 → PR #436 `90338cd`, #429 → PR #439 `cb00d87`). **미릴리스 없음**.
 
   **#423** SSE 를 보던 브라우저가 떠나면 `AsyncRequestNotUsableException` 이 catch-all 에 걸려 `ERROR Unexpected error` 로 남았다. 반환형 `void` 가 핵심이다 — 이 예외는 "응답을 더 쓸 수 없다" 는 뜻이라 `ResponseEntity` 를 돌려주면 죽은 응답에 쓰려다 2차 실패를 낸다. **결함이 로그 레벨이므로 테스트도 로그를 본다**(`ListAppender`). 그리고 단위 테스트가 증명하지 못하는 것이 하나 남아 있었다 — 죽은 응답에 정말 아무것도 쓰지 않는가. 죽은 응답은 목으로 만들 수 없어서 **실제 Tomcat 에 소켓을 붙이고 `SO_LINGER=0` 으로 RST** 를 보냈다(`ClientDisconnectRealSocketIntegrationTest`). 되돌림 세 방향 전부 확인.
   **dev 에서 "ERROR 0" 은 증거가 아니었다.** 기저율이 11시간에 2건이고 둘 다 FE 가 앱을 쓰는 창 안이었다 — 끊김이 아예 없었던 것과 구별되지 않는다. dev 에 매달리다 접었고, CI 안에서 영구히 도는 쪽이 더 나은 자리였다.
