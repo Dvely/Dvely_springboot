@@ -34,7 +34,14 @@
 
 불필요의 **근거는 코드**이므로 등록과 무관하게 참이다 — `src/main` 에 Checks API 호출 0건이고 `WebhookEventHandler` 에 `check_run` case 가 없다(PR #431).
 
-**단, App 등록은 환경마다 다르다.** 측정된 수치(`GET /app`)는 `dvely-test-app` 것이고 운영 App 은 아직 측정되지 않았다 — dev 와 운영의 공개 OAuth `client_id` 가 다르다(`Ov23lifhsh…` vs `Ov23liHbLL…`). **쓰이는 등록마다** 끄고, 운영 App 에 애초에 `checks` 가 붙어 있는지부터 확인한다.
+**등록은 둘이고 설정은 동일하다**(대시보드 직접 확인, 2026-10-04):
+
+| | 등록 | 웹훅 URL |
+|---|---|---|
+| dev | `dvely-test-app` (개인) | `http://54.251.165.129/api/v1/webhook/github` |
+| 운영 | `dvely-github-app` (org `Dvely`) | `https://qeploy.com/api/v1/webhook/github` |
+
+권한 8개·이벤트 4개가 두 등록에서 글자 하나까지 같다. **그래도 끄는 동작은 두 번 해야 한다** — GitHub 설정은 전파되지 않는다.
 
 **권한 제거는 즉시 적용되고 재승인이 필요 없다** — 재승인이 필요한 쪽은 추가다. 공지도 UX 도 필요 없다.
 
