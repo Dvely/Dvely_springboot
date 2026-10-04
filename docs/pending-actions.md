@@ -1,4 +1,4 @@
-# 미완료 작업 — 2026-09-30 기준 스냅샷
+# 미완료 작업 — 2026-10-01 기준 스냅샷
 
 > **이 파일은 스냅샷이다.** 작업 순서·우선순위의 SSOT 는 `.notion/ROADMAP.md` 의 "1. 현재 상태"이고,
 > 개별 작업은 GitHub Issue 가 정본이다. 이 파일은 그 둘이 다루지 않는 것 — **무엇이 누구 손에 막혀
@@ -9,12 +9,15 @@
 
 ---
 
-## 0. 릴리스 현황 — 2026-09-30 기준 `develop == main`
+## 0. 릴리스 현황 — 2026-10-01 기준
 
-**미릴리스 커밋 없음.**
+**미릴리스 6커밋** — `#423`(PR #424 수정, #428 #430 테스트) · `#425`(PR #426) · 문서(PR #427, #431).
+
+전부 로그·테스트·문서라 기능 변경이 없다. 다만 `#423` 은 **ERROR 수를 건강 신호로 쓰는 다음 검증에 영향**을 준다 — 운영에 가기 전까지 SSE 끊김이 계속 ERROR 로 쌓인다.
 
 | 릴리스 | 무엇 | 검증 |
 |---|---|---|
+| PR #422 `340e8a7` | `#413` 컨테이너 git 자격 env 전환 · `#414` GitHub App 권한 문서 · `#415` 배포 스코프 누출 · `#421` | dev 합동 검증(FE) 10:27~10:36 · 프리뷰 SHA 교체 확인 · 감사 29→30 · 자격 파일 0건 · `exitCode=128` 0건 |
 | PR #408 `84444b4` | `#405` 이력의 죽은 preview 링크 제거 (**V66**) | 기준값 6개 전부 일치 · 감소량 정확히 936 = 8×117 · 거짓 양성 79번 온전 · ERROR 0 |
 | PR #404 `bdb0967` | `#392` 3단계 + `#401` | 운영 계약 4항목 일치 · ERROR 0 · Flyway 65 그대로 |
 | PR #400 `3fa24a6` | `#395` 카탈로그 내구성 + 스킴 검증 (V65) | 스냅샷 행 기록 확인 · 복원 조건 4개 통과 |
@@ -26,6 +29,33 @@
 ---
 
 ## 1. 사람만 할 수 있는 것
+
+### 1-0. GitHub App 에서 `checks` 권한 + `check_run` 구독 제거 — **영향 0** (#414)
+
+불필요의 **근거는 코드**이므로 등록과 무관하게 참이다 — `src/main` 에 Checks API 호출 0건이고 `WebhookEventHandler` 에 `check_run` case 가 없다(PR #431).
+
+**등록은 둘이고 설정은 동일하다**(대시보드 직접 확인, 2026-10-04):
+
+| | 등록 | 웹훅 URL |
+|---|---|---|
+| dev | `dvely-test-app` (개인) | `http://54.251.165.129/api/v1/webhook/github` |
+| 운영 | `dvely-github-app` (org `Dvely`) | `https://qeploy.com/api/v1/webhook/github` |
+
+권한 8개·이벤트 4개가 두 등록에서 글자 하나까지 같다. **그래도 끄는 동작은 두 번 해야 한다** — GitHub 설정은 전파되지 않는다.
+
+**권한 제거는 즉시 적용되고 재승인이 필요 없다** — 재승인이 필요한 쪽은 추가다. 공지도 UX 도 필요 없다.
+
+```
+GitHub App 설정 → Permissions & events
+  Repository permissions → Checks  →  No access
+  Subscribe to events    → Check run  →  체크 해제
+```
+
+**성공 판정**: `./gradlew test --tests '*GithubAppPermissionProbe*' -Dgithubapp.it=true -i` 를 다시 돌려 `permissions` 에서 `checks` 가, `events` 에서 `check_run` 이 사라진 것을 본다.
+
+### 1-0b. 뒤처진 설치 1개 재승인 (#414)
+
+설치 5개 중 1개가 `administration`·`pages`·`workflows` 없는 옛 범위다. 그 설치는 installation 토큰으로 하는 Pages 발행·저장소 생성/삭제·워크플로 파일 쓰기가 실패한다. 어느 설치인지는 위 probe 가 `installationId` 로 찍는다.
 
 ### 1-1. Let's Encrypt 인증서 — **완료 (2026-09-25)**
 

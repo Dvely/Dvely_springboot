@@ -39,6 +39,7 @@ Qeploy 백엔드. 사용자가 자연어로 웹 프로젝트를 만들고, Docke
 - 로컬 DB 설정은 `src/main/resources/application-local.yml`(gitignore, 실제 키 포함)
 - Docker를 요구하는 통합 테스트는 기본 skip이고 `-Ddocker.it=true`로만 켠다
 - BYOK 코딩 에이전트 실측 테스트는 추가로 `QEPLOY_IT_OPENAI_API_KEY` 환경변수를 요구한다(없으면 skip)
+- GitHub App 권한 실측(`GithubAppPermissionProbeIntegrationTest`)은 `-Dgithubapp.it=true` 로만 켠다. 실제 App 비공개 키로 `GET /app`·`GET /app/installations` 를 읽는다(읽기 전용)
 
 ## 컨벤션 (자세한 건 `.notion/agent.md`)
 
@@ -70,7 +71,7 @@ ls src/main/resources/db/migration | sort -V | tail -1
 
 - `application-local.yml`, `*.pem`, `.env*`는 gitignore. 커밋 전 diff에 키 패턴이 없는지 확인한다
 - 로그·예외 메시지·응답 DTO에 비밀을 넣지 않는다. 비밀을 담는 엔티티/도메인에는 **`toString`을 두지 않는다**(Lombok `@ToString`·`@Data` 금지)
-- docker-java는 명령 객체의 모든 필드를 DEBUG 로그로 reflection 덤프한다. 그래서 `application.yaml`이 `com.github.dockerjava.core.command`를 WARN으로 고정하고 있다 — **풀지 말 것**
+- docker-java는 명령 객체의 모든 필드를 DEBUG 로그로 reflection 덤프한다. 그래서 `application.yaml`이 `com.github.dockerjava.core.command`를 WARN으로 고정하고 있다 — **풀지 말 것**. 그 env에는 프리뷰 DB 비밀번호와 GitHub 토큰(`ContainerGitCredentials`)이 실린다. `DockerJavaLoggerPinTest`가 상위 로거를 DEBUG로 내려놓고 자식이 조용한지 확인하므로, 풀면 테스트가 깨진다
 
 ### 4. 외부 AI 연동은 BYOK만
 
@@ -89,4 +90,4 @@ ls src/main/resources/db/migration | sort -V | tail -1
 - `qeploy-mcp-cli-design.md` — 에이전트 연동(MCP 서버·CLI). BYOK 와 호출 방향이 반대다
 - `multi-stack-deploy-design.md` · `backend-domain-binding-design.md` — 배포·도메인 설계
 - `aws-byoc-permissions.md` — 사용자 AWS 계정에 필요한 IAM
-- `github-app-permissions.md` — GitHub App 이 필요로 하는 최소 권한(코드에서 도출). 현재 실제 요구 수준은 대시보드에만 있어 빈 칸으로 둠
+- `github-app-permissions.md` — GitHub App 권한. 코드에서 도출한 최소치 + 실측 현황. **등록이 둘이다**(dev `dvely-test-app` / 운영 `dvely-github-app`) 권한 설정은 동일하지만 전파되지 않으므로 바꿀 때는 두 번 해야 한다
