@@ -1,6 +1,7 @@
 package com.example.dvely.provisioning.infrastructure.worker;
 
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.cloudconnection.domain.value.CloudProvider;
 import com.example.dvely.provisioning.application.port.out.ActiveCdnDistributionPort;
@@ -36,6 +37,7 @@ public class OrphanCloudFrontSweeper {
     private final CloudFrontDistributionProvisioner cloudFrontProvisioner;
     private final ActiveCdnDistributionPort activeCdnDistributionPort;
     private final SpringDataCdnDeletionRepository deletionRepository;
+    private final AwsCredentialFailureReporter credentialFailureReporter;
 
     @Scheduled(fixedDelayString = "${qeploy.provisioning.cdn-orphan-sweep-interval-ms:3600000}")
     public void sweep() {
@@ -44,8 +46,17 @@ public class OrphanCloudFrontSweeper {
                 sweepConnection(connection);
             } catch (RuntimeException e) {
                 // 한 계정 오류가 다른 계정 스윕을 막지 않게 — 다음 주기에 다시 본다.
-                log.warn("고아 CloudFront 스윕 실패(다음 주기 재시도): connectionId={} 원인={}",
-                        connection.getId(), e.toString());
+                //
+                // 자격이 상한 경우(#429)는 그 사실을 연결 상태로 남기고 WARN 을 내리 쌓지 않는다.
+                // dev 에서 같은 줄이 매시간 11번 쌓였고, 그러면서도 사용자에게는 "연결됨" 으로
+                // 보였다 — 서버만 알고 아무에게도 말하지 않는 상태였다.
+                if (credentialFailureReporter.reportIfCredentialFailure(connection.getId(), e)) {
+                    log.debug("자격이 유효하지 않아 CloudFront 스윕이 통과하지 못했습니다(상태에 기록됨): "
+                            + "connectionId={}", connection.getId());
+                } else {
+                    log.warn("고아 CloudFront 스윕 실패(다음 주기 재시도): connectionId={} 원인={}",
+                            connection.getId(), e.toString());
+                }
             }
         }
     }

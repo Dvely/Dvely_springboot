@@ -2,12 +2,14 @@ package com.example.dvely.provisioning.infrastructure.worker;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.cloudconnection.domain.value.CloudProvider;
@@ -32,6 +34,7 @@ class OrphanCloudFrontSweeperTest {
     @Mock private CloudFrontDistributionProvisioner cloudFrontProvisioner;
     @Mock private ActiveCdnDistributionPort activeCdnDistributionPort;
     @Mock private SpringDataCdnDeletionRepository deletionRepository;
+    @Mock private AwsCredentialFailureReporter credentialFailureReporter;
     @InjectMocks private OrphanCloudFrontSweeper sweeper;
 
     private CloudConnection awsConnection() {
@@ -97,5 +100,28 @@ class OrphanCloudFrontSweeperTest {
         sweeper.sweep();
 
         verify(deletionRepository, never()).save(any());
+    }
+
+    @Test
+    void 한_계정이_실패해도_다른_계정은_계속_훑는다() {
+        // 이 catch 경로에는 테스트가 없었다 — #429 로 분기가 늘었으니 여기서 고정한다.
+        CloudConnection bad = mock(CloudConnection.class);
+        CloudConnection good = mock(CloudConnection.class);
+        lenient().when(bad.getId()).thenReturn(1L);
+        lenient().when(good.getId()).thenReturn(2L);
+        when(cloudConnectionRepository.findAllByProvider(CloudProvider.AWS))
+                .thenReturn(List.of(bad, good));
+        RuntimeException failure = new RuntimeException("ListDistributions 실패");
+        when(cloudFrontProvisioner.listOwnedDistributions(bad)).thenThrow(failure);
+        when(cloudFrontProvisioner.listOwnedDistributions(good)).thenReturn(List.of(dist("E-orphan")));
+        when(activeCdnDistributionPort.trackedDistributionIds()).thenReturn(Set.of());
+        when(deletionRepository.existsByDistributionId("E-orphan")).thenReturn(false);
+
+        sweeper.sweep();
+
+        verify(deletionRepository).save(any(CdnDeletionEntity.class));
+        // #429: 보고는 실패한 그 연결의 id 로 간다. 잘못 넘기면 멀쩡한 연결이 "자격 만료" 로 찍힌다.
+        verify(credentialFailureReporter).reportIfCredentialFailure(1L, failure);
+        verify(credentialFailureReporter, never()).reportIfCredentialFailure(eq(2L), any());
     }
 }

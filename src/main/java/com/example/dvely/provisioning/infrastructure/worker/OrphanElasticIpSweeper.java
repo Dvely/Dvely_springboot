@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.infrastructure.worker;
 
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
@@ -30,6 +31,7 @@ public class OrphanElasticIpSweeper {
     private final ProvisionedServerRepository serverRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
     private final Ec2Provisioner ec2;
+    private final AwsCredentialFailureReporter credentialFailureReporter;
 
     @Scheduled(fixedDelayString = "${qeploy.provisioning.eip-sweep-interval-ms:600000}")
     public void sweep() {
@@ -57,7 +59,13 @@ public class OrphanElasticIpSweeper {
                             connectionId, eips.size(), reclaimed);
                 } catch (RuntimeException e) {
                     // 한 연결이 실패해도(권한·일시 오류) 다음 연결은 계속 훑는다.
-                    log.warn("EIP 고아 청소 실패(connectionId={}): {}", connectionId, e.toString());
+                    // 자격이 상한 것은 연결 상태로 남기고 주기마다 WARN 을 쌓지 않는다(#429).
+                    if (credentialFailureReporter.reportIfCredentialFailure(connectionId, e)) {
+                        log.debug("자격이 유효하지 않아 EIP 청소가 통과하지 못했습니다(상태에 기록됨): "
+                                + "connectionId={}", connectionId);
+                    } else {
+                        log.warn("EIP 고아 청소 실패(connectionId={}): {}", connectionId, e.toString());
+                    }
                 }
             });
         }

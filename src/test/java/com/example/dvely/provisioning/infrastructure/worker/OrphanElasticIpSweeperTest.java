@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.provisioning.domain.repository.ProvisionedServerRepository;
@@ -27,6 +28,7 @@ class OrphanElasticIpSweeperTest {
     @Mock private ProvisionedServerRepository serverRepository;
     @Mock private CloudConnectionRepository cloudConnectionRepository;
     @Mock private Ec2Provisioner ec2;
+    @Mock private AwsCredentialFailureReporter credentialFailureReporter;
 
     @InjectMocks private OrphanElasticIpSweeper sweeper;
 
@@ -79,5 +81,25 @@ class OrphanElasticIpSweeperTest {
 
         // 1번 연결이 예외로 터져도 2번은 계속 훑어 고아를 회수한다.
         verify(ec2).releaseElasticIp(conn2, "eipalloc-orphan2");
+    }
+
+    @Test
+    void 실패를_보고할_때_그_연결의_id_를_넘긴다() {
+        // #429: 이 보고가 연결 상태를 INVALID_CREDENTIAL 로 바꾼다. id 를 잘못 넘기면 멀쩡한
+        // 연결이 "자격 만료" 로 찍히고, 사용자는 되돌릴 방법을 모른다 — 조용히 잘못되는 쪽이다.
+        when(serverRepository.findDistinctCloudConnectionIds()).thenReturn(List.of(1L, 2L));
+        when(serverRepository.existsInFlightByCloudConnectionId(1L)).thenReturn(false);
+        when(serverRepository.existsInFlightByCloudConnectionId(2L)).thenReturn(false);
+        when(cloudConnectionRepository.findById(1L)).thenReturn(Optional.of(Mockito.mock(CloudConnection.class)));
+        when(cloudConnectionRepository.findById(2L)).thenReturn(Optional.of(Mockito.mock(CloudConnection.class)));
+        when(serverRepository.findElasticIpAllocationIds(eq(1L), any())).thenReturn(List.of());
+        when(serverRepository.findElasticIpAllocationIds(eq(2L), any())).thenReturn(List.of());
+        RuntimeException failure = new RuntimeException("describe denied");
+        when(ec2.listQeployElasticIps(any())).thenThrow(failure).thenReturn(List.of());
+
+        sweeper.sweep();
+
+        verify(credentialFailureReporter).reportIfCredentialFailure(1L, failure);
+        verify(credentialFailureReporter, never()).reportIfCredentialFailure(eq(2L), any());
     }
 }

@@ -96,7 +96,7 @@ AuditRecorder(횡단) ──→ Project/Deploy Agent/ResultApprovalGate/ResultAp
 | Deployment | preview→main PR/merge, tag, GitHub Pages, 이력/로그, 실패 원인 분석(룰 기반)+재시도 | GitHub Pages 중심 부분 구현, 취소/직렬화 미구현 |
 | Webhook | workflow_run/push/pull_request/installation 반영, delivery 재시도 | 다른 GitHub 이벤트 확장 여지 있음 |
 | DomainBinding | 관리형/커스텀 도메인, DNS 검증, Approval 연동 | Pages만 지원, HTTPS www/apex 정책 미구현 |
-| CloudConnection | AWS/GCP credential 저장, 실제 STS/IAM 검증, 프로젝트 선택 연결 | 실제 cloud 배포/비용 실집행/운영 미연결(비용 추정·운영 질의 자체는 구현됨) |
+| CloudConnection | AWS/GCP credential 저장, 실제 STS/IAM 검증, 프로젝트 선택 연결, **실작업 자격 실패를 상태로 반영**(`AwsCredentialFailureReporter` ← provisioning 고아 스윕, #429) | 실제 cloud 배포/비용 실집행/운영 미연결(비용 추정·운영 질의 자체는 구현됨). 주기적 재검증은 없음 — 자격 만료는 스윕이 닿는 경로에서만 드러난다 |
 | AuditLog | GitHub/배포/도메인/인프라 작업 16종 기록(비차단 REQUIRES_NEW), 프로젝트별 조회 API, 180일 retention 배치 | 계정 수준 감사(installation·로그인 이력)·`/me/audit-logs`는 범위 밖 |
 | Template | 템플릿 저장소가 Pages 로 발행한 `catalog.json` 취득·캐시(stale-while-error), 카탈로그 API, 프로젝트 생성 시 `templateType` 실재 검증, 첫 CODE 스텝 씨딩 | FE 갤러리·썸네일 자동화가 남음 |
 | AiAccount | 사용자 본인 AI 키 등록·암호화 보관, `UserAiKeyResolver` 로 실행 시점 키 해석. **배포 설정에 벤더 키가 없다**(#364) — `src/main` 의 `getApiKey()` 는 전부 이 모듈 안이다 | 사용량 상한·사용자별 할당은 없음 |
