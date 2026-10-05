@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.infrastructure.worker;
 
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
@@ -40,6 +41,7 @@ public class ProvisionedServerStatusWorker {
 
     private final ProvisionedServerRepository serverRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
+    private final AwsCredentialFailureReporter credentialFailureReporter;
     private final Ec2Provisioner ec2;
     private final TcpHealthChecker healthChecker;
     private final SsmRunCommandClient ssmRunCommandClient;
@@ -64,7 +66,16 @@ public class ProvisionedServerStatusWorker {
             log.warn("EC2 서버 상태 폴링 건너뜀(클라우드 연결 없음): serverId={}", server.getId());
             return;
         }
-        Ec2InstanceStatus status = ec2.describe(connection.get(), server.getInstanceId());
+        Ec2InstanceStatus status;
+        try {
+            status = ec2.describe(connection.get(), server.getInstanceId());
+        } catch (RuntimeException e) {
+            // 20초마다 도는 자리라, 프로비저닝 중 자격이 상하면 여기가 가장 먼저 안다(#429).
+            // 상태만 남기고 예외는 그대로 올린다 — 폴링 실패 처리는 호출부(sweep)의 몫이고,
+            // 여기서 삼키면 "실패했는데 다음 단계로 진행" 이 된다.
+            credentialFailureReporter.reportIfCredentialFailure(connection.get().getId(), e);
+            throw e;
+        }
 
         if (TERMINAL_STATES.contains(status.state())) {
             server.markFailed(ProvisionFailureCode.PROVIDER_ERROR,

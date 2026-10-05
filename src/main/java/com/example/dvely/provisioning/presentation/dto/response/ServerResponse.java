@@ -21,7 +21,12 @@ public record ServerResponse(
                 + "Caddy 가 443 에서 HTTPS 종단(https://{host}). 도메인 없으면 null — 그땐 url(EIP:8080) 사용.")
         String domainUrl,
         String instanceId,
-        @Schema(description = "실패 분류. 사용자 거부는 null(=거부됨).") String errorCode,
+        @Schema(description = "실패 분류. 사용자 거부는 null(=거부됨). INVALID_CREDENTIAL 은 클라우드 연결의 "
+                + "자격이 만료/무효라는 뜻으로, 권한 부족(IAM_PERMISSION)과 다르다 — 정책을 고치는 게 아니라 "
+                + "자격을 다시 등록해야 한다",
+                allowableValues = {"IAM_PERMISSION", "QUOTA_EXCEEDED", "ENGINE_UNSUPPORTED",
+                        "PROVIDER_ERROR", "INVALID_CREDENTIAL"})
+        String errorCode,
         String errorMessage,
         @Schema(description = "RUNNING 이후 앱 건강(주기 TCP 헬스체크). true=응답 · false=포트 무응답(앱이 죽었을 "
                 + "수 있음, 인스턴스는 살아있음) · null=아직 미확인. status=RUNNING 이라도 이 값이 false 면 앱 문제다.")

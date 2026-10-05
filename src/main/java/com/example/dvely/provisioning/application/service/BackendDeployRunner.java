@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.application.service;
 
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.environment.application.port.in.EnvironmentValueResolver;
@@ -47,6 +48,7 @@ public class BackendDeployRunner {
 
     private final ProvisionedServerRepository serverRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
+    private final AwsCredentialFailureReporter credentialFailureReporter;
     private final NativeBuildService nativeBuildService;
     private final DockerImageBuildService imageBuildService;
     private final WebImageBuildService webImageBuildService;
@@ -200,6 +202,11 @@ public class BackendDeployRunner {
         } catch (BackendBuildException e) {
             fail(server, ProvisionFailureCode.PROVIDER_ERROR, e.getMessage());
         } catch (RuntimeException e) {
+            // ⚠ 순서가 중요하다. 돈이 걸린 롤백을 먼저 하고, 진단(상태 반영)은 그다음이다.
+            // 처음에 보고를 위로 올려 놨다가 테스트가 잡았다 — 그 호출이 어떤 이유로든 터지면
+            // 롤백이 건너뛰어지고 사용자는 고아 인스턴스 과금을 맞는다. 보조 장치가 본 기능을
+            // 죽이는 모양이고, #429 리포터 안에 같은 원칙으로 테스트를 써 둔 바로 그 함정이다.
+            //
             // launch 이후(인스턴스 생김) 실패면 과금이라 즉시 롤백한다. EIP 도 붙었으면 release
             // (연결만 풀려도 할당은 남아 계속 과금).
             if (instanceId != null) {
@@ -208,7 +215,14 @@ public class BackendDeployRunner {
             if (eipAllocationId != null) {
                 safeReleaseEip(connection, eipAllocationId);
             }
-            fail(server, classify(e), e.getMessage());
+            // 자격이 상한 것이면 연결 상태로 남긴다(#429). 스윕은 최대 1시간 뒤에 알아채는데,
+            // 배포는 사용자가 지금 기다리고 있는 자리다 — 여기서 알리는 것이 가장 빠르다.
+            //
+            // 분류를 여기서 다시 구현하지 않는다. 리포터의 반환값을 그대로 쓴다 — 코드 목록이
+            // 두 곳에 갈라지면 한쪽만 고쳐져 조용히 어긋난다.
+            boolean credentialFailure = reportCredentialFailure(connection, e);
+            fail(server, credentialFailure ? ProvisionFailureCode.INVALID_CREDENTIAL : classify(e),
+                    e.getMessage());
         } finally {
             if (artifact != null) {
                 try { Files.deleteIfExists(artifact); } catch (IOException ignored) { }
@@ -683,6 +697,12 @@ public class BackendDeployRunner {
                 """.formatted(tlsAskBase, port);
     }
 
+    /**
+     * 메시지 기반 분류. <b>자격 만료/무효는 여기서 보지 않는다</b> — 호출부가
+     * {@link AwsCredentialFailureReporter} 의 판정을 쓴다(#429). 그쪽은 예외 원인 체인과
+     * AWS errorCode 까지 보므로 메시지만 보는 이 분류보다 정확하고, 두 곳에 같은 목록을 두면
+     * 한쪽만 고쳐져 조용히 어긋난다.
+     */
     private ProvisionFailureCode classify(RuntimeException e) {
         String m = e.getMessage() == null ? "" : e.getMessage();
         if (m.contains("UnauthorizedOperation") || m.contains("AccessDenied") || m.contains("not authorized")) {
@@ -698,6 +718,21 @@ public class BackendDeployRunner {
         server.markFailed(code, message);
         serverRepository.save(server);
         log.warn("EC2 배포 실패: serverId={} code={} 원인={}", server.getId(), code, message);
+    }
+
+    /**
+     * 자격 실패 보고. <b>여기서 예외가 올라가면 {@code fail()} 기록까지 못 가</b> 서버가 전이
+     * 상태에 갇힌다. 리포터 자체도 내부에서 삼키지만, 보조 장치가 본 흐름을 죽이지 않는다는 것은
+     * 호출부에서도 보장해야 한다 — 리포터 구현이 나중에 바뀔 수 있다.
+     */
+    private boolean reportCredentialFailure(CloudConnection connection, RuntimeException cause) {
+        try {
+            return credentialFailureReporter.reportIfCredentialFailure(connection.getId(), cause);
+        } catch (RuntimeException reportFailure) {
+            log.warn("자격 실패 보고 실패(무해, 배포 실패 기록은 계속한다): connectionId={} 원인={}",
+                    connection.getId(), reportFailure.toString());
+            return false;
+        }
     }
 
     private void safeTerminate(CloudConnection connection, String instanceId) {
