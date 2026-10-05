@@ -600,7 +600,7 @@ CdnDeletionReaper
 - **도메인 변경 API — 미구현.** `POST`(연결)·`DELETE`(해제)만 있고 변경 경로가 없다
 - **www/apex redirect 정책 — 미구현**
 - **registrar 구매 연동 — 미구현**
-- **HTTPS 인증서 갱신 모니터링 — 범위 확인 필요.** ACM 은 자동 갱신하므로 "무엇을 모니터링할지" 가 먼저다. 관리형 서브도메인 쪽은 Cloudflare 프록시 때문에 GH Pages 가 인증서를 못 받는 구조적 문제가 따로 있다(#154)
+- **HTTPS 인증서 갱신 모니터링 — 범위 확인 필요.** ACM 은 자동 갱신하므로 "무엇을 모니터링할지" 가 먼저다. 관리형 서브도메인 쪽은 Cloudflare 프록시 때문에 GH Pages 가 자기 인증서를 못 받지만, 그것은 **설계로 수용됐다**(#154, PR #220) — 실제 https 프로브로 `httpsEnforced` 를 보정하고 `certificateStatus` 는 GitHub 관점으로 남긴다. 즉 여기서 모니터링할 인증서는 ACM 쪽뿐이다
 
 ## 3.14 운영 지표 (EPIC 18) — **미구현**
 
