@@ -57,7 +57,18 @@ GitHub App 설정 → Permissions & events
 
 ### 1-0b. 뒤처진 설치 1개 재승인 (#414) — **dev 등록에만 있음**
 
-dev 등록(`dvely-test-app`) 설치 5개 중 1개가 `administration`·`pages`·`workflows` 없는 옛 범위다. 그 설치는 installation 토큰으로 하는 Pages 발행·저장소 생성/삭제·워크플로 파일 쓰기가 실패한다. 어느 설치인지는 probe 가 `installationId` 로 찍는다.
+dev 등록(`dvely-test-app`) 설치 5개 중 1개가 어긋나 있다 — **계정 `unhakjace`**, `installationId=124694094`, `repository_selection=all`.
+
+```
+없음(그 기능이 실패한다): administration, pages, workflows
+아직 들고 있음(뗀 권한인데 얼어 있다): checks
+```
+
+그 설치에서는 installation 토큰으로 하는 **Pages 발행 · 저장소 생성/삭제 · `.github/workflows/` 쓰기가 실패**한다. 그리고 2026-10-05 에 뗀 `checks` 를 아직 들고 있다.
+
+**조치**: 그 계정(`unhakjace`)에서 재승인하거나 설치를 제거한다. 재승인하면 현재 요구 집합(= `checks` 없고 `administration`·`pages`·`workflows` 있음)으로 맞춰진다. 재승인은 **설치한 계정의 소유자만** 할 수 있다 — App 소유자(`dldnsgkr`)가 대신 못 한다.
+
+**확인**: probe 를 다시 돌려 `어긋난 설치 0개` 가 나오는지 본다.
 
 **운영 등록에는 이런 설치가 없다**(확인됨). 그리고 이 설치는 범위가 얼어 있어 방금 뗀 `checks` 도 아직 들고 있다 — 재승인하거나 제거해야 걷힌다.
 

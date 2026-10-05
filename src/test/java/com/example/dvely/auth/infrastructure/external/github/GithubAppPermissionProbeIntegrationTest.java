@@ -90,16 +90,85 @@ class GithubAppPermissionProbeIntegrationTest {
 
         System.out.println("=== GET /app/installations — 설치가 실제로 허용한 것 ===");
         System.out.println("설치 수=" + (installations == null ? 0 : installations.size()));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> wanted = (Map<String, Object>) app.get("permissions");
+        int outOfSync = 0;
         if (installations != null) {
             for (Map<String, Object> installation : installations) {
-                // 계정 이름은 사용자 식별자라 출력하지 않는다 — 비교에 필요한 것은 범위뿐이다.
+                @SuppressWarnings("unchecked")
+                Map<String, Object> granted = (Map<String, Object>) installation.get("permissions");
+                String drift = drift(wanted, granted);
+                boolean inSync = drift.isEmpty();
+                if (!inSync) {
+                    outOfSync++;
+                }
+                // 동기화된 설치는 계정 이름을 찍지 않는다 — 비교에 필요한 것은 범위뿐이고, 계정은
+                // 사용자 식별자다. 어긋난 설치만 이름을 찍는다: 그래야 누가 재승인해야 하는지
+                // 알 수 있다. 전에 id 만 찍어 두고 "어느 설치인지는 probe 가 찍는다" 고 적었는데,
+                // 사람이 대시보드에서 id 로 계정을 찾을 길이 없어 조치가 막혔다.
                 System.out.println("installationId=" + installation.get("id")
                         + " repository_selection=" + installation.get("repository_selection")
-                        + " suspended=" + (installation.get("suspended_at") != null));
-                System.out.println("  permissions=" + sorted(installation.get("permissions")));
+                        + " suspended=" + (installation.get("suspended_at") != null)
+                        + (inSync ? "  [동기화됨]" : "  [어긋남] account=" + accountLogin(installation)));
+                System.out.println("  permissions=" + sorted(granted));
                 System.out.println("  events=" + installation.get("events"));
+                if (!inSync) {
+                    System.out.println("  ⚠ " + drift);
+                }
             }
         }
+        System.out.println("=== 요약 ===");
+        System.out.println("어긋난 설치 " + outOfSync + "개"
+                + (outOfSync == 0 ? " — 전부 현재 요구 집합과 일치한다"
+                        : " — 위 [어긋남] 항목이 재승인 또는 제거 대상이다"));
+    }
+
+    /**
+     * App 이 요구하는 집합과 설치가 허용한 집합의 차이를 사람이 읽을 문장으로 만든다.
+     *
+     * <p>두 방향을 모두 본다. <b>없는 것</b>은 그 설치에서 해당 기능이 실패한다는 뜻이고(예
+     * {@code pages} 가 없으면 Pages 발행이 실패), <b>남은 것</b>은 우리가 뗀 권한을 그 설치가
+     * 아직 들고 있다는 뜻이다 — 허용 범위가 과거 승인 시점에 얼어 있기 때문이다. 한쪽만 보면
+     * 후자를 놓친다(실제로 {@code checks} 를 뗐을 때 그 모양이 나왔다).
+     */
+    private String drift(Map<String, Object> wanted, Map<String, Object> granted) {
+        if (wanted == null || granted == null) {
+            return "";
+        }
+        List<String> missing = wanted.keySet().stream()
+                .filter(k -> !granted.containsKey(k))
+                .sorted()
+                .toList();
+        List<String> leftover = granted.keySet().stream()
+                .filter(k -> !wanted.containsKey(k))
+                .sorted()
+                .toList();
+        if (missing.isEmpty() && leftover.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        if (!missing.isEmpty()) {
+            sb.append("없음(그 기능이 실패한다): ").append(String.join(", ", missing));
+        }
+        if (!leftover.isEmpty()) {
+            if (sb.length() > 0) {
+                sb.append(" / ");
+            }
+            sb.append("아직 들고 있음(뗀 권한인데 얼어 있다): ").append(String.join(", ", leftover));
+        }
+        return sb.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private String accountLogin(Map<String, Object> installation) {
+        Object account = installation.get("account");
+        if (account instanceof Map<?, ?> map) {
+            Object login = ((Map<String, Object>) map).get("login");
+            if (login != null) {
+                return String.valueOf(login);
+            }
+        }
+        return "(알 수 없음)";
     }
 
     /** 비교를 눈으로 하려면 키 순서가 안정적이어야 한다. */
