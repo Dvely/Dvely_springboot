@@ -153,10 +153,15 @@ TCP+TLS 를 새로 맺는다. 실제 비용은 그쪽이고 클라이언트 생�
 모든 파일이 root 소유라 `--no-same-owner` 문제를 못 잡았고, 실제 파이프라인에서만 드러났다.
 실제 에이전트 실행이 필요하고, 그러려면 BYOK 키와 화면을 몰 사람이 있어야 한다.
 
-### 2-3. `#154` — 관리형 서브도메인 인증서
+### 2-3. `#154` — **완료 (2026-09-04)**, 이슈만 안 닫혀 있었음
 
-구조적 문제다. Cloudflare 프록시 때문에 GitHub Pages 가 인증서를 발급받지 못한다. **프록시를 끌지,
-도메인 전략을 바꿀지가 먼저 결정돼야** 착수할 수 있다.
+"프록시를 끌지 도메인 전략을 바꿀지 결정이 먼저" 라고 적혀 있었는데 **이미 결정되고 구현됐다** — PR #220(`76461ce`)이 고쳤고 제목에 `#154` 가 들어 있다. base 가 `develop` 이라 `Closes` 가 자동 동작하지 않아 이슈만 열린 채 남았다.
+
+**구현된 방향**: 프록시는 유지하고 모델을 고쳤다. `GithubPagesDomainHostingAdapter.verify` 가 실제 https 프로브로 `httpsEnforced` 를 **상향 보정**하고, `certificateStatus` 는 "GitHub 관점의 값" 이라는 자기 뜻에 충실하게 `PENDING` 으로 둔다. 화면에는 `httpsEnforced` 를 쓴다.
+
+**테스트가 양방향으로 지킨다**: `verificationMarksHttpsEnforcedWhenProxiedDomainServesHttpsDespiteGithubPending`(프로브 성공 → true, 인증서는 PENDING 유지) · `verificationLeavesHttpsFalseWhenNeitherGithubNorProbeConfirms`(둘 다 아직이면 false 유지 — 보정이 과하게 번지지 않음).
+
+**이 항목이 한 달 동안 "결정 대기" 로 남아 있던 비용**: 내가 이슈 본문만 읽고 사용자에게 A/B 결정을 물었다. 코드를 먼저 봤으면 물을 일이 아니었다. 같은 형태를 오늘 세 번 봤다(`#332` 미구현 표기, `#344` 제목이 끝난 일 지목, `#154`).
 
 ### 2-4. 끝난 것 (2026-09-26 ~ 09-30)
 
