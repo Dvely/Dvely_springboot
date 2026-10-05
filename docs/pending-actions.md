@@ -30,7 +30,7 @@
 
 ## 1. 사람만 할 수 있는 것
 
-### 1-0. GitHub App 에서 `checks` 권한 + `check_run` 구독 제거 — **영향 0** (#414)
+### 1-0. GitHub App 에서 `checks` 권한 + `check_run` 구독 제거 — **완료 (2026-10-05)** (#414)
 
 불필요의 **근거는 코드**이므로 등록과 무관하게 참이다 — `src/main` 에 Checks API 호출 0건이고 `WebhookEventHandler` 에 `check_run` case 가 없다(PR #431).
 
@@ -51,11 +51,15 @@ GitHub App 설정 → Permissions & events
   Subscribe to events    → Check run  →  체크 해제
 ```
 
-**성공 판정**: `./gradlew test --tests '*GithubAppPermissionProbe*' -Dgithubapp.it=true -i` 를 다시 돌려 `permissions` 에서 `checks` 가, `events` 에서 `check_run` 이 사라진 것을 본다.
+**확인됨**: probe 재실행으로 dev 등록(`dvely-test-app`)에서 둘 다 사라진 것을, 대시보드 직접 읽기로 운영 등록(`dvely-github-app`, `6 selected 1 mandatory`)과 운영 설치의 허용 범위에서 사라진 것을 봤다.
 
-### 1-0b. 뒤처진 설치 1개 재승인 (#414)
+**부수 실측**: 제거는 **동기화된 설치에만** 즉시 전파된다. dev 설치 5개 중 4개는 즉시 `checks` 를 잃었고, 과거 *추가* 를 승인하지 않아 범위가 얼어 있는 1개는 **`checks` 를 그대로 들고 있다**. 아래 1-0b 가 그 설치다.
 
-설치 5개 중 1개가 `administration`·`pages`·`workflows` 없는 옛 범위다. 그 설치는 installation 토큰으로 하는 Pages 발행·저장소 생성/삭제·워크플로 파일 쓰기가 실패한다. 어느 설치인지는 위 probe 가 `installationId` 로 찍는다.
+### 1-0b. 뒤처진 설치 1개 재승인 (#414) — **dev 등록에만 있음**
+
+dev 등록(`dvely-test-app`) 설치 5개 중 1개가 `administration`·`pages`·`workflows` 없는 옛 범위다. 그 설치는 installation 토큰으로 하는 Pages 발행·저장소 생성/삭제·워크플로 파일 쓰기가 실패한다. 어느 설치인지는 probe 가 `installationId` 로 찍는다.
+
+**운영 등록에는 이런 설치가 없다**(확인됨). 그리고 이 설치는 범위가 얼어 있어 방금 뗀 `checks` 도 아직 들고 있다 — 재승인하거나 제거해야 걷힌다.
 
 ### 1-1. Let's Encrypt 인증서 — **완료 (2026-09-25)**
 
