@@ -28,6 +28,27 @@
 
 ---
 
+## 0-1. `#413` installation 토큰 범위 축소 — **권하지 않는다 (2026-10-05 분석)**
+
+내가 `#413` 에 "남은 항목: installation 토큰 범위 축소" 라고 적었다. **그 전제가 틀렸다.**
+
+**컨테이너에 들어가는 토큰은 사용자 OAuth 토큰이다.** `getRepositoryAccessToken`(사용자 토큰 우선 + installation 폴백)은 **서버에서 GitHub API 를 부를 때만** 쓰이고, 컨테이너 git 작업은 전부 `user.getGithubUserAccessToken()` 을 직접 쓴다 — `PreviewWorkspaceService:69` · `DeployAgentService:71` · `BackendSourceClone:44` · `ResultApprovalGate:206` · `RepositoryBindingService:93`. 그래서 **installation 토큰을 좁혀도 컨테이너 노출은 전혀 줄지 않는다.**
+
+### 진짜 축소는 "컨테이너에 installation 토큰을 주는 것" 인데, 막는 것이 있다
+
+| | |
+|---|---|
+| 얻는 것 | 저장소 1개로 제한 + 1시간 만료 (사용자 OAuth 토큰은 넓고 오래간다) |
+| 막는 것 | `repository_selection=selected` 설치는 **새로 만든 저장소를 포함하지 않는다.** 그리고 저장소 생성 자체가 사용자 토큰을 요구한다(`getGithubUserAccessToken` 이 그 메시지를 던진다). **운영 설치가 바로 `selected`(저장소 2개)다** — 그대로 바꾸면 새 저장소 흐름이 깨진다 |
+
+### 이미 있는 완화가 생각보다 강하다
+
+`#413` 이후 토큰은 **컨테이너 env 에 없다.** 컨테이너 생성 env 는 `HOME` + egress 뿐이고(`DockerContainerService:229`), 토큰은 해당 `exec` 에만 실린다(`:717`). 즉 **git 명령이 도는 몇 초 동안 그 프로세스의 환경에만** 존재한다.
+
+남는 위험: 그 몇 초 사이에 컨테이너 안에서 같은 uid(`node`)로 이미 돌고 있는 프로세스가 `/proc/<pid>/environ` 을 읽는 경우. 사용자 저장소 코드가 그걸 노리고 있어야 한다.
+
+**판단**: 방금 FE 와 e2e 검증한 push 경로에 폴백 분기를 새로 넣는 위험이, 이미 좁은 노출 창을 더 줄이는 이득보다 크다. 실제 사고나 요구가 생기면 그때 한다. 한다면 설계는 "기존 저장소는 범위 지정 installation 토큰, 새 저장소 생성만 사용자 토큰" + 실패 시 폴백이고, `selected` 설치에서 반드시 실측해야 한다.
+
 ## 1. 사람만 할 수 있는 것
 
 ### 1-0. GitHub App 에서 `checks` 권한 + `check_run` 구독 제거 — **완료 (2026-10-05)** (#414)
