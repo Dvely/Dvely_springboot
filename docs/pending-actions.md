@@ -11,10 +11,11 @@
 
 ## 0. 릴리스 현황 — 2026-10-04 기준
 
-**미릴리스 1건** — `#429`(PR #437, 자격 실패를 연결 상태로 반영). dev 실측 검증 완료.
+**미릴리스 없음** — `develop == main`.
 
 | 릴리스 | 무엇 | 검증 |
 |---|---|---|
+| PR #439 `cb00d87` | `#429` 자격 실패를 연결 상태로 반영 | dev 실측(`판정근거=ExpiredToken`, 매시간 WARN 0건) · 되돌림 3방향 · 헬스 200×5 · 카탈로그 200 |
 | PR #436 `90338cd` | `#423` SSE 끊김을 ERROR 로 남기지 않음 · `#425` docker-java 핀 보호 · `#414` App 권한 실측 | 운영 코드 변경은 핸들러 하나(비주석 diff 직접 확인) · 되돌림 3방향 · 헬스 200×5 |
 | PR #422 `340e8a7` | `#413` 컨테이너 git 자격 env 전환 · `#414` 문서 · `#415` 배포 스코프 누출 · `#421` | dev 합동 검증(FE) · 프리뷰 SHA 교체 · 감사 29→30 · 자격 파일 0건 |
 | PR #408 `84444b4` | `#405` 이력의 죽은 preview 링크 제거 (**V66**) | 기준값 6개 일치 · 감소량 936 = 8×117 · 거짓 양성 79번 온전 |
@@ -29,7 +30,7 @@
 
 ## 1. 사람만 할 수 있는 것
 
-### 1-0. GitHub App 에서 `checks` 권한 + `check_run` 구독 제거 — **영향 0** (#414)
+### 1-0. GitHub App 에서 `checks` 권한 + `check_run` 구독 제거 — **완료 (2026-10-05)** (#414)
 
 불필요의 **근거는 코드**이므로 등록과 무관하게 참이다 — `src/main` 에 Checks API 호출 0건이고 `WebhookEventHandler` 에 `check_run` case 가 없다(PR #431).
 
@@ -50,11 +51,15 @@ GitHub App 설정 → Permissions & events
   Subscribe to events    → Check run  →  체크 해제
 ```
 
-**성공 판정**: `./gradlew test --tests '*GithubAppPermissionProbe*' -Dgithubapp.it=true -i` 를 다시 돌려 `permissions` 에서 `checks` 가, `events` 에서 `check_run` 이 사라진 것을 본다.
+**확인됨**: probe 재실행으로 dev 등록(`dvely-test-app`)에서 둘 다 사라진 것을, 대시보드 직접 읽기로 운영 등록(`dvely-github-app`, `6 selected 1 mandatory`)과 운영 설치의 허용 범위에서 사라진 것을 봤다.
 
-### 1-0b. 뒤처진 설치 1개 재승인 (#414)
+**부수 실측**: 제거는 **동기화된 설치에만** 즉시 전파된다. dev 설치 5개 중 4개는 즉시 `checks` 를 잃었고, 과거 *추가* 를 승인하지 않아 범위가 얼어 있는 1개는 **`checks` 를 그대로 들고 있다**. 아래 1-0b 가 그 설치다.
 
-설치 5개 중 1개가 `administration`·`pages`·`workflows` 없는 옛 범위다. 그 설치는 installation 토큰으로 하는 Pages 발행·저장소 생성/삭제·워크플로 파일 쓰기가 실패한다. 어느 설치인지는 위 probe 가 `installationId` 로 찍는다.
+### 1-0b. 뒤처진 설치 1개 재승인 (#414) — **dev 등록에만 있음**
+
+dev 등록(`dvely-test-app`) 설치 5개 중 1개가 `administration`·`pages`·`workflows` 없는 옛 범위다. 그 설치는 installation 토큰으로 하는 Pages 발행·저장소 생성/삭제·워크플로 파일 쓰기가 실패한다. 어느 설치인지는 probe 가 `installationId` 로 찍는다.
+
+**운영 등록에는 이런 설치가 없다**(확인됨). 그리고 이 설치는 범위가 얼어 있어 방금 뗀 `checks` 도 아직 들고 있다 — 재승인하거나 제거해야 걷힌다.
 
 ### 1-1. Let's Encrypt 인증서 — **완료 (2026-09-25)**
 
@@ -152,10 +157,15 @@ TCP+TLS 를 새로 맺는다. 실제 비용은 그쪽이고 클라이언트 생�
 모든 파일이 root 소유라 `--no-same-owner` 문제를 못 잡았고, 실제 파이프라인에서만 드러났다.
 실제 에이전트 실행이 필요하고, 그러려면 BYOK 키와 화면을 몰 사람이 있어야 한다.
 
-### 2-3. `#154` — 관리형 서브도메인 인증서
+### 2-3. `#154` — **완료 (2026-09-04)**, 이슈만 안 닫혀 있었음
 
-구조적 문제다. Cloudflare 프록시 때문에 GitHub Pages 가 인증서를 발급받지 못한다. **프록시를 끌지,
-도메인 전략을 바꿀지가 먼저 결정돼야** 착수할 수 있다.
+"프록시를 끌지 도메인 전략을 바꿀지 결정이 먼저" 라고 적혀 있었는데 **이미 결정되고 구현됐다** — PR #220(`76461ce`)이 고쳤고 제목에 `#154` 가 들어 있다. base 가 `develop` 이라 `Closes` 가 자동 동작하지 않아 이슈만 열린 채 남았다.
+
+**구현된 방향**: 프록시는 유지하고 모델을 고쳤다. `GithubPagesDomainHostingAdapter.verify` 가 실제 https 프로브로 `httpsEnforced` 를 **상향 보정**하고, `certificateStatus` 는 "GitHub 관점의 값" 이라는 자기 뜻에 충실하게 `PENDING` 으로 둔다. 화면에는 `httpsEnforced` 를 쓴다.
+
+**테스트가 양방향으로 지킨다**: `verificationMarksHttpsEnforcedWhenProxiedDomainServesHttpsDespiteGithubPending`(프로브 성공 → true, 인증서는 PENDING 유지) · `verificationLeavesHttpsFalseWhenNeitherGithubNorProbeConfirms`(둘 다 아직이면 false 유지 — 보정이 과하게 번지지 않음).
+
+**이 항목이 한 달 동안 "결정 대기" 로 남아 있던 비용**: 내가 이슈 본문만 읽고 사용자에게 A/B 결정을 물었다. 코드를 먼저 봤으면 물을 일이 아니었다. 같은 형태를 오늘 세 번 봤다(`#332` 미구현 표기, `#344` 제목이 끝난 일 지목, `#154`).
 
 ### 2-4. 끝난 것 (2026-09-26 ~ 09-30)
 

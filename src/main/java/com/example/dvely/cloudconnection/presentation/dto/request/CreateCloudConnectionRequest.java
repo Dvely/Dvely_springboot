@@ -31,7 +31,8 @@ public record CreateCloudConnectionRequest(
         @Schema(description = "AWS Secret Access Key. awsCredentialType=ACCESS_KEY일 때 사용. 응답에 노출되지 않음")
         String secretAccessKey,
 
-        @Schema(description = "AWS Session Token. ASIA로 시작하는 임시 자격 증명일 때만 사용, AKIA 장기 키는 비워둠")
+        @Schema(description = "사용하지 않습니다. 값이 있으면 400으로 거부됩니다 — 임시 자격(ASIA)은 만료되어 지원하지 않고, "
+                + "장기 키(AKIA)에는 필요하지 않습니다. 하위 호환을 위해 필드만 남아 있습니다")
         String sessionToken,
 
         @Schema(description = "GCP 인증 방식. 생략 시 SERVICE_ACCOUNT_KEY", allowableValues = {"SERVICE_ACCOUNT_KEY", "SERVICE_ACCOUNT_EMAIL"}, example = "SERVICE_ACCOUNT_KEY")

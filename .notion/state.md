@@ -145,7 +145,7 @@
 ## 2.11 CloudConnection
 
 - AWS/GCP 연결 CRUD
-- AWS Access Key/Role ARN 입력 모델
+- AWS Access Key/Role ARN 입력 모델. **임시 자격(`ASIA` 접두사)은 등록 시점에 거부한다**(#429 A안) — 세션 토큰은 만료되고 갱신되지 않아 연결이 검증을 통과한 뒤 조용히 죽는다. 장기 키(`AKIA`)에 붙은 `sessionToken` 도 거부한다(조용히 버리면 왜 안 쓰이는지 알 길이 없다)
 - GCP Service Account Key/Email 입력 모델
 - provider별 입력 형식 검증, 민감 credential 암호화 저장, secret 비노출 응답
 - `cloud_connection_verification_jobs` 발급과 worker claim/lease 기반 비동기 실제 검증
@@ -600,7 +600,7 @@ CdnDeletionReaper
 - **도메인 변경 API — 미구현.** `POST`(연결)·`DELETE`(해제)만 있고 변경 경로가 없다
 - **www/apex redirect 정책 — 미구현**
 - **registrar 구매 연동 — 미구현**
-- **HTTPS 인증서 갱신 모니터링 — 범위 확인 필요.** ACM 은 자동 갱신하므로 "무엇을 모니터링할지" 가 먼저다. 관리형 서브도메인 쪽은 Cloudflare 프록시 때문에 GH Pages 가 인증서를 못 받는 구조적 문제가 따로 있다(#154)
+- **HTTPS 인증서 갱신 모니터링 — 범위 확인 필요.** ACM 은 자동 갱신하므로 "무엇을 모니터링할지" 가 먼저다. 관리형 서브도메인 쪽은 Cloudflare 프록시 때문에 GH Pages 가 자기 인증서를 못 받지만, 그것은 **설계로 수용됐다**(#154, PR #220) — 실제 https 프로브로 `httpsEnforced` 를 보정하고 `certificateStatus` 는 GitHub 관점으로 남긴다. 즉 여기서 모니터링할 인증서는 ACM 쪽뿐이다
 
 ## 3.14 운영 지표 (EPIC 18) — **미구현**
 

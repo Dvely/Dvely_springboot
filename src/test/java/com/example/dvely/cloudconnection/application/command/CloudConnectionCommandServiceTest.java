@@ -22,6 +22,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -72,6 +73,77 @@ class CloudConnectionCommandServiceTest {
 
         assertThat(result.status()).isEqualTo(CloudConnectionStatus.VALIDATED);
         assertThatCodeIsUuid(result.jobId());
+    }
+
+    @Test
+    void 임시_자격은_등록_시점에_거부한다() {
+        // #429 A안. 전에는 반대였다 — "임시 Access Key 는 sessionToken 이 필요하다" 로 명시적으로
+        // 허용했고, 그 규칙에는 테스트가 아예 없었다. 세션 토큰은 만료되고 갱신되지 않으므로
+        // 연결은 등록 직후 검증을 통과하고 며칠 뒤 조용히 죽는다(배포 전부 403, 화면은 "연결됨").
+        when(userRepository.findById(1L)).thenReturn(Optional.of(mock(User.class)));
+
+        assertThatThrownBy(() -> service.create(1L, awsAccessKeyCommand(
+                "ASIA1234567890ABCDEF", "sessiontokenvalue1234567890")))
+                .isInstanceOf(IllegalArgumentException.class)
+                // 이유를 말해야 사용자가 조치할 수 있다 — 무엇을 쓰면 되는지까지 담는다.
+                .hasMessageContaining("임시 AWS 자격")
+                .hasMessageContaining("AKIA")
+                .hasMessageContaining("역할 ARN");
+
+        verify(cloudConnectionRepository, never()).save(any());
+        verify(verificationJobRepository, never()).save(any());
+    }
+
+    @Test
+    void 장기_키에_붙은_sessionToken_도_거부한다() {
+        // 붙여넣기 사고다. 조용히 버리면 "넣었는데 왜 안 쓰이나" 를 알 길이 없다.
+        when(userRepository.findById(1L)).thenReturn(Optional.of(mock(User.class)));
+
+        assertThatThrownBy(() -> service.create(1L, awsAccessKeyCommand(
+                "AKIA1234567890ABCDEF", "sessiontokenvalue1234567890")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sessionToken");
+
+        verify(cloudConnectionRepository, never()).save(any());
+    }
+
+    @Test
+    void 장기_키는_sessionToken_없이_저장되고_값은_null_이다() {
+        // 거부가 과하게 번지지 않았음을 반대 방향에서 고정한다.
+        //
+        // 저장되는 sessionToken 이 null 인 것도 함께 보지만, 이것은 "계약" 테스트이지 특정 줄을
+        // 지키는 테스트가 아니다. 되돌림 검증으로 확인했다 — 저장부를
+        // trimToNull(command.sessionToken()) 로 되돌려도 이 테스트는 통과한다. 검증이 비어 있지
+        // 않은 sessionToken 을 이미 거부하므로 두 구현을 구별하는 입력이 존재하지 않는다.
+        // 즉 "새 sessionToken 이 저장되지 않는다" 를 실제로 지키는 것은 위 거부 테스트 둘이고,
+        // 저장부의 null 은 그 사실을 코드에 적어 둔 것에 가깝다.
+        when(userRepository.findById(1L)).thenReturn(Optional.of(mock(User.class)));
+        when(cloudConnectionRepository.save(any())).thenAnswer(invocation -> withId(invocation.getArgument(0)));
+        when(verificationJobRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.create(1L, awsAccessKeyCommand("AKIA1234567890ABCDEF", null));
+
+        ArgumentCaptor<CloudConnection> saved = ArgumentCaptor.forClass(CloudConnection.class);
+        verify(cloudConnectionRepository).save(saved.capture());
+        assertThat(saved.getValue().getSessionToken()).isNull();
+    }
+
+    private CreateCloudConnectionCommand awsAccessKeyCommand(String accessKeyId, String sessionToken) {
+        return new CreateCloudConnectionCommand(
+                "AWS",
+                "production",
+                "123456789012",
+                "ap-northeast-2",
+                null,
+                "ACCESS_KEY",
+                accessKeyId,
+                "abcdefghijklmnopqrstuvwxyz1234567890ABCD",
+                sessionToken,
+                null,
+                null,
+                null,
+                null
+        );
     }
 
     @Test
