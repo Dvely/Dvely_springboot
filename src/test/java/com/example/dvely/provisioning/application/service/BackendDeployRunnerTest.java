@@ -9,12 +9,15 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
+import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.cloudconnection.domain.value.CloudProvider;
 import com.example.dvely.environment.application.port.in.EnvironmentValueResolver;
@@ -61,6 +64,7 @@ class BackendDeployRunnerTest {
     @Mock private EnvironmentValueResolver environmentValueResolver;
     @Mock private Ec2ProvisioningProperties ec2Properties;
     @Mock private FrontendOriginPort frontendOriginPort;
+    @Mock private AwsCredentialFailureReporter credentialFailureReporter;
 
     @InjectMocks private BackendDeployRunner runner;
 
@@ -195,6 +199,66 @@ class BackendDeployRunnerTest {
 
         verify(ec2).terminate(any(), eq("i-999"));   // 방금 만든 인스턴스를 정리
         verify(ec2).releaseElasticIp(any(), eq("eipalloc-1"));   // 붙인 EIP 도 release(유휴 과금 방지)
+    }
+
+    @Test
+    void 자격_실패_보고가_터져도_롤백과_실패기록은_일어난다() throws IOException {
+        // #429 를 배선하다 실제로 저지른 실수를 고정한다. 처음에 보고 호출을 롤백보다 위에 뒀는데,
+        // 그 호출이 어떤 이유로든 터지면 롤백이 건너뛰어지고 사용자는 고아 인스턴스 과금을 맞는다
+        // (그때는 테스트의 목이 null 이어서 NPE 였지만, 원인이 무엇이든 결과는 같다).
+        //
+        // 돈이 걸린 롤백이 먼저, 진단은 그다음이다. 보조 장치가 본 기능을 죽이지 않아야 한다.
+        Path jar = Files.createTempFile("test-app", ".jar");
+        stubHappyPath(jar);
+        when(ec2.launch(any(), any())).thenReturn("i-888");
+        when(serverRepository.save(any())).thenThrow(new RuntimeException("db down"));
+        when(credentialFailureReporter.reportIfCredentialFailure(any(), any()))
+                .thenThrow(new RuntimeException("보고 경로가 터졌다"));
+
+        assertThatThrownBy(() -> runner.deploy(building())).isInstanceOf(RuntimeException.class);
+
+        verify(ec2).terminate(any(), eq("i-888"));
+        verify(ec2).releaseElasticIp(any(), eq("eipalloc-1"));
+    }
+
+    @Test
+    void 자격_실패면_INVALID_CREDENTIAL_로_기록한다() {
+        // 사용자가 보는 코드가 PROVIDER_ERROR(기타) 가 아니라 원인을 말해야 한다. 권한 부족과
+        // 다른 분류다 — 정책을 고치는 게 아니라 자격을 다시 등록해야 하기 때문이다.
+        //
+        // 스텁을 최소로 둔다(stubHappyPath 를 쓰지 않는다) — 일찍 터지므로 뒤쪽 스텁이 쓰이지 않고
+        // strict stubs 가 그것을 잡는다. 그 경고는 맞는 경고다: 안 쓰이는 스텁은 테스트가 무엇을
+        // 거치는지 잘못 말한다.
+        when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection()));
+        when(nativeBuildService.build(OWNER, PROJECT))
+                .thenThrow(new RuntimeException("The security token included in the request is expired"));
+        when(credentialFailureReporter.reportIfCredentialFailure(any(), any())).thenReturn(true);
+
+        runner.deploy(building());
+
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository, atLeastOnce()).save(saved.capture());
+        assertThat(saved.getAllValues())
+                .anySatisfy(server -> assertThat(server.getFailureCode())
+                        .isEqualTo(ProvisionFailureCode.INVALID_CREDENTIAL));
+    }
+
+    @Test
+    void 자격_실패가_아니면_기존_분류를_유지한다() {
+        // 위 분기가 넓게 번지지 않았음을 반대 방향에서 고정한다. 리포터가 false 면 메시지 기반
+        // classify() 가 그대로 쓰여야 한다 — 권한 오류는 IAM_PERMISSION 이다.
+        when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection()));
+        when(nativeBuildService.build(OWNER, PROJECT))
+                .thenThrow(new RuntimeException("UnauthorizedOperation: not authorized"));
+        when(credentialFailureReporter.reportIfCredentialFailure(any(), any())).thenReturn(false);
+
+        runner.deploy(building());
+
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository, atLeastOnce()).save(saved.capture());
+        assertThat(saved.getAllValues())
+                .anySatisfy(server -> assertThat(server.getFailureCode())
+                        .isEqualTo(ProvisionFailureCode.IAM_PERMISSION));
     }
 
     @Test
