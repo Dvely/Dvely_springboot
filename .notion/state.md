@@ -154,7 +154,8 @@
 - 프로젝트별 Infrastructure 설정에서 `CONNECTED` connection 선택/해제(연결 또는 프로젝트 삭제 시 자동 정리)
 - **실제 AWS 작업이 자격 오류로 실패하면 연결 상태를 `INVALID_CREDENTIAL` 로 되돌린다**(`AwsCredentialFailureReporter`, #429). 전에는 검증을 사용자가 직접 누를 때만 상태가 갱신됐고, 저장된 임시 자격이 만료되면 연결이 영원히 "연결됨" 으로 남은 채 배포가 전부 403 으로 죽었다. 지금은 고아 스윕(CloudFront 1시간·EIP 1시간)이 자격 실패를 만나면 그 사실을 상태로 남긴다
   - 반영 대상은 **재시도로 풀리지 않는 것이 확실한 경우만** — `ExpiredToken`·`InvalidClientTokenId`·`SignatureDoesNotMatch` 등. 스로틀링·5xx·`AccessDenied`(= 권한 부족, 별개 문제)로는 바꾸지 않는다
-  - 주기적 **재검증은 여전히 없다**. 자격이 상한 것을 알아채는 경로는 이 스윕뿐이므로, 스윕이 닿지 않는 자격(예: CloudFront·EIP 를 쓰지 않는 연결)은 배포 시점까지 모른다
+  - **배포 경로에도 같은 보고가 걸려 있다** — `BackendDeployRunner`(사용자가 기다리는 자리)와 `ProvisionedServerStatusWorker`(프로비저닝 중 20초 주기). 배포 실패 분류에 `INVALID_CREDENTIAL` 이 생겨 FE 가 "권한 부족" 과 구분해 안내할 수 있다
+  - 주기적 **재검증은 여전히 없다**. 자격이 상한 것을 알아채는 경로는 스윕(1시간)과 위 두 자리뿐이다 — 아무 작업도 하지 않는 연결은 다음 스윕까지 모른다
 
 ## 2.12 API/응답/브랜드 정합성
 

@@ -237,6 +237,7 @@ Accept: text/event-stream
 ### 3.7 Secret 마스킹
 
 - **Environment 변수**(`EnvironmentVariableResponse`): `secret=true`인 변수는 생성/조회/수정 **어떤 응답에서도 `value`가 항상 `null`**입니다. 평문은 절대 API 응답에 실리지 않습니다. `secret`은 `false→true`만 가능(역방향은 400).
+- **서버 실패 분류 `errorCode` 에 `INVALID_CREDENTIAL` 이 추가되었습니다**(#429). 클라우드 연결의 자격이 **만료/무효**라는 뜻이고 권한 부족(`IAM_PERMISSION`)과 다릅니다 — 정책을 고치는 게 아니라 **자격을 다시 등록**해야 합니다. 전체 값: `IAM_PERMISSION` · `QUOTA_EXCEEDED` · `ENGINE_UNSUPPORTED` · `PROVIDER_ERROR` · `INVALID_CREDENTIAL`. 모르는 값은 기존처럼 기본 문구로 떨어뜨리면 됩니다. 이 코드가 뜨면 해당 연결의 `status` 도 `INVALID_CREDENTIAL` 로 바뀌어 있습니다(같은 판정을 두 자리에서 보여줍니다).
 - **CloudConnection 자격 증명**: `secretAccessKey`/`sessionToken`/`serviceAccountKeyJson`은 요청으로만 받고 응답에는 절대 포함되지 않습니다(`secretAccessKeyConfigured` 등 boolean으로 존재 여부만 노출). `accessKeyId`만 부분 마스킹되어 노출됩니다(`AKIA************3XYZ` 형식, 8자 이하면 `****`).
 
 ### 3.8 휴지통(Trash) 7일 보관
