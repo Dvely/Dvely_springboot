@@ -136,9 +136,14 @@ GET/POST/PUT /repos/{owner}/{repo}/pages
 > 공개 App 페이지(`https://github.com/apps/<slug>`)로는 권한을 알 수 없다 — GitHub 은 설치 흐름에서만 보여준다.
 
 ```
-permissions = actions=write, administration=write, checks=write, contents=write,
+# 2026-10-05 이후 (checks + check_run 제거 완료, 두 등록 모두)
+permissions = actions=write, administration=write, contents=write,
               metadata=read, pages=write, pull_requests=write, workflows=write
-events      = [check_run, pull_request, push, workflow_run]
+events      = [pull_request, push, workflow_run]
+
+# 제거 전
+permissions = … checks=write …
+events      = [check_run, …]
 ```
 
 | 권한 | 현재 | 도출치 | 차이 |
@@ -150,16 +155,18 @@ events      = [check_run, pull_request, push, workflow_run]
 | Pages | write | Read & write | 일치 |
 | Workflows | write | Read & write | 일치 |
 | Administration | write | 폴백 경로에 달림 | **판단 필요** — 아래 |
-| **Checks** | **write** | **없음** | ❌ **불필요** — `src/main` 전체에 Checks API 호출이 0건이다(`/check-runs`·`/check-suites`·`CheckRun` 어느 것도 없음) |
+| ~~Checks~~ | **제거됨** | 없음 | ✅ **2026-10-05 제거 완료** — 두 등록 모두. 근거는 `src/main` 전체에 Checks API 호출 0건(`/check-runs`·`/check-suites`·`CheckRun` 어느 것도 없음) |
 
 **이벤트 구독**
 
 | 이벤트 | 코드가 다루나 |
 |---|---|
 | `push` · `pull_request` · `workflow_run` | ✅ `WebhookEventHandler:46,50,54` |
-| **`check_run`** | ❌ **처리하지 않는다** — `WebhookEventHandler` 의 `switch` 에 해당 `case` 가 없어 조용히 버려진다 |
+| ~~`check_run`~~ | ✅ **2026-10-05 구독 해제 완료** — `WebhookEventHandler` 의 `switch` 에 `case` 가 없어 조용히 버려지고 있었다 |
 
-`checks` 권한과 `check_run` 구독은 **한 쌍**이다(그 이벤트를 받으려면 그 권한이 필요하다). 둘을 함께 떼는 것이 가장 안전한 첫 축소다 — 호출도 처리도 없으므로 **깨질 코드가 없다**.
+`checks` 권한과 `check_run` 구독은 **한 쌍**이었다(그 이벤트를 받으려면 그 권한이 필요하다). 함께 떼는 것이 가장 안전한 첫 축소였고 — 호출도 처리도 없으므로 깨질 코드가 없었다 — **2026-10-05 에 두 등록 모두 완료**했다.
+
+> **찾기 어려운 자리였다.** `Repository permissions` 섹션이 기본으로 **접혀** 있고(`details open=false`) 그 아래 `Subscribe to events` 는 펼쳐져 있다. 그래서 `Check run` 은 바로 보이는데 `Checks` 는 안 보인다. 알파벳 순으로 **`Attestations` 다음, `Code quality` 앞**(8번째)이다.
 
 ### Administration 은 폴백이 실제로 쓰이는지에 달렸다
 
@@ -191,6 +198,19 @@ actions=write, checks=write, contents=write, metadata=read, pull_requests=write
 
 추가 쪽은 위 "설치별 허용 범위" 에서 **실제로 관측된다** — 5개 중 1개가 아직 옛 범위다.
 
+### ⚠️ 제거의 "즉시" 에는 예외가 있다 — 실측 (2026-10-05)
+
+`checks` 를 뗀 직후 `GET /app/installations` 를 다시 읽었더니 dev 등록의 설치 5개 중 **4개는 즉시 `checks` 를 잃었고 1개는 그대로 들고 있었다.** 그 1개가 바로 위에서 "옛 범위에 머물러 있다" 고 적은 설치다.
+
+```
+설치 4개: actions, administration, contents, metadata, pages, pull_requests, workflows   ← checks 사라짐
+설치 1개: actions, checks, contents, metadata, pull_requests                             ← checks 남음
+```
+
+**이유**: 그 설치는 과거의 *추가* 를 승인하지 않아 허용 범위가 **그 시점에 얼어 있다**. 제거는 App 의 *현재* 요구 집합을 동기화된 설치에 전파하는 것이므로, 얼어 있는 설치는 자기가 승인한 옛 집합을 그대로 유지한다 — 당신이 방금 뗀 권한까지 포함해서.
+
+**따라서** 모든 설치에서 권한을 확실히 걷으려면 뒤처진 설치가 **재승인하거나 제거**되어야 한다. 재승인하면 새 집합(= `checks` 없고 `administration`·`pages`·`workflows` 있음)으로 맞춰진다.
+
 **따라서 `checks` + `check_run` 제거는 사용자 영향이 0이다.** 공지도 재승인 UX 도 필요 없다. 축소를 미룰 이유로 재승인을 들 수 없다.
 
 (`unhak/github-app-reauthorization` 브랜치는 **추가** 쪽 — 이미 넓힌 권한을 설치들이 승인하게 만드는 경로다. 뒤처진 설치 1개가 그 UX 를 아직 타지 않았다.)
@@ -201,8 +221,8 @@ actions=write, checks=write, contents=write, metadata=read, pull_requests=write
 2. ~~현재 권한·이벤트 확보~~ → **API 로 받았다**(`GithubAppPermissionProbeIntegrationTest`). 대시보드가 필요하지 않았다
 3. ~~차이 표 작성~~ → `checks` + `check_run` 이 불필요로 확정, `administration` 은 폴백 측정 대기
 4. ~~운영 App 등록의 현황 측정~~ → **대시보드 직접 읽기로 확정**. 두 등록의 권한·이벤트가 동일하다
-5. **`checks` + `check_run` 제거** ← 사용자 영향 0(재승인 불필요). **두 등록 각각** 해야 한다 — 설정은 전파되지 않는다
-6. 운영 등록의 설치별 허용 범위 측정 ← 아직. dev 에서 1개가 뒤처져 있었으므로 운영도 봐야 한다
+5. ~~**`checks` + `check_run` 제거**~~ → **2026-10-05 완료, 두 등록 모두 실측 확인**(probe + 대시보드). 운영 설치의 허용 범위에서도 `checks` 가 즉시 사라졌다
+6. ~~운영 등록의 설치별 허용 범위 측정~~ → **깨끗하다.** 운영 설치는 요구 집합과 일치하고 보류 없음(저장소 2개 한정). 뒤처진 설치는 **dev 등록에만** 있다
 7. `administration` 은 `#413` 의 토큰 폴백 정리 뒤에 다시 본다
 8. dev 웹훅 `http://` → `https://` 는 호스트명·인증서 비용을 받아들일지의 판단
 
