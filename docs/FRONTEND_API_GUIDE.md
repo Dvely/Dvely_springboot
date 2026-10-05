@@ -453,10 +453,16 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 
 기본 경로 `/api/v1/cloud-connections`.
 
+> **⚠️ AWS 임시 자격은 400 입니다.** `accessKeyId` 가 `ASIA` 로 시작하면(STS 임시 자격) 거부합니다 — 세션 토큰은 15분~36시간 뒤 만료되고 갱신되지 않아, 연결이 등록 직후 검증을 통과한 뒤 **며칠 뒤 조용히 죽습니다**(배포는 전부 AWS 403, 연결 화면은 "연결됨"). 장기 키(`AKIA`)에 `sessionToken` 이 붙어 와도 거부합니다(장기 키는 세션 토큰을 쓰지 않습니다).
+>
+> FE 안내 문구는 **IAM 사용자의 장기 Access Key(`AKIA`) 또는 역할 ARN(권장)** 으로 유도하면 됩니다. 400 응답의 `message` 가 그대로 쓸 수 있는 문장입니다.
+>
+> 이미 임시 자격으로 등록된 연결은 남아 있고, 만료되면 상태가 `INVALID_CREDENTIAL` 로 바뀝니다(최대 1시간) — 그때 재등록을 유도하면 됩니다.
+
 | 메서드 | 경로 | 용도 | 요청 | 응답(핵심 필드) | 주요 에러 |
 |---|---|---|---|---|---|
 | GET | `(기본 경로)` | 내 클라우드 연결 목록 | - | `[CloudConnectionResponse]` | - |
-| POST | `(기본 경로)` | AWS/GCP 연결 등록(형식 검증만, 실 권한 확인은 별도 Job) | `{ provider(AWS\|GCP), displayName, region, accountId?, roleArn?, awsCredentialType?(ACCESS_KEY\|ROLE_ARN), accessKeyId?, secretAccessKey?, sessionToken?, gcpCredentialType?(SERVICE_ACCOUNT_KEY\|SERVICE_ACCOUNT_EMAIL), serviceAccountKeyJson?, projectId?, serviceAccountEmail? }` | 201 `{ cloudConnectionId, provider, status(보통 VALIDATED), jobId }` | 400 |
+| POST | `(기본 경로)` | AWS/GCP 연결 등록(형식 검증만, 실 권한 확인은 별도 Job). **AWS 임시 자격은 거부됩니다** — 아래 주의 | `{ provider(AWS\|GCP), displayName, region, accountId?, roleArn?, awsCredentialType?(ACCESS_KEY\|ROLE_ARN), accessKeyId?, secretAccessKey?, sessionToken?, gcpCredentialType?(SERVICE_ACCOUNT_KEY\|SERVICE_ACCOUNT_EMAIL), serviceAccountKeyJson?, projectId?, serviceAccountEmail? }` | 201 `{ cloudConnectionId, provider, status(보통 VALIDATED), jobId }` | 400 |
 | GET | `/{id}` | 연결 상세 조회 | - | `CloudConnectionResponse`(시크릿은 `*Configured` boolean으로만) | 404 |
 | GET | `/{id}/health` | 저장된 마지막 상태 조회(재검증 아님) | - | `{ cloudConnectionId, provider, status, message, checkedAt }` | 404 |
 | POST | `/{id}/verification-jobs` | 실 권한 확인 Job 생성 | - | 202 `{ jobId, cloudConnectionId, status, connectionStatus, message, attempt, createdAt, startedAt, completedAt }` | 404 |

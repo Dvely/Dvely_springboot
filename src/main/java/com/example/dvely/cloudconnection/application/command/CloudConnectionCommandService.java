@@ -102,9 +102,12 @@ public class CloudConnectionCommandService {
             if (hasText(command.accountId()) && !AWS_ACCOUNT_ID.matcher(command.accountId().trim()).matches()) {
                 throw new IllegalArgumentException("AWS accountId는 12자리 숫자여야 합니다.");
             }
-            String sessionToken = accessKeyId.startsWith("ASIA")
-                    ? trimToNull(command.sessionToken())
-                    : null;
+            // 임시 자격은 위에서 거부되고 장기 키에 붙은 세션 토큰도 거부되므로, 여기서는 항상
+            // null 이다. 이 줄은 그 사실을 코드에 적어 둔 것이고 독자적인 동작은 없다 — 되돌려도
+            // 테스트가 깨지지 않는다(검증이 이미 막으므로 두 구현을 구별하는 입력이 없다).
+            // 컬럼과 필드는 남겨 둔다 — 이미 저장된 임시 자격이 DB 에 있고, 그것들은 B안(#429)의
+            // AwsCredentialFailureReporter 가 만료를 감지해 상태로 알린다.
+            String sessionToken = null;
             return new CloudConnection(
                     ownerUserId,
                     CloudProvider.AWS,
@@ -255,6 +258,22 @@ public class CloudConnectionCommandService {
         }
     }
 
+    /**
+     * 임시 자격(ASIA)을 <b>입력 시점에 거부한다</b>(#429 A안).
+     *
+     * <p>전에는 반대였다 — "임시 Access Key 는 sessionToken 이 필요하다" 로 <b>명시적으로 허용</b>했다.
+     * 그런데 세션 토큰은 15분~36시간 뒤 만료되고 {@code StaticCredentialsProvider} 는 갱신하지 않는다.
+     * 그래서 연결은 등록 직후 검증을 통과하고 <b>며칠 뒤 조용히 죽었다</b> — 배포는 전부 AWS 403 이
+     * 되는데 연결 화면은 "연결됨" 이었다.
+     *
+     * <p>{@code AwsCredentialFailureReporter}(#429 B안)가 상한 뒤에 알려 주지만, <b>사용자가 조치할
+     * 수 있는 순간에 말하는 것</b>이 먼저다. 등록 화면에서 거부하면 그 자리에서 영구 키나 역할 ARN 으로
+     * 바꿀 수 있고, B안은 이미 저장된 연결을 위한 안전망으로 남는다.
+     *
+     * <p>판별자는 접두사다 — {@code AKIA} 는 IAM 사용자의 장기 키, {@code ASIA} 는 STS 임시 자격이다.
+     * 정규식에서 {@code ASIA} 를 빼지 않은 이유는 그러면 "형식이 올바르지 않습니다" 로 뭉개져
+     * <b>사용자가 왜 거부됐는지 모르기</b> 때문이다. 형식은 통과시키고 이유를 말한다.
+     */
     private void validateAwsAccessKey(String accessKeyId, String secretAccessKey, String sessionToken) {
         if (!AWS_ACCESS_KEY_ID.matcher(accessKeyId).matches()) {
             throw new IllegalArgumentException("AWS accessKeyId 형식이 올바르지 않습니다.");
@@ -262,8 +281,18 @@ public class CloudConnectionCommandService {
         if (!AWS_SECRET_ACCESS_KEY.matcher(secretAccessKey).matches()) {
             throw new IllegalArgumentException("AWS secretAccessKey 형식이 올바르지 않습니다.");
         }
-        if (accessKeyId.startsWith("ASIA") && !hasText(sessionToken)) {
-            throw new IllegalArgumentException("임시 AWS Access Key는 sessionToken이 필요합니다.");
+        if (accessKeyId.startsWith("ASIA")) {
+            throw new IllegalArgumentException(
+                    "임시 AWS 자격(ASIA로 시작하는 Access Key)은 만료되어 사용할 수 없습니다. "
+                            + "만료 뒤에는 배포가 모두 실패하므로 등록하지 않습니다. "
+                            + "IAM 사용자의 장기 Access Key(AKIA) 또는 역할 ARN(권장)을 사용해주세요.");
+        }
+        if (hasText(sessionToken)) {
+            // 장기 키에 세션 토큰이 붙어 오는 것은 붙여넣기 사고다. 조용히 버리면 "넣었는데 왜 안
+            // 쓰이나" 를 알 길이 없으므로 이유를 말한다 — 장기 키는 세션 토큰을 쓰지 않는다.
+            throw new IllegalArgumentException(
+                    "장기 AWS Access Key(AKIA)에는 sessionToken이 필요하지 않습니다. "
+                            + "sessionToken은 임시 자격에만 쓰이며, 임시 자격은 지원하지 않습니다.");
         }
     }
 
