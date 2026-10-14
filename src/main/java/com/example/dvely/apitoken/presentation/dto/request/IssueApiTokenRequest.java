@@ -16,7 +16,9 @@ public record IssueApiTokenRequest(
         @Schema(description = "구분용 이름(선택)", example = "내 노트북 Claude Code", nullable = true)
         @Size(max = 64) String label,
 
-        @Schema(description = "만료까지 일수. 생략 시 90일, 최대 365일", example = "90", nullable = true)
+        @Schema(description = "만료까지 일수. 스코프마다 다르다 — READ: 생략 시 90일·최대 365일, "
+                + "WRITE: 생략 시 30일·최대 90일(유출 시 할 수 있는 일이 달라서). 범위를 벗어나면 400",
+                example = "90", nullable = true)
         @Min(1) @Max(365) Integer expiresInDays
 ) {
 }
