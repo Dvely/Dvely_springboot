@@ -118,8 +118,10 @@ class ResultApprovalGateTest {
                 .doesNotContain("https://preview.qeploy.test/s/tok/")
                 .doesNotContain("- preview: ")
                 .doesNotContain("/api/v1/previews/");
-        // 승인 자체를 가리키는 정보는 남아야 한다 — 링크만 빼는 것이다.
-        assertThat(captor.getValue()).contains("501").contains("RESULT");
+        // 무엇을 기다리는지는 남아야 한다 — 링크만 빼는 것이다.
+        assertThat(captor.getValue()).contains("main에 반영됩니다");
+        // #457: ID 와 원시 enum 은 채팅에 싣지 않는다. 승인 ID 는 승인 탭이 들고 있다.
+        assertThat(captor.getValue()).doesNotContain("RESULT").doesNotContain("[501]");
     }
 
     @Test

@@ -126,7 +126,14 @@ class RepositoryBindingGateTest {
         // see exactly what they will get if they just press approve.
         assertThat(captor.getValue())
                 .contains("my-project")
-                .contains("501");
+                // 카드가 사라진 뒤 대화 이력에 남는 유일한 경고라 빠지면 안 된다.
+                .contains("프리뷰가 만료될 때 작업물이 사라집니다");
+        // #457: 카드가 이미 그리는 것과 내부 값은 싣지 않는다. 전에는 카드 설명 문장이 글자 그대로
+        // 반복됐고 "[501] REPOSITORY_BINDING" 처럼 ID 와 원시 enum 이 채팅에 드러났다.
+        assertThat(captor.getValue())
+                .doesNotContain("REPOSITORY_BINDING")
+                .doesNotContain("[501]")
+                .doesNotContain("아직 GitHub 저장소가 연결되어 있지 않습니다");
         // #391: preview 주소는 넣지 않는다. 사용자가 화면에서 프리뷰를 여는 것이 곧 access 발급이고
         // 그것이 accessToken 을 회전시켜 이 주소를 죽인다 — 대화 이력에 영구히 죽은 링크가 남는다.
         assertThat(captor.getValue())

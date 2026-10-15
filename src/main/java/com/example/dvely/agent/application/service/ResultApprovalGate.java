@@ -155,7 +155,7 @@ public class ResultApprovalGate {
                 taskId, approval.getId(), projectId);
         agentMessageService.appendAssistant(
                 task == null ? null : task.conversationId(),
-                buildGateMessage(approval)
+                buildGateMessage()
         ,
                 ChatMessageKind.APPROVAL_REQUESTED, taskId);
         return true;
@@ -230,9 +230,10 @@ public class ResultApprovalGate {
      * <p>안내조차 남기지 않은 이유: 승인 카드가 이미 화면에 프리뷰와 함께 뜬다. 주소도 안내도
      * 중복이고, 주소는 거기에 해롭기까지 했다.</p>
      */
-    private String buildGateMessage(Approval approval) {
+    private String buildGateMessage() {
+        // 마지막 줄에 있던 "- [ID] RESULT: summary" 는 뺐다(#457). 원시 enum 이 채팅에 드러났고,
+        // 위 두 문장이 이미 무엇을 기다리는지 말한다. 승인 ID 는 승인 탭이 들고 있다.
         return "작업 결과가 preview에 준비되었습니다. 미리보기와 변경 내역을 확인해 주세요.\n"
-                + "승인하면 현재 preview 상태 전체가 main에 반영됩니다. 거절하면 preview에만 남습니다.\n"
-                + "- [" + approval.getId() + "] RESULT: " + approval.getSummary();
+                + "승인하면 현재 preview 상태 전체가 main에 반영됩니다. 거절하면 preview에만 남습니다.";
     }
 }
