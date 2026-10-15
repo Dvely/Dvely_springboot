@@ -287,4 +287,35 @@ class RepositoryBindingGateTest {
         return new Approval(id, 1L, 11L, 21L, "task-1", ApprovalType.REPOSITORY_BINDING,
                 ApprovalStatus.PENDING, "[저장소 연결] my-project", LocalDateTime.now(), null);
     }
+
+    @Test
+    void reportsClosedWithoutArtifactOnlyWhenTheSystemCancelledTheBinding() {
+        // #461: 결과 메시지를 생략하는 기준. 시스템이 닫은(CANCELLED) 저장소 연결만 해당한다.
+        // 사용자가 거절(REJECTED)하면 프리뷰가 살아 있으므로 결과는 그대로 나가야 한다.
+        when(approvalRepository.findByTaskIdOrderByIdAsc("cancelled"))
+                .thenReturn(java.util.List.of(approvalOf(ApprovalType.REPOSITORY_BINDING, "cancel")));
+        when(approvalRepository.findByTaskIdOrderByIdAsc("rejected"))
+                .thenReturn(java.util.List.of(approvalOf(ApprovalType.REPOSITORY_BINDING, "reject")));
+        when(approvalRepository.findByTaskIdOrderByIdAsc("approved"))
+                .thenReturn(java.util.List.of(approvalOf(ApprovalType.REPOSITORY_BINDING, "approve")));
+        when(approvalRepository.findByTaskIdOrderByIdAsc("other"))
+                .thenReturn(java.util.List.of(approvalOf(ApprovalType.CHANGE, "cancel")));
+
+        assertThat(gate.closedWithoutArtifact("cancelled")).isTrue();
+        assertThat(gate.closedWithoutArtifact("rejected")).isFalse();
+        assertThat(gate.closedWithoutArtifact("approved")).isFalse();
+        assertThat(gate.closedWithoutArtifact("other")).isFalse();
+        assertThat(gate.closedWithoutArtifact("none")).isFalse();
+    }
+
+    private Approval approvalOf(ApprovalType type, String decision) {
+        Approval approval = new Approval(1L, 11L, 21L, "task-1", type, "summary");
+        switch (decision) {
+            case "cancel" -> approval.cancel();
+            case "reject" -> approval.reject();
+            case "approve" -> approval.approve();
+            default -> { }
+        }
+        return approval;
+    }
 }

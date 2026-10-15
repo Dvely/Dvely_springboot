@@ -67,6 +67,49 @@ class AgentPlanExecutorTest {
         verify(messageService).appendAssistant(21L, "수정 완료", ChatMessageKind.AGENT_RESULT, "task-1");
     }
 
+    @Test
+    void doesNotAnnounceAResultWhenTheSystemClosedTheRepositoryBindingWithoutTheWork() {
+        // #461 (2026-10-15 운영, 승인 #49): 저장소 연결을 묻는 동안 프리뷰가 정리돼 스윕이 태스크를
+        // 마쳤는데, 1초 뒤 여기서 저장된 요약 "The site is ready" 를 결과로 냈다. 앞의 "프리뷰가
+        // 정리되어 연결하지 못했다" 를 뒤집는 줄이 화면에서 가장 진하게 그려졌다.
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        RepositoryBindingGate repositoryBindingGate = mock(RepositoryBindingGate.class);
+        when(repositoryBindingGate.closedWithoutArtifact("task-1")).thenReturn(true);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
+                taskStore,
+                messageService,
+                mock(BuildFailureRecoveryService.class),
+                mock(ChangeService.class),
+                mock(ResultApprovalGate.class),
+                repositoryBindingGate,
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
+                .thenReturn(new CodeAgentService.CodeResult("preview", "The site is ready."));
+
+        executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L), "task-1", 1L);
+
+        // 태스크는 정상적으로 끝난다 — 생략하는 것은 메시지뿐이다.
+        verify(taskStore).markDone("task-1", "preview", "The site is ready.");
+        verify(messageService, org.mockito.Mockito.never())
+                .appendAssistant(any(), any(), eq(ChatMessageKind.AGENT_RESULT), any());
+    }
+
     // ── ADR-Y4 (#55): AgentExecutionRegistry unregister-in-finally wiring ──────────────────────
 
     @Test
