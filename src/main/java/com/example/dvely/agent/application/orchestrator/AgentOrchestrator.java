@@ -16,6 +16,7 @@ import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.approval.domain.value.ApprovalTypeLabel;
 import com.example.dvely.chat.domain.model.Conversation;
 import com.example.dvely.chat.domain.repository.ConversationRepository;
 import com.example.dvely.common.exception.NotFoundException;
@@ -768,15 +769,15 @@ public class AgentOrchestrator {
      * 바로 아래에 승인 카드가 붙고 그 카드가 같은 summary 를 그리므로, 여기까지 지시문을 실으면
      * 같은 내용이 두 번 보인다(사용자 요청 원문까지 치면 세 번이다). 지시문은 카드가 소유하고
      * 이 메시지는 "어떤 승인이 걸렸는지"만 기록한다 — 카드는 결정하면 사라지지만 이 줄은 대화
-     * 이력으로 남아 승인 ID 와 유형을 되짚을 수 있다.
+     * 이력으로 남는다.
+     *
+     * <p>유형은 사람이 읽는 이름으로 남긴다(#457). {@code - [48] CHANGE} 처럼 ID 와 원시 enum 을
+     * 찍으면 카드·승인 탭이 숨겨 둔 내부 값이 채팅에서 다시 보인다. 승인 ID 는 승인 탭이 들고 있다.
      */
     private String buildApprovalChatMessage(List<Approval> approvals) {
         StringBuilder message = new StringBuilder(APPROVAL_HEADLINE);
         for (Approval approval : approvals) {
-            message.append("\n- [")
-                    .append(approval.getId())
-                    .append("] ")
-                    .append(approval.getType());
+            message.append("\n- ").append(ApprovalTypeLabel.of(approval.getType()));
         }
         return message.toString();
     }
