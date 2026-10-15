@@ -112,9 +112,10 @@ class AgentOrchestratorTest {
         // taskId 는 submit() 이 새로 발급하므로(newTaskId) 값을 고정할 수 없다 — 실렸다는 것만 본다.
         verify(messageService).appendAssistant(
                 isNull(),
+                // #457: 유형은 사람이 읽는 이름으로 남긴다. 카드·승인 탭과 같은 이름이다.
                 eq("작업 계획을 만들었습니다. 승인 후 실행합니다.\n"
-                        + "- [101] CHANGE\n"
-                        + "- [102] DEPLOYMENT"),
+                        + "- 변경 사항 승인\n"
+                        + "- 배포 승인"),
                 eq(ChatMessageKind.APPROVAL_REQUESTED),
                 anyString());
     }

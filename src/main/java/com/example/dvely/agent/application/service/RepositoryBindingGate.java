@@ -105,7 +105,7 @@ public class RepositoryBindingGate {
                 taskId, approval.getId(), projectId);
         agentMessageService.appendAssistant(
                 task == null ? null : task.conversationId(),
-                buildGateMessage(approval, candidate)
+                buildGateMessage(candidate)
         ,
                 ChatMessageKind.APPROVAL_REQUESTED, taskId);
         return true;
@@ -124,12 +124,17 @@ public class RepositoryBindingGate {
         return true;
     }
 
-    /** preview 주소를 본문에 넣지 않는 이유는 {@code ResultApprovalGate} 의 같은 메서드 주석에 있다(#391). */
-    private String buildGateMessage(Approval approval, String candidate) {
-        return "작업물이 준비됐는데 이 프로젝트에는 아직 GitHub 저장소가 연결되어 있지 않습니다.\n"
-                + "지금 연결하지 않으면 프리뷰가 만료될 때 작업물이 사라집니다.\n"
-                + "승인하면 저장소를 만들어 연결하고 현재 작업물을 preview 브랜치에 올립니다.\n"
-                + "- 저장소 이름(기본값): " + candidate + " — 승인할 때 다른 이름을 보낼 수 있습니다.\n"
-                + "- [" + approval.getId() + "] REPOSITORY_BINDING: " + approval.getSummary();
+    /**
+     * preview 주소를 본문에 넣지 않는 이유는 {@code ResultApprovalGate} 의 같은 메서드 주석에 있다(#391).
+     *
+     * <p>바로 아래 승인 카드가 설명·이름 입력칸·입력 안내를 그린다. 여기까지 같은 걸 적으면 한 문장이
+     * 글자 그대로 두 번 보이고, {@code [49] REPOSITORY_BINDING} 같은 내부 값까지 드러났다(#457).
+     * 그래서 이 메시지는 <b>카드가 사라진 뒤에도 읽히는 기록 한 줄</b>과 <b>카드가 말하지 않는 경고</b>
+     * 만 남긴다. 이름은 남긴다 — 결정 후 카드가 사라지면 어떤 이름을 제안받았는지 볼 데가 없다.
+     */
+    private String buildGateMessage(String candidate) {
+        return "작업물이 준비됐습니다. 이 프로젝트에는 GitHub 저장소가 없어 저장소 연결 승인을 요청했습니다 — "
+                + candidate + "\n"
+                + "지금 연결하지 않으면 프리뷰가 만료될 때 작업물이 사라집니다.";
     }
 }
