@@ -8,6 +8,7 @@ import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
+import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.project.domain.model.Project;
@@ -109,6 +110,24 @@ public class RepositoryBindingGate {
         ,
                 ChatMessageKind.APPROVAL_REQUESTED, taskId);
         return true;
+    }
+
+    /**
+     * 이 태스크가 <b>시스템이 저장소 연결 승인을 닫은 채</b> 끝나는가 — 그러면 결과 메시지를 내지 않는다(#461).
+     *
+     * <p>저장소 연결을 묻는 동안 프리뷰가 정리되면(또는 오래 방치되면) 스윕이 승인을 CANCELLED 로
+     * 닫고 태스크를 마친다. 그 뒤 실행기가 완료 시점에 저장된 요약을 결과로 발행하는데, 그 요약은
+     * "사이트가 준비됐다" 고 말한다 — 1초 앞의 "프리뷰가 정리되어 연결하지 못했다" 를 뒤집고, 화면에서
+     * 가장 진한 줄로 그려졌다(2026-10-15 운영, 승인 #49).
+     *
+     * <p>판단은 승인 상태로 한다. 본문을 읽지 않고, 프리뷰가 지금 있는지도 보지 않는다 — 후자는 다른
+     * 이유로 프리뷰가 내려간 정상 태스크까지 조용히 삼킨다. 사용자가 직접 거절(REJECTED)하면 프리뷰가
+     * 살아 있으므로 결과는 그대로 낸다.
+     */
+    public boolean closedWithoutArtifact(String taskId) {
+        return approvalRepository.findByTaskIdOrderByIdAsc(taskId).stream()
+                .anyMatch(approval -> approval.getType() == ApprovalType.REPOSITORY_BINDING
+                        && approval.getStatus() == ApprovalStatus.CANCELLED);
     }
 
     private boolean isLastCodeStep(AgentPlan plan, int stepIndex) {

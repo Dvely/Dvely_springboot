@@ -422,7 +422,7 @@ public class AgentOrchestrator {
                     describeHold(hold) + " 동안 결정이 없어 프리뷰가 정리되었고, 저장소를 연결하지 못한 채"
                             + " 이 작업을 마쳤습니다.\n"
                             + "같은 내용을 다시 요청하면 새로 만들어 연결할 수 있습니다.",
-                    ChatMessageKind.TASK_CANCELLED,
+                    ChatMessageKind.TASK_CLOSED, // 태스크는 DONE 이다 — 취소 모양으로 그리지 않는다(#461)
                     taskId
             );
             return true;
@@ -482,7 +482,7 @@ public class AgentOrchestrator {
                     task.conversationId(),
                     "오랫동안 결정되지 않아 저장소를 연결하지 못한 채 이 작업을 마쳤습니다.\n"
                             + "나중에 연결하려면 프로젝트 설정에서 저장소를 연결하거나 배포를 요청해주세요.",
-                    ChatMessageKind.TASK_CANCELLED,
+                    ChatMessageKind.TASK_CLOSED, // 태스크는 DONE 이다 — 취소 모양으로 그리지 않는다(#461)
                     taskId
             );
             return true;
