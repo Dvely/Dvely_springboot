@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Authenticates a request from either a browser JWT or an agent/CLI personal access token.
@@ -40,6 +41,25 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
      * exposed as agent tools at all.</p>
      */
     private static final Set<String> WRITE_METHODS = Set.of("POST", "PUT", "PATCH", "DELETE");
+
+    /**
+     * The only writes a PAT may make, as {@code METHOD path} — everything else needs a browser login.
+     *
+     * <p>An allowlist rather than a denylist: before #453 a WRITE token could approve its own
+     * approval requests, mint fresh tokens and swap the user's AWS connection, because the agent
+     * tools simply did not expose those and nothing on the server said no. With a denylist the next
+     * such endpoint is open until someone remembers it; here it is closed until someone opens it.
+     *
+     * <p>Kept in step with what {@code agent-tools/packages/client} actually calls. Giving agents a
+     * new write means adding a line here, on purpose.
+     */
+    private static final List<Pattern> PAT_WRITABLE = List.of(
+            Pattern.compile("POST /api/v1/projects/\\d+/deployments"),
+            Pattern.compile("POST /api/v1/deployments/\\d+/retry"),
+            Pattern.compile("POST /api/v1/projects/\\d+/environment-variables"),
+            Pattern.compile("PATCH /api/v1/projects/\\d+/environment-variables/\\d+"),
+            Pattern.compile("POST /api/v1/projects/\\d+/domains")
+    );
 
     private final TokenPort tokenPort;
     private final TokenBlacklistPort tokenBlacklistPort;
@@ -81,10 +101,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (WRITE_METHODS.contains(request.getMethod()) && !apiToken.allowsWrite()) {
             // 403 rather than falling through to anonymous: the caller authenticated correctly and
             // simply lacks the scope, and a 401 would send them off to re-authenticate for nothing.
-            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
-            response.setContentType("application/json;charset=UTF-8");
-            response.getWriter().write(
-                    "{\"code\":\"FORBIDDEN\",\"message\":\"이 토큰은 읽기 전용입니다. write 스코프 토큰이 필요합니다.\"}");
+            reject(response, "이 토큰은 읽기 전용입니다. write 스코프 토큰이 필요합니다.");
+            return false;
+        }
+
+        if (WRITE_METHODS.contains(request.getMethod()) && !patMayWrite(request)) {
+            reject(response, "이 작업은 개인 액세스 토큰으로 할 수 없습니다. 웹에서 진행해주세요.");
             return false;
         }
 
@@ -95,6 +117,20 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         List.of(new SimpleGrantedAuthority("ROLE_USER"),
                                 new SimpleGrantedAuthority("SCOPE_" + apiToken.getScope().name()))));
         return true;
+    }
+
+    private static boolean patMayWrite(HttpServletRequest request) {
+        // getRequestURI is the raw path; the security firewall has already refused encoded slashes,
+        // "..", and ";" by the time this runs, and anything odd that slips past simply fails to
+        // match — which denies, the safe direction.
+        String call = request.getMethod() + " " + request.getRequestURI();
+        return PAT_WRITABLE.stream().anyMatch(p -> p.matcher(call).matches());
+    }
+
+    private static void reject(HttpServletResponse response, String message) throws IOException {
+        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+        response.setContentType("application/json;charset=UTF-8");
+        response.getWriter().write("{\"code\":\"FORBIDDEN\",\"message\":\"" + message + "\"}");
     }
 
     private void authenticateWithJwt(String token) {

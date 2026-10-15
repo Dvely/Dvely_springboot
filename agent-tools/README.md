@@ -17,6 +17,20 @@
 API 와 함께 두고 반복하기 위해서다. 자립적인 디렉터리라 공개 저장소로 떼어내는 것은 나중에 언제든
 가능하고, 그 시점은 오픈소스 공개를 결정할 때다.
 
+## ⚠️ 아직 npm 에 배포되지 않았다
+
+`@qeploy/client`·`@qeploy/mcp`·`@qeploy/cli` 는 **레지스트리에 없다**(위 "지금은 이 저장소 안에 있다" 의 결과다). 그래서 아래의 `npx @qeploy/...` 명령은 **지금 그대로는 npm 404 로 실패한다** — 배포하면 그대로 동작할 형태로 적어 둔 것이다(#451).
+
+그때까지 쓰려면 소스에서 실행한다:
+
+```bash
+cd agent-tools && npm install
+claude mcp add qeploy -- node "$(pwd)/packages/mcp/src/index.js"
+node packages/cli/src/bin.js login
+```
+
+**스코프 없는 npm `qeploy` 는 우리 것이 아니다**(남의 패키지, 2018). 어디에도 그 이름을 안내하지 않는다.
+
 ## 시작하기 — 로그인 한 번
 
 ```bash

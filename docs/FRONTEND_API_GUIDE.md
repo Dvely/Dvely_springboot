@@ -12,7 +12,7 @@
 
 | 환경 | Base URL | 비고 |
 |---|---|---|
-| 로컬 백엔드 | `http://localhost:8080` | `application.yaml` 기본 포트. FE 정본(`Dvely_FE_test`)의 `VITE_API_BASE` 기본값과 동일 |
+| 로컬 백엔드 | `http://localhost:8080` | `application.yaml` 기본 포트. FE 정본(`Dvely_FE`)의 `VITE_API_BASE` 기본값과 동일 |
 | Swagger UI | `http://localhost:8080/swagger-ui/index.html` | 도메인별 그룹 드롭다운(auth/project/chat/agent/deployment/domainbinding/cloudconnection/preview/environment/webhook/user)으로 필터링 가능 |
 | OpenAPI JSON | `http://localhost:8080/v3/api-docs` (그룹별: `/v3/api-docs/{group}`) | 코드 생성기(openapi-generator 등)에 바로 사용 가능 |
 
@@ -118,7 +118,7 @@ SSE, GitHub webhook/App 콜백, preview 프록시(`@RawApiResponse` 마킹된 �
 - 이 문서의 각 엔드포인트 표에 적힌 "응답"은 모두 이 envelope의 `data` 내용입니다.
 - **`@RawApiResponse`가 붙은 엔드포인트**(감싸지지 않고 바디를 그대로 반환): `GET /api/v1/auth/github/app/callback`(302 redirect, 바디 없음), `POST /api/v1/webhook/github`(202, 바디 없음), `GET /api/v1/agent/tasks/{taskId}/events/stream`(SSE), `GET /api/v1/previews/{sessionId}/{accessToken}/**`(프리뷰 앱의 원본 바이트 그대로 프록시).
 
-### 3.2 FE 정본(`Dvely_FE_test`)의 unwrap 규약
+### 3.2 FE 정본(`Dvely_FE`)의 unwrap 규약
 
 `src/api/http.ts`의 `request<T>()`는 아래 규칙으로 동작합니다 — 신규 FE 프로젝트도 동일 패턴을 권장합니다.
 
@@ -594,6 +594,8 @@ POST /api/v1/api-tokens
 
 `WRITE` 가 짧은 이유는 유출됐을 때 할 수 있는 일이 다르기 때문이다 — 배포하고 환경변수를 바꾸고 도메인을 붙인다. 범위를 벗어나면 **400** 이고 메시지에 스코프가 들어 있으니 그대로 보여주면 된다. 발급 UI 의 만료일 입력은 선택한 스코프에 따라 상한을 바꿔야 한다.
 
+**`WRITE` 도 모든 쓰기가 아니다(#453).** PAT 로 통과하는 쓰기는 배포 생성·재시도, 환경변수 추가·수정, 도메인 추가 다섯 개뿐이고, 승인·토큰 발급/폐기·AI 키·클라우드 연결·삭제 등 나머지는 403 이다. 브라우저 로그인(JWT)은 영향이 없다. 발급 UI 에서 `WRITE` 를 설명할 때 "모든 작업" 처럼 쓰지 말 것.
+
 ### 4.12 AiCredential — `com.example.dvely.aiaccount.presentation` (3)
 
 사용자 본인 AI API 키(BYOK) 관리. 등록한 키로 `CLAUDE_CODE` · `CODEX` 코딩 에이전트가 실행되고, 사용량은 사용자 계정으로 직접 청구된다.
@@ -900,5 +902,5 @@ CODE 단계는 GitHub 저장소 연결과 무관하게 동작합니다(Docker �
 ## 6. 참고
 
 - 이 문서의 모든 필드명·상태값은 각 컨트롤러·DTO(`src/main/java/com/example/dvely/**/presentation/**`)와 일치합니다. 스키마가 바뀌면 이 문서도 함께 갱신해야 합니다.
-- 통합 테스트/수동 시나리오는 FE 정본 저장소의 `Dvely_FE_test/API_TEST_FLOW.md`(콘솔 기반 수동 QA 흐름)도 함께 참고하세요.
+- 통합 테스트/수동 시나리오는 **구** FE 저장소 `Dvely_FE_test` 의 `API_TEST_FLOW.md`(2026-07-19 이후 갱신 없음 — 지금의 정본은 `Dvely_FE` 다. 그 문서는 거기에만 있어 경로는 유지한다)(콘솔 기반 수동 QA 흐름)도 함께 참고하세요.
 - Swagger UI 상단 Info 블록(SwaggerConfig)에도 이 문서의 §3(공통 규약) 요약이 markdown으로 포함되어 있습니다.
