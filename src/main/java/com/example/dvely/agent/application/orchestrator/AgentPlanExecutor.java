@@ -151,6 +151,12 @@ public class AgentPlanExecutor {
             taskStore.markDone(taskId, previewUrl, summary);
             taskStore.removePlan(taskId);
             AgentTask task = taskStore.get(taskId);
+            if (repositoryBindingGate.closedWithoutArtifact(taskId)) {
+                // 작업물이 이미 사라진 채 시스템이 마무리한 태스크다. 마감 안내는 닫은 쪽이 이미
+                // 남겼고, 여기서 요약("사이트가 준비됐다")을 내면 그 안내를 뒤집는다(#461).
+                log.info("=== AgentPlan 실행 완료(결과 메시지 생략 — 저장소 연결 없이 마감): taskId={} ===", taskId);
+                return;
+            }
             agentMessageService.appendAssistant(
                     task == null ? null : task.conversationId(),
                     summary == null || summary.isBlank() ? "작업을 완료했습니다." : summary,

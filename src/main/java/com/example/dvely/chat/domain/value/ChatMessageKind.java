@@ -44,5 +44,14 @@ public enum ChatMessageKind {
     TASK_FAILED,
 
     /** 작업이 취소되거나 되돌릴 수 없이 종료됐다. */
-    TASK_CANCELLED
+    TASK_CANCELLED,
+
+    /**
+     * 작업은 끝났지만(DONE) 사용자가 고르지 않은 채 시스템이 마무리했다 — 예: 저장소 연결을 묻는 동안
+     * 프리뷰가 정리돼 연결하지 못하고 마친 경우(#461).
+     *
+     * <p>{@link #TASK_CANCELLED} 를 쓰지 않는 이유: 태스크는 취소되지 않았다. 그 값을 붙이면 화면이
+     * 취소처럼 흐리게 그려, "작업을 마쳤습니다" 라는 본문과 모양이 서로 다른 말을 한다.</p>
+     */
+    TASK_CLOSED
 }

@@ -1247,8 +1247,10 @@ class AgentOrchestratorTest {
         f.orchestrator().abandonApprovalTaskWithLostPreview("task-1", Duration.ofHours(6));
 
         ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
+        // #461: 태스크는 DONE 이므로 취소 kind 를 붙이지 않는다 — 붙이면 화면이 "마쳤습니다" 를
+        // 취소 모양(흐리게)으로 그린다.
         verify(f.messageService()).appendAssistant(
-                eq(21L), message.capture(), eq(ChatMessageKind.TASK_CANCELLED), eq("task-1"));
+                eq(21L), message.capture(), eq(ChatMessageKind.TASK_CLOSED), eq("task-1"));
         assertThat(message.getValue())
                 .doesNotContain("변경 내용은 남아 있지 않습니다")
                 .contains("저장소를 연결하지 못한 채")
@@ -1269,6 +1271,9 @@ class AgentOrchestratorTest {
         verify(f.taskStore(), never()).cancel("task-1", 1L);
         verify(f.taskStore()).resumeAfterResultDecline(eq("task-1"), anyString());
         assertThat(f.approval().getStatus()).isEqualTo(ApprovalStatus.CANCELLED);
+        // #461: 마침이므로 마감 안내도 취소 kind 가 아니다.
+        verify(f.messageService()).appendAssistant(
+                eq(21L), anyString(), eq(ChatMessageKind.TASK_CLOSED), eq("task-1"));
     }
 
     @Test
