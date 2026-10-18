@@ -39,7 +39,8 @@ public record MessageResponse(
                 존재하지 않는 버튼이 뜬 적이 있다).
                 AGENT_RESULT: 에이전트가 만든 결과·답변 / TASK_PROGRESS: 진행·전이 안내 /
                 APPROVAL_REQUESTED: 승인 필요 / INPUT_REQUIRED: 사용자 입력 필요(되묻기 질문) /
-                CLARIFICATION_ANSWER: 되묻기 답변 기록 / TASK_FAILED: 실패 / TASK_CANCELLED: 취소·종료.
+                CLARIFICATION_ANSWER: 되묻기 답변 기록 / TASK_FAILED: 실패 / TASK_CANCELLED: 취소·종료 /
+                TASK_CLOSED: 작업은 끝났지만 시스템이 마무리함(예: 프리뷰 정리로 저장소 미연결).
                 사용자 메시지와 이 필드 도입 이전 줄은 null 이며, <b>모르는 값이 오면 무시하고
                 평범한 어시스턴트 줄로 그릴 것</b> — 종류는 늘어난다.
                 """,
