@@ -72,6 +72,19 @@ class DecisionAgentServiceTest {
     }
 
     @Test
+    void instruction_도_사용자의_언어로_쓰게_한다() {
+        // 하위 에이전트는 instruction 의 언어로 사용자에게 답한다. 여기서 언어를 정하지 않으면
+        // 한국어 요청이 영어 instruction 이 되고 결과 메시지가 영어로 나온다(#469).
+        answers(VALID_PLAN);
+
+        decide();
+
+        ArgumentCaptor<String> systemPrompt = ArgumentCaptor.forClass(String.class);
+        verify(llmPort).complete(systemPrompt.capture(), anyList(), any());
+        assertThat(systemPrompt.getValue()).contains("Write it in the SAME LANGUAGE the");
+    }
+
+    @Test
     void 정상_응답은_계획으로_읽고_재시도하지_않는다() {
         answers(VALID_PLAN);
 

@@ -51,7 +51,10 @@ public class DecisionAgentService {
             For each step, write the "instruction" as a complete, self-contained natural language request
             that the downstream specialist agent can act on independently — as if the original message
             did not exist. Do NOT copy fragments verbatim; instead synthesize a clear, actionable
-            directive from the full context of the user's message.
+            directive from the full context of the user's message. Write it in the SAME LANGUAGE the
+            user wrote in: the agent that carries it out writes its reply to the user in the
+            language of its instruction, so an English instruction for a Korean request comes back
+            to that user in English.
 
             EVERY step must also carry a "userSummary": ONE short sentence, in the SAME LANGUAGE the
             user wrote in, saying what this step will do. This is not a second copy of the instruction
