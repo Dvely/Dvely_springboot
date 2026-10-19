@@ -39,7 +39,8 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - run: npm ci
+      # npm ci 가 아니다 — agent-tools/.gitignore 가 package-lock.json 을 빼고 있어 ci 는 lock 이 없다며 죽는다.
+      - run: npm install --no-audit --no-fund
       - run: npm test
 
       # client 가 먼저다 — mcp·cli 가 그 버전을 의존한다. 하나라도 실패하면 거기서 멈춘다.

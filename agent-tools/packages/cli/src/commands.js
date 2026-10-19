@@ -39,10 +39,38 @@ function requireId(args, what) {
   return id;
 }
 
+/**
+ * A PAT issued on the web is stored as it is — no exchange. The command that tells people to run
+ * this is shown on the very page that issues PATs, so asking them to dig a browser token out of
+ * devtools instead was a detour, and a web page saying "copy the token from devtools" reads like
+ * phishing (#471).
+ */
+async function savePastedToken({ deps, flags, apiUrl, token }) {
+  // Scope and lifetime were fixed when the token was issued. Accepting the flags and then ignoring
+  // them would let someone believe they got a WRITE token when they hold a READ one.
+  if (flags.scope !== undefined || flags.expiresInDays !== undefined) {
+    throw new UsageError(
+      '발급된 토큰의 스코프·만료는 바꿀 수 없습니다. --scope·--expires-in-days 없이 다시 실행하세요.'
+    );
+  }
+  // One read before saving, so a typo or a revoked token fails here and not on the agent's first
+  // call, where the cause is much harder to see.
+  await deps.createClient({ ...flags, apiUrl }, token).listProjects();
+
+  const path = writeConfig({ ...readConfig(deps.env), token, apiUrl, apiTokenId: null }, deps.env);
+  return {
+    data: { scope: null, expiresAt: null, configPath: path },
+    text:
+      `로그인했습니다. 토큰을 ${path} 에 저장했습니다(0600).\n` +
+      '스코프·만료는 발급할 때 정한 그대로입니다(웹의 토큰 목록에서 확인).\n' +
+      '확인: qeploy projects',
+  };
+}
+
 export const commands = {
   login: {
     usage: 'qeploy login [--scope READ|WRITE] [--expires-in-days N]',
-    summary: '브라우저 토큰으로 개인 액세스 토큰을 발급받아 저장한다',
+    summary: '개인 액세스 토큰을 저장한다 (웹에서 발급한 것, 또는 브라우저 토큰으로 새로 발급)',
     // Runs before there is anything to authenticate with, so it builds its own client.
     auth: false,
     async run({ deps, flags, out, err }) {
@@ -54,25 +82,23 @@ export const commands = {
 
       err(`Qeploy: ${apiUrl}`);
       err('');
-      err('1. 브라우저에서 Qeploy 에 로그인합니다.');
-      err('2. 개발자도구 → Application → Local Storage → accessToken 값을 복사합니다.');
-      err('3. 아래에 붙여넣습니다. 입력은 화면에 표시되지 않습니다.');
+      err('웹의 설정 → 개인 액세스 토큰에서 발급한 토큰(qp_...)을 붙여넣습니다.');
+      err('입력은 화면에 표시되지 않습니다.');
+      err('(아직 발급하지 않았다면 브라우저 로그인 토큰도 됩니다 — 그때는 --scope 로 새로 발급합니다.)');
       err('');
 
-      // The browser JWT, not the PAT. It lives about an hour, which is plenty to trade it for a
-      // long-lived token and means a leaked paste stops mattering quickly.
       // Trimmed here rather than trusting the prompt to have done it: copying a token often picks
       // up a trailing newline, and a whitespace-only paste must fail as "empty", not as a 401.
-      const jwt = String(await deps.readSecret('accessToken: ') ?? '').trim();
-      if (!jwt) throw new UsageError('토큰이 비어 있습니다.');
-      if (jwt.startsWith('qp_')) {
-        // Pasting a PAT here would "work" only until it expired, and the user would have no idea
-        // why, because nothing was issued and nothing is refreshable.
-        throw new UsageError(
-          '이건 이미 발급된 개인 액세스 토큰(qp_...)입니다. 브라우저의 accessToken 을 붙여넣어 주세요.'
-        );
+      const pasted = String(await deps.readSecret('token: ') ?? '').trim();
+      if (!pasted) throw new UsageError('토큰이 비어 있습니다.');
+
+      if (pasted.startsWith('qp_')) {
+        return await savePastedToken({ deps, flags, apiUrl, token: pasted });
       }
 
+      // Otherwise it is the browser JWT. It lives about an hour, which is plenty to trade it for a
+      // long-lived token and means a leaked paste stops mattering quickly.
+      const jwt = pasted;
       const client = deps.createClient({ ...flags, apiUrl }, jwt);
       const issued = await client.issueApiToken({
         scope,
