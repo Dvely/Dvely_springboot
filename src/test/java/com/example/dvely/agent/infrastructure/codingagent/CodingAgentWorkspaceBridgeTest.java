@@ -77,6 +77,8 @@ class CodingAgentWorkspaceBridgeTest {
         assertThat(prompt.getValue()).contains("버튼 색을 바꿔줘");
         // 서버를 띄우면 프리뷰 실행기와 충돌한다.
         assertThat(prompt.getValue()).contains("Do NOT start a preview");
+        // 요약은 그대로 채팅의 결과 메시지가 된다. 언어를 적지 않으면 지시문 언어(영어)로 답한다(#469).
+        assertThat(prompt.getValue()).contains("the language the request below is written in (Korean if you cannot tell)");
     }
 
     @Test

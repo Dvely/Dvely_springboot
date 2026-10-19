@@ -435,7 +435,8 @@ GET /preview-sessions/{sessionId}/logs
   - 주소는 컨테이너를 다시 만들거나 재시작하면 바뀔 수 있어 그때 다시 읽는다(`rebindContainerIp`). 예전에 발행 포트가 재할당되던 것과 같은 성질이다(#71·#278)
 - **바깥으로 나가는 방향**은 `qeploy.preview.egress.enabled` 가 가른다(기본 꺼짐, #332 4단계)
   - 꺼짐: 공유 브리지 `qeploy-preview`(`enable_icc=false`)에 붙고 바깥이 열려 있다
-  - 켜짐: 프리뷰마다 전용 `--internal` 네트워크 + 프록시 하나(`qeploy-egress` 별칭)가 허용목록만 통과시킨다. 공유 네트워크로는 안 된다 — `icc=false` 를 켜면 프리뷰가 프록시에도 닿지 못하고, 끄면 프리뷰끼리 서로 닿는다(실측)
+  - 켜짐: 프리뷰마다 전용 `--internal` 네트워크 + 프록시 컨테이너 하나(`qeploy-egress` 별칭)가 허용목록만 통과시킨다. 공유 네트워크로는 안 된다 — `icc=false` 를 켜면 프리뷰가 프록시에도 닿지 못하고, 끄면 프리뷰끼리 서로 닿는다(실측)
+    - 프록시 컨테이너는 하나지만 그 안에서 **세션마다 tinyproxy 프로세스를 따로** 띄운다(Issue #466). 접속 상한(`per-session-max-clients`, 기본 16)이 세션마다 걸려서 한 프리뷰가 상한을 다 써도 다른 세션의 설치는 영향받지 않는다 — 예전에는 프로세스도 하나뿐이라 상한이 프록시 전체에 걸렸고, 한 프리뷰가 유휴 연결로 상한을 점유하면 다른 모든 프리뷰의 설치가 막혔다(실측)
   - 컨테이너에는 `HTTP(S)_PROXY` 와 함께 `JAVA_TOOL_OPTIONS` 로 JVM 프록시가 들어간다 — JVM 은 환경변수 프록시를 스스로 읽지 않아 gradle 이 여기 걸린다
 
 남은 항목: 게이트웨이 인가 강화(소유권·JWT 미검증 + `permitAll` — Issue #77, 무헤더 accessToken이 iframe 임베딩을 위한 의도된 설계라 FE 조율 후 착수), dependency/build/image cache.

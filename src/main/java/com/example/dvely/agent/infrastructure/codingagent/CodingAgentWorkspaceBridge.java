@@ -119,7 +119,9 @@ public class CodingAgentWorkspaceBridge {
 
                 When you are done, reply with a short summary for the person who asked — the owner
                 of the app, not a developer. Say what the app can do now, in plain terms. Do not
-                mention file paths, frameworks, containers, or build output.
+                mention file paths, frameworks, containers, or build output. Write the summary in
+                the language the request below is written in (Korean if you cannot tell) — it is
+                shown to that person as-is.
 
                 Request:
                 %s

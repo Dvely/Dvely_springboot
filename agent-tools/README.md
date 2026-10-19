@@ -17,11 +17,11 @@
 API 와 함께 두고 반복하기 위해서다. 자립적인 디렉터리라 공개 저장소로 떼어내는 것은 나중에 언제든
 가능하고, 그 시점은 오픈소스 공개를 결정할 때다.
 
-## ⚠️ 아직 npm 에 배포되지 않았다
+## npm 에 있다
 
-`@qeploy/client`·`@qeploy/mcp`·`@qeploy/cli` 는 **레지스트리에 없다**(위 "지금은 이 저장소 안에 있다" 의 결과다). 그래서 아래의 `npx @qeploy/...` 명령은 **지금 그대로는 npm 404 로 실패한다** — 배포하면 그대로 동작할 형태로 적어 둔 것이다(#451).
+`@qeploy/client`·`@qeploy/mcp`·`@qeploy/cli` 0.1.0 을 2026-10-19 공개 배포했다(#451). 아래 `npx` 명령이 그대로 동작한다.
 
-그때까지 쓰려면 소스에서 실행한다:
+소스에서 바로 돌리려면(이 저장소를 고치는 중일 때):
 
 ```bash
 cd agent-tools && npm install
@@ -34,7 +34,7 @@ node packages/cli/src/bin.js login
 ## 시작하기 — 로그인 한 번
 
 ```bash
-npx @qeploy/cli login          # 브라우저 토큰 → 개인 액세스 토큰 발급·저장
+npx @qeploy/cli login          # 웹에서 발급한 개인 액세스 토큰을 붙여넣어 저장
 ```
 
 `~/.config/qeploy/config.json` 에 0600 으로 저장하고, **CLI 와 MCP 서버가 같은 파일을 읽는다.**
@@ -58,9 +58,12 @@ export QEPLOY_TOKEN=qp_...
 
 ### 지금은 붙여넣기다
 
-`login` 은 브라우저에서 로그인한 뒤 개발자도구의 `accessToken` 을 한 번 붙여넣게 합니다. 입력은
-화면에 표시되지 않고, 붙여넣은 브라우저 토큰은 한 시간이면 만료됩니다 — 오래 사는 것은 그걸로
-바꿔 받은 PAT 쪽입니다.
+`login` 은 웹의 설정 → 개인 액세스 토큰에서 발급한 토큰(`qp_...`)을 한 번 붙여넣게 합니다. 입력은
+화면에 표시되지 않고, 서버에 한 번 확인한 뒤 저장합니다. 스코프·만료는 발급할 때 정한 그대로라
+`--scope`·`--expires-in-days` 를 같이 주면 거절합니다(조용히 무시하면 지정이 먹은 줄 안다, #471).
+
+아직 발급하지 않았다면 브라우저 로그인 토큰(JWT)을 붙여넣어도 됩니다. 그때는 그걸로 `--scope` 의
+PAT 를 새로 발급해 저장합니다. 토큰 옵션(`--token`)은 두지 않습니다 — 셸 히스토리와 `ps` 에 남습니다.
 
 브라우저로 왕복하는 `gh auth login` 식 흐름은 GitHub OAuth 앱을 하나 더 등록해야 해서 별건으로
 두었습니다(`Dvely_springboot` #327).
@@ -130,3 +133,28 @@ cd agent-tools && npm install && npm test
 QEPLOY_E2E_URL=http://localhost:8099 QEPLOY_E2E_READ_TOKEN=qp_... node e2e.mjs      # MCP
 QEPLOY_E2E_URL=http://localhost:8099 QEPLOY_E2E_READ_TOKEN=qp_... ./e2e-cli.sh      # CLI
 ```
+
+## npm 배포
+
+`@qeploy` 조직(npm)에 공개 패키지로 올린다. 무료다. **`client` 를 먼저** 올린다 — 나머지 둘이 그 버전을 의존한다.
+버전을 올릴 때는 `mcp`·`cli` 의 `@qeploy/client` 의존 버전도 같이 올린다.
+
+### 보통은 GitHub Actions 로
+
+`package.json` 의 버전을 올려 develop(또는 main)에 머지한 뒤, Actions → **Publish agent-tools to npm** → Run workflow.
+테스트를 돌리고, 레지스트리에 아직 없는 버전만 올린다. npm 토큰은 저장소에 없다 — npm Trusted Publishing(OIDC)이다.
+
+이게 동작하려면 npmjs.com 의 **세 패키지 각각** Settings → Trusted Publisher 에 다음을 등록해 둬야 한다:
+조직 `Dvely` · 저장소 `Dvely_springboot` · 워크플로 `agent-tools-publish.yml`.
+
+### 손으로 올릴 때
+
+```bash
+cd agent-tools && npm test
+for p in client mcp cli; do (cd packages/$p && npm publish) || break; done
+```
+
+**일반 터미널에서 실행한다.** 계정 2단계 인증이 보안 키(브라우저 승인) 방식이라 패키지마다 승인 링크를 열고 기다린다 — 입력을 기다릴 수 없는 환경(에이전트의 셸 등)에서는 `EOTP` 로 끝나고 아무것도 올라가지 않는다. npm 은 2단계 인증 없는 계정의 배포를 403 으로 막는다.
+
+`publishConfig.access=public` 이 패키지에 들어 있어 `--access public` 은 필요 없다(스코프 패키지의 기본값은 비공개 시도다).
+올라가는 것은 `src` 와 README 뿐이다(`files`).
