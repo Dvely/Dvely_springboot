@@ -130,3 +130,15 @@ cd agent-tools && npm install && npm test
 QEPLOY_E2E_URL=http://localhost:8099 QEPLOY_E2E_READ_TOKEN=qp_... node e2e.mjs      # MCP
 QEPLOY_E2E_URL=http://localhost:8099 QEPLOY_E2E_READ_TOKEN=qp_... ./e2e-cli.sh      # CLI
 ```
+
+## npm 배포
+
+`@qeploy` 조직(npm)에 공개 패키지로 올린다. 무료다. **`client` 를 먼저** 올린다 — 나머지 둘이 그 버전을 의존한다.
+
+```bash
+cd agent-tools && npm test
+for p in client mcp cli; do (cd packages/$p && npm publish); done
+```
+
+`publishConfig.access=public` 이 패키지에 들어 있어 `--access public` 은 필요 없다(스코프 패키지의 기본값은 비공개 시도다).
+올라가는 것은 `src` 와 README 뿐이다(`files`). 버전을 올릴 때는 `mcp`·`cli` 의 `@qeploy/client` 의존 버전도 같이 올린다.

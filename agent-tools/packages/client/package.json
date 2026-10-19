@@ -5,6 +5,21 @@
   "type": "module",
   "main": "src/index.js",
   "license": "MIT",
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dvely/Dvely_springboot.git",
+    "directory": "agent-tools/packages/client"
+  },
+  "homepage": "https://qeploy.com",
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./src/index.js",
     "./config": "./src/config.js"
