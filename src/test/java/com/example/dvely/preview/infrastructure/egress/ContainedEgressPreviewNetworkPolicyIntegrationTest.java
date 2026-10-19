@@ -134,6 +134,32 @@ class ContainedEgressPreviewNetworkPolicyIntegrationTest {
                 .contains("403");
     }
 
+    @Test
+    @DisplayName("#466 이전 모양(전역 리스너)의 프록시 컨테이너가 떠 있어도 새로 만들어 세션을 붙인다")
+    void replacesProxyContainerOfOldShape() throws Exception {
+        // 이전 코드가 남긴 컨테이너를 흉내 낸다 — 모양 라벨이 없고, 0.0.0.0:8888 에 전역 tinyproxy 가
+        // 떠 있다. 이걸 그대로 쓰면 세션 프로세스의 IP:8888 bind 가 실패한다(실측).
+        var old = dockerClient.createContainerCmd("alpine:3.20")
+                .withName(PROXY_NAME)
+                .withLabels(java.util.Map.of("qeploy.egressProxy", "true"))
+                .withCmd("sleep", "infinity")
+                .exec();
+        dockerClient.startContainerCmd(old.getId()).exec();
+        execCapture(PROXY_NAME, "apk add --no-cache tinyproxy >/dev/null 2>&1; mkdir -p /etc/tinyproxy; "
+                + "printf 'User nobody\\nGroup nobody\\nPort 8888\\nListen 0.0.0.0\\nAllow 0.0.0.0/0\\n' > /etc/tinyproxy/old.conf", 90);
+        execDetached(PROXY_NAME, "tinyproxy -d -c /etc/tinyproxy/old.conf >/dev/null 2>&1");
+        Thread.sleep(1000);
+
+        String networkB = policy.attachNetwork(SESSION_B);
+        createHelper(HELPER_B, networkB);
+
+        var labels = dockerClient.inspectContainerCmd(PROXY_NAME).exec().getConfig().getLabels();
+        assertThat(labels).containsEntry(ContainedEgressPreviewNetworkPolicy.SHAPE_LABEL, policy.proxyShape());
+        assertThat(execCapture(HELPER_B, connectThroughNc(5), 10))
+                .as("새로 만든 컨테이너의 세션 프로세스가 응답해야 한다")
+                .contains("403");
+    }
+
     private static String connectThroughNc(int timeoutSeconds) {
         return "printf 'CONNECT " + DISALLOWED_TARGET + " HTTP/1.1\\r\\nHost: " + DISALLOWED_TARGET
                 + "\\r\\n\\r\\n' | timeout " + timeoutSeconds + " nc -w " + timeoutSeconds

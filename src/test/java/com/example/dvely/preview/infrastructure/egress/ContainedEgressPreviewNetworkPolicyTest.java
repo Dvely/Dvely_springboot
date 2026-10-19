@@ -67,6 +67,18 @@ class ContainedEgressPreviewNetworkPolicyTest {
     }
 
     @Test
+    @DisplayName("컨테이너 모양 라벨은 세션별 모양과 pids·메모리 상한을 담는다 — 다르면 컨테이너를 다시 만든다")
+    void proxyShapeCarriesContainerLevelLimits() {
+        String shape = policy(List.of("github.com")).proxyShape();
+
+        // #466 이전 컨테이너(전역 리스너)에는 이 라벨이 없다 — 그걸 재사용하면 세션 bind 가 실패한다.
+        assertThat(shape).startsWith("per-session;");
+        assertThat(shape).contains("pids=256", "memory-mb=256");
+        // 세션 상한은 세션 설정 파일에서 바로 반영되므로 컨테이너를 다시 만들 이유가 아니다.
+        assertThat(shape).doesNotContain("max-clients");
+    }
+
+    @Test
     @DisplayName("환경변수에 JVM 프록시가 함께 간다 — JVM 은 환경변수 프록시를 스스로 읽지 않는다")
     void environmentCarriesJvmProxyToo() {
         List<String> env = policy(List.of("github.com")).environment();

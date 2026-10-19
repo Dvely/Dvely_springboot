@@ -63,6 +63,8 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
 
     private static final String CONF_DIR = "/etc/tinyproxy";
     private static final String ALLOW_ENTRY = "qeploy-allow.txt";
+    /** 프록시 컨테이너가 어떤 모양·상한으로 만들어졌는지. {@link #ensureProxyRunning()} 이 재사용 여부를 이것으로 정한다. */
+    static final String SHAPE_LABEL = "qeploy.egressProxy.shape";
 
     // DockerClient 는 스프링 빈이 아니다 — 직접 만든다(DockerClients 참고).
     private final DockerClient dockerClient = DockerClients.createLocal();
@@ -242,8 +244,18 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
     private void ensureProxyRunning() {
         try {
             var inspect = dockerClient.inspectContainerCmd(properties.proxyName()).exec();
-            if (Boolean.TRUE.equals(inspect.getState().getRunning())) {
+            var labels = inspect.getConfig().getLabels();
+            String shape = labels == null ? null : labels.get(SHAPE_LABEL);
+            boolean running = Boolean.TRUE.equals(inspect.getState().getRunning());
+            if (running && proxyShape().equals(shape)) {
                 return;
+            }
+            // 살아 있어도 모양이 다르면 새로 만든다. #466 이전 코드가 만든 컨테이너는 0.0.0.0:포트 에
+            // 전역 tinyproxy 를 띄워 두는데, 그게 남아 있으면 세션별 프로세스의 IP:포트 bind 가
+            // 실패해(실측: "Could not create listening sockets") 배포 직후 모든 프리뷰 생성이 막힌다.
+            // pids·메모리 상한도 컨테이너를 만들 때만 정해지므로 설정을 바꿨을 때도 여기서 반영된다.
+            if (running) {
+                log.info("[PreviewEgress] 프록시 컨테이너를 새 모양으로 다시 만듭니다: 현재={} 필요={}", shape, proxyShape());
             }
             // 죽어 있는 것을 되살리는 대신 지우고 새로 만든다 — 설정과 필터가 어느 상태인지
             // 알 수 없는 컨테이너를 egress 관문으로 쓰는 것보다 낫다. 살아 있던 세션들의 tinyproxy
@@ -266,7 +278,7 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
                         // tinyproxy 는 바인딩 뒤 nobody 로 내려간다 — 그 전환에 SETUID/SETGID 가 필요하다.
                         .withCapAdd(Capability.SETUID, Capability.SETGID)
                         .withSecurityOpts(List.of("no-new-privileges")))
-                .withLabels(Map.of("qeploy.egressProxy", "true"))
+                .withLabels(Map.of("qeploy.egressProxy", "true", SHAPE_LABEL, proxyShape()))
                 .withCmd("sleep", "infinity")
                 .exec();
         dockerClient.startContainerCmd(proxy.getId()).exec();
@@ -312,6 +324,14 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
                 """.formatted(
                 properties.proxyPort(), listenIp, properties.perSessionMaxClients(), pidFilePath,
                 CONF_DIR + "/" + ALLOW_ENTRY);
+    }
+
+    /**
+     * 컨테이너 단위로 정해지는 것만 담는다 — 세션별 프로세스 모양과 pids·메모리 상한. 세션 상한
+     * ({@code MaxClients})은 세션 설정 파일에 들어가 다음 세션부터 바로 반영되므로 넣지 않는다.
+     */
+    String proxyShape() {
+        return "per-session;pids=" + properties.proxyPidsLimit() + ";memory-mb=" + properties.proxyMemoryMb();
     }
 
     /** 앵커를 붙이고 점을 이스케이프한다 — {@code github.com} 이 {@code github.com.evil.test} 까지 열지 않게. */

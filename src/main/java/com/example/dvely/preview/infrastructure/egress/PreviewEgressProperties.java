@@ -46,7 +46,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *                             자기 연결 수만큼 스레드를 띄우므로, {@code proxyPidsLimit} 과 같은 스레드
  *                             수 상한에 스레드당 넉넉히 1MB(Alpine/musl 기준 실제 사용량보다 여유 있게
  *                             잡은 값), 거기에 세션별 프로세스 자체의 기본 메모리(코드·버퍼, 세션당
- *                             ~3MB로 추정)를 더했다. 기본값 320 = 272(스레드 1MB×272) + 16세션×3MB(48) 다.
+ *                             실측 RSS 약 2.2MB(E8)에 여유를 둔 3MB)를 더했다. 기본값 320 = 272(스레드 1MB×272) + 16세션×3MB(48) 다.
  *                             proxyPidsLimit 를 올리면 이 값도 같은 산식으로 다시 계산해야 한다
  */
 @ConfigurationProperties(prefix = "qeploy.preview.egress")
