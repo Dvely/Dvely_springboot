@@ -17,11 +17,11 @@
 API 와 함께 두고 반복하기 위해서다. 자립적인 디렉터리라 공개 저장소로 떼어내는 것은 나중에 언제든
 가능하고, 그 시점은 오픈소스 공개를 결정할 때다.
 
-## ⚠️ 아직 npm 에 배포되지 않았다
+## npm 에 있다
 
-`@qeploy/client`·`@qeploy/mcp`·`@qeploy/cli` 는 **레지스트리에 없다**(위 "지금은 이 저장소 안에 있다" 의 결과다). 그래서 아래의 `npx @qeploy/...` 명령은 **지금 그대로는 npm 404 로 실패한다** — 배포하면 그대로 동작할 형태로 적어 둔 것이다(#451).
+`@qeploy/client`·`@qeploy/mcp`·`@qeploy/cli` 0.1.0 을 2026-10-19 공개 배포했다(#451). 아래 `npx` 명령이 그대로 동작한다.
 
-그때까지 쓰려면 소스에서 실행한다:
+소스에서 바로 돌리려면(이 저장소를 고치는 중일 때):
 
 ```bash
 cd agent-tools && npm install
@@ -137,8 +137,10 @@ QEPLOY_E2E_URL=http://localhost:8099 QEPLOY_E2E_READ_TOKEN=qp_... ./e2e-cli.sh  
 
 ```bash
 cd agent-tools && npm test
-for p in client mcp cli; do (cd packages/$p && npm publish); done
+for p in client mcp cli; do (cd packages/$p && npm publish) || break; done
 ```
+
+**일반 터미널에서 실행한다.** 계정 2단계 인증이 보안 키(브라우저 승인) 방식이라 패키지마다 승인 링크를 열고 기다린다 — 입력을 기다릴 수 없는 환경(에이전트의 셸 등)에서는 `EOTP` 로 끝나고 아무것도 올라가지 않는다. npm 은 2단계 인증 없는 계정의 배포를 403 으로 막는다.
 
 `publishConfig.access=public` 이 패키지에 들어 있어 `--access public` 은 필요 없다(스코프 패키지의 기본값은 비공개 시도다).
 올라가는 것은 `src` 와 README 뿐이다(`files`). 버전을 올릴 때는 `mcp`·`cli` 의 `@qeploy/client` 의존 버전도 같이 올린다.
