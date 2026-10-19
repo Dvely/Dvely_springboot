@@ -134,6 +134,17 @@ QEPLOY_E2E_URL=http://localhost:8099 QEPLOY_E2E_READ_TOKEN=qp_... ./e2e-cli.sh  
 ## npm 배포
 
 `@qeploy` 조직(npm)에 공개 패키지로 올린다. 무료다. **`client` 를 먼저** 올린다 — 나머지 둘이 그 버전을 의존한다.
+버전을 올릴 때는 `mcp`·`cli` 의 `@qeploy/client` 의존 버전도 같이 올린다.
+
+### 보통은 GitHub Actions 로
+
+`package.json` 의 버전을 올려 develop(또는 main)에 머지한 뒤, Actions → **Publish agent-tools to npm** → Run workflow.
+테스트를 돌리고, 레지스트리에 아직 없는 버전만 올린다. npm 토큰은 저장소에 없다 — npm Trusted Publishing(OIDC)이다.
+
+이게 동작하려면 npmjs.com 의 **세 패키지 각각** Settings → Trusted Publisher 에 다음을 등록해 둬야 한다:
+조직 `Dvely` · 저장소 `Dvely_springboot` · 워크플로 `agent-tools-publish.yml`.
+
+### 손으로 올릴 때
 
 ```bash
 cd agent-tools && npm test
@@ -143,4 +154,4 @@ for p in client mcp cli; do (cd packages/$p && npm publish) || break; done
 **일반 터미널에서 실행한다.** 계정 2단계 인증이 보안 키(브라우저 승인) 방식이라 패키지마다 승인 링크를 열고 기다린다 — 입력을 기다릴 수 없는 환경(에이전트의 셸 등)에서는 `EOTP` 로 끝나고 아무것도 올라가지 않는다. npm 은 2단계 인증 없는 계정의 배포를 403 으로 막는다.
 
 `publishConfig.access=public` 이 패키지에 들어 있어 `--access public` 은 필요 없다(스코프 패키지의 기본값은 비공개 시도다).
-올라가는 것은 `src` 와 README 뿐이다(`files`). 버전을 올릴 때는 `mcp`·`cli` 의 `@qeploy/client` 의존 버전도 같이 올린다.
+올라가는 것은 `src` 와 README 뿐이다(`files`).
