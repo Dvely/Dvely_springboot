@@ -4,8 +4,25 @@
   "description": "MCP server exposing Qeploy to coding agents",
   "type": "module",
   "main": "src/index.js",
-  "bin": { "qeploy-mcp": "src/index.js" },
+  "bin": {
+    "qeploy-mcp": "src/index.js"
+  },
   "license": "MIT",
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dvely/Dvely_springboot.git",
+    "directory": "agent-tools/packages/mcp"
+  },
+  "homepage": "https://qeploy.com",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@qeploy/client": "0.1.0"
