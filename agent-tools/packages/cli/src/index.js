@@ -2,7 +2,7 @@ import { QeployApiError } from '@qeploy/client';
 import { commands } from './commands.js';
 import { UsageError } from './confirm.js';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.1';
 
 /**
  * Exit codes are this CLI's real interface in CI, where nobody reads stderr until something breaks.

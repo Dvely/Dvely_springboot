@@ -111,11 +111,65 @@ describe('login', () => {
     assert.match(seen.label, /qeploy CLI \(.+\)/);
   });
 
-  it('rejects a PAT pasted where the browser token belongs', async () => {
-    // It would "work" until it expired, and then fail for a reason the user could not deduce.
-    const { code, err } = await cli(['login'], { client: issuing(), secret: 'qp_already_a_token' });
-    assert.equal(code, EXIT.USAGE);
-    assert.match(err, /개인 액세스 토큰|accessToken/);
+  describe('with a token issued on the web', () => {
+    const checking = (fail) => {
+      const calls = [];
+      const client = {
+        listProjects: async () => {
+          calls.push('listProjects');
+          if (fail) throw fail;
+          return [];
+        },
+        issueApiToken: async () => {
+          calls.push('issueApiToken');
+          return { token: 'qp_other', info: {} };
+        },
+      };
+      return { client, calls };
+    };
+
+    it('stores it as it is, without issuing another one (#471)', async () => {
+      const { client, calls } = checking();
+      const { code } = await cli(['login'], { client, secret: 'qp_from_the_web' });
+      assert.equal(code, EXIT.OK);
+      assert.equal(readConfig(env).token, 'qp_from_the_web');
+      assert.ok(!calls.includes('issueApiToken'), '이미 발급된 토큰으로 또 발급하면 안 된다');
+    });
+
+    it('checks it against the server before saving', async () => {
+      // A typo or a revoked token should fail here, not on the agent's first call.
+      const { client, calls } = checking(new Error('401'));
+      const { code } = await cli(['login'], { client, secret: 'qp_revoked' });
+      assert.notEqual(code, EXIT.OK);
+      assert.deepEqual(calls, ['listProjects']);
+      assert.equal(client.__token, 'qp_revoked');
+      assert.equal(readConfig(env).token, undefined, '확인에 실패한 토큰은 저장하지 않는다');
+    });
+
+    it('refuses --scope and --expires-in-days rather than ignoring them', async () => {
+      // Both were fixed at issue time. Ignoring them would let someone think they now hold WRITE.
+      for (const argv of [['login', '--scope', 'WRITE'], ['login', '--expires-in-days', '30']]) {
+        const { client, calls } = checking();
+        const { code, err } = await cli(argv, { client, secret: 'qp_from_the_web' });
+        assert.equal(code, EXIT.USAGE, argv.join(' '));
+        assert.match(err, /바꿀 수 없습니다/);
+        assert.deepEqual(calls, [], '거절할 거면 서버에 묻지도 않는다');
+        assert.equal(readConfig(env).token, undefined);
+      }
+    });
+
+    it('never prints it', async () => {
+      const { client } = checking();
+      const { out, err } = await cli(['login'], { client, secret: 'qp_from_the_web' });
+      assert.ok(!out.includes('qp_from_the_web') && !err.includes('qp_from_the_web'));
+    });
+  });
+
+  it('does not send people to devtools', async () => {
+    // The command is advertised on the page that issues PATs; "copy the token from devtools" on a
+    // web page reads like phishing (#471).
+    const { err } = await cli(['login'], { client: issuing() });
+    assert.ok(!/개발자도구|Local Storage/.test(err), err);
   });
 
   it('rejects an empty paste', async () => {
