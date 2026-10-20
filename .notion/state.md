@@ -1,15 +1,15 @@
 # Qeploy 개발 상태
 
-> 기준일: 2026-08-15 · 기준 커밋: 47bb5fb · 코드 실측 기반
+> 기준일: 2026-10-20 · 기준 커밋: 02a2240 · 코드 실측 기반
 
 ## 1. 기준
 
-- 기준일: 2026-08-15
-- 기준 커밋: `47bb5fb` (PR #114 프리뷰 CDN beacon 주입 차단 반영, main)
+- 기준일: 2026-10-20
+- 기준 커밋: `02a2240` (PR #475 플래너 instruction 언어 반영, develop). 2026-09-28 이후 커밋의 반영 내역은 §4.22·§4.23·§3.15와 §4.33~§4.36 참고
 - 제품 기준: `.notion/prd.md` (§15.2는 2026-07-18 사용자 확정으로 예외 개정, §2.23 참고)
 - 구현 기준: 현재 Spring Boot 코드, Flyway migration, 테스트
-- 테스트 결과: 통합 main 737/737, Flyway V1~V31 연속 (PR #114 머지 시점, V31은 §2.27에서 신설). 직전 기준(710) 대비 +27 — §2.30 게이트웨이 인가(+16)·§2.31 서브리소스 인가·CORS 수정(+5)·§2.32 빌드 base 흡수(+5)·§2.33 CDN beacon 차단(+1) 신설분
-- 현재 공개 API: 94개, 직전 기준(93개, PR #92 시점) 대비 +1 — `POST /preview-sessions/{sessionId}/access`(프리뷰 열람 권한 발급, Issue #77, §2.30 참고) 신설. 재집계 방식은 `api.md` §1과 동일
+- 테스트 결과: **이번 갱신(2026-10-20)에서는 전체 테스트를 다시 집계하지 않았다.** 마지막 집계는 PR #114 머지 시점(2026-08-15)의 통합 main 737/737이다(직전 기준 710 대비 +27 — §2.30 게이트웨이 인가(+16)·§2.31 서브리소스 인가·CORS 수정(+5)·§2.32 빌드 base 흡수(+5)·§2.33 CDN beacon 차단(+1) 신설분). Flyway는 V1~V66 연속(`ls src/main/resources/db/migration | sort -V`, 2026-10-20 확인 — V66은 §4.36)
+- 현재 공개 API: 117개(2026-10-20 재집계, 방식은 `api.md` §1과 동일). 직전 기록 94개(PR #104 시점) 이후의 증가분과 모듈별 내역은 `api.md` §1에 있다. 2026-09-28 이후로는 엔드포인트 수가 바뀌지 않았다
 - 단위 작업 백로그와 우선순위 SSOT는 `.notion/ROADMAP.md`이다. 이 문서는 기능별 완료 여부를, ROADMAP.md는 다음에 무엇을 어떤 순서로 할지를 다룬다.
 
 이 문서는 항목을 세 종류로 구분한다.
@@ -614,15 +614,17 @@ Docker preview 성공률, 배포 성공률, build 실패 해결률, Agent intent
 ## 3.15 보안 — ROADMAP U-sec — **대부분 완료**
 
 - ~~실 API 키 등 민감정보의 env 이관~~ → **완료(#365).** `application-{dev,prod}.yml` 에 벤더 `api-key` 가 없다(남은 `--with-api-key` 는 codex CLI 의 argv 이고 키가 아니다). AI 실행은 BYOK 전용이고 `getApiKey()` 호출은 전부 `aiaccount` 안에 있다
-- ~~추적/로그 민감정보 정리~~ → **대부분 완료.** `common/security/SecretRedactor`, 비밀 담는 엔티티에 `toString` 금지, docker-java 명령 덤프를 WARN 으로 고정
-- **미착수 두 개** (`BACKLOG_STATUS.md` BI-195 후속분, 2026-09-30 이슈 신설):
-  - **#414** GitHub App 설치 권한 확인·최소화 — **코드 쪽 절반 완료.** `docs/github-app-permissions.md` 에 호출하는 엔드포인트 전부와 그것에서 도출한 필요 최소 권한(Contents·Metadata·Pull requests·Actions·Pages·Workflows)을 적었고, 호출이 없는 것(Issues·Secrets·Packages·Deployments 등)도 줄일 후보로 명시했다.
-    **남은 것**: 현재 실제 요구 수준은 대시보드에만 있어 **사람 손**이 필요하다(문서에 빈 칸으로 둠). 축소는 **기존 설치의 재승인을 요구**한다.
+- ~~추적/로그 민감정보 정리~~ → **대부분 완료.** `common/security/SecretRedactor`, 비밀 담는 엔티티에 `toString` 금지, docker-java 명령 덤프를 WARN 으로 고정(`com.github.dockerjava.core.command: WARN`). 그 핀은 `DockerJavaLoggerPinTest` 가 지킨다 — 상위 로거를 DEBUG 로 내려도 자식이 조용한지 확인하므로, 핀을 풀면 테스트가 깨진다(#425)
+- **BI-195 후속 두 개 — 이슈는 둘 다 종료** (`BACKLOG_STATUS.md` BI-195 후속분, 2026-09-30 이슈 신설 · #414 2026-10-15 종료 · #413 2026-10-18 종료):
+  - **#414** GitHub App 설치 권한 확인·최소화 — **종료.** `docs/github-app-permissions.md` 에 호출하는 엔드포인트 전부와 그것에서 도출한 필요 최소 권한(Contents·Metadata·Pull requests·Actions·Pages·Workflows)을 적었고, 호출이 없는 것(Issues·Secrets·Packages·Deployments 등)도 줄일 후보로 명시했다.
+    현재 요구 수준은 대시보드가 아니라 **API 로 받는다**(`GithubAppPermissionProbeIntegrationTest`, `-Dgithubapp.it=true` 일 때만 — `GET /app`·`GET /app/installations` 읽기 전용). App 등록이 둘(dev `dvely-test-app` / 운영 `dvely-github-app`)이고 권한·이벤트 설정이 같음을 확인했다. `checks` 권한 + `check_run` 구독은 호출·처리 0건이라 2026-10-05 두 등록 모두에서 뗐다.
+    앞서 적은 "축소는 기존 설치의 재승인을 요구한다"는 **방향이 거꾸로였다** — 제거는 재승인 없이 즉시 적용되고 재승인이 필요한 것은 추가다. 다만 과거의 추가를 승인하지 않은 설치는 옛 범위에 얼어 있어 제거도 전파되지 않는다(dev 설치 1개가 그랬고 2026-10-15 재승인 후 probe 결과 `어긋난 설치 0개`).
+    **남은 것**: `administration` 은 아래 #413 의 토큰 폴백 정리 뒤 다시 본다. dev 웹훅이 `http://` 인 것은 호스트명·인증서 비용을 받아들일지의 판단이다(`docs/github-app-permissions.md` "순서").
     ⚠️ `getRepositoryAccessToken` 이 **사용자 토큰 우선 · installation 폴백**이라, 사용자 토큰 경로가 살아 있는 한 App 권한 축소만으로는 상한이 안 내려간다 — `#413` 의 "installation 토큰으로 좁히기" 가 선행이어야 효과가 있다
   - **#413** 프리뷰 컨테이너의 `/tmp/.git-credentials` **평문** (G5) — **자격 파일을 없앴다.** `credential.helper` 를 git 의 `!` 셸 헬퍼로 두고 토큰을 **exec env 로만** 넘긴다(`ContainerGitCredentials`). 파일이 없으므로 컨테이너에 남을 것도 없고, `npm install` 에는 토큰이 닿을 경로가 없다.
     **실측으로 확인했다**: `node:20-alpine` + git 2.52 에서 `git credential fill` 이 env 만으로 `username`/`password` 를 해석하는 것을 봤다(전역 helper 없는 상태). 인용·env 전파·git 의 `!` 셸 호출이 유일한 위험이었고 그것을 없앴다.
     ⚠️ `authed()` 가 `git clone` 을 `git -c credential.helper=... clone` 으로 **쪼갠다.** 명령을 문자열로 매칭하는 코드·테스트는 서브커맨드로 맞춰야 한다.
-    **남은 것 둘**: 토큰이 여전히 **installation 토큰이 아니라 사용자 OAuth 액세스 토큰**이다(#414 와 함께 볼 것). 그리고 `qeploy.preview.egress.enabled` 가 **기본 `false`** 다(코딩 에이전트 쪽은 `true`) — 의도인지 누락인지 미판단
+    **이슈 종료 뒤에도 남은 관찰 둘**(2026-10-20 코드 기준 그대로): 토큰이 여전히 **installation 토큰이 아니라 사용자 OAuth 액세스 토큰**이다(`GithubProjectClient.getRepositoryAccessToken`, #414 와 함께 볼 것). 그리고 `qeploy.preview.egress.enabled` 가 **기본 `false`** 다(코딩 에이전트 쪽은 `true`) — 의도인지 누락인지 미판단
 
 
 ---
@@ -1067,6 +1069,10 @@ Docker preview 성공률, 배포 성공률, build 실패 해결률, Agent intent
 - `apitoken` 도메인(V60). **해시만 저장**하고 평문은 발급 응답에서 1회만 노출한다 — §4.21 의 BYOK 키와 달리 벤더에 전달할 일이 없어 비교만 하면 된다.
 - 기존 `JwtAuthenticationFilter` 가 `qp_` 접두사로 분기. 기존 JWT 경로는 테스트로 불변을 고정했다.
 - 스코프는 HTTP 메서드로 강제(READ 는 GET 만, 변경 메서드는 403).
+- **WRITE 도 모든 쓰기가 아니다(Issue #453, 2026-10-15).** PAT 로 통과하는 쓰기는 허용 목록 다섯 개뿐이다 — 배포 생성(`POST /projects/{id}/deployments`)·재시도(`POST /deployments/{id}/retry`), 환경변수 추가(`POST /projects/{id}/environment-variables`)·수정(`PATCH .../environment-variables/{variableId}`), 도메인 추가(`POST /projects/{id}/domains`). 나머지 쓰기(승인 결정, 토큰 발급·폐기, AI 키, 클라우드 연결, 삭제 등)는 403 "이 작업은 개인 액세스 토큰으로 할 수 없습니다". 브라우저 JWT 는 영향이 없다
+  - 그 전에는 WRITE PAT 가 브라우저와 같은 권한이었다. "승인·삭제는 에이전트에 노출하지 않는다"가 MCP 가 도구를 안 만든 것으로만 지켜졌고, 셸이 있는 에이전트는 저장된 토큰으로 승인을 스스로 누르거나 PAT 로 PAT 를 재발급할 수 있었다
+  - 거부 목록이 아니라 **허용 목록**이다(`JwtAuthenticationFilter.PAT_WRITABLE`, `METHOD 경로` 정규식). 새 엔드포인트는 누군가 열기 전까지 닫혀 있다. `agent-tools/packages/client` 의 쓰기 호출이 목록 밖으로 나가면 `JwtAuthenticationFilterTest` 가 깨진다 — 에이전트에 쓰기를 새로 열 때는 이 목록에 한 줄을 더한다
+  - **미실측**: dev/운영에서 실제 WRITE PAT 로 403 을 확인하지는 않았다(사용자 토큰 필요 — `ROADMAP.md` 2026-10-20 "남은 것")
 - 엔드포인트 3개(`/api/v1/api-tokens`). `api.md` §18.
 
 **실 서버 검증 완료**: 로컬 기동 후 실제 HTTP 로 10가지 경우 전수 확인 — 발급·목록·폐기, 발급 토큰의 실제 동작, READ 토큰의 쓰기 403, 만료·폐기·미상 토큰의 401 동일화, 목록 응답에 평문 부재, 만료 상한 400. 검증용 사용자·토큰은 정리했다.
@@ -1197,7 +1203,7 @@ READ·WRITE 가 똑같이 기본 90일·최대 365일이었다. 유출됐을 때
 
 - `agent-tools/` 워크스페이스: `@qeploy/client`(REST 클라이언트, 봉투 해제·에러 번역), `@qeploy/mcp`(stdio MCP 서버), `@qeploy/cli`(`qeploy` 명령).
 - **읽기 전용 도구 11개.** 되돌리기 어려운 조작(프로젝트·서버 삭제, 승인, 비용예산)은 앞으로도 노출하지 않는다. 도구 이름 집합을 테스트로 못박아 추가가 의도적 편집이 되게 했다.
-- 인증은 §4.22 의 PAT. 서버가 READ 스코프에서 변경 메서드를 403 으로 막으므로 읽기 보장이 클라이언트 규약이 아니라 서버 강제다.
+- 인증은 §4.22 의 PAT. 서버가 READ 스코프에서 변경 메서드를 403 으로 막으므로 읽기 보장이 클라이언트 규약이 아니라 서버 강제다. WRITE 스코프도 서버의 허용 목록(쓰기 5개) 밖은 403 이다(#453, §4.22).
 - API 실패는 프로토콜 예외가 아니라 **에러 결과**로 반환한다. 예외면 에이전트가 읽지 못하지만 결과면 모델이 읽고 대응한다(만료 토큰이면 재발급을 안내).
 
 **실 stdio 검증 완료**: MCP 클라이언트로 실제 서버 프로세스를 띄워 initialize → tools/list(11개) → tools/call 왕복까지 확인. 없는 프로젝트는 에러 결과, 토큰 미설정이면 종료코드 1 이고 안내가 stdout(프로토콜 채널)을 오염시키지 않는다.
@@ -1224,14 +1230,27 @@ READ·WRITE 가 똑같이 기본 90일·최대 365일이었다. 유출됐을 때
 
 - 브라우저 JWT 를 한 번 받아 PAT 로 바꾸고 `~/.config/qeploy/config.json`(0600)에 저장한다. **CLI 와 MCP 가 같은 파일을 읽는다** — 에이전트는 `npx @qeploy/mcp` 로 실행되어 환경변수를 받을 자리가 없다.
 - 환경변수가 파일을 이긴다(CI 가 설정한 토큰을 로그인 파일이 조용히 덮어쓰면 안 된다).
-- 붙여넣은 것도 발급한 것도 화면에 찍지 않는다. `qp_` 로 시작하는 값을 붙여넣으면 거절한다 — 만료될 때까지 "되는 것처럼" 보이다 이유 없이 실패하기 때문.
-- `logout` 은 로컬 파일만 지우고 그 사실을 말한다. 서버 폐기에는 WRITE 스코프가 필요한데 기본이 READ 다.
+- 붙여넣은 것도 발급한 것도 화면에 찍지 않는다. ~~`qp_` 로 시작하는 값을 붙여넣으면 거절한다~~ → **#471(2026-10-20)부터 받는다**(아래).
+- `logout` 은 로컬 파일만 지우고 그 사실을 말한다. 토큰 폐기는 PAT 로는 할 수 없고(#453 — 토큰 폐기는 허용 목록 밖) 웹에서만 된다.
+
+**웹에서 발급한 PAT 를 그대로 받는다(Issue #471, 2026-10-20)** — 이 명령을 안내하는 곳이 PAT 를 발급하는 웹 화면인데, 거기서 "개발자도구에서 브라우저 토큰을 복사하라"고 하는 것은 우회로이고 피싱처럼 읽혔다.
+
+- 붙여넣은 값이 `qp_` 로 시작하면 교환 없이 저장한다. 저장 전에 한 번 읽기 호출(`listProjects`)로 확인해, 오타·폐기된 토큰이 에이전트의 첫 호출이 아니라 여기서 실패하게 했다
+- 그때 `--scope`·`--expires-in-days` 를 함께 주면 사용법 오류로 거절한다 — 스코프·만료는 발급할 때 정해졌고, 받아 놓고 무시하면 WRITE 를 받은 줄 알게 된다
+- `qp_` 가 아니면 예전처럼 브라우저 JWT 로 보고 `--scope` 의 PAT 를 새로 발급해 저장한다. 토큰 옵션(`--token`)은 여전히 두지 않는다
+- 코드 `agent-tools/packages/cli/src/commands.js`(`savePastedToken`), 테스트 `agent-tools/packages/cli/test/login.test.js`
 
 > **브라우저 왕복이 아닌 이유(실측)**: `redirect_uri` 를 authorize 에도 토큰 교환에도 보내지 않아 GitHub 이 등록된 콜백 한 곳으로만 돌아온다. 기존 웹 콜백에 얹는 방법은 FE 가 `state` 를 검증해 브라우저에 남은 이전 state 하나로 튕긴다. #327 로 분리했다. `GITHUB_OAUTH_REDIRECT_URI` 는 선언만 되고 아무도 읽지 않는 죽은 설정이라는 것도 이때 드러났다.
 
 실 서버 검증: 실제 HS256 JWT 로 로그인 → PAT 발급·0600 저장 → **환경변수 하나 없이** CLI 와 MCP(도구 11개, 실 API 왕복) 양쪽 동작 → logout 후 종료코드 2. JS 테스트 77개.
 
-남은 것: FE 의 PAT 발급 화면(`Dvely_FE` #76)은 여전히 웹 사용자를 위해 필요하다. 다만 **개발자는 이제 FE 없이도 쓸 수 있다.** npm 배포는 오픈소스 공개를 결정할 때. 공개 저장소 분리와 npm 배포는 오픈소스 공개 결정 시점의 일이다.
+남은 것: FE 의 PAT 발급 화면(`Dvely_FE` #76)은 여전히 웹 사용자를 위해 필요하다. 다만 **개발자는 이제 FE 없이도 쓸 수 있다.** ~~npm 배포는 오픈소스 공개를 결정할 때~~ → **npm 공개 완료(Issue #451, 2026-10-19~20).** 공개 저장소 분리는 여전히 오픈소스 공개 결정 시점의 일이다(`agent-tools/README.md`).
+
+**npm 공개(Issue #451)** — `@qeploy/client`·`@qeploy/mcp` 0.1.0, `@qeploy/cli` 0.1.1(각 `package.json`, cli 는 #471 로 올렸다). `npx @qeploy/cli`·`npx -y @qeploy/mcp` 가 레지스트리 실물로 동작한다(`ROADMAP.md` 2026-10-20). 스코프 없는 npm `qeploy` 는 남의 패키지라 어디에도 안내하지 않는다.
+
+- 다음 버전부터는 GitHub Actions **Publish agent-tools to npm**(`.github/workflows/agent-tools-publish.yml`)으로 올린다. `workflow_dispatch` 로 사람이 누를 때만, `main`·`develop` 에서만 돈다. 인증은 npm Trusted Publishing(OIDC)이라 저장소에 npm 토큰이 없다. client → mcp → cli 순서로 올리고 이미 있는 버전은 건너뛴다
+- **남은 것**: npmjs.com 의 세 패키지 각각에 Trusted Publisher 등록(사용자 손, 미등록 — `ROADMAP.md` 2026-10-20). 등록 전에는 워크플로가 인증하지 못한다. 손으로 올릴 때는 일반 터미널에서 한다(에이전트 셸에서는 `EOTP` 로 실패)
+- `agent-tools/.gitignore` 가 lock 파일을 빼고 있어 워크플로는 `npm ci` 가 아니라 `npm install` 이다
 
 ---
 
@@ -1415,6 +1434,48 @@ nginx(root) 기동       exit=0 · node 소유 파일 서빙 · node 는 못 끄
 
 `QEPLOY_AI_ANTHROPIC_API_KEY` · `QEPLOY_AI_OPENAI_API_KEY` · `QEPLOY_AI_GLM_API_KEY` 는 **이 릴리스가 나간 뒤 읽히지 않는다.** 모델·thinking 설정(`*_MODEL`, `*_THINKING_MODELS`)은 모델 카탈로그라 계속 쓰인다.
 
+## 4.33 채팅에 남는 승인·마감 안내 (Issue #457·#461, 2026-10-15·18)
+
+**승인 안내에서 카드와 겹치는 줄과 원시 enum 을 뺐다(#457).** 승인 카드 바로 위 채팅 메시지가 카드 설명을 글자 그대로 되풀이하고 `[49] REPOSITORY_BINDING: ...` 처럼 ID·원시 enum 을 찍고 있었다.
+
+- 계획 승인: `- [48] CHANGE` → `- 변경 사항 승인`. 이름은 `approval/domain/value/ApprovalTypeLabel` 이 정하고 FE `approvalCopy.ts` 의 카드 제목과 같다. switch 에 `default` 가 없어 승인 유형이 늘면 컴파일이 깨진다 — 이름 없이 원시 값이 다시 새지 않게
+- 결과 승인(`ResultApprovalGate`): 마지막 `- [ID] RESULT: ...` 줄을 지웠다
+- 저장소 연결 승인(`RepositoryBindingGate`): 기록 한 줄(제안 저장소 이름 포함)과 프리뷰 만료 경고만 남긴다. 카드는 결정하면 사라지므로 채팅에는 사람이 읽는 기록을 남긴다
+- 태스크 `summary` 는 바뀌지 않았다. 승인 ID 는 승인 탭에 있다
+
+**작업물 없이 마감한 태스크에 결과를 붙이지 않는다(#461).** 저장소 연결을 묻는 동안 프리뷰가 정리돼 스윕이 태스크를 마치면, 1초 뒤 실행기가 저장된 요약("사이트가 준비됐다")을 `AGENT_RESULT` 로 발행해 앞의 마감 안내를 뒤집었다(2026-10-15 운영).
+
+- 시스템이 `REPOSITORY_BINDING` 승인을 `CANCELLED` 로 닫은 태스크는 결과 메시지를 내지 않는다(`RepositoryBindingGate.closedWithoutArtifact` → `AgentPlanExecutor`). 판단은 승인 상태로만 한다 — 본문도, 지금 프리뷰가 있는지도 보지 않는다
+- 사용자가 직접 거절(`REJECTED`)한 경우는 프리뷰가 살아 있으므로 결과를 그대로 낸다
+- 마감 안내의 `kind` 가 `TASK_CANCELLED` → 새 값 **`TASK_CLOSED`**(`ChatMessageKind`). 태스크는 취소가 아니라 `DONE` 이다. 두 경로가 이 값을 쓴다 — 프리뷰 회수(`abandonApprovalTaskWithLostPreview`)와 결정 없는 방치(`abandonStaleApprovalTask`, `qeploy.agent.approval.abandon-ttl` 기본 7일). 저장소 연결 대기가 아닌 승인 대기는 여전히 `TASK_CANCELLED` 다
+- DB 변경 없음. FE 는 모르는 `kind` 를 평범한 어시스턴트 줄로 그린다(`MessageResponse.kind` 계약, `api.md` §8)
+
+## 4.34 응답 언어를 사용자의 언어로 (Issue #469, 2026-10-20)
+
+BYOK 모델이 한국어 요청에 대한 결과 요약을 영어로 쓰는 일이 있었다. 두 곳의 프롬프트에 언어를 적었다.
+
+- **코딩 에이전트 결과 요약**(`CodingAgentWorkspaceBridge`, PR #470): 요약을 요청과 같은 언어로 쓰라고 지시한다(알 수 없으면 한국어). 요약은 그대로 사용자에게 보인다
+- **플래너 instruction**(`DecisionAgentService`, PR #475): 스텝마다 쓰는 `instruction` 도 사용자가 쓴 언어로 쓰게 했다. 실행 에이전트는 자기 instruction 의 언어로 답하므로, 한국어 요청에 영어 instruction 을 주면 답이 영어로 돌아온다. `userSummary` 는 원래 사용자 언어였다
+- 테스트는 프롬프트에 그 문장이 들어 있는지만 단정한다(`CodingAgentWorkspaceBridgeTest`·`DecisionAgentServiceTest`). **모델이 실제로 따르는지는 미실측**이다(`ROADMAP.md` 2026-10-20 "남은 것")
+
+## 4.35 클라이언트 연결 끊김을 ERROR 로 남기지 않는다 (Issue #423, 2026-10-01)
+
+SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Spring 이 `AsyncRequestNotUsableException` 을 던지는데, 전용 핸들러가 없어 맨 아래 catch-all 이 `ERROR Unexpected error` + 스택트레이스로 남겼다. 실측하니 dev 의 ERROR 2건이 전부 이것이었다(운영은 3건 중 1건). ERROR 수를 배포 건강 신호로 쓰므로 정상 동작이 그 신호를 오염시키고 있었다.
+
+- `GlobalExceptionHandler.handleClientDisconnected` 가 받아 **DEBUG 한 줄**로 남긴다(스택 없음)
+- 반환형이 `void` 다 — 응답을 더 쓸 수 없다는 예외라 `ResponseEntity` 를 돌려주면 죽은 응답에 쓰려다 2차 실패가 난다
+- Tomcat `ClientAbortException` 은 넣지 않았다. 이 예외의 원인 체인 안에서만 보였고 단독으로 핸들러까지 온 적이 관측되지 않았다
+- 끊김이 아닌 예외는 여전히 ERROR + 500 이다. 실제 Tomcat 소켓을 RST 로 끊는 `ClientDisconnectRealSocketIntegrationTest` 가 "끊김을 감지했다 → DEBUG 를 남겼다 → ERROR 가 없다" 순서로 단정한다(PR #430)
+
+## 4.36 #391 이전 대화의 죽은 프리뷰 링크 정리 (Issue #405, V66)
+
+#391 이 새 승인 메시지에서 `- preview: <주소>` 줄을 뺐지만, 이미 나간 메시지는 이력에 그대로 남아 있었다. 그 주소는 `POST /preview-sessions/{id}/access` 가 accessToken 을 회전시키는 순간부터 404 다(#77 G4).
+
+- `V66__strip_dead_preview_links_from_chat.sql` 이 `chat_messages.content` 에서 그 줄만 지운다(앞뒤 개행 포함, 개행 하나로 되돌림)
+- 조건이 둘이다 — 정규식이 `https?://` 를 요구하고, `WHERE` 는 `LIKE BINARY` 로 대소문자를 구분한다. 콜레이션이 `utf8mb4_unicode_ci` 라 순진한 `LIKE '%- preview:%'` 는 상태 메시지의 `- Preview: 실행 중인 preview 없음` 같은 정상 줄까지 잡는다(운영 드라이런에서 실제로 걸렸다)
+- 운영 드라이런(읽기만): 대상 8건, 제거 길이가 모두 117자로 같았다 — 행마다 정확히 한 번 매치됐다는 신호다. 표현식은 `DeadPreviewLinkStripExpressionTest` 가 지킨다
+- 안내 문구로 바꾸지 않고 줄 전체를 지운다. #391 과 같은 판단이다
+
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
@@ -1442,13 +1503,20 @@ nginx(root) 기동       exit=0 · node 소유 파일 서빙 · node 는 못 끄
 6. Cloud Ops Agent(상태/로그/장애분석/재시작) — 완료(§2.22)
 7. 결과 승인 2단계(preview→main 반영 게이트) — 완료(§2.23)
 8. Agent 오케스트레이션 동시성/복구 하드닝(락 계층·좀비 복구·스윕) — 완료(§2.24)
-9. AWS/GCP 실제 프로비저닝, 리소스 스케일링/정리 실행 — 미착수(§3.11, §3.12)
+9. AWS 실제 프로비저닝 — 대부분 완료(§3.11: EC2 백엔드·웹 전용 서버, RDS/EC2 DB, S3+CloudFront). GCP adapter·IaC plan/apply·리소스 스케일링/정리 실행은 미구현(§3.11, §3.12)
 10. Domain/HTTPS adapter 확장 — §3.13
 11. Audit Log(EPIC 17 나머지) — 완료(§2.25)
 
 ---
 
 # 6. 현재 결론
+
+> **2026-10-20 대조**: 이 절은 2026-08-15 시점의 결론이다. 그 뒤 §3(2026-09-30 전면 대조, Issue #411)이 바로잡은 두 가지를 아래 본문은 아직 반영하지 못하고 있다 — 두 항목에 한해 §3이 우선한다.
+>
+> 1. Environment/Secrets 값은 **프리뷰(`PREVIEW`)·EC2 백엔드 배포(`PRODUCTION`) 모두 실제로 주입된다**(§3.0·§3.6). 정적 배포(Pages·S3)에는 주입하지 않는다
+> 2. **AWS 실제 프로비저닝은 대부분 완료됐다**(§3.11 — 프로비저닝 워커 9개, `api.md` §19). 남은 것은 GCP adapter·IaC plan/apply·스케일링/정리 실행(§3.11·§3.12)이고, 저장된 인프라 설정(desired state)·비용 추정은 여전히 프로비저닝과 이어져 있지 않다
+>
+> 아래 코드 블록의 "AWS/GCP Deployment (미착수)"와 마지막 문단의 "남은 핵심 간극 (1)·(2)"가 이 두 항목이다.
 
 현재 백엔드는 GitHub 인증, 프로젝트/저장소(연결+해제), Chat 데이터, Docker Code/Chat/CloudOps Agent, GitHub Pages 배포, 도메인, Cloud credential 저장/실검증, Environment/Secrets, Preview 운영·격리, 배포 실패 복구, 인프라 설정 저장+standalone 승인, 비용 추정/예산, 결과 승인 2단계 게이트까지 폭넓은 기반을 갖췄다. Chat 메시지 저장은 Decision Agent 실행으로 바로 이어지고(CHAT 응답과 자연어 인프라 운영 질의 모두 포함), Approval/Change/PreviewSession/AgentRun이 모두 DB에 영속화되어 있으며, CloudConnection은 실제 STS/IAM 검증을 수행하고 프로젝트에서 선택할 수 있다. 승인은 이제 Agent task 기반뿐 아니라 API에서 직접 생성되는 standalone 승인(INFRA_OPERATION)도 지원하며, Cloud Ops Agent의 RESTART도 같은 승인 타입을 재사용한다. 승인은 이제 실행 전 계획 승인(1단계)과 실행 후 결과 승인(2단계, RESULT)으로 나뉘어, "결과를 확인한 뒤 git에 반영할지"와 "그것을 실제로 공개(배포)할지"가 분리된 질문이 되었다. Project를 쓰는 모든 경로(직접 API, webhook head-sync, Agent, 배포 워커)는 낙관적 잠금으로 lost-update로부터 보호된다. Agent 승인 결정 자체도 task 단위 락 계층으로 직렬화되어 동시 승인 write-skew 고착과 RUNNING 좀비 상태가 구조적으로 발생하지 않는다(§2.24).
 

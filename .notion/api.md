@@ -1,13 +1,14 @@
 # Qeploy 백엔드 API 명세
 
-> 기준일: 2026-08-15 · 기준 커밋: 113abf0 · 코드 실측 기반
+> 기준일: 2026-10-20 · 기준 커밋: 02a2240 · 코드 실측 기반
 
 ## 1. 문서 기준
 
-- 기준일: 2026-08-15
-- 기준 커밋: `113abf0` (PR #104 프리뷰 게이트웨이 인가 반영, main)
+- 기준일: 2026-10-20
+- 기준 커밋: `02a2240` (PR #475 플래너 instruction 언어 반영, develop). 직전 기준은 `113abf0`(2026-08-15, PR #104 프리뷰 게이트웨이 인가 반영)
 - 기준 코드: `src/main/java/com/example/dvely/**/presentation/*Controller.java`
-- 현재 공개 엔드포인트: 94개, 직전 기준(PR #96 시점) 93개에서 +1 — Issue #77(게이트웨이 인가)이 `POST /api/v1/preview-sessions/{sessionId}/access`(프리뷰 열람 권한 발급)를 신규 추가했다(§13.4 참고). 게이트웨이 프록시는 이제 소유권 쿠키 없이는 **401**을 반환한다
+- 현재 공개 엔드포인트: 117개, 직전 기준(`113abf0` 시점) 94개에서 +23 — Agent +2(`GET /agent/ai-providers` §9.6, `GET /agent/conversations/{conversationId}/active-task` §9), AiCredential +3(§16), ApiToken +3(§18), Template +2(§17), CloudConnection +1(`GET /cloud-connections/requirements`), DomainBinding +1(`GET /domains/hosting-targets`), DomainTls +1(`GET /tls/allow`), PreviewGateway +1(SSE 프록시), PreviewRuntimeConfig +2(`GET/PUT /projects/{projectId}/preview/runtime`), Provisioning +7(§19). 2026-09-28 이후로는 수가 바뀌지 않았다
+  - 모듈별: Agent 10 · AiCredential 3 · ApiToken 3 · Approval 4 · AuditLog 1 · Auth 7 · Change 3 · Chat 9 · CloudConnection 8 · Deployment 10 · DomainBinding 8 · DomainTls 1 · Environment 5 · PreviewGateway 2 · PreviewRuntimeConfig 2 · PreviewSession 4 · ProjectPreview 2 · Project 24 · Provisioning(DB) 3 · Provisioning(Server) 4 · Template 2 · User 1 · Webhook 1
   - 재집계 명령: `grep -rE "@GetMapping|@PostMapping|@PutMapping|@PatchMapping|@DeleteMapping|@RequestMapping\(" src/main/java --include="*Controller.java"` 후 클래스 레벨 `@RequestMapping` 6개(Agent/Auth/PreviewSession/Project/User/Webhook) 제외
 - 이 문서는 현재 코드에 존재하는 API와 PRD 달성을 위해 앞으로 필요한 API를 구분한다.
 - 아래의 `예정 API`는 설계 후보이며 아직 호출 가능한 계약이 아니다.
@@ -20,6 +21,7 @@
 
 - 기본 prefix는 `/api/v1`이다.
 - 공개 API를 제외한 요청은 `Authorization: Bearer {accessToken}`이 필요하다.
+- 에이전트·CLI는 JWT 대신 개인 액세스 토큰(`Authorization: Bearer qp_...`, §18)으로도 인증한다. 필터가 `qp_` 접두사로 경로를 고르며, 스코프·쓰기 허용 목록 제약은 §18.3 참고.
 - Spring Security가 JWT의 사용자 ID를 `@AuthenticationPrincipal Long userId`로 전달한다.
 
 인증 없이 접근 가능한 경로:
@@ -29,6 +31,10 @@
 - `GET /api/v1/auth/github/app/callback`
 - `POST /api/v1/auth/refresh`
 - `POST /api/v1/webhook/github`
+- `/api/v1/previews/**` — 프리뷰 게이트웨이. JWT 대신 URL의 회전 accessToken + 소유권 쿠키로 인가한다(§13.4)
+- `GET /api/v1/tls/allow?domain=` — 배포 EC2의 Caddy on-demand TLS 확인용(§19.4)
+- `GET /api/v1/templates`, `GET /api/v1/templates/{templateId}` — 템플릿 카탈로그(§17)
+- `GET /actuator/health` — 배포 기동 확인용, 상태값만 노출
 - Swagger/OpenAPI 경로
 
 ### 2.2 요청 상관관계 ID (Issue #345)
@@ -41,10 +47,10 @@
 현재 응답 형식은 통일되어 있지 않다.
 
 - Auth, User: `ApiResponse<T>`
-- Project, Chat, Agent, Deployment, DomainBinding, CloudConnection, Approval, Change, PreviewSession, Environment, AuditLog: DTO 직접 반환
+- Project, Chat, Agent, Deployment, DomainBinding, CloudConnection, Approval, Change, PreviewSession, Environment, AuditLog, AiCredential, ApiToken, Template, Provisioning: DTO 직접 반환
 - 삭제: 주로 `204 No Content`
 - Agent 상태 조회/입력: `ResponseEntity`
-- 일반 JSON 성공 응답은 `RawApiResponse` 처리를 거치지 않는 한 공통 MVC advice가 `status/code/message/data` envelope로 자동 변환한다. `@RawApiResponse`가 붙은 Agent/Auth/User/Webhook/PreviewGateway 컨트롤러는 원본 응답을 유지한다.
+- 일반 JSON 성공 응답은 공통 MVC advice(`ApiResponseAdvice`)가 `status/code/message/data` envelope로 자동 변환한다. 제외 대상: `@RawApiResponse`가 클래스에 붙은 Webhook·PreviewGateway 컨트롤러, 메서드에 붙은 `GET /agent/tasks/{taskId}/events/stream`(SSE)·`GET /auth/github/app/callback`(302 redirect), 이미 `ApiResponse<T>`를 반환하는 Auth·User, `SseEmitter`/`byte[]`/`void`/`text/event-stream` 응답. Agent의 나머지 `ResponseEntity` 응답은 envelope로 감싸진다.
 
 ### 2.4 공통 오류
 
@@ -54,8 +60,16 @@
 - `401 Unauthorized`: 인증 실패
 - `403 Forbidden`: 권한 또는 선행 조건 부족
 - `404 Not Found`: 사용자 소유 리소스 또는 대상 리소스 없음
-- `409 Conflict`: 중복 생성 등 상태 충돌 (예: 동일 (project, scope, key) 환경변수 재생성)
+- `405 Method Not Allowed`: `METHOD_NOT_ALLOWED`
+- `409 Conflict`: 중복 생성 등 상태 충돌 (예: 동일 (project, scope, key) 환경변수 재생성). `IllegalStateException` 전반과 낙관적 잠금 경합(`@Version`, "다른 요청과 동시에 수정되어…")도 409다
+- `429`/`502`/`503`: AI 제공자 호출 실패 — `AI_PROVIDER_RATE_LIMITED`(429) · `AI_PROVIDER_ERROR`(502) · `AI_PROVIDER_UNAVAILABLE`(503)
+- `503 Service Unavailable`: `PREVIEW_ENVIRONMENT_UNAVAILABLE`(Docker 접근 불가), `TEMPLATE_CATALOG_UNAVAILABLE`(§17.3)
 - `500 Internal Server Error`: 처리되지 않은 외부 연동/서버 오류
+
+도메인 전용 코드: `GITHUB_APP_NOT_INSTALLED`(403) · `GITHUB_APP_REPOSITORY_ACCESS_DENIED`(403) · `AI_CREDENTIAL_NOT_REGISTERED`(400) · `INVALID_TOKEN`/`EXPIRED_REFRESH_TOKEN`/`REVOKED_REFRESH_TOKEN`(401).
+
+- 클라이언트가 응답 도중 연결을 끊은 경우(SSE 탭 닫기 등, `AsyncRequestNotUsableException`)는 오류 응답을 쓰지 않고 DEBUG 로그 한 줄만 남긴다(#423). ERROR 수를 배포 건강 신호로 쓰기 때문이다.
+- PAT 스코프 거부(403, §18.3)는 보안 필터가 직접 쓰며 본문이 `{"code":"FORBIDDEN","message":"..."}`로 `status`/`data`가 없다.
 
 ### 2.5 현재 모듈
 
@@ -74,6 +88,9 @@
 - Environment
 - AuditLog
 - Template
+- AiCredential
+- ApiToken
+- Provisioning (Server, Database)
 
 ---
 
@@ -121,6 +138,8 @@ Query:
 
 성공 시 프론트 redirect URL에 `githubAppLinked=true`를 붙인다. 실패 시 `githubAppLinked=false&error=...`를 붙인다.
 
+redirect 대상은 `{프론트 redirect URL}/auth/app-callback`이며 `error` 값은 UTF-8로 인코딩해 싣는다(#367 — 한글 메시지가 그대로 붙어 콜백 자체가 400을 내던 문제). `setup_action=delete`는 아무것도 바꾸지 않고 `githubAppLinked=true`로 돌려보낸다.
+
 ### 3.3 Refresh
 
 ```json
@@ -142,7 +161,8 @@ Query:
 - `id`, `username`, `avatarUrl`
 - `githubAppInstalled`
 - `githubAppTokenLinked`
-- `githubAppTokenExpired`
+- `githubAppTokenExpired` — 액세스 토큰 만료 여부(진단용). true여도 리프레시 토큰이 살아 있으면 서버가 자동 갱신하므로 재인증 판단에 쓰지 않는다
+- `githubAppReauthorizationRequired` — 사용자가 직접 재인증해야 하는지. **재인증 UI는 이 값이 true일 때만 띄운다.** App 미설치 사용자는 재인증이 아니라 설치 대상이라 false다(#367)
 - `githubAppAccessTokenExpiresAt`
 - `githubAppRefreshTokenExpiresAt`
 
@@ -187,7 +207,7 @@ delivery 처리 상태:
 - `IGNORED`
 - `FAILED`
 
-현재 delivery 상태 조회용 공개 API는 없으며 운영 DB에 처리 기록을 보존한다.
+현재 delivery 상태 조회용 공개 API는 없다. 처리 기록은 DB에 남지만 **터미널 상태(`COMPLETED`/`IGNORED`/`FAILED`)는 수신 후 7일이 지나면 삭제된다**(#338, `qeploy.webhook.retention-days` 기본 7, 매시간 스윕). 처리 대기·재시도 대기·처리 중인 배달은 지우지 않는다.
 
 ---
 
@@ -197,7 +217,7 @@ Base path: `/api/v1/projects`
 
 | Method | Path | 기능 |
 |---|---|---|
-| POST | `/api/v1/projects` | GitHub 저장소 없이 DRAFT 프로젝트 생성, 초기 코드 생성 CODE Agent task 제출 |
+| POST | `/api/v1/projects` | GitHub 저장소 없이 DRAFT 프로젝트 생성(`202`). 코드 생성은 첫 대화 요청에서 시작 |
 | POST | `/api/v1/projects/{projectId}/repository` | 새 저장소 생성 또는 기존 저장소 연결 |
 | DELETE | `/api/v1/projects/{projectId}/repository` | GitHub 저장소 연결 해제(비파괴, GitHub 호출 없음) |
 | GET | `/api/v1/projects/github/repositories` | 접근 가능한 GitHub 저장소 목록 조회. 유저별 60초 캐시, `?refresh=true`로 무효화 |
@@ -262,6 +282,14 @@ ZIP 업로드 처리는 아직 없다(§14.1 참고).
 }
 ```
 
+요청 규칙:
+
+- `repositoryMode`: `create`(별칭 `create_new`·`new`) / `existing`(별칭 `import`·`import_existing`). 대소문자·하이픈 무시, 생략하면 `create`. 그 외 값은 `400`.
+- `repositoryVisibility` 생략 시 `PRIVATE`. `existing`이면 GitHub 저장소의 실제 공개 범위를 따른다.
+- `existing`의 `repositoryFullName`은 `owner/repo` 형식이어야 하고(아니면 `400`), 찾을 수 없거나 접근 권한이 없어도 `400`.
+- 이미 저장소가 연결된 프로젝트에 다시 연결하면 `409`. `create`에서 같은 이름의 저장소가 이미 있어도 `409`.
+- preview 브랜치 준비부터 저장·감사까지는 저장소 연결 승인(`REPOSITORY_BINDING`, §14.3)과 같은 공용 코어(`RepositoryProvisioningService.bindToProject`)를 탄다.
+
 연결 처리 흐름:
 
 1. 프로젝트 소유권 확인
@@ -290,13 +318,15 @@ Query `deleteMode`:
 
 - 생략 또는 `PROJECT_ONLY`: 프로젝트 soft delete, 대화를 휴지통으로 이동
 - `PROJECT_AND_REPOSITORY`: GitHub 저장소 삭제 후 대화와 프로젝트 데이터 제거
+- 별칭: `PROJECT`(=`PROJECT_ONLY`), `PROJECT_WITH_REPOSITORY`(=`PROJECT_AND_REPOSITORY`). 그 외 값은 `400`. 저장소가 연결되지 않은 프로젝트에 `PROJECT_AND_REPOSITORY`를 쓰면 `409`.
+- 삭제가 커밋된 뒤 트랜잭션 밖에서 best-effort로 정리한다: 선택된 클라우드 연결이 있으면 프론트 S3 정적 사이트 버킷을 지우고, 프론트 S3 HTTPS 도메인(CloudFront+ACM, Cloudflare 레코드)의 정리를 큐에 넣는다. 정리가 실패해도 삭제는 되돌리지 않는다.
 
 ### 6.5 Overview 통합 데이터
 
-- `currentUrl`: 연결된 DomainBinding을 우선하고 없으면 최신 LIVE 배포 URL 사용
+- `currentUrl`: 연결된(connected) DomainBinding을 `https://{hostname}`으로 우선하고, 없으면 최신 LIVE 배포 URL, 그것도 없으면 프로젝트에 저장된 URL
 - `deployStatus`: 가장 최근 Deployment 상태
 - `currentVersion`: 가장 최근 LIVE Deployment 버전
-- `recentChanges`: Deployment, Change, Approval, Domain의 최근 이벤트 3개
+- `repositoryVersion`: GitHub webhook(`push`)으로 동기화된 최신 `vN` 저장소 태그
 - `latestCommit`: GitHub 최신 커밋과 상대시간
 - `repositoryHealth`: 연결 저장소 health
 - `domainSummary`: 현재 우선 DomainBinding의 hostname, URL, 유형, 상태
@@ -305,11 +335,13 @@ Query `deleteMode`:
 
 트래픽/분석 기능은 PRD 현재 범위에서 제외되어 `trafficSummary`를 응답하지 않는다.
 
+`recentChanges`는 2026-08-16 응답에서 제거됐다(읽는 소비자가 없었다). 최근 이벤트는 `GET /{projectId}/activity-logs`로 본다.
+
 ### 6.6 Infrastructure 설정
 
 - 프로젝트당 하나의 CloudConnection만 선택할 수 있다.
 - 실제 검증 상태가 `CONNECTED`인 connection만 선택 가능하다.
-- 이 설정은 "어떤 연결을 쓸지" 선택만 담당하며, 실제 AWS/GCP 배포·운영 실행과는 아직 연결되어 있지 않다(§12 참고).
+- 여기서 고른 연결이 실제 AWS 실행의 자격이 된다: EC2 백엔드 서버(`/projects/{id}/servers`), DB 프로비저닝(`/projects/{id}/databases`), S3 프론트 배포가 모두 이 선택을 읽는다(§19). 선택이 없으면 서버·DB는 `404`, S3 배포는 `400`이고, 선택했어도 CONNECTED가 아니면 `409`다. GCP 실행 경로는 없다.
 
 ### 6.7 Infrastructure 설정 저장(Configuration)
 
@@ -348,7 +380,7 @@ Approval 승인/거절과의 연결(§14.3 참고):
 
 운영 한계:
 
-- 이 설정은 "적용하고 싶은 desired state"를 저장할 뿐이다. 실제 AWS/GCP 리소스 프로비저닝과는 아직 연결되어 있지 않다(EPIC 15 Cloud-Ops 후속). Cloud Ops Agent(§9.4)의 `STATUS_CHECK` 응답도 매번 이 사실을 명시한다.
+- 이 4개 enum 설정은 "적용하고 싶은 desired state"를 저장할 뿐이고, 어떤 프로비저닝 경로도 읽지 않는다. 실제 AWS 리소스(EC2·RDS·S3)는 별도 API(§19, §10.1)가 만들고, 그쪽은 이 설정이 아니라 §6.6의 연결 선택과 요청 본문을 쓴다. Cloud Ops Agent(§9.4)의 `STATUS_CHECK` 응답도 매번 "저장된 인프라 설정의 실 클라우드 리소스는 아직 프로비저닝되지 않았습니다"를 붙인다.
 
 ### 6.8 Infrastructure 비용 추정 + 예산 (Cost & Budget)
 
@@ -356,6 +388,7 @@ Approval 승인/거절과의 연결(§14.3 참고):
 
 ```json
 {
+  "projectId": 12,
   "costAvailable": true,
   "provider": "AWS",
   "currency": "USD",
@@ -383,6 +416,7 @@ Approval 승인/거절과의 연결(§14.3 참고):
 - 비용 추정은 저장하지 않고 **매 요청마다 온더플라이로 계산**한다. 계산은 `InfrastructureCostEstimator`의 코드 상수 정적 가격표를 사용하며, 외부 클라우드 API를 호출하지 않는다 — 응답은 가정 기반 추정치이며 실시간 요금이 아니다(`priceTableVersion`으로 가격표 버전 식별).
 - 인프라가 구성되지 않았거나 `CONNECTED` 클라우드 연결이 선택되지 않은 프로젝트도 `200`으로 응답하며 `costAvailable=false`와 함께 추정 필드는 `null`/빈 배열로 표시한다. `assumptions`/`priceTableVersion`은 `costAvailable`과 무관하게 항상 채워진다(가격표 자체에 대한 설명이므로).
 - 통화는 `USD`로 고정된다.
+- `monthlyBudgetAmount`는 필수이며 0.01 이상, 정수부 10자리·소수 둘째 자리까지. `currency`는 생략하거나 `USD`만 받고 그 외는 `400`.
 - `budgetStatus`는 4가지: `NO_BUDGET`(예산 미설정) · `NOT_EVALUABLE`(예산은 있으나 비용 추정 불가) · `OVER_BUDGET` · `WITHIN_BUDGET`(추정 == 예산이면 `WITHIN_BUDGET`, 엄격한 `>` 비교로 판정).
 - `PUT`은 upsert(멱등)이다. 인프라가 아직 구성되지 않은 프로젝트도 예산을 먼저 설정할 수 있다(§6.7의 CONNECTED 요구사항과 달리 이 API는 그런 전제조건이 없다). 저장 직후 재계산된 결과를 `GET`과 동일한 shape로 즉시 반환한다.
 - `DELETE`는 예산이 없는 상태에서 호출해도 `204`(멱등).
@@ -414,13 +448,14 @@ Approval 승인/거절과의 연결(§14.3 참고):
 |---|---|
 | `changeApprovalRequired` | CODE(코드 변경) 실행 전 |
 | `deploymentApprovalRequired` | DEPLOY(배포) 실행 전 |
-| `domainApprovalRequired` | DOMAIN_BIND(도메인 연결/해제) 실행 전 |
+| `domainApprovalRequired` | DOMAIN_BIND(도메인 연결/해제) 실행 전 — 승인 유형 `DOMAIN_BINDING`·`DOMAIN_UNBIND` 둘 다 |
 | `infraApprovalRequired` | INFRA_OPERATE 중 영향 있는 작업(인프라 설정 변경, Cloud Ops `RESTART`) 실행 전 |
 | `resultApprovalRequired` | CODE 실행 **후**, preview→main 반영(RESULT 승인, §9.5) 전 |
 
 - `changeApprovalRequired`~`infraApprovalRequired` 4개는 `PATCH`에서 전체 문서 `PUT`과 동일하게 필수다(부분 수정 불가, 4개 모두 매번 지정).
 - `resultApprovalRequired`만 예외적으로 nullable이다 — `null`이면 현재 값을 유지한다(이 필드를 모르는 구버전 FE 요청도 그대로 동작하도록 하는 하위호환 설계).
 - 모든 정책은 기본값 `true`(가장 안전한 fail-safe)다.
+- `REPOSITORY_BINDING`·`DATABASE_PROVISION`·`SERVER_PROVISION` 세 유형은 대응 정책 필드가 없고 **항상 승인을 요구한다**. 저장소 연결은 끄면 작업물이 프리뷰 만료와 함께 사라지고, 나머지 둘은 사용자 AWS 계정에 과금되기 때문이다(§14.3).
 
 ---
 
@@ -430,7 +465,7 @@ Base path: `/api/v1/projects/{projectId}/environment-variables`
 
 | Method | Path | 기능 |
 |---|---|---|
-| GET | `/api/v1/projects/{projectId}/environment-variables` | 환경변수 목록 조회(`scope` 쿼리로 필터, scope asc → key asc 정렬) |
+| GET | `/api/v1/projects/{projectId}/environment-variables` | 환경변수 목록 조회(`scope` 쿼리로 필터, scope asc → key asc 정렬, `limit` 기본 200·최대 500) |
 | POST | `/api/v1/projects/{projectId}/environment-variables` | 환경변수 생성 |
 | PATCH | `/api/v1/projects/{projectId}/environment-variables/{variableId}` | 환경변수 값/secret 여부 수정 |
 | DELETE | `/api/v1/projects/{projectId}/environment-variables/{variableId}` | 환경변수 삭제 |
@@ -450,6 +485,7 @@ Base path: `/api/v1/projects/{projectId}/environment-variables`
 - `scope`는 `PREVIEW` 또는 `PRODUCTION`만 허용한다. `COMMON`은 존재하지 않는다 — 두 환경 모두 필요하면 두 번 생성해야 한다(설계상 의도적 결정).
 - 동일한 (프로젝트, scope, key) 조합이 이미 있으면 `409`.
 - `secret=true`로 생성해도 이 응답의 `value`는 `null`이다.
+- `key`는 `^[A-Za-z_][A-Za-z0-9_]{0,127}$`(앞뒤 공백 제거 후, 숫자로 시작 불가, 최대 128자), `value`는 최대 4096자이며 빈 문자열을 허용하고 NUL 문자는 `400`. 지원하지 않는 `scope`도 `400`.
 
 ### 7.2 수정
 
@@ -462,6 +498,9 @@ Base path: `/api/v1/projects/{projectId}/environment-variables`
 
 - `key`/`scope`는 불변이다(이름을 바꾸려면 삭제 후 재생성).
 - `secret`은 `true → false`로 되돌릴 수 없다(`400`).
+- `value`·`secret` 둘 다 생략할 수 있다(null이면 기존 값 유지). 빈 값으로 바꾸려면 `""`를 명시한다.
+
+목록 상한: 상한에 걸리면 응답 헤더 `X-Qeploy-Next-Cursor`가 붙는다. 이 목록은 (scope, key) 정렬이라 커서로 이어 받는 경로는 아직 없고, 헤더는 "상한에 닿았다"는 신호일 뿐이다. 본문은 예전과 같은 JSON 배열이다.
 
 ### 7.3 Secret 마스킹 규칙
 
@@ -472,7 +511,7 @@ Base path: `/api/v1/projects/{projectId}/environment-variables`
 ### 7.4 현재 한계
 
 - `EnvironmentValueResolver`는 애플리케이션 내부 port로만 존재하며 HTTP로 노출되지 않는다.
-- Docker Preview 컨테이너나 Deployment(GitHub Actions) workflow에 이 값을 실제로 주입하는 연결은 아직 없다(§ROADMAP 참고, `state.md` §3.5).
+- 주입은 두 경로다. 서버형 프리뷰 컨테이너(`NODE_SERVER`/`JAVA_FULLSTACK`, `PreviewRuntimeLauncher`)에는 `PREVIEW` 스코프만, EC2 백엔드 배포(`BackendDeployRunner`)에는 `PRODUCTION` 스코프만 들어간다(#415, 그 전에는 배포에 전 스코프가 섞여 들어갔다). 둘 다 DB 자동값·포트를 먼저 깔고 사용자 값으로 덮는다. 정적(`STATIC`) 프리뷰와 GitHub Pages workflow·S3 정적 배포에는 주입하지 않는다(`state.md` §3.0).
 
 ---
 
@@ -487,8 +526,8 @@ Base path: `/api/v1/projects/{projectId}/environment-variables`
 | GET | `/api/v1/trash/conversations` | 계정 휴지통 대화 목록 |
 | POST | `/api/v1/trash/conversations/{conversationId}/restore` | 대화 복구 |
 | DELETE | `/api/v1/trash/conversations/{conversationId}` | 휴지통 대화 즉시 영구 삭제 |
-| GET | `/api/v1/conversations/{conversationId}/messages` | 메시지 목록 |
-| POST | `/api/v1/conversations/{conversationId}/messages` | USER 메시지 저장 후 Agent task 제출 |
+| GET | `/api/v1/conversations/{conversationId}/messages` | 메시지 목록(생성순, `limit`·`after` 커서) |
+| POST | `/api/v1/conversations/{conversationId}/messages` | USER 메시지 저장 후 Agent task를 비동기 제출(`201`, `taskId` 즉시 반환) |
 
 메시지 생성:
 
@@ -507,11 +546,15 @@ Base path: `/api/v1/projects/{projectId}/environment-variables`
 
 현재 동작:
 
-- USER 메시지를 저장한 뒤 conversation 전체 메시지를 Decision Agent context로 전달한다.
-- 승인 대기, 질문, 결과, 오류는 ASSISTANT 메시지로 저장한다.
+- 메시지 생성은 **비동기**다. `POST`는 PENDING Agent task를 먼저 열고, USER 메시지를 그 `taskId`와 함께 저장한 뒤 곧바로 `201`을 돌려준다. 계획 수립(Decision)은 트랜잭션 커밋 뒤 백그라운드에서 돌고, 끝나면 task가 `QUEUED` 또는 `WAITING_APPROVAL`로 확정된다. 실패하면(서버 혼잡 포함) task가 `FAILED`로 닫힌다. FE는 받은 `taskId`로 바로 `GET /api/v1/agent/tasks/{taskId}/events/stream`(SSE)을 연다.
+- Decision에는 이 대화의 **사용자 발화만** 넘긴다(우리가 쓴 운영 안내 문장을 모델이 흉내 내 JSON을 못 내던 문제 때문). 최근 20턴·24,000자 윈도우가 적용된다.
+- 승인 대기, 질문, 결과, 오류는 ASSISTANT 메시지로 저장되고, 각 줄에 `kind`가 붙는다(아래).
 - 생성된 task는 conversation/project/owner 문맥을 보관한다.
 - 첫 사용자 메시지를 기반으로 대화 제목을 자동 생성하고 80자로 제한한다(`Conversation.MAX_AUTO_TITLE_LENGTH`).
-- 메시지 저장/조회 응답(`MessageResponse`)에 nullable `taskId`가 포함된다. 큐잉이 정상 접수된 경우에만 값이 있고(승인 정책에 따라 즉시 실행/승인 대기 모두 포함), 판단 자체가 실패했거나 `GET messages` 조회에서는 `null`이다. 값이 있으면 `GET /api/v1/agent/tasks/{taskId}`로 진행 상황을 폴링할 수 있다.
+- `MessageResponse.taskId`(nullable): `POST` 응답에서는 항상 값이 있다. `GET messages`에서도 그 줄을 만든(또는 그 발화가 낳은) task의 ID가 채워진다(V59). 태스크와 무관한 줄과 V59 이전에 쌓인 줄만 `null`이다.
+- `MessageResponse.kind`(nullable, V58): 어시스턴트 줄의 종류. 화면이 본문 문자열로 의미를 추론하지 않도록 서버가 붙인다. `AGENT_RESULT` · `TASK_PROGRESS` · `APPROVAL_REQUESTED` · `INPUT_REQUIRED` · `CLARIFICATION_ANSWER` · `TASK_FAILED` · `TASK_CANCELLED` · `TASK_CLOSED`(#461: 작업은 `DONE`인데 시스템이 마무리함. 예: 저장소 연결을 묻는 동안 프리뷰가 정리돼 연결하지 못하고 끝남. 취소처럼 그리지 말 것). 사용자 메시지와 도입 이전 줄은 `null`이다. **모르는 값이 오면 평범한 어시스턴트 줄로 그린다** — 종류는 늘어난다.
+- `GET messages`는 생성순(오래된 것부터)이고 `limit` 기본 500·최대 1000이다. 더 남아 있으면 응답 헤더 `X-Qeploy-Next-Cursor`가 붙으며, 그 값을 `after`로 넘기면 그 메시지보다 뒤의 것을 받는다. 헤더가 없으면 마지막 페이지다. 숫자가 아닌 커서는 `400`.
+- V66(#405): #391 이전 승인 메시지에 박혀 있던 죽은 `- preview: https://…` 줄을 이력에서 지웠다(그 줄만 지우고 주변 줄은 유지).
 
 휴지통/삭제 정책 (코드 실측, `ChatTrashPolicy`/`ChatTrashCleanupScheduler`):
 
@@ -535,10 +578,12 @@ Base path: `/api/v1/agent`
 | Method | Path | 기능 |
 |---|---|---|
 | POST | `/decision` | 자연어를 분류하고 비동기 Agent task 시작 |
+| GET | `/ai-providers` | 지정 가능한 AI 제공자·모델 목록(§9.6) |
 | GET | `/tasks/{taskId}` | task 상태 폴링 |
-| POST | `/tasks/{taskId}/input` | `WAITING_INPUT` task에 값 제출 |
-| DELETE | `/tasks/{taskId}` | 소유한 대기/실행 task 취소 |
-| DELETE | `/session` | 현재 사용자의 PreviewSession과 Docker 컨테이너 종료 |
+| GET | `/conversations/{conversationId}/active-task` | 대화의 진행/대기 중(비-terminal) 태스크 `{taskId, status}`. 없으면 `204`. 새로고침 후 되묻기 폼·진행 상태 복구용 |
+| POST | `/tasks/{taskId}/input` | `WAITING_INPUT` task에 값 제출. `204`, 대기 상태가 아니면 `409`, 없거나 대기 만료면 `404` |
+| DELETE | `/tasks/{taskId}` | 소유한 대기/실행 task 취소(`204`). 취소할 수 없거나 내 것이 아니면 `404` |
+| DELETE | `/session` | 현재 사용자의 PreviewSession과 Docker 컨테이너 종료(`204`). 닫을 세션이 없으면 `404` |
 
 ### 9.1 요청 제출
 
@@ -555,9 +600,11 @@ Base path: `/api/v1/agent`
 
 `aiProvider`는 **필수이며, 호출자 본인이 키를 등록한 제공자여야 한다**(#364). 값은 벤더(`ANTHROPIC`·`OPENAI`·`GLM`) 또는 코딩 에이전트(`CLAUDE_CODE`·`CODEX`)다. 서버 키로 도는 기본 경로는 없어졌고, 키가 없으면 실행 전에 `400 AI_CREDENTIAL_NOT_REGISTERED`로 떨어진다. 코딩 에이전트는 대응 벤더 키로 인증한다(`CLAUDE_CODE`→Anthropic, `CODEX`→OpenAI) — 계획·채팅은 그 벤더의 chat-completions로, 코드 생성만 벤더 CLI로 돈다.
 
+`model`(nullable)은 제공자 기본 모델 대신 쓸 모델 ID다. 서버가 허용한 모델이 아니면 `400`. `thinking`(nullable, `OFF`|`LOW`|`MEDIUM`|`HIGH`, 기본 `OFF`)을 지원하지 않는 모델에 켜면 무시하지 않고 `400`이다. 코딩 에이전트(`CLAUDE_CODE`·`CODEX`)는 둘 다 CLI가 정하므로, 값을 보내면 `400`이다(`thinking: OFF`는 허용).
+
 응답 주요 필드:
 
-- `steps`: `CODE`, `DEPLOY`, `DOMAIN_BIND`, `CHAT`, `INFRA_OPERATE`
+- `steps`: `{ agentType, parameters }` 목록. `agentType`은 `CLARIFY`, `CHAT`, `CODE`, `DEPLOY`, `DOMAIN_BIND`, `INFRA_OPERATE`, `RUNTIME_SETUP`, `BACKEND_DEPLOY`. 스텝의 `instruction`·`userSummary`는 사용자가 쓴 언어로 만든다(#469 — 프롬프트 지시라 LLM 출력이 보장하지는 않는다)
 - `reasoning`
 - `aiProvider`
 - `taskId`
@@ -591,25 +638,30 @@ Base path: `/api/v1/agent`
 - `suggestedFix`
 - `attempt`
 - `maxAttempts`
-- `retryable`: `POST /tasks/{taskId}/retry` 호출이 실제로 성공할지 여부(Issue #57). `true`가 되려면 `pendingApprovalId`가 `null`(대기 중인 승인 없음)**이면서** `attempt < maxAttempts`여야 한다. 이 두 조건은 `/retry`가 실제로 검사하는 것과 동일한 기준(`AgentOrchestrator.findPendingApprovalId`를 응답 조립과 `/retry` 게이트가 함께 사용)이라, 응답의 `retryable`과 실제 `/retry` 결과가 서로 어긋나지 않는다
+- `retryable`: `POST /tasks/{taskId}/retry` 호출이 실제로 성공할지 여부(Issue #57). `true`가 되려면 `pendingApprovalId`가 `null`(대기 중인 승인 없음)**이면서** `attempt < maxAttempts`여야 한다. status가 FAILED가 아니면 항상 false다. 판단 기준("PENDING 승인이 하나라도 있으면 막는다")은 응답과 /retry가 같지만, 응답은 잠금 없는 스냅샷이고 /retry는 태스크 행 잠금 아래에서 다시 읽으므로, 승인이 막 생긴 순간에는 응답이 잠깐 true로 읽힐 수 있다 — 실제 판정은 /retry가 한다
 - `pendingApprovalId` (nullable): 이 task에 걸린 `PENDING` 승인의 ID(예: `BuildFailureRecoveryService`가 만드는 "자동 수정 및 재build" 승인). 값이 있으면 `retryable`은 항상 `false`이며, `/retry`를 호출해도 `409`로 거부된다 — 먼저 `POST /approvals/{pendingApprovalId}/approve`로 그 승인을 처리해야 한다(승인 자체가 재실행을 트리거함). `null`이면 승인 대기가 없다는 뜻이며, 그 경우에만 `attempt < maxAttempts` 여부로 `retryable`이 결정된다
+- `clarification` (nullable): 구조화 되묻기(CLARIFY). `WAITING_INPUT`이고 선택형 질문일 때만 채워진다 — `{question, inputType(TEXT|SINGLE_SELECT|MULTI_SELECT), options[{value,label,recommended}], allowOther, actionType}`. `actionType=CONNECT_CLOUD`이면 질문이 아니라 클라우드 연결이 필요하다는 조치 안내다(연결 가이드는 `GET /cloud-connections/requirements`). 답은 사람이 읽는 문자열 하나로 `/input`에 보낸다. null이면 `question`만 보여주는 텍스트 입력
+- `answeredClarification` (nullable): 이미 답한 되묻기. `{question, inputType, options, allowOther, answer}`. 되묻기를 거치지 않은 태스크에서는 null
 
 추가 task API:
 
 | Method | Path | 기능 |
 |---|---|---|
-| GET | `/api/v1/agent/tasks/{taskId}/events` | event ID 기반 polling |
+| GET | `/api/v1/agent/tasks/{taskId}/events?afterEventId={id}` | event ID 기반 polling(`afterEventId` 기본 0, 시간순). `type`은 생명주기(CREATED/QUEUED/STARTED/COMPLETED/FAILED/CANCELLED/WAITING_APPROVAL/WAITING_INPUT/WAITING_RESULT_APPROVAL/REPLANNED/INPUT_RECEIVED/RETRY_QUEUED)와 스텝(STEP_STARTED/STEP_COMPLETED). 스텝 이벤트만 `stepIndex`·`stepTotal`·`agentType`을 싣는다. 모르는 type은 무시 |
 | GET | `/api/v1/agent/tasks/{taskId}/events/stream` | 영속 이벤트 SSE. 여는 즉시 주석 프레임 `:hb` 를 쓰고 유휴 시 15초마다 반복한다(#370 — 이것이 없으면 보낼 이벤트가 없는 재연결이 응답 헤더를 못 내보내 프록시에 끊긴다). `data:` 가 없으므로 이벤트가 아니다 |
-| POST | `/api/v1/agent/tasks/{taskId}/retry` | 실패 task 수동 재시도. `pendingApprovalId`가 non-null이면 항상 `409`(먼저 그 승인을 처리해야 함). `retryable:true`일 때만 호출할 것 |
+| POST | `/api/v1/agent/tasks/{taskId}/retry` | 실패 task 수동 재시도. 성공 `202`. FAILED가 아니거나, attempt가 소진됐거나, PENDING 승인이 남았거나(`pendingApprovalId` non-null — 먼저 그 승인을 처리해야 함), 없는·남의 task면 모두 `409`(404가 아니다). `retryable:true`일 때만 호출할 것 |
 
 ### 9.3 실제 Agent 동작
 
 - Decision Agent: LLM으로 다중 intent를 분류
-- Code Agent: Docker `node:20-alpine`에서 파일 생성/수정, npm build, 정적 preview 실행
-- Deploy Agent: 승인 완료 후 요청 단위 commit을 `preview` 브랜치에 non-force push하고 PR/merge/tag/workflow 배포 실행
+- Code Agent: Docker `node:20-alpine` 프리뷰 컨테이너에서 파일 생성/수정·빌드·프리뷰 실행. 런타임은 `STATIC`/`NODE_SERVER`/`JAVA_FULLSTACK`(§14.2 런타임 설정). `aiProvider`가 `CLAUDE_CODE`·`CODEX`면 코드 생성만 벤더 CLI가 별도 컨테이너에서 사용자 키로 수행하고, 결과를 프리뷰 컨테이너로 되옮긴다(`node_modules`·`.git`은 옮기지 않음). 결과 요약은 요청과 같은 언어로 쓰게 지시한다(#469)
+- Deploy Agent: 승인 완료 후 요청 단위 commit을 `preview` 브랜치에 non-force push하고 배포를 요청한다. step 파라미터 `hostingType`(`GITHUB_PAGES`|`S3`|`EC2`)이 비어 있으면 프로젝트 현재 설정을 쓰고, 모르는 값이면 기본값으로 떨어뜨리지 않고 실패한다
 - Domain Agent: 관리형 서브도메인 또는 커스텀 도메인 연결
 - Chat Agent(`ChatAgentService`): Decision Agent가 CODE/DEPLOY/DOMAIN_BIND로 분류하지 못한 일반 대화·질문에 LlmRouter 경유로 실제 LLM 응답을 1회 생성해 반환한다(Docker/GitHub 등 인프라를 건드리지 않는다). 프로젝트별 커스텀 지침은 아직 없고 고정 system prompt만 사용한다.
 - Cloud Ops Agent(`InfraOpsAgentService`, `AgentType.INFRA_OPERATE`): 서버/서비스 운영을 묻는 자연어 요청을 처리한다. §9.4 참고.
+- Clarify(`CLARIFY`): 핵심 스펙(백엔드 스택 등)이 모호하면 이 스텝 하나만 내고 `WAITING_INPUT`으로 구조화 질문을 낸다(§9.2 `clarification`). 답을 받으면 다시 판단해 계획을 만든다
+- Runtime Setup(`RUNTIME_SETUP`, `RuntimeSetupAgentService`): CODE 앞에서 프리뷰 런타임 설정(`runtimeType`·`dbEngine`·`startCommand`)을 부분 갱신해, 이어지는 프리뷰를 백엔드 런타임으로 띄운다
+- Backend Deploy(`BACKEND_DEPLOY`, `BackendDeployAgentService`): 사용자 AWS 계정에 RDS(선택)+EC2 배포를 **요청**한다. 직접 만들지 않고 `DATABASE_PROVISION`·`SERVER_PROVISION` 승인을 만들며, 승인 후 워커가 생성한다(§19)
 
 운영 한계:
 
@@ -627,7 +679,7 @@ Base path: `/api/v1/agent`
 
 | operation | 기능 | 승인 필요 | 비고 |
 |---|---|---:|---|
-| `STATUS_CHECK` | 배포/Preview/클라우드 연결/인프라 설정 상태를 고정 템플릿으로 요약 | 아니오 | 각 항목 독립적으로 degrade, "실 클라우드 리소스는 아직 프로비저닝되지 않았습니다" 문구 항상 포함 |
+| `STATUS_CHECK` | 배포/Preview/클라우드 연결/인프라 설정 상태를 고정 템플릿으로 요약 | 아니오 | 각 항목 독립적으로 degrade, "실 클라우드 리소스는 아직 프로비저닝되지 않았습니다" 문구 항상 포함. 이 문구는 §6.7 인프라 설정에 대한 것이고, §19로 만든 EC2 서버·DB는 STATUS_CHECK가 조회하지 않는다(위 4항목만) |
 | `LOG_VIEW` | ACTIVE preview 컨테이너 로그(tail 50줄/최대 2000자) | 아니오 | Preview 운영 API(§14.2, `GET /preview-sessions/{id}/logs`)보다 훨씬 축약된 chat 전용 뷰 |
 | `FAILURE_ANALYSIS` | 최근 배포 실패 원인 분석 | 아니오 | §10.2의 `DeploymentFailureAnalysisService`를 그대로 재사용 |
 | `RESTART` | ACTIVE preview 컨테이너 재시작 | 예(`INFRA_OPERATION`, 프로젝트 정책이 켜져 있으면) | 유일한 변경 작업, 대상은 항상 DB 재조회. 이 승인은 Agent task 기반(taskId 있음) — §6.7의 standalone 승인과 타입은 같지만 출처가 다름(§14.3 참고) |
@@ -661,7 +713,7 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 동작:
 
 - plan의 **마지막 CODE step**이 끝난 직후 1회 평가된다. 발동 조건: 프로젝트가 GitHub 저장소에 BOUND, 그리고 프로젝트 Chat 설정의 `resultApprovalRequired`(기본 `true`)가 켜져 있음.
-- 신규/미연결 프로젝트(아직 BOUND 아님)는 게이트 대상이 아니다 — 반영할 저장소가 없으므로 기존 DEPLOY step 흐름 그대로 첫 배포를 진행한다.
+- 신규/미연결 프로젝트(아직 BOUND 아님)는 RESULT 게이트 대상이 아니다. 대신 같은 지점에서 **저장소 연결 승인(`REPOSITORY_BINDING`)** 이 열린다 — 이 태스크의 작업 결과 프리뷰가 있을 때만, 정책과 무관하게(`RepositoryBindingGate`). 두 게이트는 같은 `repositoryBindingStatus` 로 갈리므로 한 태스크에서 하나만 열린다. 흐름은 §13.11, 승인 유형은 §14.3 참고.
 - 게이트가 발동하면: CODE 결과를 `preview` 브랜치에 push → task를 `WAITING_RESULT_APPROVAL`로 전환 → `ApprovalType.RESULT` Approval 생성 → "미리보기와 변경 내역을 확인해 주세요" assistant 메시지 발송.
 - 여러 CODE step이 있는 plan(예: 실패 후 재시도)도 RESULT 승인은 1번만 열리며, 마지막 CODE step까지의 누적 결과 전체를 대상으로 한다.
 - **승인**: `POST /approvals/{approvalId}/approve` → `preview`에 `main` 대비 새 커밋이 있으면 PR 생성+merge, 없으면(멱등 재시도) main HEAD SHA만 기록 → `Change`가 `MERGED`로 전환(`prNumber`/`mergeCommitSha`/`mergedAt` 기록) → task가 이어서 재개(남은 step 계속 또는 `DONE`).
@@ -689,7 +741,7 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 ] }
 ```
 
-- **근거는 호출자가 등록한 크리덴셜이다**(#364). 예전에는 배포에 설정된 서버 키가 근거였다. 키를 하나도 등록하지 않았으면 **빈 배열**이고, 미인증 호출도 빈 배열이다.
+- **근거는 호출자가 등록한 크리덴셜이다**(#364). 예전에는 배포에 설정된 서버 키가 근거였다. 키를 하나도 등록하지 않았으면 **빈 배열**이다. 미인증 호출은 다른 인증 API와 같이 `401`이다.
 - 벤더 키 하나를 등록하면 그 벤더와 **대응 코딩 에이전트가 함께** 나온다(`ANTHROPIC`→`CLAUDE_CODE`, `OPENAI`→`CODEX`). 키는 벤더 단위로 한 번만 등록하면 되기 때문이다. `GLM`은 코딩 에이전트 모드가 없어 벤더만 나온다.
 - 코딩 에이전트는 `models: []`·`defaultModel: null`이다 — 코드 생성 단계의 모델을 벤더 CLI가 정하므로 고를 것이 없다. 빈 목록이 정직한 답이고, 플레이스홀더를 넣으면 아무것도 바꾸지 않는 선택지를 그리게 된다.
 - **API 키는 어떤 필드로도 나가지 않는다.** 모델 카탈로그는 배포 설정(`qeploy.ai.*`)에서 오고 비밀이 아니다.
@@ -700,7 +752,7 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 
 | Method | Path | 기능 |
 |---|---|---|
-| POST | `/api/v1/projects/{projectId}/deployments` | GitHub Pages 배포 시작 |
+| POST | `/api/v1/projects/{projectId}/deployments` | 프론트 배포 시작. 프로젝트 `frontendHostingType`(`GITHUB_PAGES` / `S3` / `EC2`)을 따른다 |
 | GET | `/api/v1/deployments/{deploymentId}` | 배포 상태와 GitHub Actions 상태 조회 |
 | GET | `/api/v1/projects/{projectId}/deployments` | 배포 이력 목록 |
 | GET | `/api/v1/projects/{projectId}/versions` | 배포 이력을 버전별로 묶어 조회 |
@@ -731,6 +783,22 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 }
 ```
 
+프론트 호스팅 지정(선택):
+
+```json
+{
+  "deployTargetType": "LATEST",
+  "frontendHostingType": "S3"
+}
+```
+
+- `frontendHostingType`: `GITHUB_PAGES` | `S3` | `EC2`. 지정하면 **프로젝트 설정 자체를 그 값으로 바꾸고** 이후 배포·재시도도 그것을 따른다. 생략하면 프로젝트의 현재 설정(기본 `GITHUB_PAGES`)을 쓴다.
+- `GITHUB_PAGES`: 아래 `LATEST` 처리(workflow dispatch → `workflow_run` webhook) 그대로.
+- `S3`: GitHub Actions 를 쓰지 않는다. worker 가 빌드 컨테이너에서 `npm ci|install` → `npm run build` 후 사용자 AWS 계정의 S3 정적 웹호스팅 버킷에 올리고, **worker 실행 안에서 동기로 `LIVE`** 까지 간다. `deployedUrl` 은 S3 website 엔드포인트(`http://...s3-website...amazonaws.com`, http)다. 버전·preview→main 병합은 Pages 와 같은 release 준비 단계를 재사용한다. 요청 시점에 프로젝트에 선택된 클라우드 연결이 없으면 `400`. 연결이 `CONNECTED` 가 아닌 것은 실행 단계에서 실패해 worker 재시도 경로로 간다.
+- `EC2`: 배포 이력/worker 파이프라인을 타지 않고 **웹 전용 EC2 서버 프로비저닝(§19)으로 위임**한다. 과금 자원이라 항상 `SERVER_PROVISION` 승인을 거친다. 응답의 `deploymentId` 는 배포 이력 ID 가 아니라 **대기 서버 ID**, `status=PENDING`, `approvalIds` 에 승인 ID 가 담긴다. 진행 상황은 `GET /projects/{projectId}/servers`(`webOnly=true`)로 본다. 선택된 클라우드 연결이 없으면 `404`, `CONNECTED` 가 아니면 `409`.
+
+응답(`DeployResponse`)의 `approvalIds` 는 EC2 일 때만 채워지고 Pages/S3 는 빈 배열이다.
+
 `LATEST` 처리:
 
 1. 요청 소유권과 repository binding 확인
@@ -750,6 +818,13 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 - `IN_PROGRESS`: GitHub workflow 준비/실행 중
 - `LIVE`: workflow 성공
 - `FAILED`: 재시도 소진 또는 workflow 실패
+
+실패 분류(`GET /deployments/{id}`·`GET /projects/{id}/deployments` 의 `errorCode`, 성공·진행 중이면 `null`):
+
+- `WORKFLOW_FAILED`: GitHub Actions 가 실패로 끝남
+- `RESULT_UNKNOWN`: 결과를 확인하지 못하고 포기함. **실패라는 뜻이 아니다**(사이트가 떠 있을 수 있다). 화면에서 실패로 단정하지 말 것
+- `RETRY_EXHAUSTED`: 재시도 한도 소진
+- 분류 도입 전에 실패한 옛 이력은 `errorCode=null` 이고 `errorMessage` 만 있다.
 
 정확성:
 
@@ -785,6 +860,7 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 - `201`을 반환하며, 원본과 동일한 `deployTargetType`(VERSION이면 동일 버전)으로 새 `DeploymentHistory`를 생성한다.
 - 새 이력은 `retriedFromHistoryId`로 원본 이력과 연결된다. 원본 이력은 되돌리지 않고 감사 목적으로 그대로 보존된다.
 - 재시도는 직접 Deployment API와 동일하게 Approval 없이 즉시 큐잉된다(승인 미적용, 직접 배포와 대칭적인 설계).
+- 프로젝트가 EC2 프론트 호스팅이면 재시도도 웹 전용 서버 재프로비저닝(§19)으로 위임되어 `SERVER_PROVISION` 승인을 거친다. 응답 `deploymentId` 는 대기 서버 ID 다. 원본 이력이 Pages/S3 였더라도 지금 설정이 EC2 면 이쪽으로 간다.
 
 ---
 
@@ -793,12 +869,14 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 | Method | Path | 기능 |
 |---|---|---|
 | GET | `/api/v1/domain-search?keyword={label}` | 지원 중인 관리형 도메인 후보 조회 |
-| GET | `/api/v1/projects/{projectId}/domains` | 프로젝트 도메인 목록 |
+| GET | `/api/v1/domains/hosting-targets` | 이 서버가 도메인 연결을 실제로 지원하는 `hostingTarget` 목록(어댑터가 등록된 것만) |
+| GET | `/api/v1/projects/{projectId}/domains` | 프로젝트 도메인 목록(최신순, `limit` 기본 200·최대 500. 더 있으면 `X-Qeploy-Next-Cursor` 헤더, `after`로 이어 받음. 숫자가 아닌 커서는 `400`) |
 | POST | `/api/v1/projects/{projectId}/domains` | 도메인 연결 Agent task 제출 |
 | GET | `/api/v1/domains/{domainId}` | 도메인 상태 조회 |
 | GET | `/api/v1/domains/{domainId}/verification-guide` | DNS 레코드 가이드 |
 | POST | `/api/v1/domains/{domainId}/verification-checks` | DNS, hosting, 인증서, HTTPS 재검증 |
 | DELETE | `/api/v1/domains/{domainId}` | 도메인 연결 해제 Agent task 제출 |
+| GET | `/api/v1/tls/allow?domain={hostname}` | **인증 불필요.** EC2 Caddy on-demand TLS 확인 게이트(`DomainTlsController`, §19.4) |
 
 관리형 서브도메인:
 
@@ -821,6 +899,20 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 }
 ```
 
+`hostingTarget`(생략 시 `GITHUB_PAGES`):
+
+| 값 | 대상 | DNS | HTTPS |
+|---|---|---|---|
+| `GITHUB_PAGES` | GitHub Pages 프론트 | CNAME | Pages 인증서 + HTTPS 강제 |
+| `AWS` | 이 프로젝트의 RUNNING 백엔드 EC2 | A 레코드 → EIP | 인스턴스 Caddy on-demand TLS(`/tls/allow` 게이트) |
+| `AWS_EC2_FRONTEND` | 웹 전용(독립 프론트) EC2 | A 레코드 → EIP | 위와 같음 |
+| `AWS_S3_FRONTEND` | S3 정적 프론트 | CloudFront 도메인으로 CNAME | CloudFront + ACM(us-east-1), 비동기 수 분 |
+| `GCP` | — | — | 어댑터가 없어 `400`("아직 지원되지 않습니다") |
+
+- `AWS`/`AWS_EC2_FRONTEND`: RUNNING 서버가 없으면 `409`. 커스텀 도메인의 검증 방식 기본값은 `A` 다.
+- `AWS_S3_FRONTEND`: 프로젝트 `frontendHostingType=S3` 가 아니면 `409`. ACM 인증서만 요청하고 `PROVISIONING` 으로 저장한 뒤 worker 가 검증 CNAME → CloudFront 배포 → 최종 CNAME → https 확인을 진행해 `CONNECTED` 로 올린다. 관리형은 worker 가 DNS 를 걸고, 커스텀은 사용자가 `verification-guide` 의 검증 CNAME·최종 CNAME 을 직접 넣는다.
+- `type` 은 `MANAGED_SUBDOMAIN`/`managed_subdomain` 둘 다 받고, 응답은 소문자(`managed_subdomain`)로 나간다.
+
 현재 동작:
 
 - 연결/해제 요청은 `202 Accepted`와 `taskId`, 상태, approval ID 목록 반환
@@ -830,14 +922,15 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 - GitHub Pages: custom domain, 인증서 상태/만료일, HTTPS 강제 적용 상태 조회
 - GitHub Pages 인증서 활성화 후 HTTPS 강제 적용 자동 활성화
 - 삭제: hosting adapter에서 custom domain 해제, 관리형이면 Cloudflare record도 삭제
-- Domain 응답과 Overview에 `hostingTarget`, `httpsEnforced`, `certificateStatus`, `certificateExpiresAt` 포함
+- `AWS_S3_FRONTEND` 해제는 Cloudflare 레코드(최종·ACM 검증 CNAME)를 지우고 CloudFront 배포·인증서 정리를 큐잉한다(best-effort). 해제 요청이 만드는 승인 유형은 `DOMAIN_BINDING` 이 아니라 `DOMAIN_UNBIND` 다.
+- Domain 응답과 Overview에 `hostingTarget`, `httpsEnforced`, `certificateStatus`, `certificateExpiresAt` 포함. Domain 응답의 `serverId` 는 EC2 대상(`AWS`·`AWS_EC2_FRONTEND`)일 때 가리키는 RUNNING 서버 ID(아니면 null)
 
 현재 한계:
 
 - Cloudflare 기본값과 profile 설정은 `qeploy.com`이다.
 - Agent prompt와 사용자 안내 예시는 `qeploy.com`으로 통일되어 있다.
 - 구매형 도메인은 registrar 연동 전까지 검색 결과와 연결 API에서 제외한다.
-- AWS/GCP target은 계약에 포함되지만 실제 cloud 배포 adapter 추가 전까지 명시적으로 거절한다.
+- AWS 계열(`AWS`·`AWS_EC2_FRONTEND`·`AWS_S3_FRONTEND`)은 어댑터가 있어 동작한다. `GCP` 만 어댑터가 없어 `400` 으로 거절한다. 실제 지원 목록은 `GET /domains/hosting-targets` 로 받는다(배포마다 달라질 수 있음).
 - www/apex redirect 정책은 아직 없다.
 
 ---
@@ -847,6 +940,7 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 | Method | Path | 기능 |
 |---|---|---|
 | GET | `/api/v1/cloud-connections` | 내 AWS/GCP 연결 목록 |
+| GET | `/api/v1/cloud-connections/requirements?provider=AWS&credentialType=ROLE_ARN` | 연결 가이드: 입력 필드·얻는 위치·준비 단계·추천 IAM 권한 정책(전체본)·신뢰 정책 |
 | POST | `/api/v1/cloud-connections` | 클라우드 연결 정보 등록 |
 | GET | `/api/v1/cloud-connections/{cloudConnectionId}` | 연결 상세 |
 | GET | `/api/v1/cloud-connections/{cloudConnectionId}/health` | 저장된 실제 검증 결과 조회 |
@@ -854,9 +948,11 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 | GET | `/api/v1/cloud-connection-verification-jobs/{jobId}` | 검증 Job 상태 조회 |
 | DELETE | `/api/v1/cloud-connections/{cloudConnectionId}` | 연결 삭제 |
 
+`requirements`(인증 필요): `provider` 기본 `AWS`, `credentialType` 기본 `ROLE_ARN`. AWS 외 provider 는 `400`. 서버에 AssumeRole 소스 신원(`platform-principal-arn`)이 설정되지 않은 배포에서는 `credentialType` 과 무관하게 **ACCESS_KEY 가이드만** 내려간다(역할 위임이 실제로 동작하지 않으므로). 응답: `provider`, `credentialType`, `recommendedCredentialType`, `credentialOptions`, `fields`, `steps`, `policyName`, `roleName`, `recommendedPolicy`(JSON), `trustPolicy`(ROLE_ARN 만, ACCESS_KEY 는 null), `notes`. 연결 검증은 자격 유효성만 보고 프로비저닝 권한은 보지 않으므로, 이 정책을 미리 붙이지 않으면 연결은 성공해도 배포에서 권한 부족으로 실패한다.
+
 지원 credential:
 
-- AWS `ACCESS_KEY`
+- AWS `ACCESS_KEY` — IAM 사용자의 장기 키(`AKIA`)만 받는다. 임시 자격(`ASIA`)은 만료되면 배포가 전부 죽으므로 등록 시점에 `400`(#429). `ACCESS_KEY` 방식에서 `sessionToken` 에 값이 있으면 `400` 이다(필드는 하위 호환용으로만 남아 있다).
 - AWS `ROLE_ARN`
 - GCP `SERVICE_ACCOUNT_KEY`
 - GCP `SERVICE_ACCOUNT_EMAIL`
@@ -864,7 +960,7 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 민감정보 저장:
 
 - AWS secret access key
-- AWS session token
+- AWS session token — #429 이후 신규 등록에서는 저장하지 않는다(항상 null). 컬럼은 이전에 저장된 임시 자격 때문에 남아 있다.
 - GCP service account key JSON
 - 위 값은 JPA converter를 통해 AES-GCM 암호화 저장된다.
 - 응답에는 원문 secret을 반환하지 않는다.
@@ -877,11 +973,17 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 - GCP Service Account Key/Email은 각각 OAuth token 발급 또는 IAM Credentials impersonation 후 Resource Manager `projects.get`을 실제로 호출한다.
 - 실제 호출 성공 시에만 `CONNECTED`로 저장하며, `GET .../health`는 상태를 바꾸지 않고 저장된 결과만 조회한다.
 - `CONNECTED` 상태 connection만 `PUT /api/v1/projects/{projectId}/settings/infrastructure`에서 선택할 수 있다(§6.6).
+- 재검증(`POST .../verification-jobs`, `202`)은 진행 중(PENDING/RUNNING) Job 이 있으면 그 Job 을 그대로 돌려준다. 없으면 연결을 `VALIDATED` 로 되돌리고 새 Job 을 만든다.
+- 연결 상태: `VALIDATED` · `VERIFYING` · `CHECKING` · `CONNECTED` · `PERMISSION_MISSING` · `BILLING_DISABLED` · `REGION_UNSUPPORTED` · `INVALID_CREDENTIAL` · `UNKNOWN_ERROR`.
+- **실제 AWS 작업이 자격 오류로 실패하면 연결 상태가 `INVALID_CREDENTIAL` 로 바뀐다(#429).** 백엔드/프론트 EC2 배포 실행, 프로비저닝 중 EC2 상태 폴링, 고아 CloudFront·EIP 정리 스윕이 이를 감지한다(`AwsCredentialFailureReporter`). 판정은 재시도로 풀리지 않는 코드(`ExpiredToken`·`InvalidClientTokenId`·`InvalidAccessKeyId`·`SignatureDoesNotMatch`·`AuthFailure` 등)나 만료/무효 토큰 메시지일 때만이다. 스로틀링·5xx·네트워크 오류나 권한 부족(`AccessDenied`)으로는 바꾸지 않는다.
+- 자격을 고치는 수정 API 는 없다. 재검증은 저장된 같은 값을 다시 확인할 뿐이므로, 자격이 상했으면 새 자격으로 다시 등록해야 한다.
 
 현재 한계:
 
-- CloudConnection과 실제 AWS/GCP 배포 실행이 연결되어 있지 않다(선택 및 설정 저장/비용 추정/자연어 운영 질의까지는 가능하지만, 실제 리소스 프로비저닝은 없다). 인프라 설정 저장(§6.7), 비용 추정(§6.8), 운영 질의(§9.4)는 모두 구현되어 있다.
-- 실제 AWS/GCP 배포(IaC plan/apply)와 오토스케일링/로드밸런서/DB 설정 API는 없다.
+- **AWS 연결은 실제 리소스 생성에 쓰인다.** 프로젝트에 선택된(§6.6) `CONNECTED` 연결로 EC2 서버·RDS/EC2 DB(§19), S3 프론트 배포(§10.1), S3 프론트 HTTPS(CloudFront+ACM, §11)를 만든다.
+- GCP 연결은 검증(`CONNECTED` 판정)까지만 있고 실제 배포 경로는 없다.
+- §6.7 인프라 설정(desired state)은 프로비저닝에 쓰이지 않는다. 서버 인스턴스 타입은 `POST /servers` 요청값(기본 `t3.micro`)으로 정해진다.
+- IaC plan/apply, 오토스케일링/로드밸런서 설정 API 는 없다.
 
 ---
 
@@ -907,13 +1009,14 @@ POST /conversations/{conversationId}/messages
 GET  /conversations/{conversationId}/messages
 ```
 
-이 흐름에서 메시지 저장 직후 conversation 전체 문맥이 Decision Agent에 전달되고, 필요한 승인을 거쳐 Agent가 실행된다(§8, §9 참고). 승인 대기/질문/결과/오류는 ASSISTANT 메시지로 저장된다.
+메시지 `POST`는 PENDING task의 `taskId`를 즉시 돌려주고, 계획 수립은 백그라운드에서 사용자 발화만으로 진행된다. FE는 그 `taskId`로 SSE(`GET /agent/tasks/{taskId}/events/stream`)를 열어 진행을 받는다. 필요한 승인을 거쳐 Agent가 실행되며, 승인 대기/질문/결과/오류는 `kind`가 붙은 ASSISTANT 메시지로 저장된다(§8, §9 참고).
 
 ### 13.3 Agent 직접 호출
 
 ```text
 POST /agent/decision
 GET  /agent/tasks/{taskId}
+GET  /agent/conversations/{conversationId}/active-task   # 새로고침 후 진행 태스크 복구(없으면 204)
 POST /agent/tasks/{taskId}/input
 DELETE /agent/tasks/{taskId}
 DELETE /agent/session
@@ -923,7 +1026,7 @@ DELETE /agent/session
 
 ```text
 GET  /projects/{projectId}/preview-session      # 프로젝트의 현재 프리뷰(없으면 204)
-POST /projects/{projectId}/preview-session      # 프리뷰 띄우기(200 연결 / 202 준비 시작 / 409 저장소 미연결 / 503 Docker)
+POST /projects/{projectId}/preview-session      # 프리뷰 띄우기(200 연결 / 202 준비 시작 / 409 저장소 미연결 / 503 Docker). ?force=true 는 기존 세션을 닫고 항상 새로 빌드(202)
 POST /preview-sessions/{sessionId}/access       # 열람 권한 발급 — iframe 표시 직전 필수(404 없음·타유저 / 409 종료·준비중)
 GET  /preview-sessions/{sessionId}/status
 GET  /preview-sessions/{sessionId}/logs
@@ -932,12 +1035,14 @@ DELETE /preview-sessions/{sessionId}
 
 프리뷰 세션은 두 경로로 만들어진다(Issue #94).
 
-- **작업 결과 프리뷰**: Agent CODE 스텝이 내부적으로 생성(`task_id` 있음). 생성 API 없음, `previewUrl`은 `GET /agent/tasks/{taskId}`에서 얻는다.
-- **현재 상태 프리뷰**: 위 `POST`로 사용자가 직접 생성(`task_id` NULL, V31). `preview` 브랜치를 clone → 빌드 → 서빙하며, 준비 중에는 세션 상태가 `PROVISIONING`이고 `previewUrl`은 null이다. 실패하면 `FAILED` + `failureReason`(빌드 로그 꼬리 포함).
+- **작업 결과 프리뷰**: Agent CODE 스텝이 내부적으로 생성(`task_id` 있음). 생성 API 없음. 태스크 응답에는 주소가 없고 `previewCreated`(만들어졌는지)만 있다 — 열 주소는 `POST /preview-sessions/{sessionId}/access`가 준다(§9.2).
+- **현재 상태 프리뷰**: 위 `POST`로 사용자가 직접 생성(`task_id` NULL, V31). `preview` 브랜치를 clone → 빌드 → 서빙하며, 준비 중에는 세션 상태가 `PROVISIONING`이다(이 응답에는 주소가 없다 — `ACTIVE`가 되면 access로 발급받는다). 실패하면 `FAILED` + `failureReason`(빌드 로그 꼬리 포함).
 
 `previewUrl`의 기준 오리진은 `qeploy.preview.gateway-base-url`이다(운영 기본값 `https://qeploy.com`, 미설정 시 CORS 허용 오리진에서 유추 — Issue #95). Docker 데몬에 닿지 못하면 500이 아니라 **503 `PREVIEW_ENVIRONMENT_UNAVAILABLE`**로 원인을 적어 응답한다.
 
-게이트웨이(`GET /api/v1/previews/{sessionId}/{accessToken}/**`)는 URL만으로 열리지 않는다(Issue #77). `POST /preview-sessions/{sessionId}/access`가 소유자를 확인하고 `HttpOnly` 소유권 쿠키(`Path=/api/v1/previews/{sessionId}/`)를 `Set-Cookie`로 내려주며, 쿠키 없이 접근하면 **401**이다(`qeploy.preview.require-access-cookie`, 기본 true). 이 호출은 accessToken을 **회전**시키므로 응답 `{ sessionId, previewUrl, expiresAt }`의 `previewUrl`만 유효하고, 이전에 받은 주소(작업 응답의 `previewUrl` 포함)는 즉시 404가 된다.
+게이트웨이(`GET /api/v1/previews/{sessionId}/{accessToken}/**`)는 URL만으로 열리지 않는다(Issue #77). `POST /preview-sessions/{sessionId}/access`가 소유자를 확인하고 `HttpOnly` 소유권 쿠키(`Path=/api/v1/previews/{sessionId}/`)를 `Set-Cookie`로 내려주며, 문서 탐색(`Sec-Fetch-Dest`가 document/iframe/frame/embed/object이거나 헤더 없음)을 쿠키 없이 하면 **401**이다. JS/CSS/이미지 같은 서브리소스는 회전된 accessToken URL만으로 통과한다(#108 — sandbox 문서는 서브리소스에 쿠키를 싣지 않는다)(`qeploy.preview.require-access-cookie`, 기본 true, dev 프로필 기본 false). 이 호출은 accessToken을 **회전**시키므로 응답 `{ sessionId, previewUrl, expiresAt }`의 `previewUrl`만 유효하고, 이전에 발급된 주소는 즉시 404가 된다.
+
+게이트웨이 응답 코드: 세션 없음·토큰 불일치 `404` / 문서 탐색에 쿠키 없음 `401` / 요청 본문 10 MiB 초과 `413` / 본문을 끝까지 못 읽음 `400` / 안쪽 앱에 닿지 못함 `502`(일시 실패가 아니면 세션을 회수해, 다음 `GET /projects/{id}/preview-session`이 `204`가 된다). `Accept: text/event-stream` 요청은 스트리밍 프록시로 갈리고 `Last-Event-ID`를 전달한다(그 외 계약은 같다). 응답은 공통 envelope로 감싸지 않는다.
 
 ### 13.5 GitHub Pages 배포
 
@@ -947,6 +1052,14 @@ POST /projects/{projectId}/deployments
 GET  /deployments/{deploymentId}
 GET  /deployments/{deploymentId}/logs
 GET  /projects/{projectId}/versions
+```
+
+프론트를 S3·EC2 로 올릴 때는 같은 `POST /projects/{projectId}/deployments` 에 `frontendHostingType` 을 실어 보낸다(§10.1). EC2 는 승인이 필요하다:
+
+```text
+POST /projects/{projectId}/deployments      ({"deployTargetType":"LATEST","frontendHostingType":"EC2"} → approvalIds)
+POST /approvals/{approvalId}/approve
+GET  /projects/{projectId}/servers          (webOnly=true 서버가 RUNNING 될 때까지 폴링)
 ```
 
 배포가 FAILED로 끝나면 다음 흐름으로 복구한다(§10.2 참고):
@@ -960,6 +1073,7 @@ POST /deployments/{deploymentId}/retry
 ### 13.6 도메인
 
 ```text
+GET  /domains/hosting-targets
 GET  /domain-search
 POST /projects/{projectId}/domains
 GET  /domains/{domainId}/verification-guide
@@ -1023,6 +1137,18 @@ POST /approvals/{approvalId}/approve   → preview→main merge, task 재개
 POST /approvals/{approvalId}/reject    → task CANCELLED, preview에는 그대로 남음
 ```
 
+저장소가 아직 없는(NOT_BOUND) 프로젝트는 같은 지점에서 RESULT 대신 저장소 연결 승인(REPOSITORY_BINDING)이 열린다(작업 결과 프리뷰가 있을 때만, 정책으로 끌 수 없음):
+
+```text
+GET  /agent/tasks/{taskId}        (status: WAITING_RESULT_APPROVAL)
+GET  /approvals/{approvalId}      (type: REPOSITORY_BINDING, input.field=repositoryName)
+POST /approvals/{approvalId}/approve  { "repositoryName": "..." }(선택) → 저장소 생성·연결 + preview 브랜치 push, task 재개
+또는
+POST /approvals/{approvalId}/reject   → 저장소를 만들지 않음. task는 취소되지 않고 그대로 완료
+```
+
+프리뷰가 이미 회수된 뒤 approve를 누르면 승인은 `CANCELLED`로 닫히고(응답 200) task는 저장소 없이 마친다. 결정 없이 프리뷰가 회수되거나 오래 방치돼도(`qeploy.agent.approval.abandon-ttl`, 기본 7일) 같은 방식으로 마치며, 이때 채팅의 마감 안내는 `kind=TASK_CLOSED` 이고 결과 메시지는 붙지 않는다(#461, §8).
+
 §9.5 참고.
 
 ---
@@ -1042,16 +1168,19 @@ POST /approvals/{approvalId}/reject    → task CANCELLED, preview에는 그대�
 구현됨:
 
 - `GET /api/v1/projects/{projectId}/changes` — `status`: `PREVIEW_READY` / `DEPLOYED` / `MERGED` / `REJECTED`(뒤 2개는 결과 승인 게이트, §9.5 참고). `MERGED`는 `approvalId`/`prNumber`/`mergeCommitSha`/`mergedAt`을 함께 반환한다.
+  최신순, `limit` 기본 200·최대 500. 더 있으면 `X-Qeploy-Next-Cursor` 헤더가 붙고 `after`로 넘기면 그보다 오래된 항목을 받는다.
 - `GET /api/v1/changes/{changeId}`
 - `GET /api/v1/changes/{changeId}/diff`
 - `DELETE /api/v1/preview-sessions/{previewSessionId}`
 - `GET /api/v1/preview-sessions/{previewSessionId}/status`
-- `GET /api/v1/preview-sessions/{previewSessionId}/logs`
+- `GET /api/v1/preview-sessions/{previewSessionId}/logs?tail=&sinceSeconds=` — `tail` 기본 200, [1, 2000] 밖이면 경계값으로 보정. `sinceSeconds`는 "최근 N초". 컨테이너가 이미 없으면 404가 아니라 `containerRunning=false`, `logText=""`
 - `GET /api/v1/projects/{projectId}/preview-session` — 프로젝트의 현재 프리뷰(작업 프리뷰/현재 상태 프리뷰 중 최근 것). ACTIVE 세션은 컨테이너 생존을 확인한 뒤에만 반환한다
-- `POST /api/v1/projects/{projectId}/preview-session` — 작업 지시 없이 `preview` 브랜치 현재 상태로 프리뷰 생성
+- `POST /api/v1/projects/{projectId}/preview-session` — 작업 지시 없이 `preview` 브랜치 현재 상태로 프리뷰 생성. `?force=true`면 붙지 않고 항상 새로 빌드(202)
 - `POST /api/v1/preview-sessions/{previewSessionId}/access` — 열람 권한 발급(소유권 쿠키 + accessToken 회전, Issue #77). iframe 표시 직전 필수
+- `GET /api/v1/projects/{projectId}/preview/runtime` — 프리뷰 런타임 설정 조회. 저장값이 없으면 `source=DEFAULT`(`STATIC`). 실제 기동 시에는 저장값이 없으면 클론 내용으로 자동 감지한다(`DETECTED`)
+- `PUT /api/v1/projects/{projectId}/preview/runtime` — **전체 교체**. 본문 `{runtimeType(STATIC|NODE_SERVER|JAVA_FULLSTACK, 필수), startCommand, apiPathPrefix, healthPath, dbEngine(MYSQL|POSTGRESQL)}`. 비운 `apiPathPrefix`는 `/api`, `dbEngine`은 `MYSQL`, `healthPath`는 null로 리셋된다. 일부만 바꾸려면 GET 값을 그대로 실어 보낸다(채팅 `RUNTIME_SETUP`은 부분 갱신). 응답 `source`: `STORED`|`DEFAULT`|`DETECTED`. 남의·없는 프로젝트는 `404`
 
-Preview URL은 `/api/v1/previews/{previewSessionId}/{accessToken}/...` gateway 형식으로 발급되며, 오리진은 서버 설정(`qeploy.preview.gateway-base-url`)에서 온다. 게이트웨이는 위 access 발급으로 받은 소유권 쿠키가 없으면 **401**을 반환한다(§13.4 참고).
+Preview URL은 `/api/v1/previews/{previewSessionId}/{accessToken}/...` gateway 형식으로 발급되며, 오리진은 서버 설정(`qeploy.preview.gateway-base-url`)에서 온다. 게이트웨이는 위 access 발급으로 받은 소유권 쿠키가 없으면 문서 탐색에 **401**을 반환한다(서브리소스는 accessToken URL만으로 통과, §13.4 참고).
 
 예정:
 
@@ -1061,7 +1190,7 @@ Preview URL은 `/api/v1/previews/{previewSessionId}/{accessToken}/...` gateway �
 
 구현됨:
 
-- `GET /api/v1/projects/{projectId}/approvals`
+- `GET /api/v1/projects/{projectId}/approvals` — 상태와 무관하게 최신순. `limit` 기본 200·최대 500, 더 있으면 `X-Qeploy-Next-Cursor` 헤더, `after`로 넘기면 그보다 오래된 것
 - `GET /api/v1/approvals/{approvalId}`
 - `POST /api/v1/approvals/{approvalId}/approve`
 - `POST /api/v1/approvals/{approvalId}/reject`
@@ -1071,15 +1200,29 @@ Preview URL은 `/api/v1/previews/{previewSessionId}/{accessToken}/...` gateway �
 - `CHANGE`
 - `DEPLOYMENT`
 - `DOMAIN_BINDING`
+- `DOMAIN_UNBIND` — 도메인 연결 **해제**(DOMAIN_BIND step의 `operation=DELETE`). 되돌리기 어려운 삭제라 "연결"로 오표시되지 않게 유형을 나눴다. 정책은 `domainApprovalRequired`를 같이 따른다.
 - `INFRA_OPERATION`
-- `RESULT` — 결과 승인(Issue #56, §9.5 참고). 다른 4개 타입은 모두 실행 **전** 계획을 승인하지만, `RESULT`는 유일하게 이미 실행된 CODE 결과를 main에 반영할지 승인한다. 항상 Agent task 기반(`taskId` 있음)이며 standalone으로는 생성되지 않는다.
+- `RESULT` — 결과 승인(Issue #56, §9.5 참고). 이미 실행된 CODE 결과를 main에 반영할지 묻는다. 항상 Agent task 기반(`taskId` 있음)이며 standalone으로는 생성되지 않는다.
+- `REPOSITORY_BINDING` — 저장소 연결 승인. RESULT와 같은 지점(마지막 CODE step 직후)에서 저장소가 없는(NOT_BOUND) 프로젝트에만 열리는 RESULT의 짝이다. 항상 task 기반이고 정책으로 끌 수 없다.
+- `DATABASE_PROVISION` — DB 생성(RDS 또는 EC2 위 DB 컨테이너, §19.5). 과금이라 정책으로 끌 수 없다. standalone.
+- `SERVER_PROVISION` — EC2 백엔드/프론트 서버 생성(§19.2). 과금이라 정책으로 끌 수 없다. standalone.
+
+`CHANGE`·`DEPLOYMENT`·`DOMAIN_BINDING`·`DOMAIN_UNBIND`·`INFRA_OPERATION`은 실행 **전** 계획을 승인하고, `RESULT`·`REPOSITORY_BINDING`은 이미 실행된 CODE 결과를 어떻게 남길지 승인한다.
 
 승인 출처는 두 가지다:
 
 - Agent 기반: `approval.taskId`가 채워짐. Agent plan 실행 중 생성된다(§9 참고). `RESULT`는 항상 이 경로다.
-- **Standalone**: `approval.taskId = null`. Agent task 없이 API에서 직접 생성된다. `StandaloneApprovalHandler` SPI를 구현하는 도메인(현재는 Project/`InfrastructureChangeApprovalHandler`)이 승인/거절 후속 처리를 소유한다.
+- **Standalone**: `approval.taskId = null`. Agent task 없이 API에서 직접 생성된다. `StandaloneApprovalHandler` SPI를 구현한 도메인이 승인/거절 후속 처리를 소유한다 — `InfrastructureChangeApprovalHandler`(INFRA_OPERATION), `DatabaseProvisionApprovalHandler`(DATABASE_PROVISION), `ServerProvisionApprovalHandler`(SERVER_PROVISION). 에이전트의 BACKEND_DEPLOY 경로가 만드는 DB·서버 승인도 standalone이지만 `conversationId`가 채워져(`Approval.standaloneInConversation`) 채팅에 카드로 뜬다. 즉 standalone이어도 `conversationId`가 null이라는 보장은 없다.
 - `INFRA_OPERATION` 타입은 두 출처를 모두 가질 수 있는 유일한 승인 유형이다: §6.7의 `PUT .../settings/infrastructure/configuration`이 만드는 승인은 standalone(`taskId=null`)이고, §9.4 Cloud Ops Agent의 `RESTART`가 만드는 승인은 Agent 기반(`taskId` 있음, 일반 Agent plan 승인과 동일 경로)이다. `ApprovalType`은 같지만 `taskId` 유무로 두 흐름을 구분한다.
 - 승인/거절 결정에는 동시 요청 경합 방지를 위한 비관적 잠금이 걸려 있다.
+
+approve 요청 본문(선택): `{ "repositoryName": "..." }` — `REPOSITORY_BINDING`에서만 읽고 다른 유형은 무시한다. 소문자·숫자·하이픈만 유효하며 그 외 문자는 하이픈으로 치환된다. 생략하거나 비우면 프로젝트명 기반 후보 이름을 쓴다. 응답의 `input`(nullable)이 이 입력 스펙(`field`, `defaultValue`, `required=false`, `pattern="^[a-z0-9-]+$"`, `maxLength=100`)을 주며, PENDING인 `REPOSITORY_BINDING`에만 채워진다.
+
+거절 예외: 다른 유형의 거절은 task를 `CANCELLED`로 만든다(RESULT 포함). `REPOSITORY_BINDING`만 task를 취소하지 않는다 — 거절은 "저장소를 만들지 않는다"는 뜻이고 task는 그대로 재개·완료된다. 승인 시점에 프리뷰가 이미 회수됐으면 승인은 `CANCELLED`로 닫히고 task는 저장소 없이 마친다(이때 결과 메시지는 내지 않는다, #461).
+
+PENDING이 아닌 승인에 approve/reject를 호출하면 `409`, 본인 소유가 아니거나 없으면 `404`.
+
+채팅 기록의 승인 안내 줄은 유형을 사람이 읽는 이름으로 남긴다(#457, `ApprovalTypeLabel` — 예: "변경 사항 승인", "GitHub 저장소 연결"). 예전처럼 `- [48] CHANGE` 같은 ID·원시 enum을 쓰지 않는다. 승인 ID는 승인 API로 본다.
 
 ### 14.4 Project Settings
 
@@ -1089,6 +1232,7 @@ Preview URL은 `/api/v1/previews/{previewSessionId}/{accessToken}/...` gateway �
 - `GET/PUT/DELETE /api/v1/projects/{projectId}/settings/infrastructure` — CloudConnection 선택(§6.6)
 - `GET/PUT /api/v1/projects/{projectId}/settings/infrastructure/configuration` + `GET .../configuration/history` — 인프라 설정 저장(§6.7)
 - `GET /api/v1/projects/{projectId}/settings/repository`
+- `GET/PUT /api/v1/projects/{projectId}/preview/runtime` — 프리뷰 런타임 설정(STATIC/NODE_SERVER/JAVA_FULLSTACK). PUT은 전체 교체. 상세는 §14.2
 - `GET/PUT/DELETE /api/v1/projects/{projectId}/settings/cost-budget` — 비용 추정 + 예산(§6.8)
 - `GET/POST/PATCH/DELETE /api/v1/projects/{projectId}/environment-variables`(+ `/history`) — Environment/Secrets 설정, §7 참고
 
@@ -1101,7 +1245,7 @@ Preview URL은 `/api/v1/previews/{previewSessionId}/{accessToken}/...` gateway �
 
 ### 14.5 AWS/GCP 실제 프로비저닝과 운영
 
-§6.7의 인프라 "설정 저장"(desired state)과 §6.8의 비용 추정(정적 가격표), §9.4의 Cloud Ops Agent(자연어 상태/로그/장애분석/재시작)는 모두 구현되어 있다. 아래는 그 설정을 실제 클라우드 리소스로 만들고 운영하는, 여전히 없는 API다.
+사용자 AWS 계정에 실제 리소스를 만드는 API 는 §19(EC2 서버·DB 프로비저닝)와 §10.1(S3/EC2 프론트 배포)로 구현되어 있다. 다만 §6.7 의 인프라 "설정 저장"(desired state)·§6.8 비용 추정과는 연결되어 있지 않다 — 프로비저닝은 그 설정을 읽지 않는다. 아래는 여전히 없는 API 다.
 
 - `POST /api/v1/projects/{projectId}/cloud-deployments` — 실제 IaC plan/apply 실행
 - `GET /api/v1/projects/{projectId}/infrastructure/status` — 실제 프로비저닝된 리소스 상태 조회(현재 §9.4 STATUS_CHECK는 "프로비저닝되지 않았다"만 알린다)
@@ -1113,6 +1257,7 @@ Preview URL은 `/api/v1/previews/{previewSessionId}/{accessToken}/...` gateway �
 AgentRun 구현:
 
 - `GET /api/v1/agent/tasks/{taskId}`
+- `GET /api/v1/agent/conversations/{conversationId}/active-task`
 - `GET /api/v1/agent/tasks/{taskId}/events`
 - `GET /api/v1/agent/tasks/{taskId}/events/stream`
 - `POST /api/v1/agent/tasks/{taskId}/retry`
@@ -1170,7 +1315,7 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 
 ### 15.2 기록되는 데이터 (참고 — 이 API는 조회 전용)
 
-이 엔드포인트는 감사 로그를 **읽기만** 한다. 감사 행을 만들거나 수정·삭제하는 공개 API는 없다 — 기록은 GitHub 저장소 생성/연결/해제/삭제, preview 브랜치 push, RESULT merge, 배포 요청/재시도/성공/실패, 도메인 연결/해제, preview 재시작, 인프라 설정 변경 요청/적용/거절 등 16종 액션(`AuditAction`, `category`는 `GITHUB`/`DEPLOYMENT`/`DOMAIN`/`INFRA` 4종)이 발생할 때 서버 내부 훅에서만 남는다.
+이 엔드포인트는 감사 로그를 **읽기만** 한다. 감사 행을 만들거나 수정·삭제하는 공개 API는 없다 — 기록은 GitHub 저장소 생성/연결/해제/삭제, preview 브랜치 push, RESULT merge, 배포 요청/재시도/성공/실패, 도메인 연결/해제, preview 재시작, 인프라 설정 변경 요청/적용/거절, 배포 EC2 서버 자동 복구 시도/실패(`SERVER_RECOVERY_ATTEMPTED`/`SERVER_RECOVERY_FAILED`, 헬스 모니터가 무응답 앱을 재시작한 시스템 이벤트) 등 18종 액션(`AuditAction`, `category`는 `GITHUB`/`DEPLOYMENT`/`DOMAIN`/`INFRA` 4종)이 발생할 때 서버 내부 훅에서만 남는다.
 
 - `detail`/`errorSummary`에는 토큰·시크릿·환경변수 값·로그 본문을 저장하지 않는다. `errorSummary`는 저장 전 시크릿 패턴 레닥션(`SecretRedactor`)을 거친다.
 - 보관 기간은 기본 180일(`qeploy.audit.retention-days`)이며, 만료 행은 시간당 배치 스케줄러(`qeploy.audit.retention-sweep-interval-ms`, 기본 3600000ms)가 삭제한다. 삭제 결과를 조회하는 API는 없다(애플리케이션 로그로만 확인 가능).
@@ -1204,6 +1349,7 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 - 응답에는 평문이 없다. `maskedApiKey` 는 앞 6자만 남긴다(`sk-ant****`) — 접두사는 벤더별로 거의 상수라 식별용이고, 꼬리는 실제 엔트로피라 노출하지 않는다.
 - 도메인·엔티티 모두 `toString` 을 두지 않아 로그로 새지 않는다. 실행 시에는 컨테이너 exec 환경변수로만 전달되어 `docker inspect` 나 명령행(`/proc`)에 남지 않는다.
 - 공백·제어문자가 섞인 키는 400. 환경변수로 그대로 주입되는 값이라 개행이 붙은 채 조용히 받지 않는다.
+- 요청 본문 `{ apiKey(필수, ≤512자), label(선택, ≤64자) }`. 키가 6자 이하면 `maskedApiKey`는 `****`다.
 
 ### 16.4 미등록 시 동작
 
@@ -1215,7 +1361,7 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 
 ### 16.6 저장 스키마
 
-`ai_provider_credentials`(V44): `user_id`, `provider`, `encrypted_api_key`, `label`, timestamps. `UNIQUE(user_id, provider)` + 사용자 삭제 시 CASCADE.
+`ai_provider_credentials`(V55): `user_id`, `provider`, `encrypted_api_key`, `label`, timestamps. `UNIQUE(user_id, provider)` + 사용자 삭제 시 CASCADE.
 
 ---
 
@@ -1316,13 +1462,124 @@ FE 는 `demoUrl` 을 iframe `src` 에, `thumbnailUrl` 을 `img src` 에 넣는�
 
 - `Authorization: Bearer qp_...` — 필터가 `qp_` 접두사로 PAT 경로를 고른다. JWT 파싱을 먼저 시도하는 방식은 에이전트 요청마다 예외를 던진다.
 - 스코프 `READ`/`WRITE` 2종. **HTTP 메서드로 강제**한다 — `READ` 토큰은 GET 만 가능하고 변경 메서드는 **403**. 엔드포인트별 애노테이션이면 새 엔드포인트가 누군가 애노테이션을 기억한 날에야 보호되지만, 메서드 기준은 작성한 날부터 덮인다.
+- **`WRITE` 도 모든 쓰기가 아니다(#453).** PAT로 통과하는 쓰기는 허용 목록(`JwtAuthenticationFilter.PAT_WRITABLE`)의 다섯 개뿐이다.
+
+  | Method | Path |
+  |---|---|
+  | POST | `/api/v1/projects/{projectId}/deployments` |
+  | POST | `/api/v1/deployments/{deploymentId}/retry` |
+  | POST | `/api/v1/projects/{projectId}/environment-variables` |
+  | PATCH | `/api/v1/projects/{projectId}/environment-variables/{variableId}` |
+  | POST | `/api/v1/projects/{projectId}/domains` |
+
+  나머지 변경 메서드(승인 결정, PAT 발급·폐기, AI 키, 클라우드 연결, 각종 삭제 등)는 `WRITE` 토큰이어도 **403**이다. 그 전에는 WRITE PAT가 브라우저 로그인과 같은 권한이라, 에이전트가 저장된 토큰으로 자기 승인을 누르거나 PAT로 PAT를 재발급할 수 있었다. 거부 목록이 아니라 허용 목록이라 새 엔드포인트는 누군가 열기 전까지 닫혀 있다. 에이전트에 쓰기를 새로 열 때는 이 목록에 한 줄을 더하고, `agent-tools/packages/client`의 쓰기 호출이 목록 밖으로 나가면 `JwtAuthenticationFilterTest`가 깨진다. 브라우저 JWT는 영향이 없다.
+- 403 메시지는 두 가지다: READ 토큰의 쓰기 → "이 토큰은 읽기 전용입니다. write 스코프 토큰이 필요합니다." / 허용 목록 밖의 쓰기 → "이 작업은 개인 액세스 토큰으로 할 수 없습니다. 웹에서 진행해주세요." 본문은 `{"code":"FORBIDDEN","message":"..."}`이다.
 - 403 이지 401 이 아니다. 인증 자체는 성공했으므로 재인증하러 보낼 일이 아니다.
 - 미상·만료·폐기는 전부 **401** 로 동일하다. 어느 쪽인지 알려주지 않는다.
 - **만료는 스코프마다 다르다** — `READ` 기본 90일·최대 365일, `WRITE` 기본 30일·최대 90일. 유출됐을 때 할 수 있는 일이 다르기 때문이다: `READ` 는 소유자가 이미 볼 수 있는 것을 드러내지만 `WRITE` 는 배포하고 환경변수를 바꾸고 도메인을 붙이며, 그것도 아무도 화면을 보고 있지 않은 헤드리스 클라이언트에서 일어난다. 상한이 있어야 아무도 기억하지 못하는 토큰이 스스로 멈춘다.
 - 범위를 벗어나면 400 이고, 메시지에 스코프를 넣는다 — 365일 요청은 그 토큰이 배포할 수 있다는 걸 알기 전까지 합리적이라, 상한만 알려주면 왜 답이 달라졌는지 알 수 없다.
 - `last_used_at` 은 1시간 스로틀로 갱신한다(매 요청 UPDATE 를 인증 경로에 얹지 않는다).
+- 만료된 토큰은 바로 지우지 않고 30일 유예(`qeploy.api-token.expired-grace-days`) 뒤 매일 03:00 정리에서 삭제한다(#338) — 그동안 목록에 "만료됨"으로 남아 인증이 왜 깨졌는지 알 수 있다.
+- 폐기(`DELETE`)는 행을 즉시 삭제한다(소유자 범위 삭제라 남의 토큰 ID는 404).
 
 ### 18.4 저장 스키마
 
 `api_tokens`(V60): `user_id`, `token_hash`(UNIQUE), `token_prefix`, `scope`, `label`, `expires_at`, `last_used_at`. 사용자 삭제 시 CASCADE.
 
+---
+
+## 19. Provisioning API (사용자 AWS 계정의 EC2·DB)
+
+백엔드 앱(또는 웹 전용 프론트)을 사용자 AWS 계정의 EC2 에, DB 를 RDS 나 EC2 위 컨테이너에 만든다. 과금 자원은 **항상 승인을 거친다** — 프로젝트 Chat 승인 정책(§6.9)으로 끌 수 없다. 모두 프로젝트에 선택된(§6.6) 클라우드 연결을 쓴다.
+
+### 19.1 엔드포인트 (7개)
+
+| Method | Path | 기능 |
+|---|---|---|
+| POST | `/api/v1/projects/{projectId}/servers` | EC2 서버 생성 요청(승인 대기 행 + `SERVER_PROVISION` 승인 생성) |
+| GET | `/api/v1/projects/{projectId}/servers` | 프로젝트 EC2 서버 목록(최신순, 순수 DB 조회 — 상시 폴링 안전) |
+| POST | `/api/v1/servers/{serverId}/terminate` | 서버 종료(멱등, `200` 본문 없음) |
+| GET | `/api/v1/servers/{serverId}/logs` | 인스턴스 최근 로그(SSM Run Command — 수 초 걸리는 외부 호출) |
+| GET | `/api/v1/projects/{projectId}/databases` | 프로젝트 DB 목록(순수 DB 조회 — 상시 폴링 안전) |
+| POST | `/api/v1/projects/{projectId}/databases` | DB 생성 요청 |
+| DELETE | `/api/v1/databases/{databaseId}` | DB 삭제(멱등, `204`) |
+
+PAT(§18)로는 이 중 **조회(GET)만** 된다. 쓰기 메서드는 `WRITE` 토큰이어도 `403`(PAT 쓰기 허용 목록 밖).
+
+### 19.2 EC2 서버 생성
+
+```json
+{
+  "instanceType": "t3.micro",
+  "deployMode": "DOCKER",
+  "bundledDbEngine": "MYSQL",
+  "frontendRepo": null,
+  "frontendDir": "frontend",
+  "apiPathPrefix": "/api",
+  "webOnly": false
+}
+```
+
+본문은 생략할 수 있다(전부 기본값).
+
+- `instanceType`: 생략 시 `t3.micro`.
+- `deployMode`: `NATIVE`(jar 를 `java -jar`, 기본) | `DOCKER`(저장소 Dockerfile 로 이미지 빌드 후 `docker run`). 그 외 값은 `400`.
+- `bundledDbEngine`: `MYSQL` | `POSTGRESQL`. 같은 EC2 에 DB 컨테이너를 compose 로 함께 띄운다. `DOCKER` 에서만 쓸 수 있다.
+- `frontendRepo`(별도 프론트 저장소 `owner/repo`) / `frontendDir`(하위 폴더): 하나라도 있으면 같은 EC2 에 nginx 프론트 컨테이너를 함께 띄운다. `apiPathPrefix`(기본 `/api`, 콤마로 여러 개)만 백엔드로 프록시한다. `DOCKER` 에서만 쓸 수 있다.
+- `webOnly=true`: 백엔드 없이 프론트 nginx 만 띄운다(독립 프론트 EC2). 프론트 소스가 필요하고 번들 DB 는 쓸 수 없다. `POST /deployments` 의 `frontendHostingType=EC2`(§10.1)가 이 경로를 쓴다.
+
+응답(`200`): `{ "requiresApproval": true, "serverId": 42, "approvalIds": [101] }` — 항상 승인 대기다.
+
+오류:
+
+- `404`: 프로젝트에 선택된 클라우드 연결이 없거나 요청자 소유가 아님
+- `409`: 연결이 `CONNECTED` 가 아님 / `webOnly` 인데 프론트 소스 없음 / `webOnly` + 번들 DB / 번들 DB·프론트 컨테이너인데 `deployMode≠DOCKER`
+- `400`: `deployMode`·`bundledDbEngine` 미지원 값
+
+승인 이후:
+
+- `POST /approvals/{approvalId}/approve`(standalone 승인, `taskId=null`): 연결이 `CONNECTED` 인지 다시 확인하고 `QUEUED` 로 넘긴다. 실제 빌드·인스턴스 생성은 배포 worker 가 트랜잭션 밖에서 한다. 이때 연결이 해제됐거나 `CONNECTED` 가 아니면 `409` 이고 승인 상태도 함께 롤백된다.
+- `POST /approvals/{approvalId}/reject`: AWS 자원을 만들기 전이라 대기 행만 `FAILED`(`errorCode=null`)로 닫는다.
+- 같은 종류(`webOnly` 같음)의 진행 중 서버가 있는 상태에서 다시 요청하면 **재배포**다. 새 서버가 `RUNNING` 이 되면 옛 서버의 EIP 를 새 인스턴스로 옮기고 옛 서버를 종료한다(블루그린). IP 가 그대로라 도메인·인증서는 건드리지 않는다.
+- 대화의 `BACKEND_DEPLOY` 스텝도 같은 서비스로 대기 행과 승인을 만든다(승인 카드가 그 대화에 뜬다).
+
+### 19.3 서버 목록 응답(`ServerResponse`)
+
+| 필드 | 설명 |
+|---|---|
+| `serverId`, `projectId`, `instanceType`, `instanceId` | |
+| `status` | `PENDING`(승인 대기) → `QUEUED` → `BUILDING` → `PROVISIONING` → `RUNNING`, 또는 `FAILED` / `TERMINATED`. 전이 상태(`QUEUED`·`BUILDING`·`PROVISIONING`)면 폴링, 종료 상태(`RUNNING`·`FAILED`·`TERMINATED`)면 정지 |
+| `webOnly` | 독립 프론트 서버면 `true` |
+| `host`, `port` | EIP, 앱 포트(8080 고정) |
+| `url` | `RUNNING` 일 때만 `http://{host}:{port}` |
+| `domainUrl` | 이 서버 종류(백엔드/프론트)에 연결된 도메인이 있고 `RUNNING` 일 때만 `https://{hostname}` — Caddy 가 443 을 종단 |
+| `errorCode` | `IAM_PERMISSION` · `QUOTA_EXCEEDED` · `ENGINE_UNSUPPORTED` · `PROVIDER_ERROR` · `INVALID_CREDENTIAL`. 사용자 거부는 `null` |
+| `errorMessage` | 실패 상세 |
+| `healthy`, `lastHealthCheckAt` | `RUNNING` 이후 주기 TCP 헬스체크. `false` 면 인스턴스는 살아 있으나 앱 무응답 |
+| `recoveryAttemptedAt` | 무응답 감지 후 자동 재시작을 시도한 시각(회복되면 `null`) |
+| `hasBootDiagnostics` | 부트 타임아웃으로 실패하며 부트 로그를 보존했는지 |
+| `createdAt`, `updatedAt` | |
+
+`INVALID_CREDENTIAL`(#429)은 클라우드 연결의 자격이 만료/무효라는 뜻이다. 권한 부족(`IAM_PERMISSION`)과 달리 정책이 아니라 **자격을 다시 등록**해야 한다. 이때 연결 상태도 `INVALID_CREDENTIAL` 로 바뀐다(§12).
+
+### 19.4 서버 종료·로그, TLS 확인
+
+- `terminate`: 인스턴스 종료 후 EIP release, 그 IP 를 가리키던 도메인의 Cloudflare 레코드 삭제, SSM 파라미터·S3/ECR 아티팩트를 정리한다. 인스턴스 종료 외에는 best-effort 다. 이미 `TERMINATED` 면 그냥 지나간다. 남의 서버는 `404`.
+- `logs?source=`: `APP`(기본) · `BOOT`(cloud-init, "왜 안 떴나") · `CADDY`(HTTPS). 최근 약 200줄. `RUNNING`·`PROVISIONING` 서버만 조회되고 그 외는 `409` 다. 예외는 `source=BOOT` 이면서 보존된 부트 로그가 있는 경우로, 종료된 서버도 보존본을 돌려준다. 인스턴스가 아직 없어도 `409`.
+- `GET /api/v1/tls/allow?domain={hostname}`(**인증 불필요**, `DomainTlsController`): EC2 인스턴스의 Caddy 가 on-demand TLS 인증서를 받기 전에 묻는 게이트다. 등록된 EC2 도메인(`hostingTarget` 이 `AWS`·`AWS_EC2_FRONTEND`)이면 `200`, 아니면 `404`(본문 없음).
+
+### 19.5 DB 생성
+
+```json
+{ "method": "RDS", "engine": "POSTGRESQL" }
+```
+
+- `method`: `LOCAL`(실행 중인 프리뷰 컨테이너 옆 DB 컨테이너, 테스트용·무과금) | `RDS` | `DOCKER`(사용자 AWS EC2 위 DB 컨테이너). `engine`: `POSTGRESQL` | `MYSQL`. 둘 다 필수(`400`).
+- 응답(`200`)은 method 와 무관하게 같은 형태다: `{ requiresApproval, database, taskId, approvalIds }`.
+  - `LOCAL`: 즉시 만든다. `requiresApproval=false` 이고 `database` 에 접속정보와 **`password`(이 응답에서 1회만)**, `expiresAt`(기본 30분, `qeploy.provisioning.local-ttl`)이 실린다. ACTIVE 프리뷰가 없으면 `404`.
+  - `RDS`/`DOCKER`: 대기 행과 `DATABASE_PROVISION` standalone 승인을 만든다. `requiresApproval=true`, `approvalIds` 채움, `database=null`. 선택된 클라우드 연결이 없으면 `404`, `CONNECTED` 가 아니면 `409`.
+- 승인하면 생성을 시작해 `PROVISIONING`, 상태 worker 가 `READY` 로 올린다. 거절하면 `FAILED`(`errorCode=null`).
+
+목록(`ProvisionedDatabaseResponse`): `databaseId`, `projectId`, `method`, `engine`, `origin`(`MANUAL` | `PREVIEW_AUTO` — 서버형 프리뷰가 자동 마련), `status`(`PENDING`·`PROVISIONING` 은 폴링 / `READY`·`FAILED`·`EXPIRED` 는 정지), `host`·`port`(`READY` 전 `null`), `database`, `username`, `expiresAt`(LOCAL 만), `errorCode`(열린 문자열), `errorMessage`, `createdAt`, `updatedAt`. **조회 응답에는 `password` 가 없다.** 시각은 오프셋을 포함한다(`+09:00`).
+
+`DELETE`: RDS 는 생성에 쓴 연결로 인스턴스를 삭제하고 DOCKER 는 EC2 를 정리한다. LOCAL 은 컨테이너를 정리한다. 끝나면 `EXPIRED`. 이미 `EXPIRED` 면 그냥 지나간다. 남의 DB 는 `404`.

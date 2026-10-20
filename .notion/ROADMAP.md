@@ -1,6 +1,6 @@
 # Qeploy 단위(Unit) 파이프라인 로드맵
 
-> 기준일: 2026-08-15 · 기준 커밋: 0635569 · 코드 실측 기반
+> 기준일: 2026-10-20 · 기준 커밋: 02a2240 · 코드 실측 기반
 
 이 문서는 `danto/<도메인>` 단위 작업 파이프라인의 SSOT다. 우선순위, 진행 상태, 세션 인계 정보를 이 문서 하나로 관리한다.
 
@@ -10,6 +10,7 @@
 
 ## 1. 현재 상태
 
+- 2026-10-20(2차): **#469 의 실제 원인 — 플래너가 쓰는 `instruction` 의 언어 — 을 고쳐 운영에 올렸다 — main 배포 완료 — PR #476 `ec99acf`(#475 `02a2240`).** 아래 1차의 #470 은 Codex·Claude Code 경로(`CodingAgentWorkspaceBridge`)만 고쳤는데, 영어 요약이 관측된 GLM 과 OpenAI·Anthropic 의 CODE 는 `CodeAgentService` 툴 루프를 탄다. 툴 루프는 이미 "요청과 같은 언어로" 를 요구하지만 모델이 보는 '요청' 은 사용자 원문이 아니라 플래너(`DecisionAgentService`)가 쓴 `instruction` 이었고, 플래너는 `userSummary` 에만 언어를 지정하고 있었다 — 한국어 요청 → 영어 instruction → 영어 요약. 플래너 프롬프트에 "instruction 도 사용자가 쓴 언어로" 를 넣었다(`DecisionAgentServiceTest`, 되돌리면 실패). dev 실측(`02a2240`, GLM, 프로젝트 8): 한국어 요청의 결과 승인 카드 요약이 한국어로 나왔다 — **표본 1건**. 배포 직후 운영 API 200×3. DB 마이그레이션 없음. 이슈 #469 종료(10-20). **남은 것**: Trusted Publisher 등록(사용자), FE login 문구 두 줄(FE 세션), `#344` 9-2(측정 선행, 이슈는 열려 있음), WRITE PAT 403 실측·Cloudflare(사용자). **미릴리스 없음**(develop = main 트리 `02a2240`).
 - 2026-10-20: **agent-tools 를 npm 에 공개하고(#451), 결과 요약 언어(#469)·`qeploy login` PAT 붙여넣기(#471)와 함께 운영에 올렸다 — main 배포 완료 — PR #473 `f33735c`.** npm `@qeploy/client`·`@qeploy/mcp` 0.1.0, `@qeploy/cli` 0.1.1(조직 `qeploy`, 계정 2FA 보안 키). 레지스트리 실물로 `npx` 실행 확인. FE #132 로 "준비 중" 덮개를 걷었다. 다음 버전부터는 Actions **Publish agent-tools to npm**(Trusted Publishing, `workflow_dispatch`) — **npmjs.com 의 세 패키지 각각에 Trusted Publisher 등록이 필요하다(미등록)**. 손으로 올릴 때는 일반 터미널에서(에이전트 셸은 `EOTP`). `agent-tools/.gitignore` 가 lock 을 빼고 있어 워크플로는 `npm ci` 가 아니라 `npm install` 이다. #469 는 코딩 에이전트 프롬프트에 응답 언어를 적은 것으로, **모델이 실제로 따르는지는 미확인**(dev 프론트는 로컬 실행, `VITE_API_URL=http://54.251.165.129/api/v1`). 같은 릴리스에 팀원 #467(프리뷰 egress 세션별 접속 상한, 설정 3개 기본값 있음). 이슈 #429·#332·#413 종료. **남은 것**: #469 실측, Trusted Publisher 등록(사용자), FE login 문구 두 줄(FE 세션), `#344` 9-2(측정 선행), WRITE PAT 403 실측·Cloudflare(사용자). **미릴리스 없음**.
 - 2026-10-18: **승인 안내 메시지 정리(#457)와 작업물 없이 마감한 태스크(#461)를 운영에 올렸다 — main 배포 완료 — PR #459 `99a0102` · #463 `1f229c1`.** #457: 승인 대기 채팅 메시지에서 카드와 겹치는 줄·원시 enum 을 빼고 `ApprovalTypeLabel`(FE `approvalCopy.ts` 제목과 같은 문구) 한 줄로 바꿨다. #461: 시스템이 `REPOSITORY_BINDING` 승인을 닫아(프리뷰 회수·7일 방치) 작업물이 사라진 태스크에는 `AGENT_RESULT` 를 붙이지 않고(`RepositoryBindingGate.closedWithoutArtifact`), 마감 안내는 새 kind `TASK_CLOSED` 로 남긴다 — 사용자가 직접 거절한 경우는 결과를 그대로 낸다. DB·FE 변경 없음(FE 는 모르는 kind 를 기본 무게로 그린다). **#401 운영 확인 완료**(승인 #49, 10-15 19:39 `CANCELLED`, 태스크 `DONE`). 이슈 #429·#332·#413 은 코드·main 기준으로 끝난 것을 확인하고 닫았다. **남은 것**: 실제 WRITE PAT 로 403 실측(사용자 토큰 필요), npm 배포(#451, 보류 — `@qeploy` 스코프 선점은 사용자), `#344` 9-2(측정 선행), Cloudflare 라우팅(사용자), BYOK 모델이 결과 요약을 영어로 쓰는 문제(범위 밖, 미등록), `TASK_CLOSED` 화면 확인(FE, 자연 발생 시). **미릴리스 없음**.
 - 2026-10-15: **WRITE PAT 가 브라우저와 같은 쓰기 권한이던 구멍을 막았다(#453) — main 배포 완료 — PR #455 `aeea6a6`.** PAT 쓰기는 허용 목록 5개(배포 생성·재시도, 환경변수 추가·수정, 도메인 추가)만 통과, 승인·토큰 발급/폐기·AI 키·클라우드 연결·삭제는 403. 목록은 `JwtAuthenticationFilter.PAT_WRITABLE`, agent-tools 클라이언트와 테스트로 대조. FE: MCP 안내 "준비 중" 덮개 운영 반영(FE #128), 주석 PR FE #130 사용자 머지 대기. **남은 것**: dev/운영에서 실제 WRITE PAT 로 403 확인(사용자 토큰 필요, 미실측), npm 배포(#451, 보류 결정), ~~FE #401 화면 확인~~ → 10-15 운영 확인, ~~`unhakjace` 설치 재승인(#414)~~ → 14:58 재승인 확인(probe `어긋난 설치 0개`), #414 종료. **미릴리스 없음**.
@@ -374,10 +375,10 @@
 
 ## 2. 단위(Unit) 파이프라인 규칙
 
-- 단위 1개 = **이슈 1개 + 브랜치 1개(`danto/<도메인>`) + PR 1개**. Issue/Commit/PR 형식은 `agent.md`를 따른다.
+- 단위 1개 = **이슈 1개 + 브랜치(`<이름>/<도메인>`, base `develop`)**. PR 은 스쿼시 커밋 1개 단위이고, 한 이슈가 여러 PR 로 나뉠 수 있다(#414 는 PR 9개). Issue/Commit/PR 형식은 `agent.md`를 따른다.
 - 완료 기준(Definition of Done):
   1. `./gradlew test` 통과
-  2. 해당 영역의 FE 플로우 확인 — FE 정본 repo(`/Users/otter/Dvely_FE_test`) 기준으로 관련 화면/API 호출이 깨지지 않는지 확인한다. 내부 사본(FE 코드가 이 저장소 안에 있다면)은 구버전이므로 판단 근거로 쓰지 않는다.
+  2. 해당 영역의 FE 플로우 확인 — 운영 FE 저장소 `Dvely/Dvely_FE`(로컬 `/Users/otter/Dvely/Dvely_FE`) 기준으로 관련 화면/API 호출이 깨지지 않는지 확인한다. `Dvely_FE_test`(API 시험용, 2026-07-19 이후 갱신 없음)와 이 저장소 안의 `Dvely_FE_test/` 사본(gitignore)은 판단 근거로 쓰지 않는다.
 - 단위 착수 전 관련 `BACKLOG_STATUS.md` BI 항목과 `state.md` 해당 절을 확인해 중복 작업을 피한다.
 - 단위 완료 후 `api.md`/`connection.md`/`state.md`/`BACKLOG_STATUS.md` 중 실제로 바뀐 부분을 함께 갱신한다(Timothy 담당 또는 담당자 합의).
 - 민감한 작업(예: 실 API 키/시크릿 이관)은 사용자 승인 후 착수한다.
@@ -405,9 +406,9 @@
 | AD | `danto/audit-log` | **완료 (2026-07-25)** | BI-188~192·195(부분) (EPIC 17) | 감사 로그 도메인 신설 — `audit_logs`(V30, FK 0개) + 16종 액션 카탈로그 + 서비스 10곳 훅 + 조회 API 1개(90→91) + retention 180일. BI-195는 부분 완료(후속 분리, 아래 참고). Issue #74 / PR #75 머지 |
 | AE | `danto/preview-exposure` | **완료 (2026-07-25)** | BI-081/G1 (EPIC 07/17) | preview 컨테이너 호스트 포트를 루프백에만 바인딩해 외부 직접 접근 차단(G1). 644/644, 리뷰 APPROVE(Low 2, L1 반영). Issue #76 / PR #78 머지, main `af221a7` |
 | AG | `danto/preview-gateway-authz` | **완료 (2026-08-15)** | - | preview 게이트웨이 인가 — G2(소유권 쿠키 발급 `POST /preview-sessions/{id}/access` + 게이트웨이 401) · G4(발급 시 accessToken 회전). 726/726, DDL 없음. Issue #77 / PR #104 머지, main `113abf0`. FE 연동 `Dvely_FE` PR #30 머지·배포 완료 |
-| U-sec | `danto/security` | **보류 — 사용자 승인 필요** | - | 🔴 실 OpenAI API 키 등 민감정보의 env 이관, 추적/로그에 남은 민감정보 정리 |
-| CA | `danto/coding-agent-byok` | **머지 준비 완료 (2026-09-05) · PR #245 CI 성공** | EPIC 05 (Agent) | 외부 AI 코딩 에이전트 개인계정 연동(BYOK). 사용자 본인 공식 API 키로 Claude Code / Codex CLI를 격리 컨테이너에서 헤드리스 실행. 변형 A(서버측) 1차 범위. 구독 임베딩·세션 가로채기·우회는 비목표. 설계 `docs/byok-coding-agent-design.md`, 요구사항 `srs.md`, PRD 부록 A-1. V45(develop 이 V43·V44 연속 선점). PR 5분할 + 실측 수정 3건, 커밋 10개, 테스트 1166개 통과, CI 성공. Issue #242. **CODE 스텝 배선은 Issue #325 로 분리** — 실행기·자격증명·라우팅은 다 있으나 제품 플로우가 부르지 않는 휴면 상태다. Claude 경로 실검증도 그 안에 있다(`state.md` §4.21) |
-| SEC-preview | (미착수) | **설계 확정 · unhak 인계 (2026-09-11)** | EPIC 07 (Preview) | 프리뷰 컨테이너의 사용자 코드 실행 격리 — 워크스페이스 소유자를 node 로 통일. `cap-drop ALL` 이 `DAC_OVERRIDE` 를 떼는 것이 설계를 결정한다(root 가 node 소유 트리에 못 씀 → 주인이 하나여야 함). 순서: 빌드 컨테이너 분리 → 워크스페이스를 처음부터 node → exec 기본 뒤집기 → (별건) egress 허용목록. Issue #332, `state.md` §4.25 |
+| U-sec | `danto/security` | **완료 (2026-09-20) · PR #365 머지** | - | 실 API 키 등 민감정보 정리 — 서버 키 경로 자체를 없애고 AI 실행을 BYOK 전용으로 바꿨다(Issue #364). 추적/로그 민감정보는 `SecretRedactor`·docker-java 로거 핀(#425)으로 정리. `state.md` §3.15·§4.32 |
+| CA | `danto/coding-agent-byok` | **완료 (2026-09-07) · PR #245 머지** | EPIC 05 (Agent) | 외부 AI 코딩 에이전트 개인계정 연동(BYOK). 사용자 본인 공식 API 키로 Claude Code / Codex CLI를 격리 컨테이너에서 헤드리스 실행. 변형 A(서버측) 1차 범위. 구독 임베딩·세션 가로채기·우회는 비목표. 설계 `docs/byok-coding-agent-design.md`, 요구사항 `srs.md`, PRD 부록 A-1. V45(develop 이 V43·V44 연속 선점). PR 5분할 + 실측 수정 3건, 커밋 10개, 테스트 1166개 통과, CI 성공. Issue #242. CODE 스텝 배선은 Issue #325 로 분리했고 2026-09-10 완료(이슈 종료)됐다(`state.md` §4.21) |
+| SEC-preview | (unhak) | **완료 (2026-10-18 이슈 종료)** — 1~3단계 적용, egress 허용목록은 기본 비활성 | EPIC 07 (Preview) | 프리뷰 컨테이너의 사용자 코드 실행 격리 — 워크스페이스 소유자를 node 로 통일. `cap-drop ALL` 이 `DAC_OVERRIDE` 를 떼는 것이 설계를 결정한다(root 가 node 소유 트리에 못 씀 → 주인이 하나여야 함). 순서: 빌드 컨테이너 분리 → 워크스페이스를 처음부터 node → exec 기본 뒤집기 → (별건) egress 허용목록. Issue #332, `state.md` §4.25·§4.28·§4.30. egress 프록시 접속 상한은 #466 에서 세션별로 바꿨다 |
 | PAT | `danto/agent-pat` | **완료 (2026-09-10) · PR #306 머지** | EPIC 05 (Agent) | 에이전트용 개인 액세스 토큰. MC 단위의 유일한 선행 요건. 해시 저장, `qp_` 접두사 필터 분기, 스코프는 HTTP 메서드로 강제. 엔드포인트 3개, V60. 실 서버 HTTP 검증 10건 통과. Issue #304, `state.md` §4.22, `api.md` §18 |
 | MC | `danto/agent-pat` | **완료 (2026-09-10) · PR #306 머지** | EPIC 05 (Agent) | 에이전트 연동 — MCP 서버 + npm CLI 오픈소스 제공. 사용자의 Claude Code·Codex 가 Qeploy 를 도구로 호출한다(CA 와 방향이 반대라 컴플라이언스 이슈 없음, AI 비용 0). 선행: 개인 액세스 토큰(PAT) — 현행 JWT 는 1시간이라 헤드리스 불가. 설계 `docs/qeploy-mcp-cli-design.md`, 요구사항 `srs.md` §B, PRD 부록 A-2 |
 
@@ -419,10 +420,10 @@
 - ~~**Issue #117** 라우터 basename 고정 앱이 프리뷰에서 빈 화면~~ — **완료(2026-09-10 close)**
 
 > ⚠️ 위 셋은 **2026-09-24 에 확인해 보니 이미 닫혀 있었는데 이 절만 "1순위 후보" 로 남아 있었다.** 같은 형태가 같은 날 한 번 더 있었다 — #367·#370·#372·#376 이 main 에 반영된 뒤에도 열려 있었다(`Closes #N` 이 `develop` 대상 PR 에 있으면 GitHub 이 자동으로 닫지 않는다). **develop-first 흐름에서는 릴리스 뒤 이슈를 수동으로 닫고 이 절도 같이 손대야 한다.** 원장이 끝난 일을 1순위로 가리키면 다음 세션이 그걸 다시 판다.
-- EPIC 18 운영 지표(BI-196~201), Preview 런타임 확장(BI-079·085~087·090~092), 도메인 확장(BI-141·142), AWS/GCP 실배포(BI-130·131 — IaC 설계 선행)
-- BI-195 후속 분리분(EPIC 17, `.agent-team/04-architecture/ad-audit-log-design.md` §9 분할 근거): GitHub App 설치 권한 재검토·축소, G5 컨테이너 `/tmp/.git-credentials` 평문 개선 — 보안 성격이라 `U-sec`에 인접하며, 아직 이슈 미신설(착수 전 범위·우선순위를 사용자와 확인)
+- EPIC 18 운영 지표(BI-196~201), Preview 런타임 확장(BI-079·085~087 — BI-090~092 는 2026-10-20 대조에서 Done 확인), 도메인 확장(BI-141·142), GCP 배포(BI-130 은 AWS 만 있어 Doing, BI-131 — IaC 설계 선행)
+- ~~BI-195 후속 분리분~~ — **완료.** GitHub App 설치 권한 확인·축소(#414, 2026-10-15 종료), G5 컨테이너 git 자격 평문 제거(#413, 2026-10-18 종료). 남은 관찰(사용자 OAuth 토큰 → installation 토큰 전환, `administration` 권한)은 `state.md` §3.15
 
-Audit Log(Issue #74, BI-188~192)는 완료했다(2026-07-25, §1 참고). Issue #62(결과 승인 리뷰 Low 등급 잔여)·#64(배포 재시도 TOCTOU 경합)도 각각 PR #68·PR #67로 이미 완료되었다(§1의 2026-07-19 항목 참고) — 이 목록에 남아 있던 것은 §1을 갱신한 뒤 이 절을 함께 갱신하지 않아 발생한 지연이었다(이번 개정에서 정정). `U-sec`는 실 OpenAI API 키 이관을 포함하므로 민감 작업으로 분류되어 있으며 여전히 사용자 승인 전까지 보류한다. 우선순위가 바뀌면 이 표를 먼저 갱신한다.
+Audit Log(Issue #74, BI-188~192)는 완료했다(2026-07-25, §1 참고). Issue #62(결과 승인 리뷰 Low 등급 잔여)·#64(배포 재시도 TOCTOU 경합)도 각각 PR #68·PR #67로 이미 완료되었다(§1의 2026-07-19 항목 참고) — 이 목록에 남아 있던 것은 §1을 갱신한 뒤 이 절을 함께 갱신하지 않아 발생한 지연이었다(이번 개정에서 정정). `U-sec`·`CA`·`SEC-preview`·BI-195 후속도 같은 이유로 2026-10-20 에 상태를 바로잡았다. 우선순위가 바뀌면 이 표를 먼저 갱신한다.
 
 ---
 

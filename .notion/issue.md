@@ -1,6 +1,7 @@
 # Issue 작성 규칙
 
 > 기준일: 2026-07-17 · 기준 커밋: 34fe578 · 코드 실측 기반
+> 개정: 2026-10-20 · 기준 커밋: 02a2240 — Title 에서 `Issue {Letter}: ` 를 뺐고, 이슈와 PR 의 관계를 실제 관행(이슈 1개 = PR 여러 개 가능)에 맞췄다
 
 type 목록, 브랜치 규칙, 이슈 번호 표기 등 컨벤션 SSOT는 `agent.md`다. 이 파일은 Issue 템플릿만 다룬다.
 
@@ -8,12 +9,14 @@ type 목록, 브랜치 규칙, 이슈 번호 표기 등 컨벤션 SSOT는 `agent
 항상 아래 형식을 사용한다.
 
 ```markdown
-Issue {Letter}: [{Module}] {작업 요약}
+[{Module}] {작업 요약}
 ```
 
 예:
-- `Issue C: [Project+Chat] API 테스트 중 발견된 저장소 플로우 및 대화 복구 보정`
-- `Issue D: [DomainBinding] 도메인 연결 및 Cloudflare/GitHub Pages 연동 추가`
+- `[Agent] CODE 작업 결과 요약이 영어로 나온다 — 코딩 에이전트 프롬프트에 응답 언어가 없다` (#469)
+- `[Auth] WRITE PAT 가 승인·토큰 발급 등 브라우저 전용 쓰기까지 호출할 수 있다` (#453)
+
+#367(2026-09-21)까지는 앞에 `Issue {Letter}: ` 를 붙였다(예: `Issue AW: [Auth] ...`). #370(2026-09-22)부터는 붙이지 않는다 — 문자가 겹친 적이 있어(`AY`·`AZ` 가 각각 두 번) 이슈는 번호로 가리킨다(`agent.md` Issue Title 참조).
 
 ## Body
 항상 아래 템플릿을 사용한다.
@@ -48,7 +51,8 @@ Issue {Letter}: [{Module}] {작업 요약}
 ```
 
 ## 작성 원칙
-- 이슈는 PR 하나로 끝낼 수 있는 단위로 작성한다. `ROADMAP.md`의 단위(Unit)는 이슈 1개 + 브랜치 1개(`danto/<도메인>`) + PR 1개로 구성한다.
+- Task list 의 항목 하나가 PR 하나다. 이슈 하나는 PR 여러 개로 끝날 수 있다(실측: #414 는 develop 대상 PR 9개). PR 마다 브랜치 하나(`<이름>/<도메인>`)를 쓰고 base 는 `develop` 이다.
+- base 가 `develop` 인 PR 의 `Closes #N` 은 이슈를 닫지 않는다. 운영(`main`) 반영을 확인한 뒤 릴리스 PR 번호를 남기고 수동으로 닫는다.
 - 기존 동작을 바로잡는 작업은 "기능 추가"보다 "수정/보정" 표현을 우선 사용한다.
 - 프론트엔드 테스트 콘솔처럼 실제 PR에 포함하지 않을 변경은 제외 범위 또는 참고에만 적는다.
 - Issue title에는 `fix`, `feat`, `refactor` 같은 commit type을 넣지 않는다.
