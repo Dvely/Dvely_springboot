@@ -45,12 +45,14 @@ CLI를 함께 내는 이유는 셋이다. MCP를 지원하지 않는 환경을 �
 ## 패키지 구조
 
 ```
-qeploy-agent-tools/            (별도 저장소, MIT)
+agent-tools/                   (이 저장소 안, 패키지별 MIT)
 ├─ packages/
 │  ├─ client/    @qeploy/client      REST 클라이언트 + 타입 (공용)
 │  ├─ mcp/       @qeploy/mcp         MCP 서버 (stdio)
 │  └─ cli/       @qeploy/cli         npm CLI
 ```
+
+처음에는 별도 저장소(`qeploy-agent-tools`)로 설계했지만, API 와 함께 반복하려고 이 저장소의 `agent-tools/` 에 두었다. 떼어내는 시점은 오픈소스 공개를 결정할 때다(`agent-tools/README.md`).
 
 사용:
 
