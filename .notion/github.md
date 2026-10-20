@@ -1,6 +1,7 @@
 # Commit, Issue, PR 작성 가이드
 
 > 기준일: 2026-07-17 · 기준 커밋: 34fe578 · 코드 실측 기반
+> 개정: 2026-10-20 · 기준 커밋: 02a2240 — Issue 제목(`Issue {Letter}:` 제거), 릴리스 PR, 다중 이슈 표기, 브랜치·base 를 `agent.md` 개정에 맞췄다
 
 <aside>
 🔧
@@ -14,18 +15,22 @@
 Issue, Commit, PR 작성안은 항상 아래 형식을 기준으로 한다.
 
 ```text
-Issue Title  : Issue {Letter}: [{Module}] {작업 요약}
+Issue Title  : [{Module}] {작업 요약}
 Commit       : {type}({scope}): {작업 요약} [ #IssueNumber ]
 PR Title     : [{Module}] {작업 요약} [ #IssueNumber ]
+Release PR   : [Release] {운영에 나가는 변경 요약} [ #IssueA #IssueB ]   (develop → main)
 ```
 
 예:
 
 ```text
-Issue D: [DomainBinding] 도메인 연결 및 Cloudflare/GitHub Pages 연동 추가
+[DomainBinding] 도메인 연결 및 Cloudflare/GitHub Pages 연동 추가
 config(domainbinding): Cloudflare 설정을 yml 관리 방식으로 전환 [ #IssueNumber ]
 [Config] Cloudflare 설정을 yml 관리 방식으로 전환 [ #IssueNumber ]
+[Release] 결과 요약 언어·프리뷰 프록시 접속 상한·agent-tools npm 배포 [ #469 ]
 ```
+
+Issue 제목 앞의 `Issue {Letter}: ` 는 #370(2026-09-22)부터 쓰지 않는다(`agent.md` Issue Title 참조).
 
 ## Type 기준
 
@@ -43,11 +48,11 @@ config(domainbinding): Cloudflare 설정을 yml 관리 방식으로 전환 [ #Is
 
 ## 주의
 
-- 이슈 번호는 대괄호 안에 공백을 넣는 형식을 사용한다. `[ #11 ]`이 표준이고, `[#11]`은 사용하지 않는다(`agent.md` 참조).
+- 이슈 번호는 대괄호 안에 공백을 넣는 형식을 사용한다. `[ #11 ]`이 표준이고, `[#11]`은 사용하지 않는다(`agent.md` 참조). 여러 개면 대괄호 하나 안에 공백으로 나열한다: `[ #423 #425 #414 ]`.
 - Issue title에는 commit type을 넣지 않는다.
 - PR title에는 Issue 번호를 붙인다.
 - 로컬 환경 파일, 시크릿, 개인 개발용 설정은 커밋/PR에 포함하지 않는다.
-- 브랜치는 `danto/<도메인>` 규칙을 기본으로 한다(`agent.md` 브랜치 규칙 참조).
+- 브랜치는 `<이름>/<도메인>` 규칙을 기본으로 하고(예: `danto/coding-agent-byok`, `unhak/backend-eip`), PR 의 base 는 `develop` 이다(`agent.md` 브랜치 규칙 참조).
 
 # Issue Body
 

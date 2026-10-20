@@ -1,8 +1,8 @@
 # Qeploy Backend Backlog Board
 
-> 기준일: 2026-07-25 · 기준 커밋: af221a7 · 코드 실측 기반
+> 기준일: 2026-10-20 · 기준 커밋: 02a2240 · 코드 실측 기반 (Todo·Doing·Backlog 23개는 전수 재대조, Done 은 2026-09-30 이후 이슈가 닿은 항목만 재확인)
 
-검토일: 2026-07-03 (최초 작성), 2026-07-18 갱신(U3~U7·Issue #45·Cost & Budget·Cloud Ops Agent·Issue #56 완료분 반영), 2026-07-25 갱신(Issue #74 Audit Log — BI-188~192 Done, BI-195 부분 완료 반영), 2026-07-25 갱신(Issue #76/PR #78 Preview 외부 노출 차단 — BI-081 Done 반영)
+검토일: 2026-07-03 (최초 작성), 2026-07-18 갱신(U3~U7·Issue #45·Cost & Budget·Cloud Ops Agent·Issue #56 완료분 반영), 2026-07-25 갱신(Issue #74 Audit Log — BI-188~192 Done, BI-195 부분 완료 반영), 2026-07-25 갱신(Issue #76/PR #78 Preview 외부 노출 차단 — BI-081 Done 반영), 2026-10-20 갱신(남은 23개 코드 재대조 — BI-090~092·BI-195 Done, BI-130 Doing, 2026-09-30 이후 종료 이슈 반영)
 기준: PRD 백로그 201개 항목을 현재 코드, DB migration, API controller, service, test와 대조
 검증: `./gradlew test` 통과 (2026-07-03 시점 최초 검증, Issue #56은 PR #61 머지 시점 514/514 보고 기준, Issue #74는 PR #75 머지 시점 641/641 보고 기준, Issue #76은 PR #78 머지 시점 644/644 보고 기준 — 리뷰어 `.agent-team/10-review/ad-audit-review.md`·`.agent-team/10-review/ae-preview-exposure-review.md`가 각각 직접 실행해 확인)
 
@@ -24,9 +24,9 @@ Issue #56(결과 승인 2단계)은 PRD 201개 백로그 원장에 대응 BI 번
 | Status | Count | 의미 |
 | --- | ---: | --- |
 | Todo | 3 | MVP 기준 다음에 바로 넣을 작업 |
-| Doing | 11 | 일부 구현됐지만 완성 기준이 남은 작업 |
-| Backlog | 9 | MVP 이후 확장 작업 |
-| Done | 159 | 현재 구현 완료로 판단되는 작업 |
+| Doing | 9 | 일부 구현됐지만 완성 기준이 남은 작업 |
+| Backlog | 7 | MVP 이후 확장 작업 |
+| Done | 163 | 현재 구현 완료로 판단되는 작업 |
 | Removed | 19 | 제품 흐름과 맞지 않거나 다른 task로 흡수할 작업 |
 
 이 보드의 남은 Todo/Doing/Backlog 항목은 `.notion/ROADMAP.md`의 "이후 백로그"(Audit Log → Issue #55~#57)로 재편성되었다. 두 문서가 다르면 `ROADMAP.md`를 우선한다.
@@ -41,13 +41,23 @@ Issue #56(결과 승인 2단계)은 PRD 201개 백로그 원장에 대응 BI 번
 
 2026-07-25 5차 갱신: Preview 컨테이너 외부 노출 차단(Issue #76/PR #78, BI-081)이 완료되어 1개 항목을 Todo → Done으로 이동했다. 범위는 G1(컨테이너 호스트 포트가 `0.0.0.0`에 퍼블리시되어 게이트웨이·accessToken·Spring Security를 우회하던 결함)만이며, G2(게이트웨이 소유권/JWT 미검증)·G4(accessToken 회전·폐기 없음)는 Issue #77로 분리되어 아직 Todo/Doing 어디에도 등재되지 않았다(무헤더 accessToken이 iframe 임베딩을 위한 의도된 설계라 FE 조율 후 착수, `ROADMAP.md` AG 항목 참고).
 
+2026-10-20 6차 갱신: 남은 23개(Todo 3·Doing 11·Backlog 9)를 코드와 다시 대조하고 2026-09-30 이후 닫힌 이슈를 반영했다. 7-25 이후 이 보드는 BI-195 메모 한 줄 말고는 손대지 않아, 9월 초에 구현된 것이 Doing/Backlog 에 그대로 남아 있었다. 상태가 바뀐 것은 5개다.
+
+- **BI-090·091·092 Doing → Done**: 프리뷰 런타임 3종(`PreviewRuntimeType` — `STATIC`·`NODE_SERVER`·`JAVA_FULLSTACK`)과 서버형 프리뷰의 LOCAL DB 자동 프로비저닝이 2026-09-01 에 들어왔다(PR #178·#179, `PreviewRuntimeLauncher`, AgentType `RUNTIME_SETUP`, `state.md` §3.5). 단 `JAVA_FULLSTACK` 은 실제 에이전트 파이프라인으로 검증한 기록이 없다(`docs/pending-actions.md` §2-2).
+- **BI-130 Backlog → Doing**: AWS 배포 실행은 있다 — EC2 백엔드(`Ec2Provisioner`·`BackendDeployRunner`), RDS, S3 정적 호스팅 + CloudFront·ACM, 프로비저닝 워커 9개(2026-09-02~09-06, `state.md` §3.11). GCP 어댑터는 없다.
+- **BI-195 Backlog → Done**: 남은 후속 이슈 둘이 닫혔다 — #414(2026-10-15 종료: App 권한을 API·대시보드로 실측하고 불필요한 `checks` 권한 + `check_run` 구독을 두 App 등록 모두에서 제거), #413(2026-10-18 종료: 컨테이너 git 자격 파일을 없애고 exec env 로만 전달, PR #418·#419. installation 토큰 축소는 전제가 틀려 하지 않기로 결론 — `docs/pending-actions.md` §0-1).
+
+상태는 그대로지만 메모를 고친 Done 항목: BI-081(G2·G4 는 Issue #77/PR #104 로 2026-08-15 완료 — "미착수" 표기가 낡아 있었다), BI-112·BI-186·BI-172(2026-09-21 #364 이후 배포 실패 분석은 룰 기반 전용), BI-116(#429 자격 실패를 연결 상태로 반영·임시 자격 등록 거부), BI-157(#415 운영 배포에 PREVIEW 변수가 섞이던 결함 수정), BI-194(#332 프리뷰 컨테이너 node 실행·egress 허용목록, #466 egress 세션별 접속 상한).
+
+PRD 201개 원장에 BI 번호가 없는 2026-09 이후 작업 — BYOK(#242·#325·#364), PAT·MCP·CLI(#304·#451·#453·#471), 퍼블리싱 템플릿(#318), 성능 10개 단위(#335~#345 — 그중 #344 는 9-2 만 남아 열려 있다), 결과 승인·프리뷰 회수 정합(#376·#380·#401·#461), 응답 언어(#469) 등 — 은 이 보드에 올리지 않는다(`ROADMAP.md`·`state.md` 참고).
+
 ## Todo
 
 ### EPIC 14. Project Settings API
 
 - [ ] **BI-163** · `P1` · `BE` · Version Policy Settings API
 - [ ] **BI-164** · `P1` · `BE` · Deployment Defaults API
-- [ ] **BI-165** · `P1` · `BE` · Domain Settings API
+- [ ] **BI-165** · `P1` · `BE` · Domain Settings API — 설정 경로(`/settings/`)에는 없지만 도메인 관리 자체는 `DomainBindingController`·`DomainTlsController` 로 있다. 남은 것은 설정 화면용 계약을 따로 둘지의 결정(`state.md` §3.8)
 
 ## Doing
 
@@ -65,9 +75,10 @@ Issue #56(결과 승인 2단계)은 PRD 201개 백로그 원장에 대응 BI 번
 - [ ] **BI-085** · `P1` · `Infra` · 의존성 캐시 구현
 - [ ] **BI-086** · `P1` · `Infra` · 빌드 캐시 구현
 - [ ] **BI-087** · `P1` · `Infra` · 이미지 캐시 구현
-- [ ] **BI-090** · `P2` · `Infra` · 백엔드 프로젝트 preview 지원
-- [ ] **BI-091** · `P2` · `Infra` · 풀스택 프로젝트 preview 지원
-- [ ] **BI-092** · `P2` · `Infra` · DB 필요 프로젝트 preview 지원
+
+### EPIC 10. AWS / GCP Infra
+
+- [ ] **BI-130** · `P1` · `Infra` · AWS/GCP 배포 실행 구조 — **AWS 완료, GCP 미구현** (2026-10-20 Backlog → Doing). AWS: EC2 백엔드(`Ec2Provisioner`·`BackendDeployRunner`), RDS(`RdsProvisioner`), S3 정적 호스팅 + CloudFront·ACM, 프로비저닝 워커 9개(2026-09-02~09-06, `state.md` §3.11). GCP 프로비저닝 어댑터는 없다(`CloudProvider.GCP` 는 연결·검증까지)
 
 ### EPIC 11. Domain / DNS / HTTPS
 
@@ -78,12 +89,7 @@ Issue #56(결과 승인 2단계)은 PRD 201개 백로그 원장에 대응 BI 번
 
 ### EPIC 10. AWS / GCP Infra
 
-- [ ] **BI-130** · `P1` · `Infra` · AWS/GCP 배포 실행 구조
-- [ ] **BI-131** · `P2` · `Infra` · IaC 실행 구조 설계
-
-### EPIC 17. Security / Audit
-
-- [ ] **BI-195** · `P1` · `BE` · 권한 최소화 정책 적용 — **부분 완료** (2026-07-25, Issue #74/PR #75). 완료분: 감사 로그 접근 최소화(소유자 404, 관리자/전체 조회 표면 없음)·데이터 최소화(레닥션·화이트리스트)·권한 사용 가시화(카탈로그 16종). 후속분(미착수, **2026-09-30 이슈 신설**): GitHub App 설치 권한 재검토·축소 → **#414**, G5 컨테이너 `/tmp/.git-credentials` 평문 개선 → **#413**. 아래 EPIC 17 Done의 BI-188~192 참고
+- [ ] **BI-131** · `P2` · `Infra` · IaC 실행 구조 설계 — 지금은 SDK 직접 호출이고 terraform·cloudformation 0건(`state.md` §3.11)
 
 ### EPIC 18. Success Metrics
 
@@ -182,12 +188,15 @@ Issue #56(결과 승인 2단계)은 PRD 201개 백로그 원장에 대응 BI 번
 - [x] **BI-077** · `P0` · `Infra` · 의존성 설치 자동화
 - [x] **BI-078** · `P0` · `Infra` · 빌드 명령 자동 실행
 - [x] **BI-080** · `P0` · `Infra` · Preview 내부 프록시 생성
-- [x] **BI-081** · `P1` · `Infra` · 외부 공개 URL 차단 — G1만 완료 (2026-07-25, Issue #76 / PR #78. `DockerContainerService` 호스트 포트 바인딩을 `bindIpAndPort("127.0.0.1", 0)`으로 전환해 컨테이너 포트의 `0.0.0.0` 외부 퍼블리시를 차단, 게이트웨이 프록시 경로는 무영향). G2(게이트웨이 소유권/JWT 미검증)·G4(accessToken 회전·폐기 없음)는 Issue #77로 분리, 미착수
+- [x] **BI-081** · `P1` · `Infra` · 외부 공개 URL 차단 — G1만 완료 (2026-07-25, Issue #76 / PR #78. `DockerContainerService` 호스트 포트 바인딩을 `bindIpAndPort("127.0.0.1", 0)`으로 전환해 컨테이너 포트의 `0.0.0.0` 외부 퍼블리시를 차단, 게이트웨이 프록시 경로는 무영향). G2(게이트웨이 소유권/JWT 미검증)·G4(accessToken 회전·폐기 없음)는 Issue #77로 분리 → **2026-08-15 완료**(PR #104 — 소유권 쿠키 발급 `POST /preview-sessions/{id}/access` + 게이트웨이 401, 발급 시 accessToken 회전. FE `Dvely_FE` PR #30)
 - [x] **BI-082** · `P0` · `BE` · 컨테이너 상태 조회 API — 완료 (2026-07-18, ROADMAP U4, PR #47. `GET /preview-sessions/{id}/status`)
 - [x] **BI-083** · `P0` · `Infra` · 컨테이너 로그 수집 — 완료 (2026-07-18, ROADMAP U4, PR #47. `GET /preview-sessions/{id}/logs`)
 - [x] **BI-084** · `P1` · `Infra` · 미사용 컨테이너 자동 종료
 - [x] **BI-088** · `P0` · `Infra` · 정적 프로젝트 preview 지원
 - [x] **BI-089** · `P0` · `Infra` · React 프로젝트 preview 지원
+- [x] **BI-090** · `P2` · `Infra` · 백엔드 프로젝트 preview 지원 — 완료 (2026-09-01, PR #178·#179. 2026-10-20 Doing → Done). `PreviewRuntimeType.NODE_SERVER`(앱 자체 서버가 3000 에서 UI+API)·`JAVA_FULLSTACK`(합본 이미지 + 내부 nginx 가 `/api`→Java). 런타임은 `PreviewRuntimeDetector` 가 추정하고 `PUT /projects/{id}/preview/runtime` 으로 덮는다. `JAVA_FULLSTACK` 은 실 파이프라인 검증 기록 없음(`docs/pending-actions.md` §2-2)
+- [x] **BI-091** · `P2` · `Infra` · 풀스택 프로젝트 preview 지원 — 완료 (2026-09-01, BI-090 과 같은 PR). JS 풀스택은 `NODE_SERVER`(React+Express, Next.js 등), Java 백엔드 + 정적 FE 는 `JAVA_FULLSTACK`. 게이트웨이는 런타임과 무관하게 무변경
+- [x] **BI-092** · `P2` · `Infra` · DB 필요 프로젝트 preview 지원 — 완료 (2026-09-01. 2026-10-20 Doing → Done). 서버형 프리뷰가 부팅될 때 세션 전용 LOCAL DB 컨테이너를 자동 프로비저닝하고(`PreviewRuntimeLauncher.autoProvisionDbBestEffort`) 접속값을 `PreviewEnvComposer` 가 exec env 로 주입한다
 
 ### EPIC 08. Approval System
 
@@ -213,14 +222,14 @@ Issue #56(결과 승인 2단계)은 PRD 201개 백로그 원장에 대응 BI 번
 - [x] **BI-109** · `P0` · `BE` · 배포 상태 관리
 - [x] **BI-110** · `P0` · `BE` · 배포 URL 저장
 - [x] **BI-111** · `P0` · `BE` · 배포 실패 감지
-- [x] **BI-112** · `P1` · `BE` · 배포 실패 원인 분석 — 완료 (2026-07-18, ROADMAP U6, Issue #48 / PR #50. `POST/GET /deployments/{id}/failure-analysis`, LLM+룰 fallback)
+- [x] **BI-112** · `P1` · `BE` · 배포 실패 원인 분석 — 완료 (2026-07-18, ROADMAP U6, Issue #48 / PR #50. `POST/GET /deployments/{id}/failure-analysis`, LLM+룰 fallback). **2026-09-21(#364/PR #365)부터 룰 기반 전용** — 사용자가 제공자를 고르지 않는 자리라 BYOK 로 돌릴 수 없어 LLM 경로를 걷었다(`analysisSource` 는 항상 `RULE_BASED`)
 - [x] **BI-113** · `P1` · `BE` · 배포 재시도 API — 완료 (2026-07-18, ROADMAP U6, Issue #48 / PR #50. `POST /deployments/{id}/retry`)
 - [x] **BI-114** · `P1` · `BE` · 특정 버전 재배포
 - [x] **BI-115** · `P1` · `BE` · 배포 결과 검증
 
 ### EPIC 10. AWS / GCP Infra
 
-- [x] **BI-116** · `P1` · `Infra` · AWS 계정 연결 처리
+- [x] **BI-116** · `P1` · `Infra` · AWS 계정 연결 처리 — 보정(#429, 2026-10-04~05): 저장된 자격이 만료·무효가 되면 연결 상태를 `INVALID_CREDENTIAL` 로 되돌린다(`AwsCredentialFailureReporter`, PR #437·#446). STS 임시 자격(`ASIA`)은 등록 시점에 400 으로 거부한다(PR #441, `prd.md` 부록 A-5)
 - [x] **BI-117** · `P1` · `Infra` · GCP 계정 연결 처리
 - [x] **BI-118** · `P1` · `BE` · 클라우드 제공자 설정 저장
 - [x] **BI-119** · `P1` · `BE` · 연결 클라우드 계정 저장
@@ -259,7 +268,7 @@ Issue #56(결과 승인 2단계)은 PRD 201개 백로그 원장에 대응 BI 번
 - [x] **BI-154** · `P0` · `BE` · 환경변수 추가 API — `POST /projects/{id}/environment-variables`
 - [x] **BI-155** · `P0` · `BE` · 환경변수 수정 API — `PATCH /projects/{id}/environment-variables/{variableId}`
 - [x] **BI-156** · `P0` · `BE` · 환경변수 삭제 API — `DELETE /projects/{id}/environment-variables/{variableId}`
-- [x] **BI-157** · `P0` · `BE` · Preview / Production 환경 분리 — `EnvironmentScope.PREVIEW/PRODUCTION`(COMMON 없음, 설계상 의도적 보류)
+- [x] **BI-157** · `P0` · `BE` · Preview / Production 환경 분리 — `EnvironmentScope.PREVIEW/PRODUCTION`(COMMON 없음, 설계상 의도적 보류). 보정(#415, 2026-09-30 PR #416): EC2 백엔드 배포(`BackendDeployRunner`)가 전 스코프를 끌어와 PREVIEW 값이 운영 서버에 주입되던 결함을 `resolve(projectId, PRODUCTION)` 으로 고쳤다
 - [x] **BI-158** · `P0` · `BE` · Secret 값 암호화 저장 — secret 여부와 무관하게 값 전체 AES-256-GCM
 - [x] **BI-159** · `P0` · `BE` · Secret 값 마스킹 응답 — `secret=true`는 모든 응답에서 `value=null`
 - [x] **BI-160** · `P1` · `BE` · 환경값 변경 이력 저장 — `environment_variable_histories`(값 자체는 미저장, append-only)
@@ -277,7 +286,7 @@ Issue #56(결과 승인 2단계)은 PRD 201개 백로그 원장에 대응 BI 번
 
 - [x] **BI-170** · `P1` · `Infra` · 서버 상태 확인 기능 — 완료 (2026-07-18, Issue #54 / PR #59. `STATUS_CHECK`, 배포/Preview/클라우드연결/인프라설정 4행 고정 템플릿)
 - [x] **BI-171** · `P1` · `Infra` · 서버 로그 조회 기능 — `LOG_VIEW`, ACTIVE preview 컨테이너 stdout/stderr tail 50줄/2000자
-- [x] **BI-172** · `P1` · `BE` · 장애 원인 분석 기능 — `FAILURE_ANALYSIS`, U6 `DeploymentFailureAnalysisService` 재사용
+- [x] **BI-172** · `P1` · `BE` · 장애 원인 분석 기능 — `FAILURE_ANALYSIS`, U6 `DeploymentFailureAnalysisService` 재사용(2026-09-21부터 룰 기반 전용, BI-112 참고)
 - [x] **BI-173** · `P1` · `Infra` · 서버 재시작 기능 — `RESTART`, ACTIVE preview 세션 한정, INFRA_OPERATION 승인 대상
 - [x] **BI-176** · `P1` · `BE` · 서비스 영향 작업 감지 — `InfraOperation.serviceImpact`/`impactMarkers()`
 - [x] **BI-177** · `P1` · `BE` · 비용 증가 작업 감지 — `InfraOperation.costImpact`/`impactMarkers()`
@@ -290,18 +299,19 @@ Issue #56(결과 승인 2단계)은 PRD 201개 백로그 원장에 대응 BI 번
 - [x] **BI-183** · `P0` · `BE` · 최선 수정안 1개 생성
 - [x] **BI-184** · `P0` · `BE` · 수정안 승인 후 코드 수정
 - [x] **BI-185** · `P0` · `Infra` · 수정 후 재빌드 실행
-- [x] **BI-186** · `P1` · `BE` · 배포 실패 원인 분석 — 완료 (2026-07-18, ROADMAP U6, Issue #48 / PR #50. BI-112과 동일 API, EPIC 16 관점 중복 항목)
+- [x] **BI-186** · `P1` · `BE` · 배포 실패 원인 분석 — 완료 (2026-07-18, ROADMAP U6, Issue #48 / PR #50. BI-112과 동일 API, EPIC 16 관점 중복 항목). 2026-09-21부터 룰 기반 전용(BI-112 참고)
 - [x] **BI-187** · `P1` · `BE` · 오류 해결 이력 저장
 
 ### EPIC 17. Security / Audit
 
 - [x] **BI-193** · `P0` · `BE` · 위험 작업 이중 확인 처리
-- [x] **BI-194** · `P0` · `Infra` · Preview 컨테이너 격리 정책 — 완료 (2026-07-18, ROADMAP U4, Issue #42 / PR #47. 메모리 1GiB/CPU 1코어/pids 256/capDrop ALL+3/no-new-privileges/전용 네트워크 icc=false)
+- [x] **BI-194** · `P0` · `Infra` · Preview 컨테이너 격리 정책 — 완료 (2026-07-18, ROADMAP U4, Issue #42 / PR #47. 메모리 1GiB/CPU 1코어/pids 256/capDrop ALL+3/no-new-privileges/전용 네트워크 icc=false). 후속 강화: #332(프리뷰 컨테이너가 Qeploy API 에 닿던 경로 차단, 사용자 코드를 root 가 아니라 `node` 로 실행, egress 허용목록 프록시 — 기본 비활성, 2026-09-11~09-15), #466(egress 프록시 접속 상한을 세션마다 걸어 한 프리뷰가 다른 프리뷰의 설치를 막지 못하게, 2026-10-19 PR #467)
 - [x] **BI-188** · `P1` · `BE` · 감사 로그 모델 설계 — 완료 (2026-07-25, Issue #74 / PR #75. V30 `audit_logs`, FK 0개, 인덱스 3개, `audit` 도메인 4계층 신설)
 - [x] **BI-189** · `P1` · `BE` · GitHub 작업 로그 저장 — 완료 (2026-07-25, Issue #74 / PR #75. 레포 생성/연결/해제/삭제, preview push, RESULT merge 6종 액션)
 - [x] **BI-190** · `P1` · `BE` · 배포 작업 로그 저장 — 완료 (2026-07-25, Issue #74 / PR #75. 요청/재시도/성공/실패 4종 액션)
 - [x] **BI-191** · `P1` · `BE` · 도메인 작업 로그 저장 — 완료 (2026-07-25, Issue #74 / PR #75. 연결/해제 2종 액션 — 삭제 시 행이 사라지는 `domain_bindings`의 유일한 잔존 기록)
 - [x] **BI-192** · `P1` · `BE` · 인프라 작업 로그 저장 — 완료 (2026-07-25, Issue #74 / PR #75. preview 재시작, 인프라 설정 변경 요청/적용/거절 4종 액션)
+- [x] **BI-195** · `P1` · `BE` · 권한 최소화 정책 적용 — 완료 (2026-10-18, 2026-10-20 Backlog → Done). 1차(2026-07-25, Issue #74/PR #75): 감사 로그 접근 최소화(소유자 404, 관리자/전체 조회 표면 없음)·데이터 최소화(레닥션·화이트리스트)·권한 사용 가시화(카탈로그 16종). 후속 둘(2026-09-30 이슈 신설): **#414**(2026-10-15 종료) GitHub App 권한을 코드에서 도출하고(`docs/github-app-permissions.md`) API·대시보드로 실측, 불필요한 `checks` 권한 + `check_run` 구독을 dev·운영 두 등록 모두에서 제거. **#413**(2026-10-18 종료) G5 — 컨테이너 `/tmp/.git-credentials` 파일을 없애고 토큰을 exec env + 인라인 credential helper 로만 전달(PR #418·#419). installation 토큰으로 좁히는 안은 컨테이너가 사용자 OAuth 토큰을 쓰므로 노출이 줄지 않아 하지 않기로 결론(PR #448, `docs/pending-actions.md` §0-1). 인접: PAT 쓰기를 허용 목록 5개로 좁힘(#453, PR #454)
 
 ## Removed
 
@@ -321,8 +331,9 @@ Issue #56(결과 승인 2단계)은 PRD 201개 백로그 원장에 대응 BI 번
 
 U1~U7, Issue #45, Cost & Budget, Cloud Ops Agent, Issue #56(결과 승인 2단계), Issue #74(Audit Log, BI-188~192), Issue #76(Preview 외부 노출 차단, BI-081/G1)이 모두 완료(2026-07-25)되어 이전 스프린트 목표는 모두 처리되었다. 다음 우선순위는 `ROADMAP.md` "이후 백로그" 순서를 따른다.
 
-1. ~~`BI-188~192·195` Audit Log(EPIC 17 나머지)~~ — BI-188~192 완료, 1순위 소진(2026-07-25, Issue #74/PR #75). BI-195는 부분 완료(위 EPIC 17 Backlog 참고)
-2. ~~`BI-081` 외부 공개 URL 차단~~ — G1 완료, 2순위 소진(2026-07-25, Issue #76/PR #78). 잔여 G2/G4는 Issue #77(FE 조율 후 착수, 이 보드에는 아직 미등재)로 분리
-3. `BI-163~165` 나머지 Project Settings(Version Policy/Deployment Defaults/Domain)를 채운다. — 다음 단위 1순위
-4. Issue #55(Agent 오케스트레이션 하드닝)·#57(E2E 결함 H1/M3)·#62(결과 승인 리뷰 Low 등급 잔여)를 처리한다 — Cost/CloudOps/결과 승인 리뷰에서 파생. (`ROADMAP.md` 기준 #55·#57·#62 B3는 이미 완료 처리된 것으로 보임 — 이 보드 항목은 이번 개정에서 재검증하지 않음, 확인 필요)
-5. 실제 AWS/GCP 프로비저닝(`BI-130~131` 등)은 IaC 설계가 선행되어야 하므로 후순위로 유지한다.
+1. ~~`BI-188~192·195` Audit Log(EPIC 17 나머지)~~ — BI-188~192 완료, 1순위 소진(2026-07-25, Issue #74/PR #75). ~~BI-195는 부분 완료~~ → 후속 #414·#413 종료로 **완료**(2026-10-18, 위 EPIC 17 Done 참고)
+2. ~~`BI-081` 외부 공개 URL 차단~~ — G1 완료, 2순위 소진(2026-07-25, Issue #76/PR #78). ~~잔여 G2/G4는 Issue #77로 분리~~ → **완료**(2026-08-15, PR #104)
+3. `BI-163~165` 나머지 Project Settings(Version Policy/Deployment Defaults/Domain)를 채운다. — 다음 단위 1순위(2026-10-20 재확인: `settings/` 경로에 셋 다 없음. BI-165 는 계약 결정이 먼저 — 위 Todo 참고)
+4. ~~Issue #55(Agent 오케스트레이션 하드닝)·#57(E2E 결함 H1/M3)·#62(결과 승인 리뷰 Low 등급 잔여)를 처리한다~~ — **셋 다 2026-07-18~19 종료 확인**(2026-10-20, GitHub 이슈 상태로 재검증)
+5. ~~실제 AWS/GCP 프로비저닝(`BI-130~131` 등)은 IaC 설계가 선행되어야 하므로 후순위로 유지한다.~~ — IaC 없이 SDK 직접 호출로 **AWS 배포가 먼저 들어왔다**(2026-09-02~09-06, BI-130 Doing). 남은 것은 GCP 어댑터(BI-130)와 IaC(BI-131)
+6. 그 밖의 남은 Doing·Backlog — 커밋 메시지 자동 생성(BI-037 — preview 브랜치 커밋 메시지는 여전히 `feat: apply Qeploy Agent task <taskId>` 고정 문구)·프로젝트 컨텍스트 수집(BI-051), Preview 캐시(BI-085~087)·실행 명령 추론(BI-079 — 런타임 타입 추정 `PreviewRuntimeDetector` 는 있다), 도메인 변경·www 리디렉션(BI-142·141 — 도메인은 연결·해제만 있고 변경 경로가 없다), 운영 지표(EPIC 18, BI-196~201 — Micrometer·`MeterRegistry` 0건)는 2026-10-20 재대조에서도 상태가 그대로다

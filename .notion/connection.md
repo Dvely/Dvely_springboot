@@ -1,6 +1,6 @@
 # Qeploy 모듈 연계 흐름
 
-> 기준일: 2026-08-15 · 기준 커밋: 8ba8c11 · 코드 실측 기반
+> 기준일: 2026-10-20 · 기준 커밋: 02a2240 · 코드 실측 기반
 
 ## 1. 문서 목적
 
@@ -10,7 +10,7 @@
 - PRD의 목표 흐름과 현재 흐름은 어디가 다른가
 - 앞으로 어떤 연결을 추가해야 전체 사용자 여정이 완성되는가
 
-기준일: 2026-07-18
+기준일: 2026-10-20 (상단 표기와 같다. 2026-09-28 이후 커밋은 §7.3·§8.1·§18.1·§18.5·§19 에 이슈 번호로 반영했다)
 
 표기:
 
@@ -44,7 +44,7 @@ Decision Agent    Webhook(workflow_run/push/pull_request/installation)
    ├─→ Chat Agent(ChatAgentService, LLM 응답)
    └─→ Cloud Ops Agent(InfraOpsAgentService) ──→ 상태/로그/장애분석/재시작(§8.6)
         ↓
-   Approval (CHANGE/DEPLOYMENT/DOMAIN_BINDING/INFRA_OPERATION/RESULT)
+   Approval (CHANGE/DEPLOYMENT/DOMAIN_BINDING/DOMAIN_UNBIND/INFRA_OPERATION/RESULT/REPOSITORY_BINDING/DATABASE_PROVISION/SERVER_PROVISION — `api.md` §14.3)
         ↑ Agent 기반(taskId 있음, Cloud Ops RESTART·RESULT 포함) 또는 standalone(taskId=NULL, Infrastructure Configuration 저장)
 
 DomainBinding ──→ Cloudflare + GitHub Pages custom domain
@@ -56,7 +56,7 @@ CloudConnection ──→ DB 저장 + 실제 STS/IAM 검증(verification job)
                 └─ 실제 클라우드 프로비저닝과는 아직 미연결(desired state와 추정치만 저장/계산)
 
 Environment ──→ 프로젝트별 환경변수/Secret CRUD + 이력(암호화 저장)
-    └─ EnvironmentValueResolver(port)만 존재, Preview/Deployment 런타임 실주입 미연결
+    └─ EnvironmentValueResolver(port) ──→ 서버형 프리뷰(PREVIEW, PreviewEnvComposer) · EC2 백엔드 배포(PRODUCTION, BackendDeployRunner)
 
 Project Settings(Chat/Infrastructure/Repository/Environment/Infrastructure Configuration/Cost & Budget) ──→ Agent 승인 정책 / CloudConnection 선택 / 저장소 정보 / 환경변수 / 인프라 설정 / 비용·예산
 
@@ -69,14 +69,14 @@ AuditRecorder(횡단) ──→ Project/Deploy Agent/ResultApprovalGate/ResultAp
 - Chat 메시지 저장은 Decision Agent 실행으로 바로 이어진다(더 이상 별도 진입점이 아니다. §7 참고). CHAT으로 분류된 요청은 `ChatAgentService`가, 서버/서비스 운영 질의는 Cloud Ops Agent가 처리한다(§8 참고).
 - Agent task, plan, PreviewSession은 DB에 영속화되며 DB queue worker가 lease로 실행을 claim한다(메모리 전용이 아니다. §8 참고).
 - PreviewSession은 Agent를 거치지 않는 경로로도 만들어진다(Issue #94): `Project → ProjectPreviewService → Docker PreviewSession(task_id NULL)`. 준비(clone/build/serve)는 `previewExecutor`에서 비동기로 돌고, 절차 자체는 CODE 스텝과 `PreviewWorkspaceService`를 공유한다.
-- Deployment는 GitHub Pages만 실행한다.
-- CloudConnection은 등록 후 실제 STS/IAM 검증을 거치며, 프로젝트 Infrastructure 설정에서 선택할 수 있다. 다만 실제 배포/운영에는 아직 사용되지 않는다.
-- Environment/Secrets는 저장·조회·이력까지는 완비되어 있으나, Preview/Deployment 실행에 실제로 주입되는 연결은 아직 없다(§8.5, §14.2 참고).
+- Deployment는 프로젝트 `frontendHostingType` 으로 갈린다 — `GITHUB_PAGES`(workflow), `S3`(사용자 AWS 버킷, worker 안에서 동기 완료), `EC2`(Provisioning 의 웹 전용 서버로 위임, `SERVER_PROVISION` 승인). 백엔드는 Provisioning(EC2·RDS/EC2 DB)이 사용자 AWS 계정에 만든다(`api.md` §10.1·§19, `state.md` §3.11).
+- CloudConnection은 등록 후 실제 STS/IAM 검증을 거치며, 프로젝트 Infrastructure 설정에서 선택할 수 있다. 선택된 `CONNECTED` 연결이 EC2 서버·DB 프로비저닝, S3 프론트 배포, S3 프론트 HTTPS(CloudFront+ACM)의 자격이 된다. 실작업이 자격 오류로 실패하면 연결 상태가 `INVALID_CREDENTIAL` 로 바뀐다(#429). GCP 는 검증까지만 있다.
+- Environment/Secrets는 저장·조회·이력에 더해 실행에도 주입된다 — 서버형 프리뷰에는 `PREVIEW` 스코프만, EC2 백엔드 배포에는 `PRODUCTION` 스코프만(#415). 정적 프리뷰·GitHub Pages·S3 정적 배포에는 주입하지 않는다(§14.2, `state.md` §3.0).
 - 배포가 실패하면 온디맨드 원인 분석(룰 기반)과 승인 없는 재시도가 가능하다(§10.5 참고).
 - Approval은 Agent task 기반뿐 아니라 API 직접 생성 standalone 승인도 지원한다. `INFRA_OPERATION` 타입은 두 출처를 모두 가지는 유일한 유형이다(standalone: 인프라 설정 저장, §13.2 / Agent 기반: Cloud Ops RESTART, §8.6).
 - Cloud Ops Agent(§8.6)는 새 HTTP 엔드포인트 없이 기존 Chat/Agent 흐름을 확장한다. 실제 프로비저닝된 서버가 없다는 사실을 매 상태 조회마다 명시한다(정직한 전제).
 - CODE 작업 결과를 main에 반영(git merge)하는 것과 실제로 배포(Pages 공개)하는 것은 이제 서로 다른 단계다(§9.3, 결과 승인 게이트). merge 권한은 기본적으로 결과 승인에 있으며, 직접 배포 API는 신규 프로젝트의 첫 배포에서만 예외적으로 자동 merge한다.
-- Approval, Change, Preview(Gateway/Session/운영 API), Project Settings(Chat/Infrastructure/Repository/Environment/Infrastructure Configuration/Cost & Budget) 모듈은 존재한다. Import와 실제 Cloud 프로비저닝(IaC apply, 실 서버 운영) API는 아직 없다.
+- Approval, Change, Preview(Gateway/Session/운영 API), Project Settings(Chat/Infrastructure/Repository/Environment/Infrastructure Configuration/Cost & Budget) 모듈은 존재한다. Import API 와 IaC plan/apply 는 아직 없다. 실제 AWS 리소스 생성은 Provisioning 모듈(EC2·DB, `api.md` §19)이 SDK 로 직접 한다 — 인프라 설정(Configuration, desired state)은 그 경로가 읽지 않는다.
 
 ---
 
@@ -89,16 +89,17 @@ AuditRecorder(횡단) ──→ Project/Deploy Agent/ResultApprovalGate/ResultAp
 | Project | 프로젝트 CRUD, 저장소 연결/해제, Overview, Chat/Infrastructure(선택+설정 저장)/Repository/Cost & Budget 설정 | 부분 구현 |
 | Chat | 대화/메시지 저장, 7일 휴지통/복구/자동삭제, Agent 실행 연결, task 폴링용 taskId 노출 | Change/diff와 conversation 직접 연결이 남음 |
 | Agent | intent 분류, Code/Deploy/Domain/Chat/InfraOperate 실행, 영속 task/event, Approval 연동(계획 승인 1단계 + 결과 승인 2단계) | 실제 프로비저닝 서버 대상 운영은 아직 없음(정직한 거부까지만 구현) |
-| Approval | Change/Deployment/DomainBinding/InfraOperation/**Result** 승인·거절, Agent 기반+standalone 정책 연동 | 핵심 흐름 구현 |
+| Approval | Change/Deployment/DomainBinding/DomainUnbind/InfraOperation/**Result**/RepositoryBinding/DatabaseProvision/ServerProvision 승인·거절, Agent 기반+standalone 정책 연동(standalone 핸들러 3종: 인프라 설정·DB·서버) | 핵심 흐름 구현 |
 | Change | Code Agent 산출물의 diff/summary 저장·조회, 결과 승인 결과(MERGED/REJECTED) 반영 | rebuild API가 남음 |
 | Preview | task 단위 + **프로젝트 단위** Docker PreviewSession(Issue #94), gateway proxy(호스트 포트 loopback 바인딩, BI-081/G1), 상태/로그 조회, 자원·권한 격리, 기준 오리진 해석·Docker 가용성 점검(Issue #95) | websocket/backend preview, 게이트웨이 인가 강화(소유권/JWT, Issue #77), 서빙 중 세션 갱신(`?refresh=true`) 확장이 남음 |
-| Environment | 프로젝트별 환경변수/Secret CRUD, scope 분리, 암호화, 이력 | Preview/Deployment 런타임 실주입 연결이 남음 |
+| Environment | 프로젝트별 환경변수/Secret CRUD, scope 분리, 암호화, 이력, 서버형 프리뷰(`PREVIEW`)·EC2 백엔드 배포(`PRODUCTION`) 주입 | 정적 배포(Pages·S3)에는 주입하지 않음 |
 | Deployment | preview→main PR/merge, tag, GitHub Pages, 이력/로그, 실패 원인 분석(룰 기반)+재시도 | GitHub Pages 중심 부분 구현, 취소/직렬화 미구현 |
 | Webhook | workflow_run/push/pull_request/installation 반영, delivery 재시도 | 다른 GitHub 이벤트 확장 여지 있음 |
 | DomainBinding | 관리형/커스텀 도메인, DNS 검증, Approval 연동 | Pages만 지원, HTTPS www/apex 정책 미구현 |
 | CloudConnection | AWS/GCP credential 저장, 실제 STS/IAM 검증, 프로젝트 선택 연결, **실작업 자격 실패를 상태로 반영**(`AwsCredentialFailureReporter` ← provisioning 고아 스윕, #429) | 실제 cloud 배포/비용 실집행/운영 미연결(비용 추정·운영 질의 자체는 구현됨). 주기적 재검증은 없음 — 자격 만료는 스윕이 닿는 경로에서만 드러난다 |
 | AuditLog | GitHub/배포/도메인/인프라 작업 16종 기록(비차단 REQUIRES_NEW), 프로젝트별 조회 API, 180일 retention 배치 | 계정 수준 감사(installation·로그인 이력)·`/me/audit-logs`는 범위 밖 |
 | Template | 템플릿 저장소가 Pages 로 발행한 `catalog.json` 취득·캐시(stale-while-error), 카탈로그 API, 프로젝트 생성 시 `templateType` 실재 검증, 첫 CODE 스텝 씨딩 | FE 갤러리·썸네일 자동화가 남음 |
+| Provisioning | 사용자 AWS 계정의 EC2 서버(백엔드·웹 전용)·DB(RDS·EC2 DB 컨테이너·LOCAL) 생성/종료/로그, 항상 승인(`SERVER_PROVISION`·`DATABASE_PROVISION`), 상태·헬스·고아 정리 워커(`state.md` §3.11) | GCP·IaC·스케일링 실행 미구현 |
 | AiAccount | 사용자 본인 AI 키 등록·암호화 보관, `UserAiKeyResolver` 로 실행 시점 키 해석. **배포 설정에 벤더 키가 없다**(#364) — `src/main` 의 `getApiKey()` 는 전부 이 모듈 안이다 | 사용량 상한·사용자별 할당은 없음 |
 
 ---
@@ -335,6 +336,11 @@ ChatTrashCleanupScheduler (기본 1시간 주기)
 → 질문/결과/오류를 Assistant 메시지로 저장
 ```
 
+Assistant 줄에는 서버가 `kind`(`ChatMessageKind`)를 붙이고, 화면은 본문이 아니라 이 값으로 줄의 의미를 고른다(`api.md` §8).
+
+- **승인 안내는 기록 한 줄이다(#457).** 계획 승인 메시지는 `- 변경 사항 승인` 처럼 유형 이름만 남긴다(`ApprovalTypeLabel`, FE 카드 제목과 같은 이름). 결과 승인·저장소 연결 승인 메시지도 카드와 겹치는 설명과 `[ID] 원시 enum` 줄을 뺐다 — 설명은 바로 아래 승인 카드가 소유한다
+- **시스템이 마감한 태스크(#461).** 저장소 연결 승인(`REPOSITORY_BINDING`)을 기다리던 중 프리뷰가 회수되거나(`abandonApprovalTaskWithLostPreview`) 오래 방치되면(`abandonStaleApprovalTask`) 오케스트레이터가 승인을 `CANCELLED` 로 닫고 태스크를 `DONE` 으로 마친 뒤, 마감 안내를 `kind=TASK_CLOSED` 로 남긴다. 이어서 `AgentPlanExecutor` 가 완료 처리할 때 `RepositoryBindingGate.closedWithoutArtifact` 가 참이면 결과 메시지(`AGENT_RESULT`)를 내지 않는다 — 내면 "사이트가 준비됐다"가 앞의 마감 안내를 뒤집는다. 사용자가 직접 거절(`REJECTED`)한 경우는 결과를 그대로 낸다
+
 남은 연결:
 
 - Change/diff와 conversation의 직접 연결(현재는 project 단위로 조회)
@@ -349,7 +355,8 @@ ChatTrashCleanupScheduler (기본 1시간 주기)
 ```text
 POST /agent/decision
 → DecisionAgentService
-→ LLM이 CODE / DEPLOY / DOMAIN_BIND / CHAT / INFRA_OPERATE steps 생성
+→ LLM이 CLARIFY / CHAT / CODE / DEPLOY / DOMAIN_BIND / INFRA_OPERATE / RUNTIME_SETUP / BACKEND_DEPLOY steps 생성
+   (스텝의 instruction·userSummary 는 사용자가 쓴 언어로 — #469)
 → AgentOrchestrator
 → Project/Conversation 소유권 확인
 → ownerUserId/projectId/conversationId가 포함된 UUID task 생성
@@ -359,6 +366,8 @@ POST /agent/decision
 → DB worker가 lease를 획득하고 AgentPlanExecutor 실행
 → step/event/입력/retry 상태를 agent_runs와 agent_run_events에 저장
 ```
+
+instruction 의 언어가 중요한 이유: 하류 에이전트(Code·Chat 등)는 받은 instruction 의 언어로 사용자에게 답한다. 한국어 요청에 영어 instruction 을 넘기면 답이 영어로 돌아오므로, `DecisionAgentService` 의 시스템 프롬프트가 instruction 도 사용자 언어로 쓰라고 지시한다(#469, PR #475). 프롬프트 지시라 LLM 출력이 보장하지는 않는다.
 
 worker의 lease 갱신은 `AgentExecutionRegistry`(Issue #55)에 실제로 제출된 task로만 한정된다 — claim은 했지만 실행자 풀 포화로 dispatch가 거부된 task는 `RETRY_WAIT`로 되돌아가며 lease를 자가 갱신하지 않으므로, 만료 lease 회수(`recoverExpiredLeases`)가 막히는 RUNNING 좀비 상태가 발생하지 않는다.
 
@@ -786,6 +795,8 @@ PUT /projects/{projectId}/settings/infrastructure
 
 ### 12.2 현재 단절
 
+> **2026-10-20 대조**: 아래 그림의 "Deployment 실행 X"는 더 이상 맞지 않는다. 선택된 `CONNECTED` 연결을 Provisioning(EC2 서버·DB)과 S3 프론트 배포·S3 프론트 HTTPS 가 읽는다(`ServerProvisioningCommandService`·`DatabaseProvisioningCommandService`·`FrontendStaticHostingAdapter`, `api.md` §12·§19). 에이전트의 `BACKEND_DEPLOY` 스텝도 같은 서비스로 승인을 만든다. 끊겨 있는 것은 GCP 실행 경로와, 인프라 설정·비용 추정이 실제 프로비저닝과 이어지지 않는 부분이다.
+
 ```text
 CloudConnection
 → Project Infrastructure 설정에서 선택(연결) 가능
@@ -924,12 +935,14 @@ Resolver seam(런타임 주입을 위한 확장 지점):
 ```text
 EnvironmentValueResolver (application/port/in, HTTP 미노출)
 → EnvironmentValueResolverService가 구현
-→ 현재 호출자 없음 — Docker Preview 컨테이너 생성, GitHub Actions workflow 환경변수 주입
-   어느 쪽에서도 아직 이 port를 사용하지 않는다
-→ 향후 연결 지점: 8.2 Code Agent의 컨테이너 생성 단계, 9.x Deploy Agent의 workflow dispatch 단계
+→ 호출자 둘:
+   · PreviewRuntimeLauncher → PreviewEnvComposer → resolve(projectId, PREVIEW)       서버형 프리뷰(NODE_SERVER/JAVA_FULLSTACK) 컨테이너 exec env
+   · BackendDeployRunner.assembleEnv → resolve(projectId, PRODUCTION)               EC2 백엔드 배포 → SSM SecureString
+→ 둘 다 DB 자동값·포트를 먼저 깔고 사용자 값으로 덮는다
+→ GitHub Actions workflow·S3 정적 배포에는 주입하지 않는다
 ```
 
-이 seam이 실제로 연결되기 전까지 Environment 도메인은 "안전하게 값을 저장/조회하는 저장소"이지 "실행에 영향을 주는 설정"은 아니다.
+배포 쪽은 한때 port 를 우회해 리포지토리를 직접 불러 **전 스코프**를 주입했다 — 프리뷰용으로만 둔 값이 운영 서버에 들어갔다(#415 로 수정, `state.md` §3.0). 지금은 두 호출자 모두 port 를 타고 스코프를 인자로 넘긴다.
 
 ### 14.3 Cost & Budget 흐름 (Issue #53)
 
@@ -1057,6 +1070,8 @@ InfrastructureChangeApprovalHandler(인프라 설정 승인/거절 집행)
 
 PAT 경로(`ApiTokenAuthenticator`)는 SHA-256 + UNIQUE 인덱스 조회 1회 + `last_used_at` 1시간 스로틀로 이미 가벼워 이번 단위에서 건드리지 않았다.
 
+PAT 인증이 성공한 뒤 같은 필터가 쓰기를 두 번 거른다(#453). ① 변경 메서드(POST/PUT/PATCH/DELETE)인데 `READ` 토큰이면 403. ② `WRITE` 토큰이어도 `METHOD 경로` 가 허용 목록 `PAT_WRITABLE`(배포 생성·재시도, 환경변수 추가·수정, 도메인 추가 — `api.md` §18.3)에 없으면 403. 두 경우 모두 컨트롤러에 닿기 전에 필터가 응답을 직접 쓴다. 이 목록은 `agent-tools/packages/client`(npm `@qeploy/client`, MCP·CLI 가 공유)가 실제로 부르는 쓰기와 맞춰 두며, `JwtAuthenticationFilterTest` 가 클라이언트의 쓰기 호출이 목록 밖으로 나가지 않는지 대조한다. 브라우저 JWT 경로는 이 거름을 타지 않는다.
+
 ### 18.2 폐기 토큰: 캐시와 DB의 관계
 
 ```
@@ -1107,7 +1122,11 @@ JwtAuthenticationFilter
 
 `AuditRecorder`는 MDC를 감사 스레드로 넘긴다. 감사 스레드가 남기는 `AUDIT_FALLBACK` 로그가 어느 요청의 것인지 모르면 정작 추적이 필요할 때 추적이 안 된다.
 
-### 18.5 현재 한계
+### 18.5 응답 도중 끊긴 연결 (Issue #423)
+
+SSE 를 보던 브라우저가 떠나면 Spring 이 `AsyncRequestNotUsableException` 을 던진다. `GlobalExceptionHandler.handleClientDisconnected` 가 이를 받아 DEBUG 한 줄만 남기고 아무것도 쓰지 않는다(반환형 `void` — 죽은 응답에 쓰려다 2차 실패를 내지 않게). 전에는 catch-all 이 ERROR + 스택트레이스로 남겨, ERROR 수를 쓰는 배포 건강 신호를 정상 동작이 오염시켰다.
+
+### 18.6 현재 한계
 
 - `RequestIdFilter`는 `OncePerRequestFilter` 기본값을 따라 **ASYNC 디스패치에서는 다시 돌지 않는다**. SSE의 비동기 디스패치 구간 로그에는 `requestId`가 비어 나온다.
 - 폐기 토큰 부정 캐시의 다중 인스턴스 전파 지연(기본 60초)은 설계상 남는 창이다. 없애려면 `not-revoked-ttl: 0`으로 매 요청 DB 조회로 돌아가거나, 인스턴스 간 무효화 전파(pub/sub) 수단이 필요하다 — 후자는 현재 인프라에 없다.
@@ -1137,4 +1156,5 @@ LLM 호출에 실릴 키가 어디서 오는지. **배포 설정에서 오는 �
 - `src/main` 에서 `getApiKey()` 를 부르는 곳은 `UserAiKeyResolver` 한 곳뿐이다. 이것이 "서버 키로 도는 경로가 없다"의 구조적 근거다.
 - `AiProperties` 는 더 이상 키를 들지 않는다. 남은 것은 모델 카탈로그(`model`·`allowedModels`·`thinkingModels`·`baseUrl`)이고 비밀이 아니다.
 - **코딩 에이전트는 두 경로로 갈린다** — 계획·채팅은 위 chat-completions 경로로, 코드 생성은 `CodeAgentService` → `CodingAgentWorkspaceBridge` → `CodingAgentExecutionService`(벤더 CLI)로 간다. 양쪽이 **같은 벤더 크리덴셜**을 읽으므로 사용자는 키를 한 번만 등록한다.
+- `CodingAgentWorkspaceBridge` 가 CLI 에 넘기는 프롬프트는 결과 요약을 요청과 같은 언어로(알 수 없으면 한국어) 쓰라고 지시한다(#469, PR #470). 그 요약이 태스크 `summary` 와 결과 메시지로 그대로 사용자에게 간다.
 - `GET /agent/ai-providers`(`AiProviderQueryService`)도 같은 크리덴셜을 근거로 목록을 낸다. 배포 설정 키를 보지 않는다.

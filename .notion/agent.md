@@ -1,6 +1,7 @@
 # Qeploy 작업 지침 (Issue/PR/Commit) — 컨벤션 SSOT
 
 > 기준일: 2026-07-17 · 기준 커밋: 34fe578 · 코드 실측 기반
+> 개정: 2026-10-20 · 기준 커밋: 02a2240 — `AGENTS.md` 와 2026-09~10 실제 Issue·PR·커밋 이력에 맞춰 브랜치(`develop` 기반)·릴리스 PR·Issue 제목·다중 이슈 표기·PR 단위를 고쳤다
 
 이 파일은 프로젝트 작업 시 일관된 Issue/PR/Commit 수행 규칙을 정의하는 **단일 기준 문서(SSOT)**다.
 사용자가 " .notion 읽어"라고 요청하면 반드시 아래 파일을 먼저 읽고, 이 지침을 따른다.
@@ -13,6 +14,7 @@
 - api.md
 - connection.md
 - ROADMAP.md
+- BACKLOG_STATUS.md
 - github.md
 - issue.md
 - commit.md
@@ -27,11 +29,11 @@
 ## 기본 원칙
 1) 기능 시작 전에 Issue를 먼저 만든다.
 2) Issue의 Task list는 PR 단위로 쪼개어 작성한다.
-3) 기본은 "이슈 1개 = 커밋 1개 = PR 1개" 규칙을 따른다. `ROADMAP.md`의 단위(Unit)도 이 규칙을 그대로 따른다: 단위 1개 = 이슈 1개 + 브랜치 1개(`danto/<도메인>`) + PR 1개.
+3) 기본은 "PR 1개 = 브랜치 1개 = develop 에 들어가는 커밋 1개"다. PR 은 스쿼시 머지하고, GitHub 이 커밋 제목 끝에 `(#PR번호)` 를 붙인다(직접 적지 않는다). **이슈 하나는 Task list 의 PR 여러 개로 나뉠 수 있다** — 실측: #414 는 develop 대상 PR 9개, #451 은 5개, #318 은 7개였다. 과거의 "이슈 1개 = 커밋 1개 = PR 1개" 는 2026-09 이후 실제로 지켜지지 않아 이렇게 고쳤다.
 4) 커밋 메시지에는 반드시 `[ #IssueNumber ]`를 포함한다(공백형, §Issue/PR/Commit 타이틀 정규화 참고).
-5) PR은 Issue 완료 시점에 생성한다.
+5) PR은 Task list 의 한 항목이 끝날 때마다 develop 을 base 로 생성한다. 운영 반영은 별도의 릴리스 PR(`develop` → `main`)로 한다(§브랜치 규칙).
 6) PR 머지 후 Issue에서 Task를 수동으로 체크한다.
-7) 모든 Task 완료 후 Issue를 수동으로 Close한다.
+7) 모든 Task 완료 후 Issue를 수동으로 Close한다. **base 가 `develop` 인 PR 의 `Closes #N` 은 이슈를 닫지 않는다**(GitHub 은 기본 브랜치 `main` 대상 PR 만 자동으로 닫는다). 운영(`main`) 반영을 확인한 뒤 이슈에 릴리스 PR 번호를 남기고 닫는다.
 8) 로컬 환경 파일/시크릿은 커밋에 포함하지 않는다.
 9) Issue/PR 작성안을 줄 때는 본문뿐 아니라 타이틀도 함께 제공한다.
 
@@ -66,10 +68,11 @@
 
 ## 예외 규칙 (통합 PR)
 - 여러 Issue가 하나의 PR로 묶일 경우, PR 본문에 모든 이슈를 Refs로 연결한다.
-- 커밋도 하나로 통합하는 경우, 커밋 메시지에 이슈 번호를 모두 포함한다.
-  예: `feat: 통합 작업 [ #123 ][ #124 ]`
-- 통합 PR 타이틀에는 포함된 이슈 범위와 이슈 번호를 함께 표기한다.
-  예: `[Project+Chat] Issue A+B+C 통합 - auth/user 정합성 및 chat MVP, 후속문제해결 [ #5, #6, #8 ]`
+- 커밋도 하나로 통합하는 경우, 커밋 메시지에 이슈 번호를 모두 포함한다. 대괄호 하나 안에 공백으로 나열한다.
+  예: `docs(api): 프론트엔드 API 가이드에 모델·thinking 선택과 AI 제공자 오류 반영 [ #85 #86 ]` (`a27241e`)
+- 통합 PR 타이틀에는 포함된 이슈 범위와 이슈 번호를 함께 표기한다. 이슈 번호도 대괄호 하나 안에 공백으로 나열한다(쉼표 없음).
+  예: `[Deploy+Agent] 배포 base 확정 · 프리뷰 basename 방어 · 코딩 에이전트 배선 [ #116 #117 #325 ]` (PR #329)
+  과거 PR #7 의 `[#5,#6,#8]` 형식은 그 뒤로 쓰이지 않았다. 릴리스 PR 도 같은 표기다(아래 PR Title 참고).
 - 실측 사례: PR #31은 브랜드 통일, chat 7일 정책, cloud-connection 실검증, deployment, agent-preview, domainbinding, project overview, webhook delivery 재시도, api 응답 계약까지 다수 커밋을 하나의 이슈(`#31`) 아래 순차 커밋으로 쌓은 뒤 PR 하나로 머지했다. 앞으로 신규 작업은 `ROADMAP.md`의 단위별로 이슈/브랜치/PR을 분리하는 것을 기본으로 한다.
 
 ## Issue/PR/Commit 타이틀 정규화
@@ -78,12 +81,14 @@
 항상 아래 형식을 사용한다.
 
 ```
-Issue {Letter}: [{Module}] {작업 요약}
+[{Module}] {작업 요약}
 ```
 
 예:
-- `Issue C: [Project+Chat] API 테스트 중 발견된 저장소 플로우 및 대화 복구 보정`
-- `Issue D: [DomainBinding] 도메인 연결 및 Cloudflare/GitHub Pages 연동 추가`
+- `[Agent] CODE 작업 결과 요약이 영어로 나온다 — 코딩 에이전트 프롬프트에 응답 언어가 없다` (#469)
+- `[Preview] egress 공유 프록시의 접속 상한이 전역이라 한 프리뷰가 다른 모든 프리뷰의 설치를 막을 수 있다` (#466)
+
+이전에는 앞에 `Issue {Letter}: ` 를 붙였다(예: `Issue AW: [Auth] ...`, #304). #367(2026-09-21)이 마지막이고 #370(2026-09-22)부터 두 작성자 모두 붙이지 않는다. 문자가 겹친 적도 있다(`AY` = #325·#358, `AZ` = #327·#367). 이슈는 번호로 가리킨다.
 
 ### PR Title
 항상 아래 형식을 사용한다.
@@ -95,6 +100,15 @@ Issue {Letter}: [{Module}] {작업 요약}
 예:
 - `[Config] Cloudflare 설정을 yml 관리 방식으로 전환 [ #IssueNumber ]`
 - `[Project] 프로젝트 생성 시 GitHub 저장소 연결 강제 동작 수정 [ #IssueNumber ]`
+- 문서만 바꾸는 PR 은 `[Docs]` — 예: `[Docs] 10-20 npm 공개·릴리스와 세션 인계를 적는다 [ #451 ]` (PR #474)
+
+**릴리스 PR**(`develop` → `main`, 운영 배포)은 모듈 자리에 `Release` 를 쓰고 포함한 이슈를 모두 적는다. 스쿼시하지 않고 머지 커밋으로 합친다.
+
+```
+[Release] {운영에 나가는 변경 요약} [ #IssueA #IssueB ]
+```
+
+예: `[Release] SSE 끊김을 ERROR 로 남기지 않는다 + docker-java 핀 보호 + App 권한 실측 [ #423 #425 #414 ]` (PR #436). 2026-09-18(PR #363)부터 빠짐없이 이 형식이다. 그 전에는 `release: ...` 와 섞여 있었다(PR #140~#175, #289).
 
 실측 형식: PR 본문은 이모지 한글 템플릿(🔥 PR 개요 / 🔍 주요 변경 사항 / 📌 관련 이슈 / ✅ 테스트 결과)을 사용한다. 템플릿 전문은 `pr.md` 참고.
 
@@ -117,9 +131,10 @@ Issue {Letter}: [{Module}] {작업 요약}
 
 ## 브랜치 규칙
 
-- `main`: 운영/배포 브랜치
-- `danto/<도메인>`: 신규 단위(Unit) 작업 브랜치. 앞으로의 기본 브랜치 규칙이다. 예: `danto/agent-chat`, `danto/environment`, `danto/preview-ops`, `danto/repo-settings`, `danto/deploy-recovery`, `danto/infra-settings`, `danto/security`.
-- 과거 브랜치는 `agent/unhak`, `fix` 등 다양한 이름을 혼용했다(PR #31~#33 실측). 과거 브랜치명은 유지하되, 신규 브랜치는 `danto/<도메인>` 규칙을 따른다.
+- `main`: 운영 브랜치. push 가 운영 배포를 트리거한다(`.github/workflows/deploy-ec2.yml`). `develop` 에서 릴리스 PR 로만 들어온다.
+- `develop`: 통합 브랜치이자 **작업 PR 의 base**. push 가 dev 서버 배포를 트리거한다(`.github/workflows/deploy-ec2-dev.yml`). develop 대상 첫 PR 은 #91(2026-08-14)이고, 작업 브랜치가 `main` 으로 직접 들어간 마지막 PR 은 #190(2026-09-02)이다.
+- `<이름>/<도메인>`: 작업 브랜치(`AGENTS.md` 와 같은 규칙). 사람마다 자기 이름을 앞에 둔다 — 예: `danto/coding-agent-byok`, `danto/preview-egress-session-limit`, `unhak/backend-eip`, `unhak/planner-instruction-language`. PR 하나에 브랜치 하나를 쓰므로 뒷부분은 도메인보다 그 PR 의 주제에 가깝다.
+- 과거 브랜치는 `agent/unhak`, `fix` 등 다양한 이름을 혼용했다(PR #31~#33 실측). 과거 브랜치명은 유지하되, 신규 브랜치는 `<이름>/<도메인>` 규칙을 따른다.
 - 참고용으로 남겨둔 과거 계획(`develop_이름/*`, `feature_이름/*`, `release_이름/*`, `hotfix_이름/*`)은 실제로 쓰인 이력이 없다. 신규 작업에는 사용하지 않는다.
 
 ## 브랜드 이중 상태 (반드시 인지)
@@ -134,11 +149,12 @@ Issue {Letter}: [{Module}] {작업 요약}
 2. Task list 작성
 3. 구현
 4. 테스트 수행 (예: `./gradlew test`)
-5. 단일 커밋 생성 (commit.md 복사해서 사용)
-6. PR 생성 (pr.md 복사해서 사용)
+5. 커밋 생성 (commit.md 복사해서 사용 — 스쿼시 머지되므로 develop 에는 PR 당 커밋 하나로 남는다)
+6. `develop` 대상 PR 생성 (pr.md 복사해서 사용)
 7. 머지 후 Issue에서 Task 체크
-8. Issue 수동 Close
-9. 세션 종료 시 `ROADMAP.md`의 "현재 상태/다음 단위"를 갱신한다(단위 작업인 경우).
+8. 릴리스 PR(`develop` → `main`)로 운영 반영
+9. 운영 반영 확인 후 Issue 수동 Close
+10. 세션 종료 시 `ROADMAP.md`의 "현재 상태/다음 단위"를 갱신한다(단위 작업인 경우).
 
 ## 절대 포함하지 말 것
 - 로컬 환경 설정 파일
