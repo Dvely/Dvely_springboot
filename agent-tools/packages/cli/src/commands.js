@@ -40,6 +40,18 @@ function requireId(args, what) {
 }
 
 /**
+ * The list row for a plaintext token. The server keeps only a hash plus a display prefix (`qp_` and
+ * eight characters of the secret, 48 bits), so the prefix is the only handle — and one match is
+ * required, since naming the wrong token in "revoke #12" would be worse than naming none.
+ */
+function findOwnToken(tokens, token) {
+  const matches = (Array.isArray(tokens) ? tokens : []).filter(
+    (t) => typeof t?.tokenPrefix === 'string' && t.tokenPrefix.length > 3 && token.startsWith(t.tokenPrefix)
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/**
  * A PAT issued on the web is stored as it is — no exchange. The command that tells people to run
  * this is shown on the very page that issues PATs, so asking them to dig a browser token out of
  * devtools instead was a detour, and a web page saying "copy the token from devtools" reads like
@@ -54,10 +66,21 @@ async function savePastedToken({ deps, flags, apiUrl, token }) {
     );
   }
   // One read before saving, so a typo or a revoked token fails here and not on the agent's first
-  // call, where the cause is much harder to see.
-  await deps.createClient({ ...flags, apiUrl }, token).listProjects();
+  // call, where the cause is much harder to see. The token list is the read: it also tells us which
+  // row this token is, so `logout` can name the one to revoke instead of "the relevant one".
+  const tokens = await deps.createClient({ ...flags, apiUrl }, token).listApiTokens();
+  const own = findOwnToken(tokens, token);
 
-  const path = writeConfig({ ...readConfig(deps.env), token, apiUrl, apiTokenId: null }, deps.env);
+  const path = writeConfig(
+    {
+      ...readConfig(deps.env),
+      token,
+      apiUrl,
+      apiTokenId: own?.apiTokenId ?? null,
+      tokenPrefix: own?.tokenPrefix ?? null,
+    },
+    deps.env
+  );
   return {
     data: { scope: null, expiresAt: null, configPath: path },
     text:
@@ -112,7 +135,13 @@ export const commands = {
       if (!token) throw new Error('서버가 토큰을 반환하지 않았습니다.');
 
       const path = writeConfig(
-        { ...readConfig(deps.env), token, apiUrl, apiTokenId: issued?.info?.apiTokenId ?? null },
+        {
+          ...readConfig(deps.env),
+          token,
+          apiUrl,
+          apiTokenId: issued?.info?.apiTokenId ?? null,
+          tokenPrefix: issued?.info?.tokenPrefix ?? null,
+        },
         deps.env
       );
 
@@ -133,15 +162,18 @@ export const commands = {
     summary: '저장된 토큰을 지운다 (서버에서 폐기하지는 않는다)',
     auth: false,
     async run({ deps }) {
-      const { apiTokenId } = readConfig(deps.env);
+      const { apiTokenId, tokenPrefix } = readConfig(deps.env);
       const path = clearConfig(deps.env);
       if (!path) {
         return { data: null, text: `저장된 토큰이 없습니다 (${configPath(deps.env)}).` };
       }
       // Revoking would need a write-scoped call, and a READ token — the default — cannot make one.
       // Saying so is better than silently leaving a live credential the user thinks is gone.
-      const hint = apiTokenId
-        ? `서버에서도 무효화하려면 웹 UI 에서 토큰 #${apiTokenId} 을 폐기하세요.`
+      const which = [apiTokenId ? `#${apiTokenId}` : null, tokenPrefix ? `(${tokenPrefix}…)` : null]
+        .filter(Boolean)
+        .join(' ');
+      const hint = which
+        ? `서버에서도 무효화하려면 웹 UI 에서 토큰 ${which} 을 폐기하세요.`
         : '서버에서도 무효화하려면 웹 UI 에서 해당 토큰을 폐기하세요.';
       return { data: null, text: `${path} 를 지웠습니다.\n${hint}` };
     },
@@ -331,20 +363,21 @@ export const commands = {
   },
 
   'env:set': {
-    usage: 'qeploy env:set <projectId> KEY=VALUE --scope <PREVIEW|PRODUCTION> [--secret] [--yes]',
-    summary: '환경변수 생성 또는 수정 (WRITE 스코프 토큰 필요)',
+    usage:
+      'qeploy env:set <projectId> KEY[=VALUE] --scope <PREVIEW|PRODUCTION> [--secret] [--yes]',
+    summary:
+      '환경변수 생성 또는 수정 (WRITE 스코프 토큰 필요). =VALUE 를 빼면 값을 화면에 안 보이게 입력받거나 stdin 에서 읽는다',
     write: true,
-    async run({ client, args, flags, confirm }) {
+    async run({ client, args, flags, confirm, deps }) {
       const projectId = requireId(args, '프로젝트');
 
       const assignment = args[1];
-      if (!assignment || !assignment.includes('=')) {
-        throw new UsageError('KEY=VALUE 형식이 필요합니다. 예: DATABASE_URL=postgres://...');
+      if (!assignment) {
+        throw new UsageError('KEY=VALUE 또는 KEY 가 필요합니다. 예: DATABASE_URL=postgres://...');
       }
       // Split once: a value legitimately contains '=' (connection strings, base64 padding).
       const eq = assignment.indexOf('=');
-      const key = assignment.slice(0, eq);
-      const value = assignment.slice(eq + 1);
+      const key = eq === -1 ? assignment : assignment.slice(0, eq);
       if (!key) throw new UsageError('키가 비어 있습니다.');
 
       const scope = String(flags.scope ?? '').toUpperCase();
@@ -353,6 +386,14 @@ export const commands = {
         // environment while the user meant the other.
         throw new UsageError('--scope 는 PREVIEW 또는 PRODUCTION 이어야 합니다.');
       }
+
+      // Asked only after every argument is valid, so nobody types a secret just to hear --scope was
+      // wrong. KEY alone keeps the value out of argv: an argument is visible in `ps` while the
+      // command runs and stays in shell history, the wrong place for a secret. Piped stdin works
+      // too — `pbpaste | qeploy env:set 12 DB_PASSWORD --secret --scope PRODUCTION --yes`.
+      const value = eq === -1 ? await deps.readSecret(`${key} 값: `) : assignment.slice(eq + 1);
+      // An explicit KEY= can mean "empty on purpose"; an empty answer to the prompt is a slip.
+      if (eq === -1 && !value) throw new UsageError('값이 비어 있습니다.');
 
       // The API has no upsert: creating a duplicate (project, scope, key) is a 409. Doing the
       // lookup here is what makes "set" mean set — otherwise every caller writes this dance.

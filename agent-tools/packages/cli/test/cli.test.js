@@ -3,20 +3,22 @@ import { describe, it } from 'node:test';
 import { QeployApiError } from '@qeploy/client';
 import { run, parseArgs, EXIT, helpText } from '../src/index.js';
 import { confirm, UsageError } from '../src/confirm.js';
-import { renderTable } from '../src/render.js';
+import { renderTable, terminalSafe } from '../src/render.js';
 import { Readable, Writable } from 'node:stream';
 
 /** Runs the CLI with no process, no socket and no terminal — everything outside is injected. */
-async function cli(argv, { client = {}, confirmAnswer = true } = {}) {
+async function cli(argv, { client = {}, confirmAnswer = true, secret } = {}) {
   const out = [];
   const err = [];
+  const asked = [];
   const code = await run(argv, {
+    readSecret: async (prompt) => { asked.push(prompt); return secret; },
     createClient: () => client,
     confirm: async () => confirmAnswer,
     out: (t) => out.push(t),
     err: (t) => err.push(t),
   });
-  return { code, out: out.join('\n'), err: err.join('\n') };
+  return { code, out: out.join('\n'), err: err.join('\n'), asked };
 }
 
 describe('argument parsing', () => {
@@ -249,8 +251,39 @@ describe('env:set', () => {
     assert.match(err, /PREVIEW|PRODUCTION/);
   });
 
-  it('rejects a missing KEY=VALUE', async () => {
-    const { code } = await cli(['env:set', '1', 'JUSTAKEY', '--scope', 'PREVIEW', '--yes'], { client: base });
+  it('takes the value from a hidden prompt or stdin when only KEY is given', async () => {
+    // An argv value shows in `ps` and stays in shell history — wrong for a secret.
+    let created = null;
+    const client = {
+      listEnvironmentVariables: async () => [],
+      createEnvironmentVariable: async (p, body) => { created = body; return {}; },
+    };
+    const { code, asked } = await cli(
+      ['env:set', '1', 'DB_PASSWORD', '--secret', '--scope', 'PRODUCTION', '--yes'],
+      { client, secret: 's3cr=t' });
+    assert.equal(code, EXIT.OK);
+    assert.deepEqual(asked, ['DB_PASSWORD 값: ']);
+    assert.equal(created.key, 'DB_PASSWORD');
+    assert.equal(created.value, 's3cr=t');
+  });
+
+  it('does not ask for the value before the arguments are known to be valid', async () => {
+    const { code, asked } = await cli(['env:set', '1', 'DB_PASSWORD', '--yes'], { client: base, secret: 'x' });
+    assert.equal(code, EXIT.USAGE);
+    assert.deepEqual(asked, []);
+  });
+
+  it('rejects an empty answer to the value prompt but keeps an explicit KEY=', async () => {
+    const { code } = await cli(['env:set', '1', 'JUSTAKEY', '--scope', 'PREVIEW', '--yes'], { client: base, secret: '' });
+    assert.equal(code, EXIT.USAGE);
+    let created = null;
+    const client = { listEnvironmentVariables: async () => [], createEnvironmentVariable: async (p, b) => { created = b; return {}; } };
+    assert.equal((await cli(['env:set', '1', 'EMPTY=', '--scope', 'PREVIEW', '--yes'], { client })).code, EXIT.OK);
+    assert.equal(created.value, '');
+  });
+
+  it('rejects an empty key', async () => {
+    const { code } = await cli(['env:set', '1', '=x', '--scope', 'PREVIEW', '--yes'], { client: base });
     assert.equal(code, EXIT.USAGE);
   });
 
@@ -325,5 +358,34 @@ describe('backing out of a prompt', () => {
     const output = new Writable({ write(chunk, _e, cb) { written.push(String(chunk)); cb(); } });
 
     assert.equal(await confirm('진행할까요?', { assumeYes: false, input, output }), false);
+  });
+});
+
+describe('terminal output (server text is not trusted)', () => {
+  it('strips escape sequences from text a human sees', async () => {
+    // Build logs are the user's app's own output; an escape in them is interpreted by the terminal.
+    const evil = 'ok\u001b[2J\u001b]52;c;ZXZpbA==\u0007 done\r\nnext\rover';
+    const client = { getDeploymentLogs: async () => ({ logText: evil }) };
+    const { code, out } = await cli(['logs', '7'], { client });
+    assert.equal(code, EXIT.OK);
+    assert.equal(out, 'ok done\nnextover');
+    assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(out));
+  });
+
+  it('strips them from API error messages too', async () => {
+    const client = { listProjects: async () => { throw new QeployApiError(500, 'X', 'bad\u001b[31m red', '/p'); } };
+    const { err } = await cli(['projects'], { client });
+    assert.ok(!err.includes('\u001b'), err);
+  });
+
+  it('leaves --json alone: JSON.stringify already escapes control characters', async () => {
+    const client = { getDeploymentLogs: async () => ({ logText: 'a\u001b[31mb' }) };
+    const { out } = await cli(['logs', '7', '--json'], { client });
+    assert.equal(JSON.parse(out).logText, 'a\u001b[31mb');
+    assert.ok(!out.includes('\u001b'));
+  });
+
+  it('keeps newlines and tabs', () => {
+    assert.equal(terminalSafe('a\tb\nc'), 'a\tb\nc');
   });
 });

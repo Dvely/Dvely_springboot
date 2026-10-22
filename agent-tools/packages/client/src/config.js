@@ -52,26 +52,51 @@ export function clearConfig(env = process.env) {
   }
 }
 
+export const DEFAULT_API_URL = 'https://qeploy.com';
+
+const sameAddress = (a, b) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
+
 /**
  * Resolves the token to call the API with.
  *
  * The environment wins over the file so a CI job can set `QEPLOY_TOKEN` without the login file
  * silently overriding it, and so a developer can run one command as a different token without
  * logging out.
+ *
+ * The file token is only handed out for the address it was saved with. `QEPLOY_API_URL` can come
+ * from a project's own config — a cloned repository's `.mcp.json` env, an `.envrc` — and without
+ * this check pointing it somewhere else would send the user's stored token there (#482). A
+ * `QEPLOY_TOKEN` the caller set themselves goes wherever they point it.
+ *
+ * @param apiUrl the address the token is about to be sent to; omit to skip the check
+ * @returns {{token: string|null, source: string|null, boundTo?: string}} `boundTo` is set when a
+ *   stored token exists but belongs to a different address
  */
-export function resolveToken(env = process.env) {
+export function resolveToken(env = process.env, apiUrl) {
   const fromEnv = env.QEPLOY_TOKEN;
   if (fromEnv) return { token: fromEnv, source: 'QEPLOY_TOKEN' };
 
-  const { token } = readConfig(env);
-  if (token) return { token, source: configPath(env) };
+  const config = readConfig(env);
+  if (config.token) {
+    const savedFor = config.apiUrl ?? DEFAULT_API_URL;
+    if (apiUrl !== undefined && !sameAddress(savedFor, apiUrl)) {
+      return { token: null, source: null, boundTo: savedFor };
+    }
+    return { token: config.token, source: configPath(env) };
+  }
 
   return { token: null, source: null };
 }
 
+/** The message for a stored token that `resolveToken` withheld because the address changed. */
+export function boundToMessage(boundTo, apiUrl) {
+  return (
+    `저장된 토큰은 ${boundTo} 에서 받은 것이라 ${apiUrl} 로는 보내지 않습니다.\n` +
+    `그 주소를 쓰려면 거기서 다시 로그인하거나(qeploy login --api-url ${apiUrl}) QEPLOY_TOKEN 을 직접 넣어주세요.`
+  );
+}
+
 /** Same precedence for the API address, so one `qeploy login` pins both. */
 export function resolveApiUrl(flags = {}, env = process.env) {
-  return (
-    flags.apiUrl ?? env.QEPLOY_API_URL ?? readConfig(env).apiUrl ?? 'https://qeploy.com'
-  );
+  return flags.apiUrl ?? env.QEPLOY_API_URL ?? readConfig(env).apiUrl ?? DEFAULT_API_URL;
 }

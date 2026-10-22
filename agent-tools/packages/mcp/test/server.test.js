@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { QeployApiError } from '@qeploy/client';
+import { QeployApiError, QeployClient } from '@qeploy/client';
 import { buildTools } from '../src/tools.js';
 import { createServer } from '../src/server.js';
 
@@ -192,5 +192,28 @@ describe('write tools', () => {
     const result = await call(h, 'qeploy_deploy', { projectId: 1 });
     assert.equal(result.isError, undefined);
     assert.equal(JSON.parse(result.content[0].text).status, 'PENDING_APPROVAL');
+  });
+});
+
+describe('tool arguments with the real client (#482)', () => {
+  it('a path-rewriting id comes back as a tool error and never reaches the network', async () => {
+    const seen = [];
+    const client = new QeployClient({
+      baseUrl: 'https://q.test',
+      token: 'qp_x',
+      fetchImpl: async (url) => { seen.push(url); return { status: 200, ok: true, text: async () => '{}' }; },
+    });
+    const h = handlers(client);
+    for (const [name, args] of [
+      ['qeploy_get_project', { projectId: '../api-tokens?x=' }],
+      ['qeploy_list_env', { projectId: '1/../../servers/7/logs#' }],
+      ['qeploy_deploy', { projectId: '../api-tokens#' }],
+      ['qeploy_update_env', { projectId: 1, variableId: '../../../api-tokens#', value: 'x' }],
+    ]) {
+      const result = await call(h, name, args);
+      assert.equal(result.isError, true, name);
+      assert.match(result.content[0].text, /양의 정수/, name);
+    }
+    assert.deepEqual(seen, []);
   });
 });

@@ -66,6 +66,25 @@ describe('config file', () => {
     assert.equal(resolveToken(env).token, 'qp_from_file');
   });
 
+  it('hands the stored token only to the address it was saved with (#482)', () => {
+    // A cloned repo's .mcp.json or .envrc can set QEPLOY_API_URL; that alone must not be enough to
+    // send the user's stored token to another host.
+    writeConfig({ token: 'qp_from_file', apiUrl: 'https://qeploy.com' }, env);
+    assert.equal(resolveToken(env, 'https://qeploy.com').token, 'qp_from_file');
+    assert.equal(resolveToken(env, 'https://qeploy.com/').token, 'qp_from_file');
+    const other = resolveToken(env, 'https://evil.test');
+    assert.equal(other.token, null);
+    assert.equal(other.boundTo, 'https://qeploy.com');
+    // A token the caller put in the environment is theirs to point anywhere.
+    assert.equal(resolveToken({ ...env, QEPLOY_TOKEN: 'qp_env' }, 'https://evil.test').token, 'qp_env');
+  });
+
+  it('treats a stored token without an address as belonging to the default one', () => {
+    writeConfig({ token: 'qp_old' }, env);
+    assert.equal(resolveToken(env, 'https://qeploy.com').token, 'qp_old');
+    assert.equal(resolveToken(env, 'https://elsewhere.test').token, null);
+  });
+
   it('resolves the api url by flag, then env, then file, then default', () => {
     writeConfig({ apiUrl: 'https://from-file' }, env);
     assert.equal(resolveApiUrl({ apiUrl: 'https://from-flag' }, env), 'https://from-flag');
@@ -112,13 +131,13 @@ describe('login', () => {
   });
 
   describe('with a token issued on the web', () => {
-    const checking = (fail) => {
+    const checking = (fail, tokens = []) => {
       const calls = [];
       const client = {
-        listProjects: async () => {
-          calls.push('listProjects');
+        listApiTokens: async () => {
+          calls.push('listApiTokens');
           if (fail) throw fail;
-          return [];
+          return tokens;
         },
         issueApiToken: async () => {
           calls.push('issueApiToken');
@@ -141,7 +160,7 @@ describe('login', () => {
       const { client, calls } = checking(new Error('401'));
       const { code } = await cli(['login'], { client, secret: 'qp_revoked' });
       assert.notEqual(code, EXIT.OK);
-      assert.deepEqual(calls, ['listProjects']);
+      assert.deepEqual(calls, ['listApiTokens']);
       assert.equal(client.__token, 'qp_revoked');
       assert.equal(readConfig(env).token, undefined, '확인에 실패한 토큰은 저장하지 않는다');
     });
@@ -156,6 +175,31 @@ describe('login', () => {
         assert.deepEqual(calls, [], '거절할 거면 서버에 묻지도 않는다');
         assert.equal(readConfig(env).token, undefined);
       }
+    });
+
+    it('remembers which token it is, so logout can name the one to revoke', async () => {
+      const tokens = [
+        { apiTokenId: 11, tokenPrefix: 'qp_aaaaaaaa' },
+        { apiTokenId: 12, tokenPrefix: 'qp_fromTheW' },
+      ];
+      const { client } = checking(null, tokens);
+      await cli(['login'], { client, secret: 'qp_fromTheWebRest' });
+      assert.equal(readConfig(env).apiTokenId, 12);
+
+      const { out } = await cli(['logout']);
+      assert.match(out, /#12 \(qp_fromTheW…\)/);
+    });
+
+    it('names no token rather than a wrong one when the prefix is ambiguous', async () => {
+      const tokens = [
+        { apiTokenId: 11, tokenPrefix: 'qp_fromTheW' },
+        { apiTokenId: 12, tokenPrefix: 'qp_fromTheW' },
+      ];
+      const { client } = checking(null, tokens);
+      await cli(['login'], { client, secret: 'qp_fromTheWebRest' });
+      assert.equal(readConfig(env).apiTokenId, null);
+      const { out } = await cli(['logout']);
+      assert.match(out, /해당 토큰을 폐기/);
     });
 
     it('never prints it', async () => {

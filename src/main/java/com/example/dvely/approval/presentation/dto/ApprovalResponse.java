@@ -18,7 +18,8 @@ public record ApprovalResponse(
                 "ResultApprovalGate가 마지막 CODE step 완료 직후에만 생성합니다. REPOSITORY_BINDING은 같은 지점에서 " +
                 "저장소가 아직 연결되지 않은(NOT_BOUND) 프로젝트에만 생성되는 RESULT의 짝으로, 저장소를 만들어 연결할지 묻습니다 — " +
                 "approve 시 본문으로 저장소 이름을 지정할 수 있고, 거절해도 task는 취소되지 않고 그대로 완료됩니다.",
-                allowableValues = {"CHANGE", "DEPLOYMENT", "DOMAIN_BINDING", "INFRA_OPERATION", "RESULT", "REPOSITORY_BINDING"},
+                allowableValues = {"CHANGE", "DEPLOYMENT", "DOMAIN_BINDING", "DOMAIN_UNBIND", "INFRA_OPERATION", "RESULT",
+                        "REPOSITORY_BINDING", "DATABASE_PROVISION", "SERVER_PROVISION"},
                 example = "DEPLOYMENT")
         String type,
 

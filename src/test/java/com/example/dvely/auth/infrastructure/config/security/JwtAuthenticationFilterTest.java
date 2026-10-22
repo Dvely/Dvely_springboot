@@ -251,15 +251,18 @@ class JwtAuthenticationFilterTest {
         //
         // Token issuance is excluded on purpose: the CLI calls it with a browser JWT, never a PAT.
         String client = Files.readString(Path.of("agent-tools/packages/client/src/index.js"));
+        // The path is a template literal whose ${...} may themselves hold quotes — pathId('projectId', …)
+        // since #482 — so a ${...} is consumed whole rather than ended at the first quote.
         Matcher m = Pattern.compile(
-                "this\\.(?:(post|patch|put|delete)\\(|request\\('(POST|PATCH|PUT|DELETE)',\\s*)[`']([^`']+)[`']")
+                "this\\.(?:(post|patch|put|delete)\\(|request\\('(POST|PATCH|PUT|DELETE)',\\s*)"
+                        + "(?:`((?:[^`$]|\\$\\{[^}]*})*)`|'([^']+)')")
                 .matcher(client);
         when(apiTokenAuthenticator.authenticate(PAT)).thenReturn(Optional.of(token(ApiTokenScope.WRITE)));
 
         int checked = 0;
         while (m.find()) {
             String method = (m.group(1) != null ? m.group(1) : m.group(2)).toUpperCase();
-            String path = m.group(3).replaceAll("\\$\\{[^}]+}", "1");
+            String path = (m.group(3) != null ? m.group(3) : m.group(4)).replaceAll("\\$\\{[^}]+}", "1");
             if (path.startsWith("/api/v1/api-tokens")) {
                 continue;
             }

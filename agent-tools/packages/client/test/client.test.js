@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { QeployClient, QeployApiError } from '../src/index.js';
+import { QeployClient, QeployApiError, checkBaseUrl } from '../src/index.js';
 
 /** Minimal fetch stub: records the call and returns a canned response. */
 function stub(status, body, { capture = {} } = {}) {
@@ -111,5 +111,54 @@ describe('QeployClient', () => {
     assert.equal(capture.url, 'https://q.test/api/v1/deployments/5/logs');
     await c.getServerLogs(9);
     assert.equal(capture.url, 'https://q.test/api/v1/servers/9/logs');
+  });
+});
+
+describe('what may reach the URL (#482)', () => {
+  it('refuses an id that would rewrite the path, before any request is made', async () => {
+    // A read tool must not become a request for an arbitrary endpoint: the model's arguments are
+    // not schema-checked on the way in.
+    let called = false;
+    const c = new QeployClient(opts(async () => { called = true; }));
+    for (const bad of ['../api-tokens?x=', '1/../../servers/7/logs#', '%2e%2e', '1#', '0', -1, 1.5, '', null, undefined]) {
+      await assert.rejects(() => c.getProjectOverview(bad), TypeError, `${JSON.stringify(bad)} 는 거절돼야 한다`);
+    }
+    await assert.rejects(() => c.updateEnvironmentVariable(1, '../../../api-tokens#', { value: 'x' }), TypeError);
+    assert.equal(called, false);
+  });
+
+  it('accepts a positive integer as a number or a digit string', async () => {
+    const capture = {};
+    const c = new QeployClient(opts(stub(200, { data: {} }, { capture })));
+    await c.getProjectOverview(12);
+    assert.equal(capture.url, 'https://q.test/api/v1/projects/12/overview');
+    await c.getProjectOverview('34');
+    assert.equal(capture.url, 'https://q.test/api/v1/projects/34/overview');
+  });
+
+  it('refuses plain http outside loopback, so the token never goes out in the clear', () => {
+    assert.throws(() => checkBaseUrl('http://qeploy.com'), /https/);
+    assert.throws(() => checkBaseUrl('http://54.251.165.129'), /https/);
+    assert.throws(() => new QeployClient({ baseUrl: 'http://evil.test', token: 'qp_x' }), /https/);
+    assert.throws(() => checkBaseUrl('ftp://qeploy.com'), /https/);
+    assert.throws(() => checkBaseUrl('not a url'), /URL/);
+  });
+
+  it('keeps loopback http open for local development', () => {
+    assert.equal(checkBaseUrl('http://localhost:8099'), 'http://localhost:8099');
+    assert.equal(checkBaseUrl('http://127.0.0.1:8080/'), 'http://127.0.0.1:8080');
+    assert.equal(checkBaseUrl('http://[::1]:8080'), 'http://[::1]:8080');
+    assert.equal(checkBaseUrl('https://qeploy.com'), 'https://qeploy.com');
+  });
+
+  it('refuses a base url that already ends in /api/v1 instead of doubling it', () => {
+    assert.throws(() => checkBaseUrl('https://qeploy.com/api/v1'), /\/api\/v1/);
+    assert.throws(() => checkBaseUrl('https://qeploy.com/api/v1/'), /\/api\/v1/);
+  });
+
+  it('does not tell someone who never set QEPLOY_TOKEN that QEPLOY_TOKEN is wrong', () => {
+    const msg = new QeployApiError(401, 'UNAUTHORIZED', 'x', '/api/v1/projects').toAgentMessage();
+    assert.ok(!msg.includes('QEPLOY_TOKEN'), msg);
+    assert.match(msg, /토큰/);
   });
 });
