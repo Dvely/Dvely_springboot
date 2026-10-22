@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { QeployClient } from '@qeploy/client';
-import { resolveApiUrl, resolveToken } from '@qeploy/client/config';
+import { boundToMessage, resolveApiUrl, resolveToken } from '@qeploy/client/config';
 import { createServer } from './server.js';
 
 /**
@@ -12,8 +12,12 @@ const baseUrl = resolveApiUrl({}, process.env);
 // Falls back to what `qeploy login` stored. An agent launched as `npx @qeploy/mcp` inherits whatever
 // environment the agent had, which usually has nothing in it — and telling the user to paste a
 // credential into their agent's config file would put it in one more place it does not need to be.
-const { token } = resolveToken(process.env);
+const { token, boundTo } = resolveToken(process.env, baseUrl);
 
+if (boundTo) {
+  process.stderr.write(`${boundToMessage(boundTo, baseUrl)}\n`);
+  process.exit(1);
+}
 if (!token) {
   // stderr, not stdout: stdout is the protocol channel and anything printed there corrupts it.
   process.stderr.write(
@@ -29,5 +33,13 @@ if (!token) {
 // real deployment, so the default is that it cannot start one.
 const enableWrites = process.env.QEPLOY_ENABLE_WRITES === 'true';
 
-const server = createServer(new QeployClient({ baseUrl, token }), { enableWrites });
+let client;
+try {
+  client = new QeployClient({ baseUrl, token });
+} catch (e) {
+  process.stderr.write(`${e.message}\n`);
+  process.exit(1);
+}
+
+const server = createServer(client, { enableWrites });
 await server.connect(new StdioServerTransport());
