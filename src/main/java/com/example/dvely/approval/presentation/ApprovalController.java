@@ -47,7 +47,7 @@ public class ApprovalController {
 
     @Operation(
             summary = "승인 상세 조회",
-            description = "승인 요청 한 건의 유형(CHANGE/DEPLOYMENT/DOMAIN_BINDING/INFRA_OPERATION), " +
+            description = "승인 요청 한 건의 유형(값 목록은 ApprovalResponse.type), " +
                           "상태, 연결된 taskId·요약을 조회합니다."
     )
     @GetMapping("/api/v1/approvals/{approvalId}")
