@@ -76,3 +76,20 @@ export function renderDetail(obj, fields) {
     .map((f) => `${pad(f.label, width)}  ${cell(obj[f.key])}`)
     .join('\n');
 }
+
+/**
+ * Removes terminal control sequences from text bound for a human's terminal.
+ *
+ * Project names, error messages and above all build logs come from the user's own app and the
+ * server, so an escape sequence in them would be interpreted by the terminal — repainting lines to
+ * forge output, or OSC sequences some terminals act on. Newlines and tabs stay; a lone carriage
+ * return goes, since it rewrites the line it is on. `--json` does not need this: JSON.stringify
+ * already escapes every control character.
+ */
+export function terminalSafe(text) {
+  return String(text)
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '') // CSI: colours, cursor moves
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, '') // OSC: titles, hyperlinks, clipboard
+    .replace(/\r\n/g, '\n')
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '');
+}

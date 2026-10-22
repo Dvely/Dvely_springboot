@@ -103,6 +103,8 @@ npx @qeploy/cli projects
 npx @qeploy/cli status 340
 npx @qeploy/cli deploy 12 --yes
 npx @qeploy/cli env:set 12 API_URL=https://api.example.com --scope PRODUCTION --yes
+# 비밀 값은 =VALUE 를 빼고 입력받거나 파이프로 — 명령행 인자는 ps·셸 히스토리에 남는다
+pbpaste | npx @qeploy/cli env:set 12 DB_PASSWORD --secret --scope PRODUCTION --yes
 ```
 
 **토큰은 옵션으로 받지 않는다.** 명령행 인자는 셸 히스토리와 `ps` 출력에 남는다. 환경변수와
