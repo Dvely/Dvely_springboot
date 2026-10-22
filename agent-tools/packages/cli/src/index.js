@@ -2,7 +2,7 @@ import { QeployApiError } from '@qeploy/client';
 import { commands } from './commands.js';
 import { UsageError } from './confirm.js';
 
-export const VERSION = '0.1.1';
+export const VERSION = '0.1.2';
 
 /**
  * Exit codes are this CLI's real interface in CI, where nobody reads stderr until something breaks.
@@ -82,7 +82,7 @@ ${rows}
 공통 옵션:
   --json               응답을 그대로 JSON 으로 출력 (CI·스크립트용)
   --yes, -y            확인 없이 진행. 비대화형 환경에서는 필수
-  --api-url <url>      API 주소. 기본값은 QEPLOY_API_URL
+  --api-url <url>      API 주소(/api/v1 없이). 기본값은 QEPLOY_API_URL → 로그인한 주소 → https://qeploy.com
   --help, -h           이 도움말
   --version            버전
 
@@ -148,7 +148,7 @@ export async function run(argv, deps) {
       client = deps.createClient(flags);
     } catch (e) {
       err(e.message);
-      return EXIT.USAGE;
+      return e.code === 'NO_TOKEN' ? EXIT.AUTH : EXIT.USAGE;
     }
   }
 

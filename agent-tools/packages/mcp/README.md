@@ -3,7 +3,7 @@
 코딩 에이전트(Claude Code · Codex)가 [Qeploy](https://qeploy.com) 를 도구로 부르게 하는 MCP 서버(stdio).
 
 ```bash
-npx @qeploy/cli login                              # 한 번. 개인 액세스 토큰을 발급해 저장한다
+npx @qeploy/cli login                              # 한 번. 웹에서 발급한 토큰(qp_...)을 붙여넣어 저장한다
 claude mcp add qeploy -- npx -y @qeploy/mcp        # Claude Code
 codex mcp add qeploy -- npx -y @qeploy/mcp         # Codex
 ```

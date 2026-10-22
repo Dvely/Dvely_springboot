@@ -19,7 +19,7 @@ API 와 함께 두고 반복하기 위해서다. 자립적인 디렉터리라 �
 
 ## npm 에 있다
 
-`@qeploy/client`·`@qeploy/mcp`·`@qeploy/cli` 0.1.0 을 2026-10-19 공개 배포했다(#451). 아래 `npx` 명령이 그대로 동작한다.
+`@qeploy/client`·`@qeploy/mcp`·`@qeploy/cli` 를 2026-10-19 공개 배포했다(#451). 현재 버전은 각 `packages/*/package.json` 이 기준이다. 아래 `npx` 명령이 그대로 동작한다.
 
 소스에서 바로 돌리려면(이 저장소를 고치는 중일 때):
 
@@ -55,6 +55,14 @@ codex mcp add qeploy -- npx -y @qeploy/mcp
 export QEPLOY_API_URL=https://qeploy.com
 export QEPLOY_TOKEN=qp_...
 ```
+
+주소에는 `/api/v1` 을 붙이지 않습니다(붙이면 거절합니다 — 경로가 두 번 붙는다). 그리고 **https 가 아닌 주소는
+거절합니다**(localhost·127.0.0.1 만 예외). 토큰은 요청의 전부라, 평문으로 나가도 아무것도 알려주지 않기 때문입니다.
+
+**저장된 토큰은 로그인한 주소로만 나갑니다(#482).** `QEPLOY_API_URL` 은 클론한 저장소의 `.mcp.json`·`.envrc`
+에서도 올 수 있어서, 그것만 바꿔 저장된 토큰을 다른 호스트로 보내게 할 수 없어야 합니다. 다른 주소를 쓰려면
+거기서 `qeploy login --api-url <주소>` 를 다시 하거나 `QEPLOY_TOKEN` 을 직접 넣습니다 — 직접 넣은 토큰은 어디로든
+보냅니다.
 
 ### 지금은 붙여넣기다
 
@@ -113,7 +121,7 @@ npx @qeploy/cli env:set 12 API_URL=https://api.example.com --scope PRODUCTION --
 | 0 | 성공 |
 | 1 | API·실행 실패 |
 | 2 | 사용법 오류 (인자·필수 플래그) |
-| 3 | 인증 실패 (401·403). 토큰 만료 또는 스코프 부족 |
+| 3 | 인증 실패 (401·403) 또는 쓸 토큰 없음. 토큰 만료·스코프 부족·로그인 안 함 |
 
 쓰기 명령은 확인을 요구하고, **비대화형에서는 물어보는 대신 즉시 거절한다.** CI 로그에 뜬 프롬프트는
 답할 사람이 없어 러너 타임아웃까지 매달릴 뿐이다. `--yes` 를 붙인다.

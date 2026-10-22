@@ -18,7 +18,8 @@ export class QeployApiError extends Error {
   /** What an agent should read: the cause and, where possible, what to do about it. */
   toAgentMessage() {
     if (this.status === 401) {
-      return 'Qeploy 인증에 실패했습니다. QEPLOY_TOKEN 이 만료·폐기되었거나 잘못되었습니다. 새 토큰을 발급해 주세요.';
+      // Not "QEPLOY_TOKEN": most people never set it — their token came from `qeploy login`.
+      return 'Qeploy 인증에 실패했습니다. 토큰이 만료·폐기되었거나 잘못되었습니다. 새 토큰을 발급해 주세요.';
     }
     if (this.status === 403 && this.code === 'FORBIDDEN') {
       return '이 토큰은 읽기 전용입니다(READ 스코프). 변경 작업에는 WRITE 스코프 토큰이 필요합니다.';
@@ -30,6 +31,52 @@ export class QeployApiError extends Error {
   }
 }
 
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * Checks the address a bearer token is about to be sent to.
+ *
+ * Plain http is refused outside loopback: the token is the whole credential, and nothing else in the
+ * request would tell the user it went out in the clear (#482). Loopback stays open for local
+ * development and the e2e scripts.
+ *
+ * A trailing /api/v1 is refused rather than stripped: every path below already starts with it, so
+ * the request would go to /api/v1/api/v1/... — and against a fake token that is a 401 that looks
+ * exactly like a bad token.
+ */
+export function checkBaseUrl(baseUrl) {
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new Error(`API 주소가 올바른 URL 이 아닙니다: ${baseUrl}`);
+  }
+  const loopback = LOOPBACK.has(url.hostname) || url.hostname.endsWith('.localhost');
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new Error(`https 가 아닌 주소로는 토큰을 보내지 않습니다: ${baseUrl}`);
+  }
+  if (/\/api\/v1\/?$/.test(url.pathname)) {
+    throw new Error(`API 주소에는 /api/v1 을 붙이지 않습니다: ${baseUrl} → ${url.origin}`);
+  }
+  return baseUrl.replace(/\/+$/, '');
+}
+
+/**
+ * An id that goes into a URL path.
+ *
+ * MCP tool arguments arrive as whatever the model sent — the low-level Server does not enforce the
+ * inputSchema — so "../api-tokens?x=" would otherwise turn a read tool into a request for any
+ * endpoint the token can reach (#482). Validated here rather than in each surface so the CLI, the
+ * MCP server and any direct caller share one gate.
+ */
+function pathId(name, value) {
+  const ok =
+    (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) ||
+    (typeof value === 'string' && /^[1-9][0-9]{0,15}$/.test(value));
+  if (!ok) throw new TypeError(`${name} 는 양의 정수여야 합니다: ${JSON.stringify(value)}`);
+  return String(value);
+}
+
 export class QeployClient {
   /**
    * @param {{baseUrl: string, token: string, fetchImpl?: typeof fetch, timeoutMs?: number}} options
@@ -38,7 +85,7 @@ export class QeployClient {
     if (!baseUrl) throw new Error('QEPLOY_API_URL 이 필요합니다.');
     if (!token) throw new Error('QEPLOY_TOKEN 이 필요합니다.');
     // Trailing slashes would produce "//api/v1/..." which some gateways treat as a different path.
-    this.baseUrl = baseUrl.replace(/\/+$/, '');
+    this.baseUrl = checkBaseUrl(baseUrl);
     this.token = token;
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
@@ -131,8 +178,8 @@ export class QeployClient {
     return this.get('/api/v1/api-tokens');
   }
 
-  revokeApiToken(apiTokenId) {
-    return this.request('DELETE', `/api/v1/api-tokens/${apiTokenId}`);
+  async revokeApiToken(apiTokenId) {
+    return this.request('DELETE', `/api/v1/api-tokens/${pathId('apiTokenId', apiTokenId)}`);
   }
 
   // ── Projects ──────────────────────────────────────────────────────────────
@@ -140,25 +187,25 @@ export class QeployClient {
     return this.get('/api/v1/projects');
   }
 
-  getProjectOverview(projectId) {
-    return this.get(`/api/v1/projects/${projectId}/overview`);
+  async getProjectOverview(projectId) {
+    return this.get(`/api/v1/projects/${pathId('projectId', projectId)}/overview`);
   }
 
   // ── Deployments ───────────────────────────────────────────────────────────
-  listDeployments(projectId) {
-    return this.get(`/api/v1/projects/${projectId}/deployments`);
+  async listDeployments(projectId) {
+    return this.get(`/api/v1/projects/${pathId('projectId', projectId)}/deployments`);
   }
 
-  getDeployment(deploymentId) {
-    return this.get(`/api/v1/deployments/${deploymentId}`);
+  async getDeployment(deploymentId) {
+    return this.get(`/api/v1/deployments/${pathId('deploymentId', deploymentId)}`);
   }
 
-  getDeploymentLogs(deploymentId) {
-    return this.get(`/api/v1/deployments/${deploymentId}/logs`);
+  async getDeploymentLogs(deploymentId) {
+    return this.get(`/api/v1/deployments/${pathId('deploymentId', deploymentId)}/logs`);
   }
 
-  getDeploymentFailureAnalysis(deploymentId) {
-    return this.get(`/api/v1/deployments/${deploymentId}/failure-analysis`);
+  async getDeploymentFailureAnalysis(deploymentId) {
+    return this.get(`/api/v1/deployments/${pathId('deploymentId', deploymentId)}/failure-analysis`);
   }
 
   /**
@@ -166,31 +213,31 @@ export class QeployClient {
    * "queued, pending approval" rather than "deploying" — callers must read the returned status
    * rather than assume.
    */
-  deploy(projectId, { deployTargetType = 'LATEST', versionName, frontendHostingType } = {}) {
-    return this.post(`/api/v1/projects/${projectId}/deployments`, {
+  async deploy(projectId, { deployTargetType = 'LATEST', versionName, frontendHostingType } = {}) {
+    return this.post(`/api/v1/projects/${pathId('projectId', projectId)}/deployments`, {
       deployTargetType,
       ...(versionName ? { versionName } : {}),
       ...(frontendHostingType ? { frontendHostingType } : {}),
     });
   }
 
-  retryDeployment(deploymentId) {
-    return this.post(`/api/v1/deployments/${deploymentId}/retry`);
+  async retryDeployment(deploymentId) {
+    return this.post(`/api/v1/deployments/${pathId('deploymentId', deploymentId)}/retry`);
   }
 
   // ── Preview ───────────────────────────────────────────────────────────────
-  getPreviewSession(projectId) {
-    return this.get(`/api/v1/projects/${projectId}/preview-session`);
+  async getPreviewSession(projectId) {
+    return this.get(`/api/v1/projects/${pathId('projectId', projectId)}/preview-session`);
   }
 
   // ── Environment ───────────────────────────────────────────────────────────
-  listEnvironmentVariables(projectId) {
+  async listEnvironmentVariables(projectId) {
     // The server returns value=null for secrets; the client never sees a secret value.
-    return this.get(`/api/v1/projects/${projectId}/environment-variables`);
+    return this.get(`/api/v1/projects/${pathId('projectId', projectId)}/environment-variables`);
   }
 
-  createEnvironmentVariable(projectId, { key, value, scope, secret = false }) {
-    return this.post(`/api/v1/projects/${projectId}/environment-variables`, {
+  async createEnvironmentVariable(projectId, { key, value, scope, secret = false }) {
+    return this.post(`/api/v1/projects/${pathId('projectId', projectId)}/environment-variables`, {
       key,
       value,
       scope,
@@ -198,24 +245,27 @@ export class QeployClient {
     });
   }
 
-  updateEnvironmentVariable(projectId, variableId, { value, secret }) {
-    return this.patch(`/api/v1/projects/${projectId}/environment-variables/${variableId}`, {
+  async updateEnvironmentVariable(projectId, variableId, { value, secret }) {
+    const path =
+      `/api/v1/projects/${pathId('projectId', projectId)}` +
+      `/environment-variables/${pathId('variableId', variableId)}`;
+    return this.patch(path, {
       ...(value === undefined ? {} : { value }),
       ...(secret === undefined ? {} : { secret }),
     });
   }
 
   // ── Domains ───────────────────────────────────────────────────────────────
-  listDomains(projectId) {
-    return this.get(`/api/v1/projects/${projectId}/domains`);
+  async listDomains(projectId) {
+    return this.get(`/api/v1/projects/${pathId('projectId', projectId)}/domains`);
   }
 
   /**
    * Binding is asynchronous: the response carries a taskId, not a finished domain. Custom domains
    * additionally need the user to add a DNS record before verification can pass.
    */
-  bindDomain(projectId, { type, label, hostname, verificationMethod, hostingTarget }) {
-    return this.post(`/api/v1/projects/${projectId}/domains`, {
+  async bindDomain(projectId, { type, label, hostname, verificationMethod, hostingTarget }) {
+    return this.post(`/api/v1/projects/${pathId('projectId', projectId)}/domains`, {
       type,
       ...(label ? { label } : {}),
       ...(hostname ? { hostname } : {}),
@@ -224,16 +274,16 @@ export class QeployClient {
     });
   }
 
-  getDomainVerificationGuide(domainId) {
-    return this.get(`/api/v1/domains/${domainId}/verification-guide`);
+  async getDomainVerificationGuide(domainId) {
+    return this.get(`/api/v1/domains/${pathId('domainId', domainId)}/verification-guide`);
   }
 
   // ── Servers ───────────────────────────────────────────────────────────────
-  listServers(projectId) {
-    return this.get(`/api/v1/projects/${projectId}/servers`);
+  async listServers(projectId) {
+    return this.get(`/api/v1/projects/${pathId('projectId', projectId)}/servers`);
   }
 
-  getServerLogs(serverId) {
-    return this.get(`/api/v1/servers/${serverId}/logs`);
+  async getServerLogs(serverId) {
+    return this.get(`/api/v1/servers/${pathId('serverId', serverId)}/logs`);
   }
 }
