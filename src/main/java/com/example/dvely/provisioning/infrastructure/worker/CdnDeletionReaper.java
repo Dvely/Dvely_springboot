@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.infrastructure.worker;
 
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.provisioning.infrastructure.AcmCertificateProvisioner;
@@ -42,6 +43,7 @@ public class CdnDeletionReaper {
     private final CloudConnectionRepository cloudConnectionRepository;
     private final CloudFrontDistributionProvisioner cloudFrontProvisioner;
     private final AcmCertificateProvisioner acmProvisioner;
+    private final AwsCredentialFailureReporter credentialFailureReporter;
 
     // 다중 인스턴스 리스 소유자 식별자(JVM 별 유일).
     private final String workerId = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
@@ -63,8 +65,15 @@ public class CdnDeletionReaper {
                 String msg = e.toString();
                 deletionRepository.recordError(row.getId(),
                         msg.length() > MAX_ERROR_LEN ? msg.substring(0, MAX_ERROR_LEN) : msg);
-                log.warn("CloudFront 리프 실패(다음 주기 재시도): distributionId={} 원인={}",
-                        row.getDistributionId(), e.toString());
+                // 자격이 상한 경우(#429·#487)는 연결 상태로 남기고 매 주기 WARN 을 쌓지 않는다. 오류는
+                // 위에서 행에 이미 기록됐다.
+                if (credentialFailureReporter.reportIfCredentialFailure(row.getCloudConnectionId(), e)) {
+                    log.debug("자격이 유효하지 않아 CloudFront 를 정리할 수 없습니다(연결 상태에 기록됨): "
+                            + "distributionId={}", row.getDistributionId());
+                } else {
+                    log.warn("CloudFront 리프 실패(다음 주기 재시도): distributionId={} 원인={}",
+                            row.getDistributionId(), e.toString());
+                }
             }
         }
     }

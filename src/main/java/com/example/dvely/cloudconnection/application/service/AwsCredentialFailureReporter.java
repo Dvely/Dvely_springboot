@@ -113,7 +113,7 @@ public class AwsCredentialFailureReporter {
         }
         connection.markHealth(CloudConnectionStatus.INVALID_CREDENTIAL, LocalDateTime.now());
         cloudConnectionRepository.save(connection);
-        log.warn("AWS 자격이 더는 유효하지 않아 연결 상태를 INVALID_CREDENTIAL 로 바꿥니다: "
+        log.warn("AWS 자격이 더는 유효하지 않아 연결 상태를 INVALID_CREDENTIAL 로 바꿉니다: "
                 + "connectionId={} 판정근거={}", connectionId, reason);
     }
 
