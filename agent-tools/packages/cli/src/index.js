@@ -1,8 +1,9 @@
 import { QeployApiError } from '@qeploy/client';
 import { commands } from './commands.js';
+import { terminalSafe } from './render.js';
 import { UsageError } from './confirm.js';
 
-export const VERSION = '0.1.2';
+export const VERSION = '0.1.3';
 
 /**
  * Exit codes are this CLI's real interface in CI, where nobody reads stderr until something breaks.
@@ -168,7 +169,7 @@ export async function run(argv, deps) {
       err(result.text);
       return EXIT.ERROR;
     }
-    out(flags.json ? JSON.stringify(result.data ?? null, null, 2) : result.text);
+    out(flags.json ? JSON.stringify(result.data ?? null, null, 2) : terminalSafe(result.text));
     return EXIT.OK;
   } catch (e) {
     if (e instanceof UsageError) {
@@ -176,10 +177,11 @@ export async function run(argv, deps) {
       return EXIT.USAGE;
     }
     if (e instanceof QeployApiError) {
-      err(e.toAgentMessage());
+      // The message can carry the server's text, and through it the user's app's output.
+      err(terminalSafe(e.toAgentMessage()));
       return e.status === 401 || e.status === 403 ? EXIT.AUTH : EXIT.ERROR;
     }
-    err(`실패했습니다: ${e.message}`);
+    err(terminalSafe(`실패했습니다: ${e.message}`));
     return EXIT.ERROR;
   }
 }

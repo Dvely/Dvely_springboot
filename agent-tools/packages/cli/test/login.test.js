@@ -131,13 +131,13 @@ describe('login', () => {
   });
 
   describe('with a token issued on the web', () => {
-    const checking = (fail) => {
+    const checking = (fail, tokens = []) => {
       const calls = [];
       const client = {
-        listProjects: async () => {
-          calls.push('listProjects');
+        listApiTokens: async () => {
+          calls.push('listApiTokens');
           if (fail) throw fail;
-          return [];
+          return tokens;
         },
         issueApiToken: async () => {
           calls.push('issueApiToken');
@@ -160,7 +160,7 @@ describe('login', () => {
       const { client, calls } = checking(new Error('401'));
       const { code } = await cli(['login'], { client, secret: 'qp_revoked' });
       assert.notEqual(code, EXIT.OK);
-      assert.deepEqual(calls, ['listProjects']);
+      assert.deepEqual(calls, ['listApiTokens']);
       assert.equal(client.__token, 'qp_revoked');
       assert.equal(readConfig(env).token, undefined, '확인에 실패한 토큰은 저장하지 않는다');
     });
@@ -175,6 +175,31 @@ describe('login', () => {
         assert.deepEqual(calls, [], '거절할 거면 서버에 묻지도 않는다');
         assert.equal(readConfig(env).token, undefined);
       }
+    });
+
+    it('remembers which token it is, so logout can name the one to revoke', async () => {
+      const tokens = [
+        { apiTokenId: 11, tokenPrefix: 'qp_aaaaaaaa' },
+        { apiTokenId: 12, tokenPrefix: 'qp_fromTheW' },
+      ];
+      const { client } = checking(null, tokens);
+      await cli(['login'], { client, secret: 'qp_fromTheWebRest' });
+      assert.equal(readConfig(env).apiTokenId, 12);
+
+      const { out } = await cli(['logout']);
+      assert.match(out, /#12 \(qp_fromTheW…\)/);
+    });
+
+    it('names no token rather than a wrong one when the prefix is ambiguous', async () => {
+      const tokens = [
+        { apiTokenId: 11, tokenPrefix: 'qp_fromTheW' },
+        { apiTokenId: 12, tokenPrefix: 'qp_fromTheW' },
+      ];
+      const { client } = checking(null, tokens);
+      await cli(['login'], { client, secret: 'qp_fromTheWebRest' });
+      assert.equal(readConfig(env).apiTokenId, null);
+      const { out } = await cli(['logout']);
+      assert.match(out, /해당 토큰을 폐기/);
     });
 
     it('never prints it', async () => {
