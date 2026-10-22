@@ -1249,7 +1249,7 @@ READ·WRITE 가 똑같이 기본 90일·최대 365일이었다. 유출됐을 때
 **npm 공개(Issue #451)** — `@qeploy/client`·`@qeploy/mcp` 0.1.0, `@qeploy/cli` 0.1.1(각 `package.json`, cli 는 #471 로 올렸다). `npx @qeploy/cli`·`npx -y @qeploy/mcp` 가 레지스트리 실물로 동작한다(`ROADMAP.md` 2026-10-20). 스코프 없는 npm `qeploy` 는 남의 패키지라 어디에도 안내하지 않는다.
 
 - 다음 버전부터는 GitHub Actions **Publish agent-tools to npm**(`.github/workflows/agent-tools-publish.yml`)으로 올린다. `workflow_dispatch` 로 사람이 누를 때만, `main`·`develop` 에서만 돈다. 인증은 npm Trusted Publishing(OIDC)이라 저장소에 npm 토큰이 없다. client → mcp → cli 순서로 올리고 이미 있는 버전은 건너뛴다
-- **남은 것**: npmjs.com 의 세 패키지 각각에 Trusted Publisher 등록(사용자 손, 미등록 — `ROADMAP.md` 2026-10-20). 등록 전에는 워크플로가 인증하지 못한다. 손으로 올릴 때는 일반 터미널에서 한다(에이전트 셸에서는 `EOTP` 로 실패)
+- Trusted Publisher 는 세 패키지 모두 등록됐다(2026-10-22, `ROADMAP.md`). 워크플로 실행은 확인했지만 그때 세 버전이 모두 이미 있어 건너뛰었으므로 **OIDC 인증은 다음 실배포가 첫 확인**이다. 손으로 올릴 때는 일반 터미널에서 한다(에이전트 셸에서는 `EOTP` 로 실패)
 - `agent-tools/.gitignore` 가 lock 파일을 빼고 있어 워크플로는 `npm ci` 가 아니라 `npm install` 이다
 
 ---
