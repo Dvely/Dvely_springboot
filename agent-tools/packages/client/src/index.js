@@ -246,10 +246,10 @@ export class QeployClient {
   }
 
   async updateEnvironmentVariable(projectId, variableId, { value, secret }) {
-    const path =
-      `/api/v1/projects/${pathId('projectId', projectId)}` +
-      `/environment-variables/${pathId('variableId', variableId)}`;
-    return this.patch(path, {
+    // One template literal on purpose: JwtAuthenticationFilterTest reads this call to check the
+    // server's PAT write allowlist, and a path assembled across lines would slip past it.
+    const v = pathId('variableId', variableId);
+    return this.patch(`/api/v1/projects/${pathId('projectId', projectId)}/environment-variables/${v}`, {
       ...(value === undefined ? {} : { value }),
       ...(secret === undefined ? {} : { secret }),
     });
