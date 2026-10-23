@@ -12,6 +12,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
@@ -33,6 +34,7 @@ class ServerReplacementServiceTest {
     @Mock private ProvisionedServerRepository serverRepository;
     @Mock private CloudConnectionRepository cloudConnectionRepository;
     @Mock private Ec2Provisioner ec2;
+    @Mock private AwsCredentialFailureReporter credentialFailureReporter;
     @InjectMocks private ServerReplacementService service;
 
     @org.junit.jupiter.api.BeforeEach

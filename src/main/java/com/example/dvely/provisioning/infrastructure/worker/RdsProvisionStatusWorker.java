@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.infrastructure.worker;
 
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
@@ -42,6 +43,7 @@ public class RdsProvisionStatusWorker {
     private final ProvisionedDatabaseRepository databaseRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
     private final RdsProvisioner rdsProvisioner;
+    private final AwsCredentialFailureReporter credentialFailureReporter;
 
     @Scheduled(fixedDelayString = "${qeploy.provisioning.rds-poll-interval-ms:30000}")
     public void pollProvisioning() {
@@ -53,8 +55,15 @@ public class RdsProvisionStatusWorker {
                 pollOne(db);
             } catch (RuntimeException e) {
                 // 이 행만 건너뛰고 다음 주기에 다시 본다 — 한 인스턴스의 일시 오류가 배치를 멈추지 않게.
-                log.warn("RDS 상태 폴링 실패(다음 주기 재시도): databaseId={} instanceId={} 원인={}",
-                        db.getId(), db.getResourceId(), e.toString());
+                // 자격이 상한 경우(#429)는 연결 상태로 남기고 WARN 을 쌓지 않는다. dev 에서 만료된 임시
+                // 자격 하나가 30초마다 이 줄을 한 달 넘게 남겼다(#487) — 재시도는 그대로 둔다(자격을 고치면 이어진다).
+                if (credentialFailureReporter.reportIfCredentialFailure(db.getCloudConnectionId(), e)) {
+                    log.debug("자격이 유효하지 않아 RDS 상태를 볼 수 없습니다(연결 상태에 기록됨): databaseId={}",
+                            db.getId());
+                } else {
+                    log.warn("RDS 상태 폴링 실패(다음 주기 재시도): databaseId={} instanceId={} 원인={}",
+                            db.getId(), db.getResourceId(), e.toString());
+                }
             }
         }
     }
