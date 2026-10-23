@@ -458,7 +458,7 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 >
 > FE 안내 문구는 **IAM 사용자의 장기 Access Key(`AKIA`) 또는 역할 ARN(권장)** 으로 유도하면 됩니다. 400 응답의 `message` 가 그대로 쓸 수 있는 문장입니다.
 >
-> 이미 임시 자격으로 등록된 연결은 남아 있고, 만료되면 상태가 `INVALID_CREDENTIAL` 로 바뀝니다(최대 1시간) — 그때 재등록을 유도하면 됩니다.
+> 이미 임시 자격으로 등록된 연결은 남아 있고, 만료되면 상태가 `INVALID_CREDENTIAL` 로 바뀝니다(최대 1시간). **그때는 재등록이 아니라 `PUT /{id}/credentials`(자격 교체)로 유도합니다(#491)** — 그 연결로 만든 DB·서버·CDN 은 연결 id 로만 다뤄서, 새 연결을 만들면 기존 리소스를 지울 수 없게 되고 사용자 AWS 에 과금 리소스로 남습니다.
 
 | 메서드 | 경로 | 용도 | 요청 | 응답(핵심 필드) | 주요 에러 |
 |---|---|---|---|---|---|
@@ -468,6 +468,7 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 | GET | `/{id}/health` | 저장된 마지막 상태 조회(재검증 아님) | - | `{ cloudConnectionId, provider, status, message, checkedAt }` | 404 |
 | POST | `/{id}/verification-jobs` | 실 권한 확인 Job 생성 | - | 202 `{ jobId, cloudConnectionId, status, connectionStatus, message, attempt, createdAt, startedAt, completedAt }` | 404 |
 | GET | `/api/v1/cloud-connection-verification-jobs/{jobId}` | 검증 Job 상태 폴링 | - | 위와 동일 shape(`status`: PENDING\|RUNNING\|SUCCEEDED\|FAILED) | 404 |
+| PUT | `/{id}/credentials` | **자격 교체**(#491). 연결 id·리전 유지, AWS 자격만 바꾸고 세션 토큰은 지움. 상태 VALIDATED + 검증 Job. `INVALID_CREDENTIAL` 연결의 조치 버튼 | `{ awsCredentialType?(ACCESS_KEY\|ROLE_ARN, 생략 시 현재 방식), accountId?, roleArn?, accessKeyId?, secretAccessKey? }` | 202 검증 Job(아래 verification-jobs 와 같은 shape) | 400(ASIA·형식·**연결의 accountId 와 다른 계정**·GCP 연결) / 404 |
 | DELETE | `/{id}` | 연결 정보 삭제(실 클라우드 리소스는 삭제 안 함) | - | 204 | 404 |
 
 `CloudConnectionStatus` 전체 값: `VALIDATED · VERIFYING · CHECKING · CONNECTED · PERMISSION_MISSING · BILLING_DISABLED · REGION_UNSUPPORTED · INVALID_CREDENTIAL · UNKNOWN_ERROR`.

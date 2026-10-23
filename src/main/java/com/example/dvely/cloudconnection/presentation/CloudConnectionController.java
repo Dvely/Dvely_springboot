@@ -1,12 +1,14 @@
 package com.example.dvely.cloudconnection.presentation;
 
 import com.example.dvely.cloudconnection.application.command.dto.CreateCloudConnectionCommand;
+import com.example.dvely.cloudconnection.application.command.dto.ReplaceCloudConnectionCredentialsCommand;
 import com.example.dvely.cloudconnection.application.facade.CloudConnectionFacade;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionHealthResult;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionResult;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionVerificationJobResult;
 import com.example.dvely.cloudconnection.application.result.CreateCloudConnectionResult;
 import com.example.dvely.cloudconnection.presentation.dto.request.CreateCloudConnectionRequest;
+import com.example.dvely.cloudconnection.presentation.dto.request.ReplaceCloudConnectionCredentialsRequest;
 import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnectionHealthResponse;
 import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnectionRequirementsResponse;
 import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnectionResponse;
@@ -23,6 +25,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -117,6 +120,31 @@ public class CloudConnectionController {
             @PathVariable String jobId
     ) {
         return toJobResponse(cloudConnectionFacade.getVerificationJob(ownerUserId, jobId));
+    }
+
+    @Operation(
+            summary = "클라우드 연결 자격 교체",
+            description = "연결 id·리전은 그대로 두고 AWS 자격만 바꿉니다. 그 연결로 만든 DB·서버·CDN 은 연결 id 로 "
+                    + "다루므로, 자격이 만료되거나 키를 교체했을 때 새 연결을 만들면 기존 리소스를 지울 수 없게 됩니다 — "
+                    + "그때 이 API 를 씁니다. 상태는 VALIDATED 로 돌아가고 검증 Job 이 생깁니다(응답의 jobId 로 폴링). "
+                    + "연결에 accountId 가 있으면 다른 계정으로 바꿀 수 없고(400), 검증 Job 이 새 자격의 계정과 대조합니다. "
+                    + "임시 자격(ASIA)은 등록과 같이 거부합니다. 지금은 AWS 연결만 지원합니다."
+    )
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    @PutMapping("/api/v1/cloud-connections/{cloudConnectionId}/credentials")
+    public CloudConnectionVerificationJobResponse replaceCredentials(
+            @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long cloudConnectionId,
+            @Valid @RequestBody ReplaceCloudConnectionCredentialsRequest request
+    ) {
+        ReplaceCloudConnectionCredentialsCommand command = new ReplaceCloudConnectionCredentialsCommand(
+                request.awsCredentialType(),
+                request.accountId(),
+                request.roleArn(),
+                request.accessKeyId(),
+                request.secretAccessKey()
+        );
+        return toJobResponse(cloudConnectionFacade.replaceCredentials(ownerUserId, cloudConnectionId, command));
     }
 
     @Operation(summary = "클라우드 연결 해제", description = "Qeploy에 저장된 외부 클라우드 연결 정보를 삭제합니다.")

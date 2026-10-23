@@ -102,6 +102,21 @@ class CloudConnectionRequirementsServiceTest {
     }
 
     @Test
+    void accessKeyGuideDoesNotInviteTemporaryCredentials() {
+        // #429 이후 서버는 임시 자격(ASIA)과 sessionToken 을 400 으로 거절하는데, 가이드는 여전히
+        // "세션 토큰은 ASIA 일 때만 입력" 이라며 그 입력을 안내했다(#491). 안내대로 하면 거절당한다.
+        for (String platformArn : new String[]{PLATFORM_ARN, null}) {
+            CloudConnectionRequirementsResult result = service(platformArn).getRequirements("AWS", "ACCESS_KEY");
+
+            assertThat(result.fields()).noneSatisfy(f -> assertThat(f.key()).isEqualTo("sessionToken"));
+            assertThat(result.credentialOptions())
+                    .filteredOn(o -> o.type().equals("ACCESS_KEY"))
+                    .singleElement()
+                    .satisfies(o -> assertThat(o.summary()).doesNotContain("쓸 수도 있습니다"));
+        }
+    }
+
+    @Test
     void gcpIsNotYetSupported() {
         assertThatThrownBy(() -> service(PLATFORM_ARN).getRequirements("GCP", "ROLE_ARN"))
                 .isInstanceOf(IllegalArgumentException.class)

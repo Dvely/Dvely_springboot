@@ -123,9 +123,7 @@ public class CloudConnectionRequirementsService {
                         field("accessKeyId", "액세스 키 ID", "아래 '추천 권한 정책'을 붙인 IAM 사용자의 액세스 키입니다.",
                                 "IAM > 사용자 > 보안 자격 증명 > 액세스 키 만들기", "AKIA...", true, false),
                         field("secretAccessKey", "시크릿 액세스 키", "액세스 키를 만들 때 한 번만 보이는 비밀값입니다. AES 로 암호화 저장되며 응답에 노출되지 않습니다.",
-                                "액세스 키 생성 시 함께 발급 (그때만 확인 가능)", "****", true, true),
-                        field("sessionToken", "세션 토큰", "ASIA 로 시작하는 임시 자격일 때만 입력합니다. AKIA 장기 키는 비워둡니다.",
-                                "임시 자격(STS)일 때만", "", false, true)
+                                "액세스 키 생성 시 함께 발급 (그때만 확인 가능)", "****", true, true)
                 ),
                 List.of(
                         step(1, "권한 정책 생성",
@@ -154,7 +152,7 @@ public class CloudConnectionRequirementsService {
     private List<CredentialOption> credentialOptions(boolean roleArnAvailable) {
         CredentialOption accessKey = new CredentialOption(AwsCredentialType.ACCESS_KEY.name(), "액세스 키",
                 !roleArnAvailable,
-                "설정이 더 간단하지만 장기 키를 암호화해 저장합니다. 임시 자격(STS)을 쓸 수도 있습니다.");
+                "설정이 더 간단하지만 장기 키를 암호화해 저장합니다. 임시 자격(ASIA)은 만료되어 받지 않습니다.");
         if (!roleArnAvailable) {
             return List.of(accessKey);
         }

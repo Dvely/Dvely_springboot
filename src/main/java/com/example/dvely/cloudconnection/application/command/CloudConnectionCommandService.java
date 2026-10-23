@@ -2,6 +2,7 @@ package com.example.dvely.cloudconnection.application.command;
 
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.cloudconnection.application.command.dto.CreateCloudConnectionCommand;
+import com.example.dvely.cloudconnection.application.command.dto.ReplaceCloudConnectionCredentialsCommand;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionVerificationJobResult;
 import com.example.dvely.cloudconnection.application.result.CreateCloudConnectionResult;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
@@ -79,6 +80,61 @@ public class CloudConnectionCommandService {
                 new CloudConnectionVerificationJob(cloudConnectionId, ownerUserId)
         );
         return toJobResult(job);
+    }
+
+    /**
+     * 연결 id 를 그대로 두고 AWS 자격만 바꾼다(#491). DB·서버·CDN 은 만든 연결 id 로만 다루므로,
+     * 자격이 만료되거나 키를 교체했을 때 새 연결을 만드는 것으로는 기존 자원을 되찾지 못한다.
+     *
+     * <p>계정은 바꾸지 못한다. 자원은 그 계정 안에 있어서 다른 계정의 자격을 넣으면 삭제가 엉뚱한
+     * 계정을 향한다. 연결에 accountId 가 있으면 그 값으로 고정하고, 검증 Job 이 GetCallerIdentity 로
+     * 새 자격의 계정과 대조한다. 리전도 같은 이유로 그대로 둔다.
+     */
+    @Transactional
+    public CloudConnectionVerificationJobResult replaceCredentials(Long ownerUserId, Long cloudConnectionId,
+                                                                   ReplaceCloudConnectionCredentialsCommand command) {
+        CloudConnection cloudConnection = resolveCloudConnection(ownerUserId, cloudConnectionId);
+        if (cloudConnection.getProvider() != CloudProvider.AWS) {
+            throw new IllegalArgumentException("자격 교체는 지금 AWS 연결만 지원합니다.");
+        }
+        String accountId = pinnedAccountId(cloudConnection, command.accountId());
+        AwsCredentialType credentialType = hasText(command.awsCredentialType())
+                ? AwsCredentialType.from(command.awsCredentialType())
+                : AwsCredentialType.from(cloudConnection.getAwsCredentialType());
+
+        if (credentialType == AwsCredentialType.ACCESS_KEY) {
+            String accessKeyId = requireText(command.accessKeyId(), "accessKeyId");
+            String secretAccessKey = requireText(command.secretAccessKey(), "secretAccessKey");
+            validateAwsAccessKey(accessKeyId, secretAccessKey, null);
+            if (accountId != null && !AWS_ACCOUNT_ID.matcher(accountId).matches()) {
+                throw new IllegalArgumentException("AWS accountId는 12자리 숫자여야 합니다.");
+            }
+            cloudConnection.replaceAwsCredentials(
+                    credentialType.name(), accountId, null, accessKeyId, secretAccessKey);
+        } else {
+            if (accountId == null) {
+                throw new IllegalArgumentException("accountId must not be blank");
+            }
+            String roleArn = requireText(command.roleArn(), "roleArn");
+            validateAwsRole(accountId, roleArn);
+            cloudConnection.replaceAwsCredentials(credentialType.name(), accountId, roleArn, null, null);
+        }
+        cloudConnectionRepository.save(cloudConnection);
+        CloudConnectionVerificationJob job = verificationJobRepository.save(
+                new CloudConnectionVerificationJob(cloudConnectionId, ownerUserId)
+        );
+        return toJobResult(job);
+    }
+
+    private String pinnedAccountId(CloudConnection cloudConnection, String requestedAccountId) {
+        String current = cloudConnection.getAccountId();
+        String requested = trimToNull(requestedAccountId);
+        if (current != null && requested != null && !current.equals(requested)) {
+            throw new IllegalArgumentException(
+                    "이 연결은 AWS 계정 " + current + " 에 묶여 있어 다른 계정으로 바꿀 수 없습니다. "
+                            + "그 연결로 만든 리소스가 이 계정에 있기 때문입니다. 다른 계정이라면 새 연결을 만들어주세요.");
+        }
+        return current != null ? current : requested;
     }
 
     @Transactional
