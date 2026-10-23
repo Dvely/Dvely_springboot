@@ -1,7 +1,9 @@
 package com.example.dvely.cloudconnection.application.service;
 
 import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult;
+import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult.CredentialCase;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult.CredentialOption;
+import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult.PolicyModule;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult.RequirementField;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult.SetupStep;
 import com.example.dvely.cloudconnection.domain.value.AwsCredentialType;
@@ -9,7 +11,9 @@ import com.example.dvely.cloudconnection.domain.value.CloudProvider;
 import com.example.dvely.cloudconnection.infrastructure.config.CloudConnectionGuideProperties;
 import com.example.dvely.cloudconnection.infrastructure.external.AwsPolicyDocumentLoader;
 import jakarta.annotation.PostConstruct;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -99,7 +103,9 @@ public class CloudConnectionRequirementsService {
                 ROLE_NAME,
                 policyDocumentLoader.loadDeployPolicy(),
                 policyDocumentLoader.loadTrustPolicy(guideProperties.platformPrincipalArnOrPlaceholder()),
-                notes(true, true)
+                notes(true, true),
+                credentialCases(true),
+                policyModules()
         );
     }
 
@@ -141,7 +147,9 @@ public class CloudConnectionRequirementsService {
                 ROLE_NAME,
                 policyDocumentLoader.loadDeployPolicy(),
                 null,
-                notes(false, roleArnAvailable)
+                notes(false, roleArnAvailable),
+                credentialCases(roleArnAvailable),
+                policyModules()
         );
     }
 
@@ -185,6 +193,88 @@ public class CloudConnectionRequirementsService {
                         + "정리가 안 됩니다.",
                 platformNote
         ).filter(java.util.Objects::nonNull).toList();
+    }
+
+    /**
+     * 자격 종류별 설명. 임시 자격은 받지 않지만 목록에서 빼지 않는다 — AWS Academy·SSO 로그인·
+     * {@code aws sts} 가 주는 키가 바로 그것이라, 사용자는 자기 키가 왜 거절되는지와 대신 무엇을 쓰면
+     * 되는지를 여기서 알아야 한다(#429 이전에 받은 임시 자격 연결이 실제로 만료돼 자원을 못 지웠다, #491).
+     */
+    private List<CredentialCase> credentialCases(boolean roleArnAvailable) {
+        CredentialCase role = new CredentialCase(
+                AwsCredentialType.ROLE_ARN.name(),
+                "역할 위임 (Role ARN)",
+                "만료 걱정 없음 — Qeploy 가 15분마다 새 임시 자격을 받아 씁니다",
+                roleArnAvailable,
+                roleArnAvailable,
+                "키를 Qeploy 에 저장하지 않고, 사용자 계정의 역할을 Qeploy 가 위임받아 씁니다. 가장 안전합니다.",
+                List.of(
+                        "IAM > 정책 > 정책 생성에서 아래에서 고른 권한 정책을 붙여넣고 '" + POLICY_NAME + "' 로 저장",
+                        "IAM > 역할 > 역할 생성 > '사용자 지정 신뢰 정책' 에 신뢰 정책을 붙여넣기",
+                        "그 역할에 '" + POLICY_NAME + "' 을 연결하고 이름을 '" + ROLE_NAME + "' 로 저장",
+                        "역할 상세의 ARN 과 계정 ID 를 연결 화면에 입력"),
+                roleArnAvailable ? null
+                        : "이 환경에서는 아직 준비되지 않아 고를 수 없습니다. 장기 액세스 키를 사용해주세요.");
+        CredentialCase accessKey = new CredentialCase(
+                AwsCredentialType.ACCESS_KEY.name(),
+                "IAM 사용자 장기 액세스 키 (AKIA…)",
+                "직접 비활성화·삭제할 때까지",
+                true,
+                !roleArnAvailable,
+                "IAM 사용자의 액세스 키 ID(AKIA 로 시작)와 시크릿입니다. 시크릿은 암호화해 저장하고 응답에 내보내지 않습니다.",
+                List.of(
+                        "IAM > 정책 > 정책 생성에서 아래에서 고른 권한 정책을 붙여넣고 '" + POLICY_NAME + "' 로 저장",
+                        "IAM > 사용자 > 사용자 생성(예: qeploy-deploy) > '직접 정책 연결' 로 '" + POLICY_NAME + "' 연결",
+                        "그 사용자 > 보안 자격 증명 > 액세스 키 만들기 > 사용 사례 '서드 파티 서비스'",
+                        "액세스 키 ID 와 시크릿을 연결 화면에 입력 — 시크릿은 이 화면에서만 보입니다"),
+                "키를 교체하거나 지우면 연결이 끊깁니다. 새 연결을 만들지 말고 그 연결의 '자격 교체' 로 새 키를 넣어야 "
+                        + "기존 DB·서버·CDN 을 계속 다룰 수 있습니다.");
+        CredentialCase temporary = new CredentialCase(
+                "TEMPORARY",
+                "임시 자격 (ASIA… + 세션 토큰)",
+                "15분 ~ 36시간 뒤 만료, 자동 갱신 안 됨",
+                false,
+                false,
+                "AWS Academy·IAM Identity Center(SSO) 로그인·aws sts 명령이 주는 키입니다. 등록 직후에는 동작하지만 "
+                        + "만료되면 배포·삭제가 모두 실패하므로 받지 않습니다.",
+                List.of(),
+                "이 키밖에 없다면 IAM 사용자를 만들 권한이 있는 계정에서 장기 키를 발급하거나 역할 위임을 사용해주세요.");
+        return List.of(role, accessKey, temporary);
+    }
+
+    /**
+     * 기능 묶음을 전체본의 문장으로 풀어 낸다. 묶음 파일은 Sid 만 가리키므로, 전체본에 없는 Sid 를
+     * 가리키면 그 묶음을 고른 사용자의 정책에서 권한이 조용히 빠진다 — 그래서 여기서 바로 실패시킨다.
+     */
+    @SuppressWarnings("unchecked")
+    private List<PolicyModule> policyModules() {
+        Map<String, Map<String, Object>> bySid = new LinkedHashMap<>();
+        for (Object statement : (List<Object>) policyDocumentLoader.loadDeployPolicy().get("Statement")) {
+            Map<String, Object> s = (Map<String, Object>) statement;
+            bySid.put((String) s.get("Sid"), s);
+        }
+        List<Object> modules = (List<Object>) policyDocumentLoader.loadPolicyModules().get("modules");
+        return modules.stream().map(raw -> {
+            Map<String, Object> m = (Map<String, Object>) raw;
+            List<Map<String, Object>> statements = new java.util.ArrayList<>();
+            for (Object sid : (List<Object>) m.getOrDefault("sids", List.of())) {
+                Map<String, Object> statement = bySid.get(sid);
+                if (statement == null) {
+                    throw new IllegalStateException("권한 묶음 " + m.get("key") + " 이 전체본에 없는 Sid 를 가리킵니다: " + sid);
+                }
+                statements.add(statement);
+            }
+            for (Object extra : (List<Object>) m.getOrDefault("statements", List.of())) {
+                statements.add((Map<String, Object>) extra);
+            }
+            return new PolicyModule(
+                    (String) m.get("key"),
+                    (String) m.get("label"),
+                    (String) m.get("description"),
+                    Boolean.TRUE.equals(m.get("required")),
+                    Boolean.TRUE.equals(m.get("defaultSelected")),
+                    List.copyOf(statements));
+        }).toList();
     }
 
     private RequirementField field(String key, String label, String description, String whereToFind,
