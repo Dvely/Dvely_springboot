@@ -214,7 +214,7 @@ class CloudConnectionCommandServiceTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("DB 1개")
                 .hasMessageContaining("CloudFront 도메인 2개")
-                .hasMessageContaining("자격 교체");
+                .hasMessageContaining("리소스를 먼저 삭제");
 
         verify(cloudConnectionRepository, never()).deleteById(any());
     }
