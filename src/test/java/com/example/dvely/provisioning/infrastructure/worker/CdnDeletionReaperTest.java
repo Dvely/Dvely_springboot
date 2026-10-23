@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.provisioning.infrastructure.AcmCertificateProvisioner;
@@ -32,6 +33,7 @@ class CdnDeletionReaperTest {
     @Mock private CloudConnectionRepository cloudConnectionRepository;
     @Mock private CloudFrontDistributionProvisioner cloudFrontProvisioner;
     @Mock private AcmCertificateProvisioner acmProvisioner;
+    @Mock private AwsCredentialFailureReporter credentialFailureReporter;
     @InjectMocks private CdnDeletionReaper reaper;
 
     private CdnDeletionEntity row() {

@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.infrastructure.worker;
 
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.provisioning.domain.model.ProvisionedDatabase;
@@ -40,6 +41,7 @@ public class DockerDbProvisionStatusWorker {
     private final ProvisionedDatabaseRepository databaseRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
     private final DockerDbProvisioner dockerDbProvisioner;
+    private final AwsCredentialFailureReporter credentialFailureReporter;
 
     @Scheduled(fixedDelayString = "${qeploy.provisioning.docker-db-poll-interval-ms:30000}")
     public void pollProvisioning() {
@@ -50,8 +52,14 @@ public class DockerDbProvisionStatusWorker {
             try {
                 pollOne(db);
             } catch (RuntimeException e) {
-                log.warn("DOCKER DB 상태 폴링 실패(다음 주기 재시도): databaseId={} instanceId={} 원인={}",
-                        db.getId(), db.getResourceId(), e.toString());
+                // 자격이 상한 경우(#429·#487)는 연결 상태로 남기고 매 주기 WARN 을 쌓지 않는다.
+                if (credentialFailureReporter.reportIfCredentialFailure(db.getCloudConnectionId(), e)) {
+                    log.debug("자격이 유효하지 않아 DOCKER DB 상태를 볼 수 없습니다(연결 상태에 기록됨): databaseId={}",
+                            db.getId());
+                } else {
+                    log.warn("DOCKER DB 상태 폴링 실패(다음 주기 재시도): databaseId={} instanceId={} 원인={}",
+                            db.getId(), db.getResourceId(), e.toString());
+                }
             }
         }
     }

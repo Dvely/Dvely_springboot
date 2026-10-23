@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.application.service;
 
+import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
@@ -35,6 +36,7 @@ public class ServerReplacementService {
     private final ProvisionedServerRepository serverRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
     private final Ec2Provisioner ec2;
+    private final AwsCredentialFailureReporter credentialFailureReporter;
 
     // 다중 인스턴스 리스 소유자 식별자(JVM 별 유일). Agent 워커와 동형.
     private final String workerId = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
@@ -51,8 +53,14 @@ public class ServerReplacementService {
                 completeReplacement(newServer);
             } catch (RuntimeException e) {
                 // 이 행만 건너뛰고 다음 주기에 다시 본다 — 옛 서버가 잠시 더 남을 수 있으나(과금) 재시도로 마무리.
-                log.warn("재배포 교체 실패(다음 주기 재시도, 옛 서버 잔존 가능): newServerId={} supersedes={} 원인={}",
-                        newServer.getId(), newServer.getSupersedesServerId(), e.toString());
+                // 자격이 상한 경우(#429·#487)는 연결 상태로 남기고 매 주기 WARN 을 쌓지 않는다.
+                if (credentialFailureReporter.reportIfCredentialFailure(newServer.getCloudConnectionId(), e)) {
+                    log.debug("자격이 유효하지 않아 재배포 교체를 마칠 수 없습니다(연결 상태에 기록됨, 옛 서버 잔존): "
+                            + "newServerId={} supersedes={}", newServer.getId(), newServer.getSupersedesServerId());
+                } else {
+                    log.warn("재배포 교체 실패(다음 주기 재시도, 옛 서버 잔존 가능): newServerId={} supersedes={} 원인={}",
+                            newServer.getId(), newServer.getSupersedesServerId(), e.toString());
+                }
             }
         }
     }
