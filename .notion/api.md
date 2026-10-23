@@ -940,7 +940,7 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 | Method | Path | 기능 |
 |---|---|---|
 | GET | `/api/v1/cloud-connections` | 내 AWS/GCP 연결 목록 |
-| GET | `/api/v1/cloud-connections/requirements?provider=AWS&credentialType=ROLE_ARN` | 연결 가이드: 입력 필드·얻는 위치·준비 단계·추천 IAM 권한 정책(전체본)·신뢰 정책 |
+| GET | `/api/v1/cloud-connections/requirements?provider=AWS&credentialType=ROLE_ARN` | 연결 가이드: 입력 필드·얻는 위치·준비 단계·추천 IAM 권한 정책(전체본)·신뢰 정책. #493: `credentialCases`(ROLE_ARN·ACCESS_KEY·TEMPORARY, 임시 자격은 `supported=false`+이유)·`policyModules`(`{key,label,description,required,defaultSelected,statements}` — 고른 묶음의 statements 를 Sid 로 합치면 정책 한 장, 기본 묶음 전부 = 전체본) |
 | POST | `/api/v1/cloud-connections` | 클라우드 연결 정보 등록 |
 | GET | `/api/v1/cloud-connections/{cloudConnectionId}` | 연결 상세 |
 | GET | `/api/v1/cloud-connections/{cloudConnectionId}/health` | 저장된 실제 검증 결과 조회 |

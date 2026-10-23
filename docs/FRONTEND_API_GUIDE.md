@@ -471,6 +471,11 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 | PUT | `/{id}/credentials` | **자격 교체**(#491). 연결 id·리전 유지, AWS 자격만 바꾸고 세션 토큰은 지움. 상태 VALIDATED + 검증 Job. `INVALID_CREDENTIAL` 연결의 조치 버튼 | `{ awsCredentialType?(ACCESS_KEY\|ROLE_ARN, 생략 시 현재 방식), accountId?, roleArn?, accessKeyId?, secretAccessKey? }` | 202 검증 Job(아래 verification-jobs 와 같은 shape) | 400(ASIA·형식·**연결의 accountId 와 다른 계정**·GCP 연결) / 404 |
 | DELETE | `/{id}` | 연결 정보 삭제(실 클라우드 리소스는 삭제 안 함) | - | 204 | 404 |
 
+**연결 가이드 `GET /requirements?provider=AWS&credentialType=…`** (#493 추가 필드, 기존 필드는 그대로)
+- `credentialCases[]`: `{ type(ROLE_ARN|ACCESS_KEY|TEMPORARY), label, lifetime, supported, recommended, summary, howToGet[], caution }`. 자격 종류 카드용. `TEMPORARY` 는 항상 `supported=false` — 받지 않는 이유와 대안을 보여주는 카드다(AWS Academy·SSO·`aws sts` 키가 여기 해당). `ROLE_ARN.supported` 는 환경에 위임이 준비됐는지에 따른다(false 면 비활성 카드). `recommended` 는 정확히 하나
+- `policyModules[]`: `{ key, label, description, required, defaultSelected, statements[] }`. 체크박스용. `required` 는 체크 해제 불가(`core`). **조합**: 고른 묶음의 `statements` 를 `Sid` 기준으로 중복 제거해 합치고 `{ "Version": "2012-10-17", "Statement": [...] }` 로 감싼다 — 그 JSON 을 복사해 IAM 정책 생성에 붙여넣는다. `defaultSelected` 묶음을 전부 고른 결과는 `recommendedPolicy` 와 같다(BE 테스트가 고정). `ecrImages` 는 기본 꺼짐(서버가 ECR 전송일 때만)
+- 정책 내용을 FE 에 하드코딩하지 않는다 — BE 가 AWS 액션을 늘리면 이 응답만 바뀐다
+
 `CloudConnectionStatus` 전체 값: `VALIDATED · VERIFYING · CHECKING · CONNECTED · PERMISSION_MISSING · BILLING_DISABLED · REGION_UNSUPPORTED · INVALID_CREDENTIAL · UNKNOWN_ERROR`.
 
 ### 4.10 Preview — `com.example.dvely.preview.presentation` (7개 논리 엔드포인트, 프록시가 경로 패턴 2개를 가져 Swagger에는 8개로 집계)
