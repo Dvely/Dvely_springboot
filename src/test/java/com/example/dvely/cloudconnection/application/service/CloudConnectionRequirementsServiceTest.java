@@ -186,7 +186,31 @@ class CloudConnectionRequirementsServiceTest {
             assertThat(result.credentialCases()).filteredOn(c -> c.type().equals("ROLE_ARN"))
                     .singleElement().satisfies(c -> assertThat(c.supported()).isEqualTo(platformArn != null));
             assertThat(result.credentialCases()).filteredOn(c -> c.recommended()).hasSize(1);
+            // FE 는 권장 카드를 강조한다. 권장이 고를 수 없는 카드면 비활성 카드를 권하게 된다.
+            assertThat(result.credentialCases()).filteredOn(c -> c.recommended())
+                    .allSatisfy(c -> assertThat(c.supported()).isTrue());
         }
+    }
+
+    @Test
+    void aSidMeansTheSameStatementInEveryModule() {
+        // FE 는 고른 묶음을 Sid 로 중복 제거해 합친다. 같은 Sid 가 묶음마다 다르면 먼저 만난 쪽만 남아
+        // 권한이 조용히 빠진다. 묶음 파일에 직접 적는 문장은 전체본 Sid 와 겹치면 안 된다.
+        CloudConnectionRequirementsResult result = service(null).getRequirements("AWS", "ACCESS_KEY");
+
+        Map<String, Map<String, Object>> seen = new java.util.HashMap<>();
+        result.policyModules().stream().flatMap(m -> m.statements().stream()).forEach(st -> {
+            Map<String, Object> first = seen.putIfAbsent((String) st.get("Sid"), st);
+            if (first != null) {
+                assertThat(st).as("Sid " + st.get("Sid")).isEqualTo(first);
+            }
+        });
+        List<Object> recommended = (List<Object>) result.recommendedPolicy().get("Statement");
+        java.util.Set<Object> recommendedSids = new java.util.HashSet<>();
+        recommended.forEach(o -> recommendedSids.add(((Map<String, Object>) o).get("Sid")));
+        result.policyModules().stream().filter(m -> !m.defaultSelected() && !m.required())
+                .flatMap(m -> m.statements().stream())
+                .forEach(st -> assertThat(recommendedSids).doesNotContain(st.get("Sid")));
     }
 
     private Map<String, Object> policyOf(CloudConnectionRequirementsResult result, String... keys) {
