@@ -7,7 +7,7 @@
 - 기준일: 2026-10-20
 - 기준 커밋: `02a2240` (PR #475 플래너 instruction 언어 반영, develop). 직전 기준은 `113abf0`(2026-08-15, PR #104 프리뷰 게이트웨이 인가 반영)
 - 기준 코드: `src/main/java/com/example/dvely/**/presentation/*Controller.java`
-- 현재 공개 엔드포인트: 117개, 직전 기준(`113abf0` 시점) 94개에서 +23 — Agent +2(`GET /agent/ai-providers` §9.6, `GET /agent/conversations/{conversationId}/active-task` §9), AiCredential +3(§16), ApiToken +3(§18), Template +2(§17), CloudConnection +1(`GET /cloud-connections/requirements`), DomainBinding +1(`GET /domains/hosting-targets`), DomainTls +1(`GET /tls/allow`), PreviewGateway +1(SSE 프록시), PreviewRuntimeConfig +2(`GET/PUT /projects/{projectId}/preview/runtime`), Provisioning +7(§19). 2026-09-28 이후로는 수가 바뀌지 않았다
+- 현재 공개 엔드포인트: 118개(2026-10-23 CloudConnection +1 `PUT /cloud-connections/{id}/credentials` #491). 그 전 117개는 직전 기준(`113abf0` 시점) 94개에서 +23 — Agent +2(`GET /agent/ai-providers` §9.6, `GET /agent/conversations/{conversationId}/active-task` §9), AiCredential +3(§16), ApiToken +3(§18), Template +2(§17), CloudConnection +1(`GET /cloud-connections/requirements`), DomainBinding +1(`GET /domains/hosting-targets`), DomainTls +1(`GET /tls/allow`), PreviewGateway +1(SSE 프록시), PreviewRuntimeConfig +2(`GET/PUT /projects/{projectId}/preview/runtime`), Provisioning +7(§19). 2026-09-28 이후로는 수가 바뀌지 않았다
   - 모듈별: Agent 10 · AiCredential 3 · ApiToken 3 · Approval 4 · AuditLog 1 · Auth 7 · Change 3 · Chat 9 · CloudConnection 8 · Deployment 10 · DomainBinding 8 · DomainTls 1 · Environment 5 · PreviewGateway 2 · PreviewRuntimeConfig 2 · PreviewSession 4 · ProjectPreview 2 · Project 24 · Provisioning(DB) 3 · Provisioning(Server) 4 · Template 2 · User 1 · Webhook 1
   - 재집계 명령: `grep -rE "@GetMapping|@PostMapping|@PutMapping|@PatchMapping|@DeleteMapping|@RequestMapping\(" src/main/java --include="*Controller.java"` 후 클래스 레벨 `@RequestMapping` 6개(Agent/Auth/PreviewSession/Project/User/Webhook) 제외
 - 이 문서는 현재 코드에 존재하는 API와 PRD 달성을 위해 앞으로 필요한 API를 구분한다.
@@ -946,6 +946,7 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 | GET | `/api/v1/cloud-connections/{cloudConnectionId}/health` | 저장된 실제 검증 결과 조회 |
 | POST | `/api/v1/cloud-connections/{cloudConnectionId}/verification-jobs` | 실제 권한 검증 Job 발급(재검증) |
 | GET | `/api/v1/cloud-connection-verification-jobs/{jobId}` | 검증 Job 상태 조회 |
+| PUT | `/api/v1/cloud-connections/{cloudConnectionId}/credentials` | AWS 자격 교체(연결 id·리전·계정 유지, 검증 Job 발급) #491 |
 | DELETE | `/api/v1/cloud-connections/{cloudConnectionId}` | 연결 삭제 |
 
 `requirements`(인증 필요): `provider` 기본 `AWS`, `credentialType` 기본 `ROLE_ARN`. AWS 외 provider 는 `400`. 서버에 AssumeRole 소스 신원(`platform-principal-arn`)이 설정되지 않은 배포에서는 `credentialType` 과 무관하게 **ACCESS_KEY 가이드만** 내려간다(역할 위임이 실제로 동작하지 않으므로). 응답: `provider`, `credentialType`, `recommendedCredentialType`, `credentialOptions`, `fields`, `steps`, `policyName`, `roleName`, `recommendedPolicy`(JSON), `trustPolicy`(ROLE_ARN 만, ACCESS_KEY 는 null), `notes`. 연결 검증은 자격 유효성만 보고 프로비저닝 권한은 보지 않으므로, 이 정책을 미리 붙이지 않으면 연결은 성공해도 배포에서 권한 부족으로 실패한다.

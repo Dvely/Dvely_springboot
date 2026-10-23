@@ -117,6 +117,28 @@ public class CloudConnection {
         this.status = CloudConnectionStatus.VERIFYING;
     }
 
+    /**
+     * 같은 연결(id·리전)에 AWS 자격만 새로 넣는다. 자원은 연결 id 에 묶여 있어서, 자격이 죽은 연결을
+     * 지우고 새로 만들면 그 연결로 만든 DB·서버·CDN 을 다시는 다룰 수 없다(#491). 세션 토큰은 항상
+     * 비운다 — 임시 자격은 받지 않으므로 남아 있으면 옛 토큰이 새 키에 붙는다.
+     */
+    public void replaceAwsCredentials(String awsCredentialType,
+                                      String accountId,
+                                      String roleArn,
+                                      String accessKeyId,
+                                      String secretAccessKey) {
+        if (provider != CloudProvider.AWS) {
+            throw new IllegalStateException("AWS 연결만 자격을 교체할 수 있습니다.");
+        }
+        this.awsCredentialType = requireText(awsCredentialType, "awsCredentialType");
+        this.accountId = trimToNull(accountId);
+        this.roleArn = trimToNull(roleArn);
+        this.accessKeyId = trimToNull(accessKeyId);
+        this.secretAccessKey = trimToNull(secretAccessKey);
+        this.sessionToken = null;
+        this.status = CloudConnectionStatus.VALIDATED;
+    }
+
     public Long getId() {
         return id;
     }

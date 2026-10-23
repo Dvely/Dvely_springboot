@@ -11,11 +11,14 @@ import static org.mockito.Mockito.when;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.cloudconnection.application.command.dto.CreateCloudConnectionCommand;
+import com.example.dvely.cloudconnection.application.command.dto.ReplaceCloudConnectionCredentialsCommand;
+import com.example.dvely.cloudconnection.application.result.CloudConnectionVerificationJobResult;
 import com.example.dvely.cloudconnection.application.result.CreateCloudConnectionResult;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionVerificationJobRepository;
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
+import com.example.dvely.cloudconnection.domain.value.CloudProvider;
 import com.example.dvely.common.exception.NotFoundException;
 import java.util.Optional;
 import java.util.UUID;
@@ -190,6 +193,110 @@ class CloudConnectionCommandServiceTest {
 
         verify(cloudConnectionRepository, never()).deleteById(any());
         verify(verificationJobRepository, never()).save(any());
+    }
+
+    // ── 자격 교체(#491) ─────────────────────────────────────────────────────
+
+    @Test
+    void 만료된_임시_자격_연결에_장기_키를_넣으면_같은_연결로_되살아난다() {
+        // dev 연결 2 의 실제 모양. 자원은 연결 id 로 묶여 있어서 id 가 바뀌면 그 DB 를 지울 길이 없다.
+        CloudConnection expired = awsConnection("123456789012", "ASIA1234567890ABCDEF", "old-session-token",
+                CloudConnectionStatus.INVALID_CREDENTIAL);
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(10L, 1L)).thenReturn(Optional.of(expired));
+        when(verificationJobRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CloudConnectionVerificationJobResult job = service.replaceCredentials(1L, 10L,
+                new ReplaceCloudConnectionCredentialsCommand(
+                        "ACCESS_KEY", null, null, "AKIA1234567890ABCDEF", "abcdefghijklmnopqrstuvwxyz1234567890ABCD"));
+
+        ArgumentCaptor<CloudConnection> saved = ArgumentCaptor.forClass(CloudConnection.class);
+        verify(cloudConnectionRepository).save(saved.capture());
+        assertThat(saved.getValue().getId()).isEqualTo(10L);
+        assertThat(saved.getValue().getAccessKeyId()).isEqualTo("AKIA1234567890ABCDEF");
+        // 남은 옛 세션 토큰이 장기 키에 붙으면 AwsSessionCredentials 로 서명돼 새 키도 실패한다.
+        assertThat(saved.getValue().getSessionToken()).isNull();
+        assertThat(saved.getValue().getAccountId()).isEqualTo("123456789012");
+        assertThat(saved.getValue().getRegion()).isEqualTo("ap-northeast-2");
+        assertThat(saved.getValue().getStatus()).isEqualTo(CloudConnectionStatus.VALIDATED);
+        assertThat(job.cloudConnectionId()).isEqualTo(10L);
+        assertThatCodeIsUuid(job.jobId());
+    }
+
+    @Test
+    void 다른_계정으로는_자격을_바꿀_수_없다() {
+        // 자원은 원래 계정에 있다. 다른 계정 자격으로 삭제를 부르면 엉뚱한 계정을 향한다.
+        CloudConnection connection = awsConnection("123456789012", "AKIA1234567890ABCDEF", null,
+                CloudConnectionStatus.INVALID_CREDENTIAL);
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(10L, 1L)).thenReturn(Optional.of(connection));
+
+        assertThatThrownBy(() -> service.replaceCredentials(1L, 10L, new ReplaceCloudConnectionCredentialsCommand(
+                "ACCESS_KEY", "999999999999", null, "AKIAZZZZ567890ABCDEF", "abcdefghijklmnopqrstuvwxyz1234567890ABCD")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("123456789012");
+
+        verify(cloudConnectionRepository, never()).save(any());
+        verify(verificationJobRepository, never()).save(any());
+    }
+
+    @Test
+    void 교체에도_임시_자격은_거부한다() {
+        CloudConnection connection = awsConnection("123456789012", "ASIA1234567890ABCDEF", "old-session-token",
+                CloudConnectionStatus.INVALID_CREDENTIAL);
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(10L, 1L)).thenReturn(Optional.of(connection));
+
+        assertThatThrownBy(() -> service.replaceCredentials(1L, 10L, new ReplaceCloudConnectionCredentialsCommand(
+                "ACCESS_KEY", null, null, "ASIA9999567890ABCDEF", "abcdefghijklmnopqrstuvwxyz1234567890ABCD")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("임시 AWS 자격");
+
+        verify(cloudConnectionRepository, never()).save(any());
+    }
+
+    @Test
+    void 역할_위임으로_바꾸면_키를_지우고_계정과_ARN_을_대조한다() {
+        CloudConnection connection = awsConnection("123456789012", "AKIA1234567890ABCDEF", null,
+                CloudConnectionStatus.INVALID_CREDENTIAL);
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(10L, 1L)).thenReturn(Optional.of(connection));
+        when(verificationJobRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        assertThatThrownBy(() -> service.replaceCredentials(1L, 10L, new ReplaceCloudConnectionCredentialsCommand(
+                "ROLE_ARN", null, "arn:aws:iam::999999999999:role/QeployDeployRole", null, null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("roleArn");
+
+        service.replaceCredentials(1L, 10L, new ReplaceCloudConnectionCredentialsCommand(
+                "ROLE_ARN", null, "arn:aws:iam::123456789012:role/QeployDeployRole", null, null));
+
+        ArgumentCaptor<CloudConnection> saved = ArgumentCaptor.forClass(CloudConnection.class);
+        verify(cloudConnectionRepository).save(saved.capture());
+        assertThat(saved.getValue().getAwsCredentialType()).isEqualTo("ROLE_ARN");
+        assertThat(saved.getValue().getAccessKeyId()).isNull();
+        assertThat(saved.getValue().getSecretAccessKey()).isNull();
+    }
+
+    @Test
+    void 남의_연결은_자격을_바꿀_수_없다() {
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(10L, 2L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.replaceCredentials(2L, 10L, new ReplaceCloudConnectionCredentialsCommand(
+                "ACCESS_KEY", null, null, "AKIA1234567890ABCDEF", "abcdefghijklmnopqrstuvwxyz1234567890ABCD")))
+                .isInstanceOf(NotFoundException.class);
+
+        verify(cloudConnectionRepository, never()).save(any());
+    }
+
+    @Test
+    void 교체_명령은_시크릿을_toString_에_찍지_않는다() {
+        ReplaceCloudConnectionCredentialsCommand command = new ReplaceCloudConnectionCredentialsCommand(
+                "ACCESS_KEY", null, null, "AKIA1234567890ABCDEF", "secret-value-should-not-appear");
+        assertThat(command.toString()).doesNotContain("secret-value-should-not-appear");
+    }
+
+    private CloudConnection awsConnection(String accountId, String accessKeyId, String sessionToken,
+                                          CloudConnectionStatus status) {
+        return new CloudConnection(10L, 1L, CloudProvider.AWS, "production", accountId, "ap-northeast-2", null,
+                "ACCESS_KEY", accessKeyId, "oldsecretoldsecretoldsecret", sessionToken,
+                null, null, null, null, status, null, null, null);
     }
 
     private CloudConnection withId(CloudConnection connection) {

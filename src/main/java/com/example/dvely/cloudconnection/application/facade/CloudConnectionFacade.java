@@ -2,6 +2,7 @@ package com.example.dvely.cloudconnection.application.facade;
 
 import com.example.dvely.cloudconnection.application.command.CloudConnectionCommandService;
 import com.example.dvely.cloudconnection.application.command.dto.CreateCloudConnectionCommand;
+import com.example.dvely.cloudconnection.application.command.dto.ReplaceCloudConnectionCredentialsCommand;
 import com.example.dvely.cloudconnection.application.query.CloudConnectionQueryService;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionHealthResult;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult;
@@ -47,6 +48,11 @@ public class CloudConnectionFacade {
 
     public CloudConnectionVerificationJobResult getVerificationJob(Long ownerUserId, String jobId) {
         return cloudConnectionQueryService.getVerificationJob(ownerUserId, jobId);
+    }
+
+    public CloudConnectionVerificationJobResult replaceCredentials(Long ownerUserId, Long cloudConnectionId,
+                                                                   ReplaceCloudConnectionCredentialsCommand command) {
+        return cloudConnectionCommandService.replaceCredentials(ownerUserId, cloudConnectionId, command);
     }
 
     public void delete(Long ownerUserId, Long cloudConnectionId) {
