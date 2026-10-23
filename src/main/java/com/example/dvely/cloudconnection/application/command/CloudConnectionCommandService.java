@@ -3,6 +3,7 @@ package com.example.dvely.cloudconnection.application.command;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.cloudconnection.application.command.dto.CreateCloudConnectionCommand;
 import com.example.dvely.cloudconnection.application.command.dto.ReplaceCloudConnectionCredentialsCommand;
+import com.example.dvely.cloudconnection.application.port.out.CloudConnectionResourceUsagePort;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionVerificationJobResult;
 import com.example.dvely.cloudconnection.application.result.CreateCloudConnectionResult;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
@@ -42,6 +43,7 @@ public class CloudConnectionCommandService {
     private final UserRepository userRepository;
     private final CloudConnectionRepository cloudConnectionRepository;
     private final CloudConnectionVerificationJobRepository verificationJobRepository;
+    private final CloudConnectionResourceUsagePort resourceUsagePort;
 
     @Transactional
     public CreateCloudConnectionResult create(Long ownerUserId, CreateCloudConnectionCommand command) {
@@ -137,9 +139,23 @@ public class CloudConnectionCommandService {
         return current != null ? current : requested;
     }
 
+    /**
+     * 그 연결로 만든 자원이 남아 있으면 지우지 않는다(#495). 자원 테이블이 연결을 외래키로 묶지 않아
+     * 행이 그대로 지워지고, 그러면 DB·서버·CDN 을 지울 자격이 사라져 사용자 AWS 에 과금 자원으로 남는다.
+     *
+     * <p>메시지에 '자격 교체' 안내는 아직 넣지 않는다. 운영 FE 는 이 메시지를 그대로 띄우는데, 자격 교체
+     * 버튼은 이 API 가 운영에 나간 뒤에야 FE 에 올라갈 수 있어서 그 사이 사용자가 없는 버튼을 찾게 된다.
+     * FE 버튼이 운영에 나가면 그 문장을 더한다.
+     */
     @Transactional
     public void delete(Long ownerUserId, Long cloudConnectionId) {
         CloudConnection cloudConnection = resolveCloudConnection(ownerUserId, cloudConnectionId);
+        CloudConnectionResourceUsagePort.ResourceUsage usage = resourceUsagePort.usageOf(cloudConnection.getId());
+        if (!usage.isEmpty()) {
+            throw new IllegalStateException(
+                    "이 연결로 만든 리소스가 남아 있어 해제할 수 없습니다(" + usage.describe() + "). "
+                            + "해제하면 이 리소스를 지울 방법이 없어져 AWS 요금이 계속 나갑니다. 리소스를 먼저 삭제해주세요.");
+        }
         cloudConnectionRepository.deleteById(cloudConnection.getId());
     }
 

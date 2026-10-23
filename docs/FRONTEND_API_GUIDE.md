@@ -469,7 +469,7 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 | POST | `/{id}/verification-jobs` | 실 권한 확인 Job 생성 | - | 202 `{ jobId, cloudConnectionId, status, connectionStatus, message, attempt, createdAt, startedAt, completedAt }` | 404 |
 | GET | `/api/v1/cloud-connection-verification-jobs/{jobId}` | 검증 Job 상태 폴링 | - | 위와 동일 shape(`status`: PENDING\|RUNNING\|SUCCEEDED\|FAILED) | 404 |
 | PUT | `/{id}/credentials` | **자격 교체**(#491). 연결 id·리전 유지, AWS 자격만 바꾸고 세션 토큰은 지움. 상태 VALIDATED + 검증 Job. `INVALID_CREDENTIAL` 연결의 조치 버튼 | `{ awsCredentialType?(ACCESS_KEY\|ROLE_ARN, 생략 시 현재 방식), accountId?, roleArn?, accessKeyId?, secretAccessKey? }` | 202 검증 Job(아래 verification-jobs 와 같은 shape) | 400(ASIA·형식·**연결의 accountId 와 다른 계정**·GCP 연결) / 404 |
-| DELETE | `/{id}` | 연결 정보 삭제(실 클라우드 리소스는 삭제 안 함) | - | 204 | 404 |
+| DELETE | `/{id}` | 연결 정보 삭제(실 클라우드 리소스는 삭제 안 함). **그 연결로 만든 리소스가 남아 있으면 409**(#495) — 만료 안 된 DB, 종료 안 된 서버(FAILED 포함), 프로젝트가 이 연결을 고른 CloudFront 도메인, 정리 대기 중인 CDN. `message` 에 남은 개수가 있어 그대로 보여주면 된다('자격 교체' 안내 문장은 FE 버튼이 운영에 나간 뒤 추가) | - | 204 | 404 / 409 |
 
 **연결 가이드 `GET /requirements?provider=AWS&credentialType=…`** (#493 추가 필드, 기존 필드는 그대로)
 - `credentialCases[]`: `{ type(ROLE_ARN|ACCESS_KEY|TEMPORARY), label, lifetime, supported, recommended, summary, howToGet[], caution }`. 자격 종류 카드용. `TEMPORARY` 는 항상 `supported=false` — 받지 않는 이유와 대안을 보여주는 카드다(AWS Academy·SSO·`aws sts` 키가 여기 해당). `ROLE_ARN.supported` 는 환경에 위임이 준비됐는지에 따른다(false 면 비활성 카드). `recommended` 는 정확히 하나
