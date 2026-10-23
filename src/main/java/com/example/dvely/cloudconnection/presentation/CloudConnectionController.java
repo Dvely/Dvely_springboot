@@ -15,6 +15,8 @@ import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnecti
 import com.example.dvely.cloudconnection.presentation.dto.response.CloudConnectionVerificationJobResponse;
 import com.example.dvely.cloudconnection.presentation.dto.response.CreateCloudConnectionResponse;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -130,6 +132,11 @@ public class CloudConnectionController {
                     + "연결에 accountId 가 있으면 다른 계정으로 바꿀 수 없고(400), 검증 Job 이 새 자격의 계정과 대조합니다. "
                     + "임시 자격(ASIA)은 등록과 같이 거부합니다. 지금은 AWS 연결만 지원합니다."
     )
+    @ApiResponses({
+            @ApiResponse(responseCode = "202", description = "자격 교체됨. 상태 VALIDATED, 검증 Job 발급(jobId 로 폴링)"),
+            @ApiResponse(responseCode = "400", description = "형식 오류, 임시 자격(ASIA), 연결의 accountId 와 다른 계정, GCP 연결"),
+            @ApiResponse(responseCode = "404", description = "연결이 없거나 내 연결이 아님")
+    })
     @ResponseStatus(HttpStatus.ACCEPTED)
     @PutMapping("/api/v1/cloud-connections/{cloudConnectionId}/credentials")
     public CloudConnectionVerificationJobResponse replaceCredentials(
@@ -147,7 +154,14 @@ public class CloudConnectionController {
         return toJobResponse(cloudConnectionFacade.replaceCredentials(ownerUserId, cloudConnectionId, command));
     }
 
-    @Operation(summary = "클라우드 연결 해제", description = "Qeploy에 저장된 외부 클라우드 연결 정보를 삭제합니다.")
+    @Operation(summary = "클라우드 연결 해제", description = "Qeploy에 저장된 외부 클라우드 연결 정보를 삭제합니다. "
+            + "AWS 의 실제 리소스는 지우지 않으므로, 이 연결로 만든 리소스가 남아 있으면 409 로 거절합니다(#495).")
+    @ApiResponses({
+            @ApiResponse(responseCode = "204", description = "삭제됨"),
+            @ApiResponse(responseCode = "404", description = "연결이 없거나 내 연결이 아님"),
+            @ApiResponse(responseCode = "409", description = "이 연결로 만든 리소스(만료 안 된 DB, 종료 안 된 서버, "
+                    + "CloudFront 도메인, CDN 정리 대기)가 남아 있음. message 에 남은 개수가 있다")
+    })
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @DeleteMapping("/api/v1/cloud-connections/{cloudConnectionId}")
     public void delete(@AuthenticationPrincipal Long ownerUserId,
