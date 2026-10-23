@@ -12,6 +12,8 @@ import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.cloudconnection.application.command.dto.CreateCloudConnectionCommand;
 import com.example.dvely.cloudconnection.application.command.dto.ReplaceCloudConnectionCredentialsCommand;
+import com.example.dvely.cloudconnection.application.port.out.CloudConnectionResourceUsagePort;
+import com.example.dvely.cloudconnection.application.port.out.CloudConnectionResourceUsagePort.ResourceUsage;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionVerificationJobResult;
 import com.example.dvely.cloudconnection.application.result.CreateCloudConnectionResult;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
@@ -41,6 +43,9 @@ class CloudConnectionCommandServiceTest {
     @Mock
     private CloudConnectionVerificationJobRepository verificationJobRepository;
 
+    @Mock
+    private CloudConnectionResourceUsagePort resourceUsagePort;
+
     private CloudConnectionCommandService service;
 
     @BeforeEach
@@ -48,7 +53,8 @@ class CloudConnectionCommandServiceTest {
         service = new CloudConnectionCommandService(
                 userRepository,
                 cloudConnectionRepository,
-                verificationJobRepository
+                verificationJobRepository,
+                resourceUsagePort
         );
     }
 
@@ -193,6 +199,36 @@ class CloudConnectionCommandServiceTest {
 
         verify(cloudConnectionRepository, never()).deleteById(any());
         verify(verificationJobRepository, never()).save(any());
+    }
+
+    @Test
+    void 리소스가_남은_연결은_해제하지_않는다() {
+        // #495. 자원 테이블은 연결을 외래키로 묶지 않아 DB 가 막아 주지 않는다. 지우면 그 DB·서버·CDN 을
+        // 지울 자격이 사라진다(dev 연결 2 / DB 12 의 모양).
+        CloudConnection connection = awsConnection("123456789012", "AKIA1234567890ABCDEF", null,
+                CloudConnectionStatus.INVALID_CREDENTIAL);
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(10L, 1L)).thenReturn(Optional.of(connection));
+        when(resourceUsagePort.usageOf(10L)).thenReturn(new ResourceUsage(1, 0, 2, 0));
+
+        assertThatThrownBy(() -> service.delete(1L, 10L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("DB 1개")
+                .hasMessageContaining("CloudFront 도메인 2개")
+                .hasMessageContaining("자격 교체");
+
+        verify(cloudConnectionRepository, never()).deleteById(any());
+    }
+
+    @Test
+    void 리소스가_없는_연결은_해제한다() {
+        CloudConnection connection = awsConnection("123456789012", "AKIA1234567890ABCDEF", null,
+                CloudConnectionStatus.CONNECTED);
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(10L, 1L)).thenReturn(Optional.of(connection));
+        when(resourceUsagePort.usageOf(10L)).thenReturn(new ResourceUsage(0, 0, 0, 0));
+
+        service.delete(1L, 10L);
+
+        verify(cloudConnectionRepository).deleteById(10L);
     }
 
     // ── 자격 교체(#491) ─────────────────────────────────────────────────────
