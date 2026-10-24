@@ -179,7 +179,7 @@ public class GlobalExceptionHandler {
                 ));
     }
 
-    // 500 - 내부 오류
+    // 409 - 상태 충돌
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<ApiResponse<Void>> handleIllegalState(IllegalStateException e) {
         log.warn("Conflict: {}", e.getMessage());
