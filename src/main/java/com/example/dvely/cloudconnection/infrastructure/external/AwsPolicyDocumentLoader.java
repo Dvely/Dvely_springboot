@@ -22,6 +22,7 @@ public class AwsPolicyDocumentLoader {
 
     private static final String DEPLOY_POLICY_PATH = "aws/qeploy-aws-deploy-policy.json";
     private static final String TRUST_POLICY_PATH = "aws/qeploy-aws-trust-policy.json";
+    private static final String POLICY_MODULES_PATH = "aws/qeploy-aws-policy-modules.json";
     private static final String PLATFORM_PRINCIPAL_PLACEHOLDER = "__PLATFORM_PRINCIPAL_ARN__";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -39,6 +40,15 @@ public class AwsPolicyDocumentLoader {
         String filled = readRaw(TRUST_POLICY_PATH)
                 .replace(PLATFORM_PRINCIPAL_PLACEHOLDER, platformPrincipalArn);
         return parse(filled, TRUST_POLICY_PATH);
+    }
+
+    /**
+     * 가이드가 체크박스로 고르게 하는 기능 묶음(#493). 각 묶음은 전체본의 Sid 를 가리키거나({@code sids}),
+     * 전체본에 없는 선택 권한을 직접 담는다({@code statements}). 문장 원문은 전체본 한 곳에만 두어,
+     * 묶음과 전체본이 따로 낡지 않게 한다.
+     */
+    public Map<String, Object> loadPolicyModules() {
+        return parse(readRaw(POLICY_MODULES_PATH), POLICY_MODULES_PATH);
     }
 
     private String readRaw(String path) {

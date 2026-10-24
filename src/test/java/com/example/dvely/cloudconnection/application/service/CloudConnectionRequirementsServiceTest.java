@@ -22,6 +22,9 @@ class CloudConnectionRequirementsServiceTest {
             "cloudfront:CreateDistribution", "acm:RequestCertificate",
             "ssm:PutParameter", "ssm:SendCommand",
             "iam:CreateRole", "iam:PassRole",
+            // RDS 를 처음 쓰는 계정은 첫 CreateDBInstance 가 서비스 연결 역할을 만든다. 실계정에서 확인돼
+            // docs/aws-byoc-permissions.md 에는 있었는데 서빙하는 정책에서 빠져 있었다(#493).
+            "iam:CreateServiceLinkedRole",
             "sts:GetCallerIdentity"
     );
 
@@ -99,6 +102,124 @@ class CloudConnectionRequirementsServiceTest {
 
         assertThat(result.credentialType()).isEqualTo("ACCESS_KEY");
         assertThat(result.credentialOptions()).hasSize(1);
+    }
+
+    @Test
+    void accessKeyGuideDoesNotInviteTemporaryCredentials() {
+        // #429 이후 서버는 임시 자격(ASIA)과 sessionToken 을 400 으로 거절하는데, 가이드는 여전히
+        // "세션 토큰은 ASIA 일 때만 입력" 이라며 그 입력을 안내했다(#491). 안내대로 하면 거절당한다.
+        for (String platformArn : new String[]{PLATFORM_ARN, null}) {
+            CloudConnectionRequirementsResult result = service(platformArn).getRequirements("AWS", "ACCESS_KEY");
+
+            assertThat(result.fields()).noneSatisfy(f -> assertThat(f.key()).isEqualTo("sessionToken"));
+            assertThat(result.credentialOptions())
+                    .filteredOn(o -> o.type().equals("ACCESS_KEY"))
+                    .singleElement()
+                    .satisfies(o -> assertThat(o.summary()).doesNotContain("쓸 수도 있습니다"));
+        }
+    }
+
+    // ── 기능 묶음(#493) ─────────────────────────────────────────────────────
+
+    @Test
+    void defaultModulesComposeExactlyTheRecommendedPolicy() {
+        // 묶음이 전체본의 문장을 빠뜨리면, 기본값 그대로 고른 사용자의 정책에서 그 권한이 조용히 빠진다.
+        // 반대로 전체본에 없는 문장이 기본 묶음에 들어가면 "전체본" 이 거짓이 된다. 양쪽을 같이 본다.
+        CloudConnectionRequirementsResult result = service(null).getRequirements("AWS", "ACCESS_KEY");
+
+        Map<String, Map<String, Object>> composed = new java.util.LinkedHashMap<>();
+        result.policyModules().stream()
+                .filter(m -> m.required() || m.defaultSelected())
+                .flatMap(m -> m.statements().stream())
+                .forEach(st -> composed.putIfAbsent((String) st.get("Sid"), st));
+
+        List<Object> recommended = (List<Object>) result.recommendedPolicy().get("Statement");
+        assertThat(composed.values()).containsExactlyInAnyOrderElementsOf(
+                recommended.stream().map(o -> (Map<String, Object>) o).toList());
+    }
+
+    @Test
+    void everyModuleCarriesStatementsAndOnlyCoreIsRequired() {
+        CloudConnectionRequirementsResult result = service(null).getRequirements("AWS", "ACCESS_KEY");
+
+        assertThat(result.policyModules()).allSatisfy(m -> assertThat(m.statements()).isNotEmpty());
+        assertThat(result.policyModules()).filteredOn(m -> m.required())
+                .extracting(m -> m.key()).containsExactly("core");
+    }
+
+    @Test
+    void rdsModuleStandsOnItsOwn() {
+        // RDS 만 고른 사용자도 DB 를 만들 수 있어야 한다 — DB 보안 그룹은 EC2 API 로 만든다.
+        Map<String, Object> rdsOnly = policyOf(service(null).getRequirements("AWS", "ACCESS_KEY"),
+                "core", "managedDatabase");
+
+        assertThat(collectActions(rdsOnly)).contains(
+                "rds:CreateDBInstance", "rds:DeleteDBInstance", "iam:CreateServiceLinkedRole",
+                "ec2:CreateSecurityGroup", "ec2:AuthorizeSecurityGroupIngress", "ec2:DescribeVpcs");
+    }
+
+    @Test
+    void ecrModuleIsOptionalAndCoversWhatTheRegistryCalls() {
+        CloudConnectionRequirementsResult result = service(null).getRequirements("AWS", "ACCESS_KEY");
+
+        assertThat(result.policyModules()).filteredOn(m -> m.key().equals("ecrImages"))
+                .singleElement().satisfies(m -> assertThat(m.defaultSelected()).isFalse());
+        // EcrImageRegistry 가 부르는 API + buildx push 가 쓰는 레이어 업로드·매니페스트 확인.
+        assertThat(collectActions(policyOf(result, "ecrImages"))).contains(
+                "ecr:GetAuthorizationToken", "ecr:CreateRepository", "ecr:DeleteRepository",
+                "ecr:PutLifecyclePolicy", "ecr:PutImage", "ecr:CompleteLayerUpload", "ecr:BatchGetImage");
+    }
+
+    @Test
+    void credentialCasesExplainTemporaryKeysAreRefused() {
+        for (String platformArn : new String[]{PLATFORM_ARN, null}) {
+            CloudConnectionRequirementsResult result = service(platformArn).getRequirements("AWS", "ACCESS_KEY");
+
+            assertThat(result.credentialCases()).extracting(c -> c.type())
+                    .containsExactly("ROLE_ARN", "ACCESS_KEY", "TEMPORARY");
+            assertThat(result.credentialCases()).filteredOn(c -> c.type().equals("TEMPORARY"))
+                    .singleElement().satisfies(c -> {
+                        assertThat(c.supported()).isFalse();
+                        assertThat(c.caution()).isNotBlank();
+                    });
+            // 위임이 준비되지 않은 환경에서 역할 위임을 고를 수 있다고 하면 깨진 흐름으로 보낸다.
+            assertThat(result.credentialCases()).filteredOn(c -> c.type().equals("ROLE_ARN"))
+                    .singleElement().satisfies(c -> assertThat(c.supported()).isEqualTo(platformArn != null));
+            assertThat(result.credentialCases()).filteredOn(c -> c.recommended()).hasSize(1);
+            // FE 는 권장 카드를 강조한다. 권장이 고를 수 없는 카드면 비활성 카드를 권하게 된다.
+            assertThat(result.credentialCases()).filteredOn(c -> c.recommended())
+                    .allSatisfy(c -> assertThat(c.supported()).isTrue());
+        }
+    }
+
+    @Test
+    void aSidMeansTheSameStatementInEveryModule() {
+        // FE 는 고른 묶음을 Sid 로 중복 제거해 합친다. 같은 Sid 가 묶음마다 다르면 먼저 만난 쪽만 남아
+        // 권한이 조용히 빠진다. 묶음 파일에 직접 적는 문장은 전체본 Sid 와 겹치면 안 된다.
+        CloudConnectionRequirementsResult result = service(null).getRequirements("AWS", "ACCESS_KEY");
+
+        Map<String, Map<String, Object>> seen = new java.util.HashMap<>();
+        result.policyModules().stream().flatMap(m -> m.statements().stream()).forEach(st -> {
+            Map<String, Object> first = seen.putIfAbsent((String) st.get("Sid"), st);
+            if (first != null) {
+                assertThat(st).as("Sid " + st.get("Sid")).isEqualTo(first);
+            }
+        });
+        List<Object> recommended = (List<Object>) result.recommendedPolicy().get("Statement");
+        java.util.Set<Object> recommendedSids = new java.util.HashSet<>();
+        recommended.forEach(o -> recommendedSids.add(((Map<String, Object>) o).get("Sid")));
+        result.policyModules().stream().filter(m -> !m.defaultSelected() && !m.required())
+                .flatMap(m -> m.statements().stream())
+                .forEach(st -> assertThat(recommendedSids).doesNotContain(st.get("Sid")));
+    }
+
+    private Map<String, Object> policyOf(CloudConnectionRequirementsResult result, String... keys) {
+        Map<String, Object> bySid = new java.util.LinkedHashMap<>();
+        result.policyModules().stream()
+                .filter(m -> List.of(keys).contains(m.key()))
+                .flatMap(m -> m.statements().stream())
+                .forEach(st -> bySid.putIfAbsent((String) st.get("Sid"), st));
+        return Map.of("Version", "2012-10-17", "Statement", new ArrayList<>(bySid.values()));
     }
 
     @Test

@@ -758,6 +758,9 @@ Docker preview 성공률, 배포 성공률, build 실패 해결률, Agent intent
 
 - 등록 시 로컬 형식 검증만 수행하고 `VALIDATED` 상태로 저장
 - DB 기반 `cloud_connection_verification_jobs`를 발급하고 조회/재검증 API 추가
+- 연결 해제 가드(#495): 그 연결로 만든 자원(DB·서버·CloudFront 도메인·CDN 정리 큐)이 남아 있으면 `DELETE /cloud-connections/{id}` 가 409. 자원 테이블에 연결 외래키가 없어 그대로 지워지던 구멍
+- 연결 가이드에 자격 종류 설명(`credentialCases`)과 기능별 권한 묶음(`policyModules`, `aws/qeploy-aws-policy-modules.json`)(#493). 전체본에 빠져 있던 RDS `iam:CreateServiceLinkedRole` 추가
+- AWS 연결 자격 교체 `PUT /cloud-connections/{id}/credentials`(#491): 연결 id·리전·계정을 유지한 채 자격만 바꾼다. 자원(DB·서버·CDN)이 연결 id 에 묶여 있어 자격이 죽은 연결을 새로 만들면 기존 자원을 지울 수 없던 구멍을 막는다. 가이드의 임시 자격·sessionToken 안내 제거
 - worker claim/lease로 실제 검증을 `VERIFYING` 상태에서 비동기 실행
 - AWS Access Key는 STS `GetCallerIdentity` 호출
 - AWS Role은 Qeploy 실행 환경 credential로 `AssumeRole` 후 STS 신원 확인

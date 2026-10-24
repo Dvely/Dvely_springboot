@@ -458,7 +458,7 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 >
 > FE 안내 문구는 **IAM 사용자의 장기 Access Key(`AKIA`) 또는 역할 ARN(권장)** 으로 유도하면 됩니다. 400 응답의 `message` 가 그대로 쓸 수 있는 문장입니다.
 >
-> 이미 임시 자격으로 등록된 연결은 남아 있고, 만료되면 상태가 `INVALID_CREDENTIAL` 로 바뀝니다(최대 1시간) — 그때 재등록을 유도하면 됩니다.
+> 이미 임시 자격으로 등록된 연결은 남아 있고, 만료되면 상태가 `INVALID_CREDENTIAL` 로 바뀝니다(최대 1시간). **그때는 재등록이 아니라 `PUT /{id}/credentials`(자격 교체)로 유도합니다(#491)** — 그 연결로 만든 DB·서버·CDN 은 연결 id 로만 다뤄서, 새 연결을 만들면 기존 리소스를 지울 수 없게 되고 사용자 AWS 에 과금 리소스로 남습니다.
 
 | 메서드 | 경로 | 용도 | 요청 | 응답(핵심 필드) | 주요 에러 |
 |---|---|---|---|---|---|
@@ -468,7 +468,13 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 | GET | `/{id}/health` | 저장된 마지막 상태 조회(재검증 아님) | - | `{ cloudConnectionId, provider, status, message, checkedAt }` | 404 |
 | POST | `/{id}/verification-jobs` | 실 권한 확인 Job 생성 | - | 202 `{ jobId, cloudConnectionId, status, connectionStatus, message, attempt, createdAt, startedAt, completedAt }` | 404 |
 | GET | `/api/v1/cloud-connection-verification-jobs/{jobId}` | 검증 Job 상태 폴링 | - | 위와 동일 shape(`status`: PENDING\|RUNNING\|SUCCEEDED\|FAILED) | 404 |
-| DELETE | `/{id}` | 연결 정보 삭제(실 클라우드 리소스는 삭제 안 함) | - | 204 | 404 |
+| PUT | `/{id}/credentials` | **자격 교체**(#491). 연결 id·리전 유지, AWS 자격만 바꾸고 세션 토큰은 지움. 상태 VALIDATED + 검증 Job. `INVALID_CREDENTIAL` 연결의 조치 버튼 | `{ awsCredentialType?(ACCESS_KEY\|ROLE_ARN, 생략 시 현재 방식), accountId?, roleArn?, accessKeyId?, secretAccessKey? }` | 202 검증 Job(아래 verification-jobs 와 같은 shape) | 400(ASIA·형식·**연결의 accountId 와 다른 계정**·GCP 연결) / 404 |
+| DELETE | `/{id}` | 연결 정보 삭제(실 클라우드 리소스는 삭제 안 함). **그 연결로 만든 리소스가 남아 있으면 409**(#495) — 만료 안 된 DB, 종료 안 된 서버(FAILED 포함), 프로젝트가 이 연결을 고른 CloudFront 도메인, 정리 대기 중인 CDN. `message` 에 남은 개수가 있어 그대로 보여주면 된다('자격 교체' 안내 문장은 FE 버튼이 운영에 나간 뒤 추가) | - | 204 | 404 / 409 |
+
+**연결 가이드 `GET /requirements?provider=AWS&credentialType=…`** (#493 추가 필드, 기존 필드는 그대로)
+- `credentialCases[]`: `{ type(ROLE_ARN|ACCESS_KEY|TEMPORARY), label, lifetime, supported, recommended, summary, howToGet[], caution }`. 자격 종류 카드용. `TEMPORARY` 는 항상 `supported=false` — 받지 않는 이유와 대안을 보여주는 카드다(AWS Academy·SSO·`aws sts` 키가 여기 해당). `ROLE_ARN.supported` 는 환경에 위임이 준비됐는지에 따른다(false 면 비활성 카드). `recommended` 는 정확히 하나
+- `policyModules[]`: `{ key, label, description, required, defaultSelected, statements[] }`. 체크박스용. `required` 는 체크 해제 불가(`core`). **조합**: 고른 묶음의 `statements` 를 `Sid` 기준으로 중복 제거해 합치고 `{ "Version": "2012-10-17", "Statement": [...] }` 로 감싼다 — 그 JSON 을 복사해 IAM 정책 생성에 붙여넣는다. `defaultSelected` 묶음을 전부 고른 결과는 `recommendedPolicy` 와 같다(BE 테스트가 고정). `ecrImages` 는 기본 꺼짐(서버가 ECR 전송일 때만)
+- 정책 내용을 FE 에 하드코딩하지 않는다 — BE 가 AWS 액션을 늘리면 이 응답만 바뀐다
 
 `CloudConnectionStatus` 전체 값: `VALIDATED · VERIFYING · CHECKING · CONNECTED · PERMISSION_MISSING · BILLING_DISABLED · REGION_UNSUPPORTED · INVALID_CREDENTIAL · UNKNOWN_ERROR`.
 

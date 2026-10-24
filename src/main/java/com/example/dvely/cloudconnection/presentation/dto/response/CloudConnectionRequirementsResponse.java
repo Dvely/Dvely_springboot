@@ -1,7 +1,9 @@
 package com.example.dvely.cloudconnection.presentation.dto.response;
 
 import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult;
+import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult.CredentialCase;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult.CredentialOption;
+import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult.PolicyModule;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult.RequirementField;
 import com.example.dvely.cloudconnection.application.result.CloudConnectionRequirementsResult.SetupStep;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -42,7 +44,14 @@ public record CloudConnectionRequirementsResponse(
         Map<String, Object> trustPolicy,
 
         @Schema(description = "주의·안내 문구")
-        List<String> notes
+        List<String> notes,
+
+        @Schema(description = "자격 종류별 설명(역할 위임·장기 키·임시 자격). 받지 않는 종류도 supported=false 와 이유로 싣는다")
+        List<CredentialCase> credentialCases,
+
+        @Schema(description = "기능별 권한 묶음. 고른 묶음의 statements 를 Sid 기준으로 합쳐 {Version:\"2012-10-17\", Statement:[...]} "
+                + "한 장으로 만들면 붙여넣을 정책이 된다. required 는 항상 포함. 기본(defaultSelected) 묶음을 모두 고르면 recommendedPolicy 와 같다")
+        List<PolicyModule> policyModules
 ) {
 
     public static CloudConnectionRequirementsResponse from(CloudConnectionRequirementsResult result) {
@@ -57,7 +66,9 @@ public record CloudConnectionRequirementsResponse(
                 result.roleName(),
                 result.recommendedPolicy(),
                 result.trustPolicy(),
-                result.notes()
+                result.notes(),
+                result.credentialCases(),
+                result.policyModules()
         );
     }
 }

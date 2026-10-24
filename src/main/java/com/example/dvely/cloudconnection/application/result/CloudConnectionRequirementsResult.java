@@ -22,8 +22,40 @@ public record CloudConnectionRequirementsResult(
         String roleName,
         Map<String, Object> recommendedPolicy,
         Map<String, Object> trustPolicy,
-        List<String> notes
+        List<String> notes,
+        List<CredentialCase> credentialCases,
+        List<PolicyModule> policyModules
 ) {
+
+    /**
+     * 자격의 종류 하나 — 무엇이고, 얼마나 사는지, 여기서 받는지, 어떻게 얻는지. 받지 않는 종류(임시 자격)도
+     * 이유와 함께 싣는다. 사용자가 가진 키가 그것이면 왜 안 되는지, 무엇으로 바꾸면 되는지를 알아야 해서다.
+     */
+    public record CredentialCase(
+            String type,
+            String label,
+            String lifetime,
+            boolean supported,
+            boolean recommended,
+            String summary,
+            List<String> howToGet,
+            String caution
+    ) {
+    }
+
+    /**
+     * 권한 정책을 기능별로 고르는 묶음 하나. 고른 묶음들의 statements 를 Sid 기준으로 합치면 붙여넣을
+     * 정책 한 장이 된다(같은 Sid 는 한 번만). 필수가 아닌 기본 묶음을 모두 고르면 recommendedPolicy 와 같다.
+     */
+    public record PolicyModule(
+            String key,
+            String label,
+            String description,
+            boolean required,
+            boolean defaultSelected,
+            List<Map<String, Object>> statements
+    ) {
+    }
 
     /** 인증 방식 선택지(ROLE_ARN 권장 / ACCESS_KEY). 어느 것을 기본 추천하는지는 recommended 로 표시. */
     public record CredentialOption(String type, String label, boolean recommended, String summary) {
