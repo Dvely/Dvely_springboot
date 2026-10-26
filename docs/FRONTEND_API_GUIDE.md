@@ -52,10 +52,11 @@ Qeploy는 **GitHub OAuth로 로그인**하고 **서비스 자체 JWT**를 발급
 4. FE: accessToken/refreshToken을 저장(localStorage 등)
 5. IF githubAppInstalled == false:
      GET /api/v1/auth/github/app/install-url (Authorization 필요)
-     → { url: "https://github.com/apps/{slug}/installations/new?state={jwt}" }
-     FE: window.location = url
+     → { url: "https://github.com/apps/{slug}/installations/new?state={1회용 값}" }
+     FE: window.location = url   (URL은 15분 안에 한 번만 쓸 수 있다 — 버튼을 누를 때마다 새로 받는다)
      → 설치 완료 시 GitHub이 GET /api/v1/auth/github/app/callback 을 호출(FE가 직접 호출하지 않음)
-     → 백엔드가 installation_id를 저장한 뒤 302로
+     → 백엔드가 code로 확인한 GitHub 계정이 로그인 계정과 같고 그 설치에 접근할 수 있으면
+        installation_id를 저장한 뒤 302로
         {frontend.redirect-url}/auth/app-callback?githubAppLinked=true 로 리다이렉트
 6. FE: GET /api/v1/users/me 로 최종 프로필/GitHub App 연동 상태 확인
 ```

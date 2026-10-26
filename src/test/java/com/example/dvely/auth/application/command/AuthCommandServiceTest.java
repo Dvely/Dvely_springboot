@@ -3,6 +3,7 @@ package com.example.dvely.auth.application.command;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -21,13 +22,17 @@ import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.service.AuthDomainService;
 import com.example.dvely.auth.domain.value.GithubId;
 import com.example.dvely.auth.infrastructure.config.JwtProperties;
+import com.example.dvely.auth.infrastructure.oauth.GithubAppStateManager;
 import com.example.dvely.auth.infrastructure.oauth.OAuthStateManager;
+import com.example.dvely.common.exception.ForbiddenException;
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.common.exception.UnauthorizedException;
 import java.time.LocalDateTime;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpHeaders;
@@ -46,6 +51,7 @@ class AuthCommandServiceTest {
     @Mock private TokenBlacklistPort tokenBlacklistPort;
     @Mock private OAuthStateManager oAuthStateManager;
     @Mock private GithubUserTokenRefresher tokenRefresher;
+    @Mock private GithubAppStateManager githubAppStateManager;
 
     private AuthCommandService service;
 
@@ -62,7 +68,8 @@ class AuthCommandServiceTest {
                 tokenBlacklistPort,
                 new JwtProperties("test-secret", 3_600_000L, 2_592_000_000L),
                 oAuthStateManager,
-                tokenRefresher
+                tokenRefresher,
+                githubAppStateManager
         );
     }
 
@@ -113,9 +120,10 @@ class AuthCommandServiceTest {
 
     @Test
     void unknownOwnerCannotLinkGithubAppOrCallExternalPort() {
+        when(githubAppStateManager.consume("state")).thenReturn(77L);
         when(userRepository.findById(77L)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.linkGithubApp(77L, 123L, "code"))
+        assertThatThrownBy(() -> service.linkGithubApp("state", 123L, "code"))
                 .isInstanceOf(NotFoundException.class);
 
         verify(githubAppPort, never()).getUserToken(any());
@@ -159,16 +167,144 @@ class AuthCommandServiceTest {
      */
     @Test
     void githubTokenExchangeFailing_savesNeitherTheTokenNorTheInstallationId() {
+        when(githubAppStateManager.consume("state")).thenReturn(10L);
         when(userRepository.findById(10L)).thenReturn(Optional.of(user(10L, null)));
         when(githubAppPort.getUserToken("code"))
                 .thenThrow(HttpClientErrorException.create(
                         HttpStatus.BAD_REQUEST, "bad_verification_code",
                         HttpHeaders.EMPTY, new byte[0], null));
 
-        assertThatThrownBy(() -> service.linkGithubApp(10L, 123L, "code"))
+        assertThatThrownBy(() -> service.linkGithubApp("state", 123L, "code"))
                 .isInstanceOf(HttpClientErrorException.class);
 
         verify(userRepository, never()).save(any());
+    }
+
+    // ── #504: 저장 전에 계정과 설치 접근을 확인한다 ────────────────────────────────
+
+    @Test
+    void stateLink_savesInstallationOnlyWhenTheGithubUserCanAccessIt() {
+        givenStateLinkUpTo("123");
+        when(githubAppPort.canAccessInstallation("user-access", 555L)).thenReturn(true);
+
+        service.linkGithubApp("state", 555L, "code");
+
+        User saved = savedUser();
+        assertThat(saved.getGithubInstallationId()).isEqualTo(555L);
+    }
+
+    @Test
+    void stateLink_rejectsAnInstallationTheGithubUserCannotAccess() {
+        givenStateLinkUpTo("123");
+        when(githubAppPort.canAccessInstallation("user-access", 999L)).thenReturn(false);
+
+        assertThatThrownBy(() -> service.linkGithubApp("state", 999L, "code"))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void stateLink_rejectsATokenOfAnotherGithubAccount() {
+        // state 는 이 유저(githubId 123) 것인데 code 는 다른 GitHub 계정(456)에서 왔다 — 남이 만든
+        // 설치 링크를 연 경우다. 그 계정의 토큰이 이 유저에게 붙으면 안 된다.
+        givenStateLinkUpTo("456");
+
+        assertThatThrownBy(() -> service.linkGithubApp("state", 555L, "code"))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(githubAppPort, never()).canAccessInstallation(any(), anyLong());
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void stateLink_withoutCodeIsRejectedBeforeAnyGithubCall() {
+        when(githubAppStateManager.consume("state")).thenReturn(10L);
+
+        assertThatThrownBy(() -> service.linkGithubApp("state", 555L, null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        verify(githubAppPort, never()).getUserToken(any());
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void stateLink_withAReusedStateStopsBeforeAnything() {
+        when(githubAppStateManager.consume("state"))
+                .thenThrow(new UnauthorizedException("이미 처리된 GitHub App 연동 요청입니다."));
+
+        assertThatThrownBy(() -> service.linkGithubApp("state", 555L, "code"))
+                .isInstanceOf(UnauthorizedException.class);
+
+        verify(githubAppPort, never()).getUserToken(any());
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void reauthorizeLink_keepsTheStoredInstallationWithoutAnInstallationCheck() {
+        givenStateLinkUpTo("123", 321L);
+
+        service.linkGithubApp("state", null, "code");
+
+        assertThat(savedUser().getGithubInstallationId()).isEqualTo(321L);
+        verify(githubAppPort, never()).canAccessInstallation(any(), anyLong());
+    }
+
+    @Test
+    void settingsLink_rejectsAnInstallationTheGithubUserCannotAccess() {
+        when(githubAppPort.getUserToken("code")).thenReturn(tokenInfo());
+        when(githubUserPort.getUser("user-access"))
+                .thenReturn(new GithubUserPort.GithubUserInfo("123", "octo", "avatar"));
+        when(userRepository.findByGithubId(new GithubId("123"))).thenReturn(Optional.of(user(10L, null)));
+        when(githubAppPort.canAccessInstallation("user-access", 999L)).thenReturn(false);
+
+        assertThatThrownBy(() -> service.linkGithubAppByCode(999L, "code"))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void settingsLink_savesAnAccessibleInstallation() {
+        when(githubAppPort.getUserToken("code")).thenReturn(tokenInfo());
+        when(githubUserPort.getUser("user-access"))
+                .thenReturn(new GithubUserPort.GithubUserInfo("123", "octo", "avatar"));
+        when(userRepository.findByGithubId(new GithubId("123"))).thenReturn(Optional.of(user(10L, null)));
+        when(githubAppPort.canAccessInstallation("user-access", 555L)).thenReturn(true);
+
+        service.linkGithubAppByCode(555L, "code");
+
+        assertThat(savedUser().getGithubInstallationId()).isEqualTo(555L);
+    }
+
+    @Test
+    void settingsLink_withoutCodeIsRejected() {
+        assertThatThrownBy(() -> service.linkGithubAppByCode(555L, null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        verify(githubAppPort, never()).getUserToken(any());
+    }
+
+    private void givenStateLinkUpTo(String githubUserId) {
+        givenStateLinkUpTo(githubUserId, null);
+    }
+
+    private void givenStateLinkUpTo(String githubUserId, Long storedInstallationId) {
+        when(githubAppStateManager.consume("state")).thenReturn(10L);
+        when(userRepository.findById(10L)).thenReturn(Optional.of(user(10L, storedInstallationId)));
+        when(githubAppPort.getUserToken("code")).thenReturn(tokenInfo());
+        when(githubUserPort.getUser("user-access"))
+                .thenReturn(new GithubUserPort.GithubUserInfo(githubUserId, "someone", "avatar"));
+    }
+
+    private GithubAppPort.GithubUserTokenInfo tokenInfo() {
+        return new GithubAppPort.GithubUserTokenInfo("user-access", "user-refresh", 28800L, 15811200L);
+    }
+
+    private User savedUser() {
+        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+        verify(userRepository).save(captor.capture());
+        return captor.getValue();
     }
 
     @Test
