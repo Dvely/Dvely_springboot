@@ -336,7 +336,7 @@ class ListProjectionResponseIdentityTest {
                 Long.class, projectId);
     }
 
-        private String json(Object value) {
+    private String json(Object value) {
         try {
             return JSON.writeValueAsString(value);
         } catch (Exception e) {
