@@ -71,19 +71,22 @@ class ContainerGitCredentialsTest {
     }
 
     @Test
-    @DisplayName("helper 는 git 바로 뒤에 끼워진다 — cd 로 시작하는 명령도 형태가 유지된다")
-    void insertsHelperRightAfterGit() {
+    @DisplayName("설정 검사 뒤 git 에 hooks 끄기·helper 초기화·인라인 helper 가 붙는다 — cd 로 시작해도 형태가 유지된다")
+    void insertsGuardAndHelperRightBeforeGit() {
         ContainerGitCredentials c = new ContainerGitCredentials(mock(DockerContainerService.class));
+        String git = "/usr/bin/git -c core.hooksPath=/dev/null -c credential.helper= -c credential.helper='!f()";
 
         assertThat(c.authed("git fetch origin"))
-                .startsWith("git -c credential.helper='!f()")
+                .startsWith("{ [ \"$(find /usr/bin/git ")
+                .contains("} && " + git)
                 .endsWith(" fetch origin");
         assertThat(c.authed("cd /workspace/app && git push -u origin preview"))
-                .startsWith("cd /workspace/app && git -c credential.helper='!f()")
+                .startsWith("cd /workspace/app && { [ \"$(find /usr/bin/git ")
+                .contains("} && " + git)
                 .endsWith(" push -u origin preview");
-        // GIT_TERMINAL_PROMPT=0 접두는 유지돼야 한다 — 없으면 인증 실패 시 프롬프트로 멈춘다.
+        // GIT_TERMINAL_PROMPT=0 접두는 git 에 붙어 있어야 한다 — 없으면 인증 실패 시 프롬프트로 멈춘다.
         assertThat(c.authed("GIT_TERMINAL_PROMPT=0 git clone https://x/y.git /app"))
-                .startsWith("GIT_TERMINAL_PROMPT=0 git -c credential.helper='!f()");
+                .contains("} && GIT_TERMINAL_PROMPT=0 " + git);
     }
 
     @Test
@@ -93,7 +96,9 @@ class ContainerGitCredentialsTest {
         // 그 결과는 예외가 아니라 '자격을 못 받은 git' 이라 조용히 실패한다.
         String authed = new ContainerGitCredentials(mock(DockerContainerService.class))
                 .authed("git fetch origin");
-        String helper = authed.substring(authed.indexOf('\'') + 1, authed.lastIndexOf('\''));
+        String marker = "credential.helper='";
+        int start = authed.lastIndexOf(marker) + marker.length();
+        String helper = authed.substring(start, authed.indexOf('\'', start));
 
         assertThat(helper).doesNotContain("'");
         // env 이름이 헬퍼와 env() 양쪽에서 같아야 한다 — 어긋나면 빈 자격이 나간다.

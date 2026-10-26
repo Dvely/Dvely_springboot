@@ -17,6 +17,8 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService.ExecResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class PreviewBranchPushServiceTest {
 
@@ -52,7 +54,7 @@ class PreviewBranchPushServiceTest {
      */
     @Test
     void aFailedPushIsNotReportedAsSuccess() {
-        when(dockerService.execWithExitCode(eq(CONTAINER_ID), contains("push -u origin preview"), org.mockito.ArgumentMatchers.any()))
+        when(dockerService.execWithExitCode(eq(CONTAINER_ID), contains(" HEAD:refs/heads/preview"), org.mockito.ArgumentMatchers.any()))
                 .thenReturn(new ExecResult(128, "remote: Permission to octo/app.git denied"));
 
         assertThatThrownBy(() -> push())
@@ -67,7 +69,7 @@ class PreviewBranchPushServiceTest {
      */
     @Test
     void theFailureMessageNeverCarriesTheToken() {
-        when(dockerService.execWithExitCode(eq(CONTAINER_ID), contains("push -u origin preview"), org.mockito.ArgumentMatchers.any()))
+        when(dockerService.execWithExitCode(eq(CONTAINER_ID), contains(" HEAD:refs/heads/preview"), org.mockito.ArgumentMatchers.any()))
                 .thenReturn(new ExecResult(128, "fatal: Authentication failed"));
 
         assertThatThrownBy(() -> push())
@@ -107,10 +109,10 @@ class PreviewBranchPushServiceTest {
         verify(dockerService).execWithExitCode(eq(CONTAINER_ID), contains("git init -b preview"));
         verify(dockerService).execWithExitCode(eq(CONTAINER_ID), contains("git remote add origin"));
         verify(dockerService).execWithExitCode(eq(CONTAINER_ID), contains("git add -A"));
-        // authed() 가 `git push` 를 `git -c credential.helper=... push` 로 쪼갠다 — 부분문자열이
+        // authed() 가 `git push` 를 `git -c ... -c credential.helper=... push` 로 쪼갠다 — 부분문자열이
         // 달라지므로 서브커맨드로 맞춘다 (#413).
         verify(dockerService).execWithExitCode(eq(CONTAINER_ID),
-                contains("push -u origin preview"), org.mockito.ArgumentMatchers.any());
+                contains(" HEAD:refs/heads/preview"), org.mockito.ArgumentMatchers.any());
     }
 
     /**
@@ -154,5 +156,17 @@ class PreviewBranchPushServiceTest {
         // 되돌리기가 훨씬 비싸다.
         verify(dockerService, never()).execWithExitCode(eq(CONTAINER_ID), contains("git init"));
         verify(dockerService, never()).execWithExitCode(eq(CONTAINER_ID), contains("git push"));
+    }
+
+    @Test
+    void pushesToTheRepositoryUrlNotToAConfiguredRemote() {
+        // 인증 push 가 컨테이너 안 remote 설정을 따르지 않게 URL 로 보낸다.
+        assertThat(PreviewBranchPushService.githubUrl("octo/my.app-1")).isEqualTo("https://github.com/octo/my.app-1.git");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"octo/app;id", "octo/app app", "../app", "octo", "octo/app/x", "octo/$(id)"})
+    void rejectsRepositoryNamesThatCouldEscapeTheCommand(String name) {
+        assertThatThrownBy(() -> PreviewBranchPushService.githubUrl(name)).isInstanceOf(IllegalArgumentException.class);
     }
 }
