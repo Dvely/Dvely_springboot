@@ -287,7 +287,7 @@
 
 - V28: `project_approval_policies.result_approval_required`(기본 `true`) + `project_changes`에 `approval_id`/`pr_number`/`merge_commit_sha`/`merged_at` 컬럼 추가
 - `ApprovalType.RESULT` 신설 — 다른 4개 타입(CHANGE/DEPLOYMENT/DOMAIN_BINDING/INFRA_OPERATION)은 모두 "실행 전 계획"을 승인하지만, RESULT는 유일하게 "이미 실행된 결과"를 승인한다
-- `ResultApprovalGate`(agent 도메인): plan의 **마지막 CODE step**이 끝난 직후 1회만 평가한다. 발동 조건: 프로젝트가 GitHub 저장소에 BOUND && `resultApprovalRequired` 정책이 켜져 있음. 신규/미연결 프로젝트(BOUND 아님)는 게이트 대상에서 제외되어 기존 DEPLOY step 흐름 그대로 첫 배포를 진행한다(반영할 저장소가 아직 없으므로)
+- `ResultApprovalGate`(agent 도메인): plan의 **마지막 CODE step**이 끝난 직후 1회만 평가한다. 발동 조건: 프로젝트가 GitHub 저장소에 BOUND && (`resultApprovalRequired` 정책이 켜져 있음 **또는 결과물이 `.github/workflows/**`·`.github/actions/**`·`.github` 자체를 건드림** — #508, `WorkflowPathGuard`. 정책을 꺼도 Actions 를 바꾸는 결과물은 사람이 본다. 경로는 기본 브랜치(origin/HEAD) 대비 커밋·작업 트리·새 파일 전부, 이름 변경은 양쪽, 대소문자·`./` 무시. 확인이 실패하면 승인을 요구한다). 신규/미연결 프로젝트(BOUND 아님)는 게이트 대상에서 제외되어 기존 DEPLOY step 흐름 그대로 첫 배포를 진행한다(반영할 저장소가 아직 없으므로)
 - 게이트 발동 시: `PreviewBranchPushService`(DeployAgentService와 공유하는 신규 서비스)로 CODE 결과를 preview 브랜치에 push → task를 새 상태 `WAITING_RESULT_APPROVAL`로 전환(`TaskStore.RUNNABLE_STATUSES` 밖이라 워커가 절대 claim할 수 없음, 오직 사람의 승인/거절/취소로만 벗어남) → `RESULT` Approval 생성 → "미리보기와 변경 내역을 확인해 주세요" assistant 메시지 발송
 - 여러 CODE step이 있는 plan(예: build 실패 후 재시도)도 RESULT 승인은 1번만 열린다 — 마지막 CODE step 완료 시점까지의 누적 결과 전체를 대상으로 한다
 - 승인(`ApprovalCommandService.approve`, RESULT 분기) → `ResultApprovalService.reflect`(같은 트랜잭션 안): `preview`에 main 대비 새 커밋이 있으면 PR 생성+merge, 없으면(멱등 재시도·순수 no-op) main HEAD SHA만 기록 → `Change`를 `MERGED`로 전환(`approvalId`/`prNumber`/`mergeCommitSha`/`mergedAt` 기록) → `AgentOrchestrator.resumeAfterResult`로 task를 이어서 진행(남은 step이 있으면 계속, 없으면 DONE)

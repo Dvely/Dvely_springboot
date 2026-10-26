@@ -56,6 +56,7 @@ public class ResultApprovalGate {
     private final ApprovalRepository approvalRepository;
     private final AgentMessageService agentMessageService;
     private final AuditRecorder auditRecorder;
+    private final WorkflowPathGuard workflowPathGuard;
 
     /**
      * @param stepIndex zero-based index, within {@code plan.steps()}, of the CODE step that just
@@ -89,7 +90,7 @@ public class ResultApprovalGate {
         }
         ProjectApprovalPolicy policy = policyRepository.findByProjectId(projectId)
                 .orElseGet(() -> new ProjectApprovalPolicy(projectId));
-        if (!policy.isResultApprovalRequired()) {
+        if (!policy.isResultApprovalRequired() && !touchesWorkflow(taskId)) {
             return false;
         }
 
@@ -181,6 +182,27 @@ public class ResultApprovalGate {
             }
         }
         return DEFAULT_SUMMARY_LABEL;
+    }
+
+    /**
+     * 정책이 결과 승인을 껐어도 GitHub Actions 를 건드린 결과물은 사람이 본다(#508). workflow 는
+     * 저장소 secrets 를 읽을 수 있는 코드라, 승인을 끈 프로젝트에서 그대로 반영되면 프롬프트
+     * 인젝션 한 번으로 비밀이 빠져나간다. 정책이 켜진 프로젝트는 어차피 게이트를 타므로 묻지 않는다.
+     */
+    private boolean touchesWorkflow(String taskId) {
+        String containerId = previewSessionService.findByTaskId(taskId)
+                .map(PreviewSessionInfo::containerId)
+                .orElse(null);
+        if (containerId == null) {
+            // 볼 작업물이 없으면 반영할 것도 없다 — 정책대로 둔다.
+            return false;
+        }
+        boolean touches = workflowPathGuard.touchesGuardedPath(containerId);
+        if (touches) {
+            log.info("[ResultApprovalGate] 결과 승인이 꺼진 프로젝트지만 workflow 변경이 있어 승인을 받는다 taskId={}",
+                    taskId);
+        }
+        return touches;
     }
 
     private boolean isLastCodeStep(AgentPlan plan, int stepIndex) {

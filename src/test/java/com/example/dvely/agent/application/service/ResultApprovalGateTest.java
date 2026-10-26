@@ -62,11 +62,12 @@ class ResultApprovalGateTest {
     private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
     private final AgentMessageService agentMessageService = mock(AgentMessageService.class);
     private final AuditRecorder auditRecorder = mock(AuditRecorder.class);
+    private final WorkflowPathGuard workflowPathGuard = mock(WorkflowPathGuard.class);
 
     private final ResultApprovalGate gate = new ResultApprovalGate(
             projectRepository, policyRepository, previewSessionService, previewBranchPushService,
             userRepository, authCommandService, taskStore, approvalRepository, agentMessageService,
-            auditRecorder
+            auditRecorder, workflowPathGuard
     );
 
     @Test
@@ -226,13 +227,48 @@ class ResultApprovalGateTest {
                 .thenReturn(Optional.of(boundProject()));
         when(policyRepository.findByProjectId(11L))
                 .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, true, true, true, true, false)));
+        stubPreviewSessionAndUser();
+        when(workflowPathGuard.touchesGuardedPath("container-1")).thenReturn(false);
 
         boolean fired = gate.requestIfRequired(plan, 0, "task-1", 1L, 11L);
 
         assertThat(fired).isFalse();
-        verifyNoInteractions(previewBranchPushService, previewSessionService, approvalRepository);
+        verifyNoInteractions(previewBranchPushService, approvalRepository);
         verify(taskStore, never()).markStepCompleted(anyString(), org.mockito.ArgumentMatchers.anyInt());
         verify(taskStore, never()).markWaitingResultApproval(anyString(), anyString());
+    }
+
+    @Test
+    void firesEvenWithThePolicyOffWhenTheResultTouchesAWorkflow() {
+        // #508: 승인을 끈 프로젝트라도 GitHub Actions 를 건드린 결과물은 사람이 본다.
+        AgentPlan plan = codePlan();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+                .thenReturn(Optional.of(boundProject()));
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, false, false, false, false, false)));
+        stubPreviewSessionAndUser();
+        when(workflowPathGuard.touchesGuardedPath("container-1")).thenReturn(true);
+        when(taskStore.get("task-1")).thenReturn(null);
+        when(approvalRepository.save(any(Approval.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        boolean fired = gate.requestIfRequired(plan, 0, "task-1", 1L, 11L);
+
+        assertThat(fired).isTrue();
+        verify(previewBranchPushService).push(eq("container-1"), any(), any(), eq("octo/repo"), eq(false), eq("task-1"));
+        verify(approvalRepository).save(any(Approval.class));
+    }
+
+    @Test
+    void doesNotAskTheGuardWhenThePolicyAlreadyRequiresApproval() {
+        // 정책이 켜져 있으면 어차피 게이트를 탄다 — 컨테이너에 git 을 한 번 더 돌릴 이유가 없다.
+        AgentPlan plan = codePlan();
+        stubBoundPolicyOnProject();
+        stubPreviewSessionAndUser();
+        when(taskStore.get("task-1")).thenReturn(null);
+        when(approvalRepository.save(any(Approval.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        assertThat(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).isTrue();
+        verifyNoInteractions(workflowPathGuard);
     }
 
     @Test
