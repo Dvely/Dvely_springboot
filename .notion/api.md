@@ -35,7 +35,7 @@
 - `GET /api/v1/tls/allow?domain=` — 배포 EC2의 Caddy on-demand TLS 확인용(§19.4)
 - `GET /api/v1/templates`, `GET /api/v1/templates/{templateId}` — 템플릿 카탈로그(§17)
 - `GET /actuator/health` — 배포 기동 확인용, 상태값만 노출
-- Swagger/OpenAPI 경로
+- Swagger/OpenAPI 경로 — **local 에서만**. dev·prod 는 springdoc 을 끄고(#505) 이 경로에 인증을 요구한다
 
 ### 2.2 요청 상관관계 ID (Issue #345)
 

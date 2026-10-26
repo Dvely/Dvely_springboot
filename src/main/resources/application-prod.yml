@@ -173,3 +173,11 @@ qeploy:
       # 통째로 일치시킨다(점을 이스케이프한 앵커 정규식). api.openai.com 이 api.openai.com.evil.test
       # 까지 허용하지 않는다.
       allowed-hosts: ${QEPLOY_CODING_AGENT_EGRESS_ALLOWED_HOSTS:api.anthropic.com,api.openai.com}
+
+# Swagger UI·OpenAPI 문서를 끈다(#505). 문서는 local 에서만 연다 — SecurityConfig 도 이 값을 보고
+# 꺼진 프로파일에서는 문서 경로에 인증을 요구한다.
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
