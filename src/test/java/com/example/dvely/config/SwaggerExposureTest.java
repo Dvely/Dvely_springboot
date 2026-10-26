@@ -17,6 +17,7 @@ import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.env.PropertySource;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
@@ -35,7 +36,10 @@ class SwaggerExposureTest {
         });
     }
 
+    // 속성이 달라 컨텍스트 캐시에 새 컨텍스트가 하나 더 생긴다. 남겨 두면 전체 실행의 힙을 잡아먹어
+    // 뒤의 무거운 테스트가 OOM 으로 죽는다(실측) — 이 클래스가 끝나면 닫는다.
     @Nested
+    @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
     @SpringBootTest(properties = {"springdoc.api-docs.enabled=false", "springdoc.swagger-ui.enabled=false"})
     class WhenSpringdocIsOff {
 
