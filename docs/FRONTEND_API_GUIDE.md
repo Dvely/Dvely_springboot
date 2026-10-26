@@ -13,7 +13,7 @@
 | 환경 | Base URL | 비고 |
 |---|---|---|
 | 로컬 백엔드 | `http://localhost:8080` | `application.yaml` 기본 포트. FE 정본(`Dvely_FE`)의 `VITE_API_BASE` 기본값과 동일 |
-| Swagger UI | `http://localhost:8080/swagger-ui/index.html` | 도메인별 그룹 드롭다운(auth/project/chat/agent/deployment/domainbinding/cloudconnection/preview/environment/webhook/user)으로 필터링 가능 |
+| Swagger UI | `http://localhost:8080/swagger-ui/index.html` (**로컬 백엔드에서만** — dev·운영 서버는 #505 로 끔) | 도메인별 그룹 드롭다운(auth/project/chat/agent/deployment/domainbinding/cloudconnection/preview/environment/webhook/user)으로 필터링 가능 |
 | OpenAPI JSON | `http://localhost:8080/v3/api-docs` (그룹별: `/v3/api-docs/{group}`) | 코드 생성기(openapi-generator 등)에 바로 사용 가능 |
 
 모든 API 경로는 `/api/v1`으로 시작합니다(GitHub webhook·preview 프록시·auth 콜백류 제외 없음 — 전부 `/api/v1/**` 하위).
@@ -36,7 +36,8 @@ Qeploy는 **GitHub OAuth로 로그인**하고 **서비스 자체 JWT**를 발급
 | `POST /api/v1/auth/refresh` | 만료된 accessToken 대신 refreshToken으로 인증 |
 | `POST /api/v1/webhook/github` | GitHub이 직접 호출(HMAC 서명으로 검증) |
 | `GET /api/v1/previews/{sessionId}/{accessToken}/**` | URL에 내장된 1회성 토큰으로 인증(JWT 아님, iframe 접근용) |
-| `/swagger-ui/**`, `/v3/api-docs/**`, `/error` | 문서/에러 핸들링 |
+| `/swagger-ui/**`, `/v3/api-docs/**` | 문서 — local 프로파일에서만 열림(dev·prod 는 springdoc 꺼짐 + 인증 요구, #505) |
+| `/error` | 에러 핸들링 |
 
 > 주의: `GET /api/v1/auth/github/app/install-url`, `GET /api/v1/auth/github/app/reauthorize-url`, `DELETE /api/v1/auth/logout`은 **인증이 필요**합니다(컨트롤러가 `@RequestHeader("Authorization")`으로 직접 헤더를 읽지만, Security 필터 자체가 이 경로들을 permitAll에 포함하지 않으므로 유효한 Bearer 토큰이 있어야 통과합니다).
 
