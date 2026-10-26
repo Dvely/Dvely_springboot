@@ -1,18 +1,17 @@
 package com.example.dvely.auth.application.port.out;
 
-import java.util.Optional;
-
 public interface GithubAppPort {
 
     /**
-     * OAuth 유저 토큰으로 해당 유저의 GitHub App 설치 ID 조회
-     * GitHub App이 설치되지 않은 경우 Optional.empty() 반환
+     * 이 User Token 의 주인이 이 App 의 해당 설치에 접근할 수 있는지 확인한다(GET /user/installations).
+     * 콜백이 준 installation_id 를 저장하기 전에 반드시 거친다(#504). GitHub 호출 실패는 던진다 —
+     * false 로 삼키면 "남의 설치"라는 틀린 안내가 나간다.
      */
-    Optional<Long> findInstallationId(String oauthToken);
+    boolean canAccessInstallation(String userToken, long installationId);
 
     /**
      * GitHub App 설치 페이지 URL 반환
-     * state에 서비스 JWT를 담아 콜백에서 유저를 식별
+     * state 는 1회용 연동 요청 값(GithubAppStateManager)
      */
     String getInstallationUrl(String state);
 

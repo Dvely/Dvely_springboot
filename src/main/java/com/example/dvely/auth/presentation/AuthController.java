@@ -63,17 +63,16 @@ public class AuthController {
     @Operation(
             summary = "GitHub App 설치 URL 조회",
             description = "GitHub App 설치 페이지 URL을 반환합니다. " +
-                          "JWT를 state 파라미터에 담아 URL을 생성하며, GitHub이 설치 완료 후 state를 그대로 콜백으로 돌려줘 " +
-                          "별도 세션 없이 설치한 유저를 식별합니다. " +
+                          "1회용 연동 요청 값(15분 유효)을 state 파라미터에 담아 URL을 생성하며, GitHub이 설치 완료 후 state를 그대로 콜백으로 돌려줘 " +
+                          "별도 세션 없이 설치한 유저를 식별합니다. 받은 URL은 한 번만 쓸 수 있습니다. " +
                           "githubAppInstalled가 false인 유저에게 GitHub App 연동을 유도할 때 호출합니다."
     )
     @GetMapping("/github/app/install-url")
     public ApiResponse<GithubUrlResponse> getGithubAppInstallUrl(
             @Parameter(hidden = true) @RequestHeader("Authorization") String authorization
     ) {
-        String token = extractBearerToken(authorization);
-        tokenPort.getUserId(token);
-        return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubAppInstallUrl(token)));
+        Long userId = tokenPort.getUserId(extractBearerToken(authorization));
+        return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubAppInstallUrl(userId)));
     }
 
     @Operation(
@@ -86,16 +85,16 @@ public class AuthController {
     public ApiResponse<GithubUrlResponse> getGithubAppReauthorizeUrl(
             @Parameter(hidden = true) @RequestHeader("Authorization") String authorization
     ) {
-        String token = extractBearerToken(authorization);
-        Long userId = tokenPort.getUserId(token);
-        return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubAppReauthorizeUrl(userId, token)));
+        Long userId = tokenPort.getUserId(extractBearerToken(authorization));
+        return ApiResponse.success(new GithubUrlResponse(authFacade.getGithubAppReauthorizeUrl(userId)));
     }
 
     @Operation(
             summary = "GitHub App 설치 완료 콜백",
             description = "GitHub App 설치 후 GitHub이 브라우저를 이 URL로 리다이렉트합니다. " +
-                          "state(설치 전 발급한 서비스 JWT)로 유저를 식별하고 Installation ID를 DB에 저장합니다. " +
-                          "state가 없는 경우(GitHub App settings 경유 설치)에는 code로 GitHub 유저를 조회해 연동합니다. " +
+                          "state(설치 URL 발급 때 만든 1회용 값)로 유저를 식별하고, code로 확인한 GitHub 사용자가 그 유저 본인이며 " +
+                          "Installation에 접근할 수 있을 때만 저장합니다. " +
+                          "state가 없는 경우(GitHub App settings 경유 설치)에는 code로 GitHub 유저를 조회해 같은 확인을 거쳐 연동합니다. " +
                           "처리 완료 후 프론트엔드로 리다이렉트합니다. 직접 호출하는 API가 아니라 GitHub이 호출합니다."
     )
     @GetMapping("/github/app/callback")
@@ -103,15 +102,14 @@ public class AuthController {
     public ResponseEntity<Void> githubAppCallback(
             @Parameter(description = "GitHub이 발급한 App Installation ID. 재인증 콜백에서는 없을 수 있음") @RequestParam(value = "installation_id", required = false) Long installationId,
             @Parameter(description = "install | update | delete") @RequestParam(value = "setup_action", defaultValue = "install") String setupAction,
-            @Parameter(description = "설치 요청 시 포함했던 서비스 JWT (settings 경유 시 없을 수 있음)") @RequestParam(value = "state", required = false) String state,
+            @Parameter(description = "설치 요청 시 포함했던 1회용 연동 요청 값 (settings 경유 시 없을 수 있음)") @RequestParam(value = "state", required = false) String state,
             @Parameter(hidden = true) @RequestParam(value = "code", required = false) String code
     ) {
         String baseUrl = frontendProperties.redirectUrl() + "/auth/app-callback";
         try {
             if (!"delete".equals(setupAction)) {
                 if (state != null) {
-                    Long userId = tokenPort.getUserId(state);
-                    authFacade.linkGithubApp(userId, installationId, code);
+                    authFacade.linkGithubApp(state, installationId, code);
                 } else if (installationId != null) {
                     authFacade.linkGithubAppByCode(installationId, code);
                 } else {
