@@ -1,6 +1,8 @@
 package com.example.dvely.agent.infrastructure.docker;
 
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -57,7 +59,37 @@ public class ContainerGitCredentials {
      * printf 가 해석한다.</p>
      */
     private static final String INLINE_HELPER =
-            "!f() { printf \"username=%s\\npassword=%s\\n\" \"$" + USER_VAR + "\" \"$" + TOKEN_VAR + "\"; }; f";
+            "!f() { test \"$1\" = get || return 0; p=; h=; "
+                    + "while read -r l; do case \"$l\" in protocol=https) p=1;; host=github.com) h=1;; esac; done; "
+                    + "test \"$p$h\" = 11 || return 0; "
+                    + "printf \"username=%s\\npassword=%s\\n\" \"$" + USER_VAR + "\" \"$" + TOKEN_VAR + "\"; }; f";
+
+    /**
+     * 인증 git 호출이 따르면 안 되는 설정 키. 요청 대상·자격 공급을 바꾸거나 git 이 외부 명령을
+     * 실행하게 만드는 것들이다. 시스템·전역·저장소 설정 어디에 있든(include 포함) 하나라도 있으면
+     * 그 호출을 돌리지 않는다. 컨테이너 안 설정은 같은 컨테이너에서 도는 코드가 바꿀 수 있다.
+     */
+    static final String UNSAFE_CONFIG_PATTERN = "^("
+            + "url\\.|credential\\.(.+\\.)?helper$|https?\\.|include\\.|includeif\\.|filter\\.|protocol\\."
+            + "|uploadpack\\.|receivepack\\.|gpg\\."
+            + "|core\\.(hookspath|fsmonitor|sshcommand|askpass|gitproxy|alternaterefscommand)$"
+            + "|remote\\..*\\.(pushurl|proxy|receivepack|uploadpack|vcs)$"
+            + "|diff\\..*\\.(command|textconv)$|merge\\..*\\.driver$"
+            + ")";
+
+    /** 위 키가 있을 때 인증 git 호출 대신 내는 종료 코드. 호출부 오류 메시지에서 알아볼 수 있게 고정한다. */
+    static final int UNSAFE_CONFIG_EXIT = 97;
+
+    /**
+     * 인증 git 호출 앞에 붙는 검사. 같은 셸 안에서 돌아 그 사이에 설정이 바뀔 틈이 없다.
+     * 설정 읽기 자체가 실패하면(git 없음 등) 뒤 git 호출도 같은 이유로 실패하므로 막지 않는다.
+     */
+    private static final String UNSAFE_CONFIG_GUARD =
+            "{ ! git config --get-regexp '" + UNSAFE_CONFIG_PATTERN + "' >/dev/null 2>&1"
+                    + " || { echo 'qeploy: 컨테이너 git 설정이 허용 범위를 벗어나 인증 git 호출을 하지 않습니다' >&2;"
+                    + " exit " + UNSAFE_CONFIG_EXIT + "; }; } && ";
+
+    private static final Pattern TRAILING_ASSIGNMENT = Pattern.compile("(?:[A-Z_][A-Z0-9_]*=\\S*\\s+)+$");
 
     private final DockerContainerService dockerService;
 
@@ -80,8 +112,17 @@ public class ContainerGitCredentials {
         if (at < 0) {
             throw new IllegalArgumentException("git 명령이 아닙니다: " + gitCommand);
         }
-        return gitCommand.substring(0, at)
-                + "git -c credential.helper='" + INLINE_HELPER + "' "
+        // GIT_TERMINAL_PROMPT=0 처럼 git 앞에 붙은 환경 지정은 git 에 걸린 것이라 그 앞에 검사를 둔다.
+        int start = at;
+        Matcher assignment = TRAILING_ASSIGNMENT.matcher(gitCommand.substring(0, at));
+        if (assignment.find()) {
+            start = assignment.start();
+        }
+        // hooks 는 끄고, 저장소·전역 설정의 helper 는 비운 뒤 인라인 helper 하나만 둔다.
+        return gitCommand.substring(0, start)
+                + UNSAFE_CONFIG_GUARD
+                + gitCommand.substring(start, at)
+                + "git -c core.hooksPath=/dev/null -c credential.helper= -c credential.helper='" + INLINE_HELPER + "' "
                 + gitCommand.substring(at + "git ".length());
     }
 

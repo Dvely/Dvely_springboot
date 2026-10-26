@@ -147,7 +147,7 @@ class PreviewWorkspaceServiceTest {
         verify(docker, org.mockito.Mockito.atLeastOnce())
                 .execWithExitCode(eq(CONTAINER_ID), captor.capture(), org.mockito.ArgumentMatchers.any());
         var cloneCommands = captor.getAllValues().stream()
-                // authed() 가 `git clone` 을 `git -c credential.helper=... clone` 으로 쪼갠다 (#413).
+                // authed() 가 `git clone` 을 `git -c ... -c credential.helper=... clone` 으로 쪼갠다 (#413).
                 .filter(command -> command.contains(" clone "))
                 .toList();
 

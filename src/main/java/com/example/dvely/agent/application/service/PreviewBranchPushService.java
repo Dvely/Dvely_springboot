@@ -5,6 +5,7 @@ import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -22,6 +23,9 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class PreviewBranchPushService {
+
+    private static final Pattern REPOSITORY_NAME =
+            Pattern.compile("[A-Za-z0-9-]+/[A-Za-z0-9._-]+");
 
     private final DockerContainerService dockerService;
     private final ContainerGitCredentials gitCredentials;
@@ -53,7 +57,7 @@ public class PreviewBranchPushService {
     private void pushToPreview(String containerId, String username, String userToken,
                                String repoFullName, boolean isNew, String taskId) {
 
-        String remoteUrl = "https://github.com/" + repoFullName + ".git";
+        String remoteUrl = githubUrl(repoFullName);
         boolean hasGit = "yes".equals(
                 dockerService.exec(containerId, "[ -d " + ContainerPaths.APP_DIR + "/.git ] && echo yes || echo no").trim());
 
@@ -66,7 +70,7 @@ public class PreviewBranchPushService {
             // 로컬 히스토리를 그대로 올리면 두 히스토리에 공통 조상이 없어 push 가 거부된다.
             // --soft 라서 작업 트리와 인덱스는 건드리지 않고 HEAD 만 원격 끝으로 옮긴다.
             gitCredentials.exec(containerId, username, userToken,
-                    ContainerPaths.inApp("(git fetch origin preview 2>/dev/null "
+                    ContainerPaths.inApp("(git fetch " + remoteUrl + " preview 2>/dev/null "
                             + "&& git reset --soft FETCH_HEAD) || true"));
         } else {
             execOrThrow(containerId, ContainerPaths.inApp("git remote set-url origin " + remoteUrl), "git remote set-url");
@@ -79,8 +83,17 @@ public class PreviewBranchPushService {
         execOrThrow(containerId,
                 ContainerPaths.inApp("git diff --cached --quiet || git commit -m 'feat: apply Qeploy Agent task "
                         + taskId + "'"), "git commit");
+        // remote 이름이 아니라 URL 로 보낸다. 인증 호출이 컨테이너 안 remote 설정을 따르지 않게 한다.
         execAuthedOrThrow(containerId, username, userToken,
-                ContainerPaths.inApp("git push -u origin preview"), "git push");
+                ContainerPaths.inApp("git push " + remoteUrl + " HEAD:refs/heads/preview"), "git push");
+    }
+
+    /** 저장소 이름이 셸·URL 에 그대로 들어가므로 GitHub 이름 규칙 밖의 문자는 받지 않는다. */
+    static String githubUrl(String repoFullName) {
+        if (repoFullName == null || !REPOSITORY_NAME.matcher(repoFullName).matches()) {
+            throw new IllegalArgumentException("저장소 이름 형식이 올바르지 않습니다: " + repoFullName);
+        }
+        return "https://github.com/" + repoFullName + ".git";
     }
 
     /**
