@@ -35,7 +35,7 @@
 - `GET /api/v1/tls/allow?domain=` — 배포 EC2의 Caddy on-demand TLS 확인용(§19.4)
 - `GET /api/v1/templates`, `GET /api/v1/templates/{templateId}` — 템플릿 카탈로그(§17)
 - `GET /actuator/health` — 배포 기동 확인용, 상태값만 노출
-- Swagger/OpenAPI 경로
+- Swagger/OpenAPI 경로 — **local 에서만**. dev·prod 는 springdoc 을 끄고(#505) 이 경로에 인증을 요구한다
 
 ### 2.2 요청 상관관계 ID (Issue #345)
 
@@ -133,8 +133,10 @@ Query:
 
 - `installation_id`: 설치 ID, 재인증에서는 없을 수 있음
 - `setup_action`: `install`, `update`, `delete`
-- `state`: 설치 URL에 넣은 서비스 JWT
-- `code`: GitHub User Token 교환용 code
+- `state`: 설치·재인증 URL 발급 때 만든 1회용 연동 요청 값(HMAC 서명, 15분 유효, 한 번 쓰면 다시 받지 않음). #504 전에는 서비스 Access JWT를 그대로 실었다
+- `code`: GitHub User Token 교환용 code. **필수** — 없으면 저장하지 않는다
+
+저장 전에 두 가지를 확인한다(#504). `code`로 받은 User Token의 GitHub 사용자가 state의 유저 본인인지(settings 경유는 이 사용자로 유저를 찾는다), 그리고 그 사용자가 `installation_id`의 설치에 접근할 수 있는지(`GET /user/installations`)다. 하나라도 아니면 저장하지 않고 `githubAppLinked=false&error=...`로 돌려보낸다.
 
 성공 시 프론트 redirect URL에 `githubAppLinked=true`를 붙인다. 실패 시 `githubAppLinked=false&error=...`를 붙인다.
 

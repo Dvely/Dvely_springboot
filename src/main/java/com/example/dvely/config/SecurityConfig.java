@@ -10,6 +10,7 @@ import com.example.dvely.common.response.ApiResponse;
 import com.example.dvely.common.response.ErrorCode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -20,6 +21,9 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.OrRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -37,8 +41,14 @@ public class SecurityConfig {
             TokenBlacklistPort tokenBlacklistPort,
             ApiTokenAuthenticator apiTokenAuthenticator,
             CorsConfigurationSource corsConfigurationSource,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            @Value("${springdoc.api-docs.enabled:true}") boolean apiDocsEnabled
     ) throws Exception {
+        // dev·prod 는 springdoc 을 끈다(#505). 꺼진 프로파일에서는 이 경로를 열어 둘 이유가 없으니
+        // 인증을 요구한다 — 설정 한 줄이 빠져 문서가 다시 켜져도 익명에게는 열리지 않는다.
+        RequestMatcher swaggerPaths = new OrRequestMatcher(
+                PathPatternRequestMatcher.withDefaults().matcher("/swagger-ui/**"),
+                PathPatternRequestMatcher.withDefaults().matcher("/v3/api-docs/**"));
         return http
                 .cors(cors -> cors.configurationSource(corsConfigurationSource))
                 .csrf(AbstractHttpConfigurer::disable)
@@ -76,11 +86,8 @@ public class SecurityConfig {
                         // 템플릿 카탈로그. 내용 자체가 이미 공개 Pages 에 있는 정적 목록이고 사용자
                         // 데이터가 없다. 로그인 전 화면에서도 갤러리를 띄울 수 있게 열어둔다.
                         .requestMatchers(HttpMethod.GET, "/api/v1/templates", "/api/v1/templates/*").permitAll()
-                        // Swagger UI
-                        .requestMatchers(
-                                "/swagger-ui/**",
-                                "/v3/api-docs/**"
-                        ).permitAll()
+                        // Swagger UI — springdoc 이 켜진 프로파일(local)에서만 연다
+                        .requestMatchers(request -> apiDocsEnabled && swaggerPaths.matches(request)).permitAll()
                         // Spring Boot 에러 핸들링 경로 (404 등이 정상 동작하려면 필요)
                         .requestMatchers("/error").permitAll()
                         // 배포 워크플로의 기동 확인용. show-details: never 라 상태값만 나간다.

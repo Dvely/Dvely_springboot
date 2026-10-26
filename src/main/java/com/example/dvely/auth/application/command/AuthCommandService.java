@@ -15,6 +15,7 @@ import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.auth.domain.service.AuthDomainService;
 import com.example.dvely.auth.domain.value.GithubId;
 import com.example.dvely.auth.infrastructure.config.JwtProperties;
+import com.example.dvely.auth.infrastructure.oauth.GithubAppStateManager;
 import com.example.dvely.auth.infrastructure.oauth.OAuthStateManager;
 import com.example.dvely.common.exception.ForbiddenException;
 import com.example.dvely.common.exception.NotFoundException;
@@ -44,6 +45,7 @@ public class AuthCommandService {
     private final JwtProperties jwtProperties;
     private final OAuthStateManager oAuthStateManager;
     private final GithubUserTokenRefresher tokenRefresher;
+    private final GithubAppStateManager githubAppStateManager;
 
     /**
      * GitHub OAuth 로그인
@@ -118,34 +120,40 @@ public class AuthCommandService {
 
     /**
      * GitHub App 설치 완료 콜백 처리
-     * installation_id 저장 + code가 있으면 GitHub App User Token 발급
+     * installation_id 저장 + GitHub App User Token 발급
      *
-     * <p>트랜잭션을 걷어내면서(#337) 순서를 바꿨다. 예전에는 installationId 를 먼저 반영하고
-     * 그 뒤에 GitHub 토큰 교환을 호출했는데, 교환이 실패하면 롤백이 installationId 반영까지
-     * 되돌려 <b>아무것도 저장되지 않는</b> 것이 이 메서드의 실제 동작이었다. 롤백이 사라진
-     * 지금 같은 결과를 얻으려면 외부 호출을 저장보다 앞에 두는 수밖에 없다 — 교환이 던지면
-     * 아래 저장 구간에 도달하지 않는다.</p>
+     * <p>저장 전에 두 가지를 확인한다(#504). code 로 받은 User Token 의 GitHub 사용자가 state 가
+     * 가리키는 유저 본인인지, 그리고 그 사용자가 installation_id 의 설치에 접근할 수 있는지다.
+     * 둘 다 없으면 콜백 URL 의 값만으로 다른 사람의 설치나 GitHub 토큰이 이 유저에게 붙는다.
+     * 확인에 쓸 User Token 이 없으므로 code 없는 콜백은 저장하지 않는다.</p>
      *
-     * <p>유저 조회는 외부 호출보다 앞에 남겨 둔다. 없는 유저면 code 를 소모하기 전에 404 가
-     * 나가던 기존 순서를 그대로 지키기 위해서다.</p>
+     * <p>트랜잭션을 걷어내면서(#337) 외부 호출을 저장보다 앞에 뒀다 — 교환이나 확인이 던지면
+     * 아래 저장 구간에 도달하지 않는다. 유저 조회는 외부 호출보다 앞에 남겨, 없는 유저면 code 를
+     * 소모하기 전에 404 가 나간다.</p>
      */
-    public void linkGithubApp(Long userId, Long installationId, String code) {
+    public void linkGithubApp(String state, Long installationId, String code) {
+        Long userId = githubAppStateManager.consume(state);
+        requireCode(code);
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
 
-        GithubAppPort.GithubUserTokenInfo tokenInfo = code == null ? null : githubAppPort.getUserToken(code);
+        GithubAppPort.GithubUserTokenInfo tokenInfo = githubAppPort.getUserToken(code);
+        GithubUserPort.GithubUserInfo githubUser = githubUserPort.getUser(tokenInfo.accessToken());
+        if (!user.getGithubId().equals(new GithubId(githubUser.id()))) {
+            throw new ForbiddenException("로그인한 계정과 다른 GitHub 계정으로 연동할 수 없습니다. "
+                    + "GitHub에서 로그아웃한 뒤 Qeploy에 로그인한 계정으로 다시 시도해 주세요.");
+        }
+        // 재인증 콜백은 installation_id 없이 온다 — 저장된 값을 그대로 둔다
+        if (installationId != null) {
+            requireAccessibleInstallation(tokenInfo, installationId);
+        }
 
-        // 여기부터가 저장 구간 — 위 외부 호출이 실패했다면 도달하지 않는다.
-        // 재인증 콜백은 installation_id 없이 올 수 있음 — 저장된 값 유지
+        // 여기부터가 저장 구간 — 위 외부 호출·확인이 실패했다면 도달하지 않는다.
         if (installationId != null) {
             authDomainService.updateInstallationId(user, installationId);
         }
-
-        if (tokenInfo != null) {
-            LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(tokenInfo.expiresInSeconds());
-            user.updateUserToken(tokenInfo.accessToken(), tokenInfo.refreshToken(), expiresAt);
-            log.info("GitHub App User Token 발급 완료: userId={}", userId);
-        }
+        LocalDateTime expiresAt = LocalDateTime.now().plusSeconds(tokenInfo.expiresInSeconds());
+        user.updateUserToken(tokenInfo.accessToken(), tokenInfo.refreshToken(), expiresAt);
 
         userRepository.save(user);
         log.info("GitHub App 연동 완료: userId={}, installationId={}", userId,
@@ -154,21 +162,20 @@ public class AuthCommandService {
 
     /**
      * GitHub App 설치 설정 페이지(state 없음)에서 오는 콜백 처리
-     * code로 User Token 발급 → GitHub 유저 정보로 DB 유저 식별
+     * code로 User Token 발급 → GitHub 유저 정보로 DB 유저 식별 → 설치 접근 확인(#504)
      *
-     * <p>트랜잭션을 걸지 않는다 — GitHub 호출 두 번이 이미 저장보다 앞에 있어, 실패하면 저장에
+     * <p>트랜잭션을 걸지 않는다 — GitHub 호출이 모두 저장보다 앞에 있어, 실패하면 저장에
      * 도달하지 않는 것은 그대로다(#337). 저장도 {@code save} 한 번뿐이라 원자성이 줄지 않는다.</p>
      */
     public void linkGithubAppByCode(Long installationId, String code) {
-        if (code == null) {
-            throw new IllegalArgumentException("code가 없어 유저를 식별할 수 없습니다");
-        }
+        requireCode(code);
 
         GithubAppPort.GithubUserTokenInfo tokenInfo = githubAppPort.getUserToken(code);
         GithubUserPort.GithubUserInfo githubUser = githubUserPort.getUser(tokenInfo.accessToken());
 
         User user = userRepository.findByGithubId(new GithubId(githubUser.id()))
                 .orElseThrow(() -> new NotFoundException("등록된 유저가 아닙니다: githubId=" + githubUser.id()));
+        requireAccessibleInstallation(tokenInfo, installationId);
 
         authDomainService.updateInstallationId(user, installationId);
 
@@ -177,6 +184,18 @@ public class AuthCommandService {
 
         userRepository.save(user);
         log.info("GitHub App 연동 완료 (settings 경유): userId={}, installationId={}", user.getId(), installationId);
+    }
+
+    private void requireCode(String code) {
+        if (code == null || code.isBlank()) {
+            throw new IllegalArgumentException("GitHub 인증 코드가 없어 연동할 수 없습니다. 다시 시도해 주세요.");
+        }
+    }
+
+    private void requireAccessibleInstallation(GithubAppPort.GithubUserTokenInfo tokenInfo, long installationId) {
+        if (!githubAppPort.canAccessInstallation(tokenInfo.accessToken(), installationId)) {
+            throw new ForbiddenException("이 GitHub 계정이 접근할 수 없는 App 설치입니다. 다시 설치해 주세요.");
+        }
     }
 
     /**

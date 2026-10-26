@@ -11,7 +11,6 @@ import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientException;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.IOException;
@@ -24,13 +23,14 @@ import java.time.format.DateTimeParseException;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 @Slf4j
 @Component
 public class GithubAppClient implements GithubAppPort {
 
     private static final String GITHUB_API_BASE_URL = "https://api.github.com";
+    private static final int INSTALLATION_PAGE_SIZE = 100;
+    private static final int MAX_INSTALLATION_PAGES = 10;
     private static final String GITHUB_BASE_URL = "https://github.com";
     private static final String GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
 
@@ -57,31 +57,31 @@ public class GithubAppClient implements GithubAppPort {
     }
 
     @Override
-    public Optional<Long> findInstallationId(String oauthToken) {
-        try {
+    public boolean canAccessInstallation(String userToken, long installationId) {
+        long appId = Long.parseLong(properties.app().appId());
+        // 기본 30개씩이라 조직이 많은 사용자는 첫 페이지 밖에 있을 수 있다. 끝 페이지까지 넘긴다.
+        for (int page = 1; page <= MAX_INSTALLATION_PAGES; page++) {
             UserInstallationsResponse response = githubRestClient
                     .get()
-                    .uri(GITHUB_API_BASE_URL + "/user/installations")
-                    .header("Authorization", "token " + oauthToken)
+                    .uri(GITHUB_API_BASE_URL + "/user/installations?per_page=" + INSTALLATION_PAGE_SIZE
+                            + "&page=" + page)
+                    .header("Authorization", "token " + userToken)
                     .header("Accept", "application/vnd.github+json")
                     .header("X-GitHub-Api-Version", "2022-11-28")
                     .retrieve()
                     .body(UserInstallationsResponse.class);
 
-            if (response == null || response.installations() == null) {
-                return Optional.empty();
+            List<InstallationDto> installations = response == null || response.installations() == null
+                    ? List.of()
+                    : response.installations();
+            if (installations.stream().anyMatch(i -> i.appId() == appId && i.id() == installationId)) {
+                return true;
             }
-
-            long appId = Long.parseLong(properties.app().appId());
-            return response.installations().stream()
-                    .filter(i -> i.appId() == appId)
-                    .map(InstallationDto::id)
-                    .findFirst();
-
-        } catch (RestClientException e) {
-            log.warn("GitHub App 설치 조회 실패: {}", e.getMessage());
-            return Optional.empty();
+            if (installations.size() < INSTALLATION_PAGE_SIZE) {
+                return false;
+            }
         }
+        return false;
     }
 
     @Override
@@ -89,7 +89,7 @@ public class GithubAppClient implements GithubAppPort {
         return UriComponentsBuilder
                 .fromUriString(GITHUB_BASE_URL + "/apps/" + getAppSlug() + "/installations/new")
                 .queryParam("state", state)
-                // state는 서비스 JWT라 '.'만 들어가지만, 값의 형식이 바뀌어도 안전하도록
+                // state는 base64url 과 '.'만 들어가지만, 값의 형식이 바뀌어도 안전하도록
                 // 인코딩을 거친다. GithubOAuthClient.getAuthorizeUrl 과 같은 이유다.
                 .build()
                 .encode()
