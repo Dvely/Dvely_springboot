@@ -82,19 +82,20 @@ public class AuthCommandService {
 
     /**
      * Refresh Token으로 서비스 Access Token 재발급 (Token Rotation)
+     *
+     * <p>폐기는 조건부 UPDATE 하나로 한다(#506). 같은 토큰으로 요청이 겹쳐도 그 UPDATE 가 1행을
+     * 바꾼 요청만 새 토큰을 받는다. 재사용 탐지(폐기된 토큰이 다시 오면 전체 폐기)는 FE 의 refresh
+     * 단일화 이후 별도로 붙인다 — 지금 넣으면 FE 가 동시에 두 번 보낼 때 정상 사용자가 로그아웃된다.</p>
      */
     @Transactional
     public TokenResult refresh(String rawToken) {
         RefreshToken refreshToken = refreshTokenRepository.findByToken(rawToken)
                 .orElseThrow(() -> new UnauthorizedException("유효하지 않은 리프레시 토큰입니다"));
 
-        if (!refreshToken.isValid()) {
+        if (!refreshTokenRepository.revokeIfActive(rawToken, LocalDateTime.now())) {
             throw new UnauthorizedException("만료되었거나 이미 사용된 리프레시 토큰입니다");
         }
-
         Long userId = refreshToken.getUserId();
-        refreshToken.revoke();
-        refreshTokenRepository.save(refreshToken);
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
@@ -238,7 +239,9 @@ public class AuthCommandService {
     private String issueRefreshToken(Long userId) {
         LocalDateTime expiresAt = LocalDateTime.now()
                 .plusSeconds(jwtProperties.refreshExpirationMs() / 1000);
-        RefreshToken refreshToken = new RefreshToken(userId, UUID.randomUUID().toString(), expiresAt);
-        return refreshTokenRepository.save(refreshToken).getToken();
+        String rawToken = UUID.randomUUID().toString();
+        // 저장되는 것은 해시뿐이다 — 원문은 여기서 응답으로 한 번 나가고 끝난다.
+        refreshTokenRepository.saveNew(new RefreshToken(userId, rawToken, expiresAt));
+        return rawToken;
     }
 }

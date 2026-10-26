@@ -150,6 +150,9 @@ redirect 대상은 `{프론트 redirect URL}/auth/app-callback`이며 `error` �
 }
 ```
 
+- 요청·응답 형태는 그대로다. 서버는 리프레시 토큰을 SHA-256 hex 로만 저장한다(#506, `refresh_tokens.token_hash`).
+- 회전은 조건부 UPDATE 하나로 원자적이다. 같은 토큰으로 요청이 겹치면 하나만 새 토큰을 받고 나머지는 401(`만료되었거나 이미 사용된 리프레시 토큰입니다`)이다. 재사용 탐지(전체 폐기)는 아직 없다 — FE refresh 단일화 이후 별도.
+
 ---
 
 ## 4. User API

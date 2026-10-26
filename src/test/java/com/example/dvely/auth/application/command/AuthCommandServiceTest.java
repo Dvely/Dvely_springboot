@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -81,8 +82,6 @@ class AuthCommandServiceTest {
         when(userRepository.findByGithubId(new GithubId("123"))).thenReturn(Optional.empty());
         when(userRepository.save(any(User.class))).thenReturn(user(10L, null));
         when(tokenPort.createToken(10L)).thenReturn("access-token");
-        when(refreshTokenRepository.save(any(RefreshToken.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
 
         TokenResult result = service.loginWithGithub(new GithubLoginCommand("code", "state"));
 
@@ -96,26 +95,37 @@ class AuthCommandServiceTest {
 
     @Test
     void refreshRevokesOldTokenBeforeIssuingRotatedPair() {
-        RefreshToken oldToken = new RefreshToken(
-                7L,
-                10L,
-                "old-refresh",
-                LocalDateTime.now().plusDays(1),
-                false
-        );
-        when(refreshTokenRepository.findByToken("old-refresh")).thenReturn(Optional.of(oldToken));
+        when(refreshTokenRepository.findByToken("old-refresh")).thenReturn(Optional.of(stored(10L)));
+        when(refreshTokenRepository.revokeIfActive(eq("old-refresh"), any(LocalDateTime.class))).thenReturn(true);
         when(userRepository.findById(10L)).thenReturn(Optional.of(user(10L, 99L)));
         when(tokenPort.createToken(10L)).thenReturn("new-access");
-        when(refreshTokenRepository.save(any(RefreshToken.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
 
         TokenResult result = service.refresh("old-refresh");
 
-        assertThat(oldToken.isRevoked()).isTrue();
         assertThat(result.accessToken()).isEqualTo("new-access");
         assertThat(result.refreshToken()).isNotEqualTo("old-refresh");
         assertThat(result.githubAppInstalled()).isTrue();
-        verify(refreshTokenRepository).save(oldToken);
+        // 응답으로 나간 원문이 그대로 저장소에 넘어간다 — 해시는 저장소가 만든다.
+        ArgumentCaptor<RefreshToken> issued = ArgumentCaptor.forClass(RefreshToken.class);
+        verify(refreshTokenRepository).saveNew(issued.capture());
+        assertThat(issued.getValue().getToken()).isEqualTo(result.refreshToken());
+    }
+
+    @Test
+    void refreshThatLosesTheConditionalRevokeIssuesNothing() {
+        // 같은 토큰으로 먼저 들어온 요청이 이미 폐기했다 — 조건부 UPDATE 가 0행이다.
+        when(refreshTokenRepository.findByToken("old-refresh")).thenReturn(Optional.of(stored(10L)));
+        when(refreshTokenRepository.revokeIfActive(eq("old-refresh"), any(LocalDateTime.class))).thenReturn(false);
+
+        assertThatThrownBy(() -> service.refresh("old-refresh"))
+                .isInstanceOf(UnauthorizedException.class);
+
+        verify(tokenPort, never()).createToken(any());
+        verify(refreshTokenRepository, never()).saveNew(any());
+    }
+
+    private RefreshToken stored(Long userId) {
+        return new RefreshToken(7L, userId, null, LocalDateTime.now().plusDays(1), false);
     }
 
     @Test
@@ -318,7 +328,7 @@ class AuthCommandServiceTest {
                 .isInstanceOf(HttpClientErrorException.class);
 
         verify(userRepository, never()).save(any());
-        verify(refreshTokenRepository, never()).save(any());
+        verify(refreshTokenRepository, never()).saveNew(any());
     }
 
     private User user(Long id, Long installationId) {

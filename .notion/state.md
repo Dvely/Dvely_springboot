@@ -26,7 +26,7 @@
 
 - GitHub OAuth 로그인 URL/callback
 - 사용자 생성/갱신
-- 서비스 JWT와 Refresh Token rotation
+- 서비스 JWT와 Refresh Token rotation (토큰은 SHA-256 해시로만 저장, 회전은 조건부 UPDATE 로 원자적 — #506)
 - 로그아웃과 Access Token blacklist
 - GitHub App 설치 callback
 - GitHub App User Token 저장과 재인증 URL

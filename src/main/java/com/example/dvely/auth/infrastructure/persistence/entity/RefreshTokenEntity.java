@@ -21,8 +21,9 @@ public class RefreshTokenEntity {
     @Column(nullable = false)
     private Long userId;
 
-    @Column(nullable = false, unique = true, length = 36)
-    private String token;
+    /** 원문이 아니라 SHA-256 hex 다(#506). 원문은 이 테이블 어디에도 없다. */
+    @Column(name = "token_hash", nullable = false, unique = true, length = 64)
+    private String tokenHash;
 
     @Column(nullable = false)
     private LocalDateTime expiresAt;
@@ -30,26 +31,15 @@ public class RefreshTokenEntity {
     @Column(nullable = false)
     private boolean revoked;
 
-    public RefreshTokenEntity(Long userId, String token, LocalDateTime expiresAt) {
+    public RefreshTokenEntity(Long userId, String tokenHash, LocalDateTime expiresAt) {
         this.userId = userId;
-        this.token = token;
+        this.tokenHash = tokenHash;
         this.expiresAt = expiresAt;
         this.revoked = false;
     }
 
-    public void revoke() {
-        this.revoked = true;
-    }
-
-    public static RefreshTokenEntity from(RefreshToken domain) {
-        RefreshTokenEntity entity = new RefreshTokenEntity(domain.getUserId(), domain.getToken(), domain.getExpiresAt());
-        if (domain.isRevoked()) {
-            entity.revoke();
-        }
-        return entity;
-    }
-
+    /** 원문은 저장하지 않으므로 읽어 온 도메인 객체의 token 은 비어 있다. */
     public RefreshToken toDomain() {
-        return new RefreshToken(id, userId, token, expiresAt, revoked);
+        return new RefreshToken(id, userId, null, expiresAt, revoked);
     }
 }
