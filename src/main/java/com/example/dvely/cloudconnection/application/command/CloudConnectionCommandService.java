@@ -143,9 +143,8 @@ public class CloudConnectionCommandService {
      * 그 연결로 만든 자원이 남아 있으면 지우지 않는다(#495). 자원 테이블이 연결을 외래키로 묶지 않아
      * 행이 그대로 지워지고, 그러면 DB·서버·CDN 을 지울 자격이 사라져 사용자 AWS 에 과금 자원으로 남는다.
      *
-     * <p>메시지에 '자격 교체' 안내는 아직 넣지 않는다. 운영 FE 는 이 메시지를 그대로 띄우는데, 자격 교체
-     * 버튼은 이 API 가 운영에 나간 뒤에야 FE 에 올라갈 수 있어서 그 사이 사용자가 없는 버튼을 찾게 된다.
-     * FE 버튼이 운영에 나가면 그 문장을 더한다.
+     * <p>'자격 교체' 안내 문장은 FE 에 그 버튼이 운영으로 나간 뒤에 넣었다. 운영 FE 는 이 메시지를 그대로
+     * 띄우므로, 버튼보다 먼저 나가면 사용자가 화면에 없는 버튼을 찾게 된다.
      */
     @Transactional
     public void delete(Long ownerUserId, Long cloudConnectionId) {
@@ -154,7 +153,8 @@ public class CloudConnectionCommandService {
         if (!usage.isEmpty()) {
             throw new IllegalStateException(
                     "이 연결로 만든 리소스가 남아 있어 해제할 수 없습니다(" + usage.describe() + "). "
-                            + "해제하면 이 리소스를 지울 방법이 없어져 AWS 요금이 계속 나갑니다. 리소스를 먼저 삭제해주세요.");
+                            + "해제하면 이 리소스를 지울 방법이 없어져 AWS 요금이 계속 나갑니다. 리소스를 먼저 삭제해주세요. "
+                            + "자격이 만료됐거나 키를 바꿨다면 해제 대신 '자격 교체'로 새 자격을 넣어주세요.");
         }
         cloudConnectionRepository.deleteById(cloudConnection.getId());
     }
