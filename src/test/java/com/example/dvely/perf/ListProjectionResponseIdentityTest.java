@@ -103,7 +103,9 @@ class ListProjectionResponseIdentityTest {
             seedChange(userId, projectId, i, bigDiff);
         }
 
-        List<ChangeResult> before = changeRepository.findAll().stream()
+        // 테이블 전체가 아니라 이 테스트가 심은 행만 읽는다. findAll() 은 실행마다 쌓이는 로컬 DB 의
+        // 큰 diff 를 전부 메모리에 올려 전체 실행을 OOM 으로 죽였다(#511).
+        List<ChangeResult> before = changeRepository.findAllById(idsOf("project_changes", projectId)).stream()
                 .filter(change -> projectId.equals(change.getProjectId())
                         && userId.equals(change.getOwnerUserId()))
                 .sorted(Comparator.comparing(ChangeEntity::getCreatedAt).reversed()
@@ -128,7 +130,8 @@ class ListProjectionResponseIdentityTest {
         seedDeployment(userId, projectId, null, "LIVE", 4);
         seedDeployment(userId, projectId, "   ", "LIVE", 5);
 
-        List<DeploymentHistoryEntity> rows = deploymentHistoryRepository.findAll().stream()
+        List<DeploymentHistoryEntity> rows = deploymentHistoryRepository
+                .findAllById(idsOf("deployment_histories", projectId)).stream()
                 .filter(row -> projectId.equals(row.getProjectId()))
                 .sorted(Comparator.comparing(DeploymentHistoryEntity::getTriggeredAt).reversed()
                         .thenComparing(Comparator.comparing(DeploymentHistoryEntity::getId).reversed()))
@@ -322,7 +325,18 @@ class ListProjectionResponseIdentityTest {
 
     // ---------------------------------------------------------------- 시딩
 
-    private String json(Object value) {
+    /** 이 프로젝트에 심은 행의 id 만 고른다. 테이블은 실행마다 쌓이므로 전체를 읽지 않는다. */
+    private List<Long> idsOf(String table, Long projectId) {
+        String idColumn = switch (table) {
+            case "project_changes" -> "change_id";
+            case "deployment_histories" -> "history_id";
+            default -> throw new IllegalArgumentException(table);
+        };
+        return jdbc.queryForList("select " + idColumn + " from " + table + " where project_id = ?",
+                Long.class, projectId);
+    }
+
+        private String json(Object value) {
         try {
             return JSON.writeValueAsString(value);
         } catch (Exception e) {
