@@ -53,7 +53,7 @@ class GlobalExceptionHandlerTest {
                         new PathVariableController(), new QueryParamController(),
                         new ConcurrentDeleteController(), new ConflictController(),
                         new MissingPathController(), new ClientGoneController(),
-                        new UnexpectedErrorController())
+                        new UnexpectedErrorController(), new GithubReauthorizationController())
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -115,6 +115,16 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.status").value(409))
                 .andExpect(jsonPath("$.code").value("CONFLICT"));
+    }
+
+    @Test
+    void githubReauthorizationHasItsOwnCodeSoTheClientOpensTheReauthorizeDialog() throws Exception {
+        // FE 는 code 로 설치·재인증 진입점을 고른다. 범용 FORBIDDEN 이면 아무것도 뜨지 않는다(#516, FE #151).
+        mockMvc.perform(get("/contract/github-reauthorize"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.status").value(403))
+                .andExpect(jsonPath("$.code").value("GITHUB_APP_REAUTHORIZATION_REQUIRED"))
+                .andExpect(jsonPath("$.message").value(GithubAppReauthorizationRequiredException.DEFAULT_MESSAGE));
     }
 
     @Test
@@ -211,6 +221,15 @@ class GlobalExceptionHandlerTest {
         @DeleteMapping("/contract/variables/{id}")
         void delete(@PathVariable Long id) {
             throw new ObjectOptimisticLockingFailureException("EnvironmentVariable", id);
+        }
+    }
+
+    @RestController
+    private static class GithubReauthorizationController {
+
+        @GetMapping("/contract/github-reauthorize")
+        Long reauthorize() {
+            throw new GithubAppReauthorizationRequiredException();
         }
     }
 

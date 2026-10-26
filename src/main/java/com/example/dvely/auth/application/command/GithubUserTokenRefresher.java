@@ -3,7 +3,8 @@ package com.example.dvely.auth.application.command;
 import com.example.dvely.auth.application.port.out.GithubAppPort;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
-import com.example.dvely.common.exception.ForbiddenException;
+import com.example.dvely.common.exception.GithubAppNotInstalledException;
+import com.example.dvely.common.exception.GithubAppReauthorizationRequiredException;
 import com.example.dvely.common.exception.NotFoundException;
 import java.time.LocalDateTime;
 import java.util.Optional;
@@ -57,11 +58,11 @@ public class GithubUserTokenRefresher {
     /**
      * 유저 행을 잠근 채 갱신한다.
      *
-     * ForbiddenException 은 롤백 대상에서 뺀다. bad_refresh_token 을 맞았을 때 토큰을 지운 뒤
+     * GithubAppReauthorizationRequiredException 은 롤백 대상에서 뺀다(#516 전에는 ForbiddenException 이었다). bad_refresh_token 을 맞았을 때 토큰을 지운 뒤
      * 예외를 던지는데, 롤백되면 그 지움이 사라져 다음 호출이 같은 무효 토큰으로 또 GitHub 에
      * 간다.
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW, noRollbackFor = ForbiddenException.class)
+    @Transactional(propagation = Propagation.REQUIRES_NEW, noRollbackFor = GithubAppReauthorizationRequiredException.class)
     public String refreshWithLock(Long userId) {
         User user = userRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new NotFoundException("유저를 찾을 수 없습니다: " + userId));
@@ -75,7 +76,10 @@ public class GithubUserTokenRefresher {
         }
 
         if (user.getGithubUserRefreshToken() == null) {
-            throw new ForbiddenException("GitHub App이 연동되지 않았습니다. GitHub App을 다시 설치해 주세요.");
+            if (!user.hasGithubAppInstalled()) {
+                throw new GithubAppNotInstalledException("GitHub App이 설치되지 않았습니다. 먼저 App을 설치해 주세요.");
+            }
+            throw new GithubAppReauthorizationRequiredException();
         }
 
         try {
@@ -94,7 +98,8 @@ public class GithubUserTokenRefresher {
                 user.clearGithubAppToken();
                 userRepository.save(user);
                 log.warn("GitHub App 토큰 초기화 — 리프레시 토큰이 거부됨: userId={}", userId);
-                throw new ForbiddenException("GitHub App 연동이 만료되었습니다. GitHub App을 다시 설치해 주세요.");
+                // 설치는 그대로다. 필요한 것은 재인증이고, 코드도 그걸 말해야 화면이 맞는 모달을 띄운다(#516).
+                throw new GithubAppReauthorizationRequiredException();
             }
             throw exception;
         }

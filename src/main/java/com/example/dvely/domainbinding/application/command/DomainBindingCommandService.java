@@ -1,5 +1,7 @@
 package com.example.dvely.domainbinding.application.command;
 
+import com.example.dvely.common.exception.GithubAppNotInstalledException;
+import com.example.dvely.common.exception.GithubAppReauthorizationRequiredException;
 import com.example.dvely.audit.application.AuditEvent;
 import com.example.dvely.audit.application.AuditRecorder;
 import com.example.dvely.audit.domain.value.AuditAction;
@@ -479,7 +481,11 @@ public class DomainBindingCommandService {
         }
 
         if (user.getGithubUserAccessToken() == null || user.getGithubUserAccessToken().isBlank()) {
-            throw new IllegalArgumentException("GitHub App User Token이 없습니다. GitHub App 권한을 갱신해 주세요.");
+            // 400 이 아니라 설치 또는 재인증이다(#516) — 요청이 잘못된 게 아니라 사용자 토큰이 없다.
+            if (!user.hasGithubAppInstalled()) {
+                throw new GithubAppNotInstalledException("GitHub App이 설치되지 않았습니다. 먼저 App을 설치해 주세요.");
+            }
+            throw new GithubAppReauthorizationRequiredException();
         }
         return user;
     }

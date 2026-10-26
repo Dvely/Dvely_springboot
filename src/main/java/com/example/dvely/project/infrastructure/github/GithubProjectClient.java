@@ -1,5 +1,7 @@
 package com.example.dvely.project.infrastructure.github;
 
+import com.example.dvely.common.exception.GithubAppNotInstalledException;
+import com.example.dvely.common.exception.GithubAppReauthorizationRequiredException;
 import com.example.dvely.common.exception.GithubRepositoryAccessDeniedException;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.application.port.out.GithubAppPort;
@@ -306,7 +308,8 @@ public class GithubProjectClient implements GithubRepositoryPort {
         if (user.getGithubUserAccessToken() != null && !user.getGithubUserAccessToken().isBlank()) {
             try {
                 return getGithubUserAccessToken(user);
-            } catch (IllegalStateException e) {
+            } catch (IllegalStateException | GithubAppReauthorizationRequiredException e) {
+                // 사용자 토큰을 못 써도 설치 토큰으로 할 수 있는 일이다 — 재인증을 요구하지 않고 대체한다.
                 if (!user.hasGithubAppInstalled()) {
                     throw e;
                 }
@@ -344,8 +347,10 @@ public class GithubProjectClient implements GithubRepositoryPort {
             throw new IllegalStateException("GitHub App이 설치되지 않은 사용자입니다: " + user.getId());
         }
 
+        // 설치는 있는데 사용자 토큰을 쓸 수 없는 상태는 재인증이다(#516). 예전에는 409 CONFLICT 로 나가
+        // 화면이 진입점을 못 띄웠다.
         if (user.getGithubUserAccessToken() == null || user.getGithubUserAccessToken().isBlank()) {
-            throw new IllegalStateException("새 GitHub 저장소 생성에는 GitHub 사용자 액세스 토큰이 필요합니다. GitHub App을 다시 설치하거나 권한을 갱신하세요: " + user.getId());
+            throw new GithubAppReauthorizationRequiredException();
         }
 
         if (!user.isUserAccessTokenExpired()) {
@@ -354,7 +359,7 @@ public class GithubProjectClient implements GithubRepositoryPort {
 
         String refreshToken = user.getGithubUserRefreshToken();
         if (refreshToken == null || refreshToken.isBlank()) {
-            throw new IllegalStateException("GitHub 사용자 리프레시 토큰이 없습니다. GitHub App을 다시 설치하거나 권한을 갱신하세요: " + user.getId());
+            throw new GithubAppReauthorizationRequiredException();
         }
 
         // 갱신은 AuthCommandService 하나만 한다. 여기서 githubAppPort.refreshUserToken 을 직접
@@ -369,6 +374,9 @@ public class GithubProjectClient implements GithubRepositoryPort {
         // AuthCommandService 는 갱신된 액세스 토큰을 직접 돌려준다. 다시 읽지 않는 것이 요점이다.
         try {
             return authCommandService.refreshGithubUserToken(user.getId());
+        } catch (GithubAppReauthorizationRequiredException | GithubAppNotInstalledException e) {
+            // 감싸면 코드가 사라진다 — 화면이 재인증·설치 진입점을 고르는 근거가 그 코드다.
+            throw e;
         } catch (RuntimeException e) {
             throw new IllegalStateException(
                     "GitHub 사용자 토큰 갱신에 실패했습니다. 새 GitHub 저장소 생성에는 GitHub App user token이 필요하므로 "
