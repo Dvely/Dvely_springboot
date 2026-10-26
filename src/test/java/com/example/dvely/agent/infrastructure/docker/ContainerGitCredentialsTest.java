@@ -74,14 +74,14 @@ class ContainerGitCredentialsTest {
     @DisplayName("설정 검사 뒤 git 에 hooks 끄기·helper 초기화·인라인 helper 가 붙는다 — cd 로 시작해도 형태가 유지된다")
     void insertsGuardAndHelperRightBeforeGit() {
         ContainerGitCredentials c = new ContainerGitCredentials(mock(DockerContainerService.class));
-        String git = "git -c core.hooksPath=/dev/null -c credential.helper= -c credential.helper='!f()";
+        String git = "/usr/bin/git -c core.hooksPath=/dev/null -c credential.helper= -c credential.helper='!f()";
 
         assertThat(c.authed("git fetch origin"))
-                .startsWith("{ ! git config --get-regexp ")
+                .startsWith("{ [ \"$(find /usr/bin/git ")
                 .contains("} && " + git)
                 .endsWith(" fetch origin");
         assertThat(c.authed("cd /workspace/app && git push -u origin preview"))
-                .startsWith("cd /workspace/app && { ! git config --get-regexp ")
+                .startsWith("cd /workspace/app && { [ \"$(find /usr/bin/git ")
                 .contains("} && " + git)
                 .endsWith(" push -u origin preview");
         // GIT_TERMINAL_PROMPT=0 접두는 git 에 붙어 있어야 한다 — 없으면 인증 실패 시 프롬프트로 멈춘다.

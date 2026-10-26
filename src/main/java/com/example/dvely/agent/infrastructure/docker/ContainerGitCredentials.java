@@ -77,6 +77,13 @@ public class ContainerGitCredentials {
             + "|diff\\..*\\.(command|textconv)$|merge\\..*\\.driver$"
             + ")";
 
+    /**
+     * 인증 git 호출은 PATH 가 아니라 이 경로의 git 을 쓴다. 호출 직전 이 파일과 git 의 exec-path
+     * (git-remote-https 등 하위 프로그램이 있는 곳)가 root 소유이고 그룹·기타가 쓸 수 없는지 같은 셸에서
+     * 확인한다 — 같은 컨테이너의 다른 uid 가 바꿔 끼울 수 없는 실행 파일만 토큰을 받는다.
+     */
+    static final String GIT_BIN = "/usr/bin/git";
+
     /** 위 키가 있을 때 인증 git 호출 대신 내는 종료 코드. 호출부 오류 메시지에서 알아볼 수 있게 고정한다. */
     static final int UNSAFE_CONFIG_EXIT = 97;
 
@@ -85,9 +92,15 @@ public class ContainerGitCredentials {
      * 설정 읽기 자체가 실패하면(git 없음 등) 뒤 git 호출도 같은 이유로 실패하므로 막지 않는다.
      */
     private static final String UNSAFE_CONFIG_GUARD =
-            "{ ! git config --get-regexp '" + UNSAFE_CONFIG_PATTERN + "' >/dev/null 2>&1"
+            "{ [ \"$(find " + GIT_BIN + " \"$(" + GIT_BIN + " --exec-path 2>/dev/null)\" -maxdepth 0"
+                    + " -user 0 ! -perm -020 ! -perm -002 2>/dev/null | wc -l | tr -d ' ')\" = 2 ]"
+                    + " || { echo 'qeploy: git 실행 파일을 신뢰할 수 없어 인증 git 호출을 하지 않습니다' >&2;"
+                    + " exit " + UNSAFE_CONFIG_EXIT + "; };"
+                    + " ! " + GIT_BIN + " config --get-regexp '" + UNSAFE_CONFIG_PATTERN + "' >/dev/null 2>&1"
                     + " || { echo 'qeploy: 컨테이너 git 설정이 허용 범위를 벗어나 인증 git 호출을 하지 않습니다' >&2;"
                     + " exit " + UNSAFE_CONFIG_EXIT + "; }; } && ";
+
+    private static final Pattern BARE_GIT = Pattern.compile("(^|[\\s;&|(])git ");
 
     private static final Pattern TRAILING_ASSIGNMENT = Pattern.compile("(?:[A-Z_][A-Z0-9_]*=\\S*\\s+)+$");
 
@@ -119,11 +132,13 @@ public class ContainerGitCredentials {
             start = assignment.start();
         }
         // hooks 는 끄고, 저장소·전역 설정의 helper 는 비운 뒤 인라인 helper 하나만 둔다.
+        // 같은 exec 의 뒤따르는 git 호출(예: fetch 뒤 reset)도 토큰이 든 env 안에서 돈다 — 모두 절대 경로로 바꾼다.
+        String rest = BARE_GIT.matcher(gitCommand.substring(at + "git ".length())).replaceAll("$1" + GIT_BIN + " ");
         return gitCommand.substring(0, start)
                 + UNSAFE_CONFIG_GUARD
                 + gitCommand.substring(start, at)
-                + "git -c core.hooksPath=/dev/null -c credential.helper= -c credential.helper='" + INLINE_HELPER + "' "
-                + gitCommand.substring(at + "git ".length());
+                + GIT_BIN + " -c core.hooksPath=/dev/null -c credential.helper= -c credential.helper='" + INLINE_HELPER + "' "
+                + rest;
     }
 
     /**

@@ -116,8 +116,36 @@ class ContainerGitCredentialsHardeningTest {
         // 검사가 GIT_TERMINAL_PROMPT=0 과 git 사이에 끼면 그 환경 지정이 검사에 걸리고 git 에는 안 걸린다.
         String command = credentials.authed("GIT_TERMINAL_PROMPT=0 git clone https://github.com/o/r.git /app");
 
-        assertThat(command).contains("&& GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null");
-        assertThat(command.indexOf("git config --get-regexp")).isLessThan(command.indexOf("GIT_TERMINAL_PROMPT"));
+        assertThat(command).contains("&& GIT_TERMINAL_PROMPT=0 /usr/bin/git -c core.hooksPath=/dev/null");
+        assertThat(command.indexOf("config --get-regexp")).isLessThan(command.indexOf("GIT_TERMINAL_PROMPT"));
+    }
+
+    @Test
+    void aGitPlantedEarlierOnThePathIsNeverRun() throws Exception {
+        // 쓰기 가능한 디렉터리가 PATH 앞에 있어도, 인증 호출과 그 뒤의 git 은 절대 경로의 git 만 쓴다.
+        Path bin = Files.createDirectories(home.resolve("bin"));
+        Path marker = home.resolve("fake-git-ran");
+        Path fake = bin.resolve("git");
+        Files.writeString(fake, "#!/bin/sh\ntouch " + marker + "\nexit 0\n");
+        fake.toFile().setExecutable(true);
+
+        Result result = run(repo, credentials.authed("git rev-parse --is-inside-work-tree && git rev-parse --git-dir"),
+                "", Map.of("PATH", bin + ":" + System.getenv("PATH")));
+
+        assertThat(result.exitCode()).isZero();
+        assertThat(result.output()).contains("true", ".git");
+        assertThat(marker).doesNotExist();
+    }
+
+    @Test
+    void anExecPathTheUserCanWriteStopsTheAuthenticatedCall() throws Exception {
+        // git-remote-https 같은 하위 프로그램을 찾는 자리가 root 소유가 아니면 토큰을 넘기지 않는다.
+        Path writable = Files.createDirectories(home.resolve("libexec"));
+
+        Result result = run(repo, credentials.authed("git rev-parse --is-inside-work-tree"),
+                "", Map.of("GIT_EXEC_PATH", writable.toString()));
+
+        assertThat(result.exitCode()).isEqualTo(ContainerGitCredentials.UNSAFE_CONFIG_EXIT);
     }
 
     private Result run(Path dir, String command) throws Exception {
@@ -125,6 +153,11 @@ class ContainerGitCredentialsHardeningTest {
     }
 
     private Result run(Path dir, String command, String stdin) throws IOException, InterruptedException {
+        return run(dir, command, stdin, Map.of());
+    }
+
+    private Result run(Path dir, String command, String stdin, Map<String, String> extraEnv)
+            throws IOException, InterruptedException {
         ProcessBuilder builder = new ProcessBuilder("sh", "-c", command).directory(dir.toFile()).redirectErrorStream(true);
         Map<String, String> env = builder.environment();
         env.put("HOME", home.toString());
@@ -135,6 +168,7 @@ class ContainerGitCredentialsHardeningTest {
             String[] kv = pair.split("=", 2);
             env.put(kv[0], kv[1]);
         }
+        env.putAll(extraEnv);
         Process process = builder.start();
         process.getOutputStream().write(stdin.getBytes(StandardCharsets.UTF_8));
         process.getOutputStream().close();
