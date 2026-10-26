@@ -10,7 +10,17 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 
 public interface SpringDataRefreshTokenRepository extends JpaRepository<RefreshTokenEntity, Long> {
-    Optional<RefreshTokenEntity> findByToken(String token);
+    Optional<RefreshTokenEntity> findByTokenHash(String tokenHash);
+
+    /**
+     * 회전의 원자 지점(#506). 같은 토큰으로 두 요청이 겹치면 InnoDB 가 두 번째 UPDATE 를 첫 번째
+     * 커밋까지 세웠다가 최신 행으로 WHERE 를 다시 평가한다 — 이미 revoked 라 0행이 되고, 그 요청은
+     * 새 토큰을 받지 못한다. 읽고 확인한 뒤 저장하던 예전 방식은 둘 다 통과시켰다.
+     */
+    @Modifying
+    @Query("UPDATE RefreshTokenEntity r SET r.revoked = true "
+            + "WHERE r.tokenHash = :tokenHash AND r.revoked = false AND r.expiresAt > :now")
+    int revokeIfActive(@Param("tokenHash") String tokenHash, @Param("now") LocalDateTime now);
 
     @Modifying
     @Query("UPDATE RefreshTokenEntity r SET r.revoked = true WHERE r.userId = :userId")
