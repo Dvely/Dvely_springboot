@@ -98,7 +98,7 @@
       "Sid": "SsmReadPublicAmiParameter",
       "Effect": "Allow",
       "Action": "ssm:GetParameter",
-      "Resource": "arn:aws:ssm:*:*:parameter/aws/service/ami-amazon-linux-latest/*"
+      "Resource": "arn:aws:ssm:*::parameter/aws/service/ami-amazon-linux-latest/*"
     },
     {
       "Sid": "SsmRunCommandOnInstances",

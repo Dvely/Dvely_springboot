@@ -223,6 +223,20 @@ class CloudConnectionRequirementsServiceTest {
     }
 
     @Test
+    void publicAmiParameterArnLeavesTheAccountEmpty() {
+        // AWS 소유 공개 파라미터라 ARN 에 계정이 없다. 실계정에서 검증된 형태는 계정 자리를 비운 것(::)이고,
+        // 계정을 적으면 AMI 조회가 거부돼 인스턴스를 못 띄운다. docs/aws-byoc-permissions.md 참고.
+        Map<String, Object> policy = service(null).getRequirements("AWS", "ACCESS_KEY").recommendedPolicy();
+        Map<String, Object> ami = ((List<Object>) policy.get("Statement")).stream()
+                .map(o -> (Map<String, Object>) o)
+                .filter(st -> "SsmReadPublicAmiParameter".equals(st.get("Sid")))
+                .findFirst().orElseThrow();
+
+        assertThat(ami.get("Resource"))
+                .isEqualTo("arn:aws:ssm:*::parameter/aws/service/ami-amazon-linux-latest/*");
+    }
+
+    @Test
     void gcpIsNotYetSupported() {
         assertThatThrownBy(() -> service(PLATFORM_ARN).getRequirements("GCP", "ROLE_ARN"))
                 .isInstanceOf(IllegalArgumentException.class)
