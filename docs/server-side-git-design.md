@@ -125,7 +125,7 @@
 | PR-2 | push 이전: `ResultApprovalGate`·`DeployAgentService`·`RepositoryBindingService` + 보호 경로 미룸(3.3) + `ChangeService` diff 이전 | 컨테이너 push·diff 없음. #508 해소 |
 | PR-3 | clone·fetch 이전: `PreviewWorkspaceService`·`BackendSourceClone`·`FrontendStaticHostingAdapter`. `PreviewBranchPushService`·`ContainerGitCredentials` 제거 | 컨테이너 인증 git 호출 0 |
 
-- 단계마다 설정 플래그(`qeploy.git.server-side.push`, `...clone`)로 켠다. 기본값은 dev 에서 먼저 켜고 운영은 dev e2e 뒤에 켠다. 문제가 생기면 플래그만 끄면 옛 경로로 돌아간다. 옛 경로는 PR-3 에서 지운다.
+- 단계마다 설정 플래그(`qeploy.git.server-side.push-enabled`, `...clone-enabled`)로 켠다. 기본값은 dev 에서 먼저 켜고 운영은 dev e2e 뒤에 켠다. 문제가 생기면 플래그만 끄면 옛 경로로 돌아간다. 옛 경로는 PR-3 에서 지운다.
 - 마이그레이션은 없다.
 
 ## 5. 테스트 전략

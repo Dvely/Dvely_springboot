@@ -60,6 +60,10 @@ dependencies {
     implementation 'com.github.docker-java:docker-java-core:3.7.1'
     implementation 'com.github.docker-java:docker-java-transport-okhttp:3.7.1'
 
+    // 서버 측 git 작업(#523). 컨테이너 작업 트리 스냅샷을 서버에서 커밋·push 하고 diff 를 만든다.
+    // 버전 고정: 2026-09 최신 안정판(EDL 1.0).
+    implementation 'org.eclipse.jgit:org.eclipse.jgit:7.8.0.202609011348-r'
+
     // Cloud connection verification
     implementation 'software.amazon.awssdk:sts'
     implementation 'software.amazon.awssdk:rds'

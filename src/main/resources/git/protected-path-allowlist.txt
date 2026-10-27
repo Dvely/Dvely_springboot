@@ -1,0 +1,4 @@
+# 보호 경로(.github 등)에서 승인 없이 통과시킬 내용의 git blob id 목록(#523, docs/server-side-git-design.md 3.1).
+# 형식: <40자 blob id>  <설명>. Qeploy 가 만들어 넣는 파일만 적는다(템플릿 카탈로그의 .github 파일 등).
+# 한 글자라도 다르면 id 가 달라져 승인을 받는다. 배포 workflow 는 프로젝트마다 내용이 달라 여기 두지 않고
+# 서버가 그 자리에서 다시 생성해 비교한다.
