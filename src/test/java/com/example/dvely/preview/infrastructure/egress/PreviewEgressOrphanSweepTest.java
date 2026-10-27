@@ -150,4 +150,18 @@ class PreviewEgressOrphanSweepTest {
         when(network.getCreated()).thenReturn(Date.from(NOW.minus(Duration.ofDays(90))));
         return network;
     }
+
+    @Test
+    void sessionProcessesAreSignalledAsTheUserTinyproxyRunsAs() {
+        // 프록시 컨테이너 root 에는 CAP_KILL 이 없다 — 다른 uid 에 보내는 신호는 막힌다. 같은 uid 로 보낸다.
+        ContainedEgressPreviewNetworkPolicy real = new ContainedEgressPreviewNetworkPolicy(
+                new PreviewEgressProperties(true, "alpine:3.20", "qeploy-preview-egress", "qeploy-egress", 8888,
+                        "qeploy-preview-", List.of("github.com"), 16, 256, 256), docker);
+
+        real.release("11111111-1111-4111-8111-111111111111");
+
+        verify(docker.execCreateCmd("qeploy-preview-egress")).withUser(ContainedEgressPreviewNetworkPolicy.TINYPROXY_USER);
+        assertThat(real.sessionTinyproxyConf("10.0.0.2", "/etc/tinyproxy/s-x.pid"))
+                .contains("User " + ContainedEgressPreviewNetworkPolicy.TINYPROXY_USER);
+    }
 }
