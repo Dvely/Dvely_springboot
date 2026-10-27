@@ -197,7 +197,7 @@ class ServerGitWorkspaceTest {
         RevCommit base = fetch(Map.of("a.txt", "a"));
         Snapshot snapshot = snapshot(new TarBuilder().file("a.txt", "a"), base);
 
-        assertThat(workspace.commit(base, snapshot.tree(), "m", ServerGitPublisher.AGENT)).isEmpty();
+        assertThat(workspace.commit(base, snapshot.tree(), "m", ServerGitPublisher.agent())).isEmpty();
     }
 
     // ---------------------------------------------------------------- 받아들이는 양의 상한(2패스)
