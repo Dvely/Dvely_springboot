@@ -177,4 +177,18 @@ class ServerGitPublisherTest {
         assertThat(maxInside.get()).isEqualTo(1);
         assertThat(remote.files("preview").get("README.md")).startsWith("writer-");
     }
+
+    @Test
+    void eachCommitCarriesTheTimeItWasMade() throws Exception {
+        // 작성자 객체를 상수로 두면 처음 만든 시각이 모든 커밋에 찍힌다.
+        remote.commit("preview", Map.of("README.md", "v1"));
+        java.time.Instant before = java.time.Instant.now().minusSeconds(1);
+        Thread.sleep(1100);   // 커밋 시각은 초 단위다
+
+        publisher.publish(request(new TarBuilder().file("README.md", "v2")), Optional.empty(), true, Set.of());
+
+        java.time.Instant committed = remote.tip("preview").getCommitterIdent().getWhenAsInstant();
+        assertThat(committed).isAfter(before.plusSeconds(1));
+        assertThat(remote.tip("preview").getAuthorIdent().getWhenAsInstant()).isEqualTo(committed);
+    }
 }

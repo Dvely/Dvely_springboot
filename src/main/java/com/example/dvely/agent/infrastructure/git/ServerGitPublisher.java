@@ -32,7 +32,14 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class ServerGitPublisher {
 
-    static final PersonIdent AGENT = new PersonIdent("Qeploy Agent", "agent@qeploy.com");
+    /**
+     * 커밋 작성자. <b>커밋할 때마다 새로 만든다</b> — {@code PersonIdent} 는 만든 시각을 커밋 시각으로 담는다.
+     * 예전에는 static 상수 하나를 써서 모든 커밋에 클래스가 처음 로드된 시각이 찍혔다(dev 에서 약 5시간
+     * 과거로 보였다).
+     */
+    static PersonIdent agent() {
+        return new PersonIdent("Qeploy Agent", "agent@qeploy.com");
+    }
 
     private final ServerGitProperties properties;
     private final ProtectedPathPolicy protectedPathPolicy;
@@ -89,7 +96,7 @@ public class ServerGitPublisher {
                     throw new ProtectedChangeRequiresApprovalException(protectedPaths);
                 }
             }
-            Optional<ObjectId> commit = workspace.commit(base, snapshot.tree(), request.commitMessage(), AGENT);
+            Optional<ObjectId> commit = workspace.commit(base, snapshot.tree(), request.commitMessage(), agent());
             commit.ifPresent(id -> workspace.push(request.remoteUrl(), request.credentials(), id, request.targetBranch()));
             return new Published(commit, snapshot.tree());
         }
