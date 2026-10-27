@@ -943,6 +943,14 @@ public class DockerContainerService {
     }
 
     /**
+     * 컨테이너 디렉터리를 데몬이 만든 tar 스트림으로 연다(첫 경로 구간이 디렉터리 이름). 컨테이너 안의
+     * 도구를 거치지 않는다. 호출자가 닫는다 — 서버 측 git 스냅샷(#523)이 쓴다.
+     */
+    public InputStream openDirectoryArchive(String containerId, String containerPath) {
+        return dockerClient.copyArchiveFromContainerCmd(containerId, containerPath).exec();
+    }
+
+    /**
      * 컨테이너 안의 파일 하나를 호스트로 꺼낸다. Docker 의 copy 는 tar 스트림을 주므로, 그 안의 첫
      * 정규 파일 엔트리를 destFile 로 푼다(빌드 산출물 jar 를 EC2 로 넘기기 전에 컨트롤 플레인으로
      * 추출하는 용도 — 빌드 컨테이너에는 클라우드 자격을 주지 않기 위함이다).

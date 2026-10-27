@@ -108,6 +108,20 @@ public final class ServerGitWorkspace implements AutoCloseable {
         }
     }
 
+    /** 원격 HEAD 가 가리키는 기본 브랜치 이름. 빈 저장소면 비어 있다. */
+    public Optional<String> defaultBranch(String remoteUrl, CredentialsProvider credentials) {
+        try (Git git = Git.wrap(repository)) {
+            Map<String, Ref> refs = git.lsRemote().setRemote(remoteUrl).setCredentialsProvider(credentials).callAsMap();
+            Ref head = refs.get(Constants.HEAD);
+            if (head == null || !head.isSymbolic()) {
+                return Optional.empty();
+            }
+            return Optional.of(Repository.shortenRefName(head.getTarget().getName()));
+        } catch (GitAPIException e) {
+            throw new ServerGitException("원격 기본 브랜치를 알아내지 못했습니다", e);
+        }
+    }
+
     /**
      * 컨테이너 디렉터리 tar(데몬이 만든 것, 첫 경로 구간이 디렉터리 이름)를 트리로 만든다.
      *

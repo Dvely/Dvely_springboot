@@ -136,6 +136,13 @@
 - 단계마다 설정 플래그(`qeploy.git.server-side.push-enabled`, `...clone-enabled`)로 켠다. 기본값은 dev 에서 먼저 켜고 운영은 dev e2e 뒤에 켠다. 문제가 생기면 플래그만 끄면 옛 경로로 돌아간다. 옛 경로는 PR-3 에서 지운다.
 - 마이그레이션은 없다.
 
+### 4.1 PR-2 구현 메모
+
+- push 진입점은 `PreviewBranchPushService.push` 한 곳이다. 플래그가 켜지면 `ServerPreviewBranch` 로 넘기고, 보호 경로 변경이 있으면 승인 없이는 올리지 않는다(`ProtectedChangeRequiresApprovalException`). `DeployAgentService`·`RepositoryBindingService` 는 이 진입점을 그대로 쓴다.
+- 결과 승인 게이트는 서버가 만든 트리로 보호 경로를 본다. 있으면 정책과 무관하게 승인을 열고, `project_changes.push_deferred`·`snapshot_tree`(V68)에 남긴 뒤 push 하지 않는다. 승인하면 `ResultApprovalService.reflect` 가 지금 작업 트리가 그 트리와 같을 때만 올리고 merge 한다.
+- `ChangeService` 의 변경 내역은 플래그가 켜지면 서버 diff 다. 같은 저장소로 가는 push 는 서버에서 하나씩 돈다(저장소 단위 잠금, 단일 인스턴스 기준).
+- 저장소 연결 첫 push(`RepositoryBindingService`)는 결과 승인 대상이 아니다(미연결 프로젝트). 그 첫 반영에 보호 경로 변경이 있으면 반영을 멈추고 안내한다.
+
 ## 5. 테스트 전략
 
 - **`snapshotTree`**: 손으로 만든 tar 와 base 트리로 검증한다.

@@ -1,5 +1,6 @@
 package com.example.dvely.change.application.service;
 
+import com.example.dvely.agent.application.service.ServerPreviewBranch;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
@@ -18,7 +19,11 @@ import com.example.dvely.change.infrastructure.persistence.repository.SpringData
 import com.example.dvely.deployment.application.port.out.GithubRepoPort;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.preview.application.result.PreviewSessionInfo;
+import com.example.dvely.preview.application.service.PreviewSessionService;
 import java.util.List;
+import java.util.Optional;
+import org.eclipse.jgit.lib.ObjectId;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -48,6 +53,8 @@ public class ResultApprovalService {
     private final GithubRepoPort githubRepoPort;
     private final ApprovalRepository approvalRepository;
     private final AuditRecorder auditRecorder;
+    private final ServerPreviewBranch serverPreviewBranch;
+    private final PreviewSessionService previewSessionService;
 
     /**
      * @throws IllegalStateException (-> 409, E-RA-05) if no Change row exists for the approval's
@@ -56,6 +63,23 @@ public class ResultApprovalService {
      *         not a normal user-facing condition.
      */
     @Transactional
+    /**
+     * 게이트가 push 를 승인 뒤로 미룬 변경(서버 측 git, #523)이면 지금 올린다. 승인 시점의 작업 트리가 검토한
+     * 스냅샷과 같을 때만 올리고, 다르면 실패시켜 다시 검토를 받는다. 미루지 않은 변경은 이미 preview 에 있다.
+     */
+    private void publishDeferred(ChangeEntity change, Approval approval, String repoFullName) {
+        if (!change.isPushDeferred()) {
+            return;
+        }
+        String containerId = previewSessionService.findByTaskId(approval.getTaskId())
+                .map(PreviewSessionInfo::containerId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "승인한 작업 내용이 있던 미리보기가 사라져 반영할 수 없습니다. 작업을 다시 실행해 주세요."));
+        serverPreviewBranch.publish(containerId, approval.getOwnerUserId(), repoFullName, approval.getTaskId(),
+                Optional.of(ObjectId.fromString(change.getSnapshotTree())), true);
+        log.info("[ResultApproval] 미뤘던 preview push 완료 | taskId={}", approval.getTaskId());
+    }
+
     public ReflectResult reflect(Approval approval) {
         ChangeEntity change = changeRepository.findByTaskId(approval.getTaskId())
                 .orElseThrow(() -> new IllegalStateException(
@@ -65,6 +89,7 @@ public class ResultApprovalService {
                 .orElseThrow(() -> new IllegalStateException(
                         "RESULT 승인의 프로젝트를 찾을 수 없습니다. projectId=" + approval.getProjectId()));
         String repoFullName = project.getSourceRepository();
+        publishDeferred(change, approval, repoFullName);
         String userToken = resolveUserToken(approval.getOwnerUserId());
 
         long startedAt = System.currentTimeMillis();

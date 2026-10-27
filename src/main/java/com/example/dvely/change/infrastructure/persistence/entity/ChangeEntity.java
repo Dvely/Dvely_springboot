@@ -66,6 +66,14 @@ public class ChangeEntity {
     @Column(name = "merged_at")
     private LocalDateTime mergedAt;
 
+    /** 서버 측 git(#523)이 변경 내역을 만든 스냅샷 트리 id. 승인 뒤 반영 때 이것과 같아야 push 한다. */
+    @Column(name = "snapshot_tree", length = 40)
+    private String snapshotTree;
+
+    /** 승인 없이 저장소에 올리지 않는 변경이라 push 를 결과 승인 뒤로 미뤘는지. */
+    @Column(name = "push_deferred", nullable = false)
+    private boolean pushDeferred;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
@@ -94,6 +102,18 @@ public class ChangeEntity {
     public void update(String summary, String diffText) {
         this.summary = summary;
         this.diffText = diffText;
+    }
+
+    /** 서버가 만든 diff 와 그 트리. 같은 태스크에서 다시 기록되면 미룸 표시는 풀린다(게이트가 다시 판단한다). */
+    public void updateFromServerSnapshot(String summary, String diffText, String snapshotTree) {
+        update(summary, diffText);
+        this.snapshotTree = snapshotTree;
+        this.pushDeferred = false;
+    }
+
+    public void deferPush(String snapshotTree) {
+        this.snapshotTree = snapshotTree;
+        this.pushDeferred = true;
     }
 
     /**
