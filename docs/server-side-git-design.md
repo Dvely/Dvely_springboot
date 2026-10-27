@@ -55,6 +55,14 @@
 **스냅샷 → 트리** (`snapshotTree`)
 
 - `DockerContainerService.copyArchiveFromContainerCmd` 로 `/workspace/app` tar 스트림을 받는다. 데몬이 만드는 tar 라 컨테이너 안 도구를 거치지 않는다.
+- **tar 를 두 번 읽는다.**
+  - 1패스는 헤더만 읽는다(경로·모드·크기·링크, `.gitignore` 본문). 그 결과로 무엇을 넣을지 정한다.
+  - 2패스는 넣기로 정한 파일의 본문만 읽어 저장한다.
+  - 그래서 ignore 로 빠질 빌드 산출물·캐시는 서버 저장소에 blob 으로 쌓이지 않는다.
+  - 1패스에서 엔트리 수·바이트가 원시 상한(`raw-max-entries`·`raw-max-bytes`)을 넘으면 그 자리에서 멈춘다. 새 경로의 `.git`·`node_modules` 는 이 수에 넣지 않는다.
+  - 스트림 하나에서 읽는 양에도 상한(`archive-max-bytes`)을 건다.
+  - 두 패스 사이에 작업 트리가 바뀌면(크기 불일치·파일 사라짐) 실패한다.
+- 하드링크는 tar 안에서 먼저 나온 정규 파일의 내용·모드를 쓴다. 해석되지 않으면, 추적 중인 경로는 실패하고(삭제로 바꾸지 않음) 새 경로는 뺀다.
 - **파일시스템에 풀지 않는다.** tar 엔트리를 읽는 대로 JGit `ObjectInserter` 로 blob 을 쓰고, `DirCache` 에 경로·모드를 쌓아 트리를 만든다.
   - 그래서 서버 디스크에 심볼릭 링크나 `..` 경로가 생길 일이 없다.
 - 포함 규칙은 `git add -A` 와 같은 의미로 맞춘다. **ignore 는 base 트리에 없는 경로(새 파일)에만 적용한다.**
@@ -125,7 +133,7 @@
 | PR-2 | push 이전: `ResultApprovalGate`·`DeployAgentService`·`RepositoryBindingService` + 보호 경로 미룸(3.3) + `ChangeService` diff 이전 | 컨테이너 push·diff 없음. #508 해소 |
 | PR-3 | clone·fetch 이전: `PreviewWorkspaceService`·`BackendSourceClone`·`FrontendStaticHostingAdapter`. `PreviewBranchPushService`·`ContainerGitCredentials` 제거 | 컨테이너 인증 git 호출 0 |
 
-- 단계마다 설정 플래그(`qeploy.git.server-side.push`, `...clone`)로 켠다. 기본값은 dev 에서 먼저 켜고 운영은 dev e2e 뒤에 켠다. 문제가 생기면 플래그만 끄면 옛 경로로 돌아간다. 옛 경로는 PR-3 에서 지운다.
+- 단계마다 설정 플래그(`qeploy.git.server-side.push-enabled`, `...clone-enabled`)로 켠다. 기본값은 dev 에서 먼저 켜고 운영은 dev e2e 뒤에 켠다. 문제가 생기면 플래그만 끄면 옛 경로로 돌아간다. 옛 경로는 PR-3 에서 지운다.
 - 마이그레이션은 없다.
 
 ## 5. 테스트 전략
