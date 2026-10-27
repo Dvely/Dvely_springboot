@@ -116,6 +116,15 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ErrorCode.GITHUB_APP_NOT_INSTALLED, e.getMessage()));
     }
 
+    // 403 - App 은 설치돼 있으나 사용자 토큰을 쓸 수 없음. 설치가 아니라 재인증으로 보낸다(#516)
+    @ExceptionHandler(GithubAppReauthorizationRequiredException.class)
+    public ResponseEntity<ApiResponse<Void>> handleGithubAppReauthorizationRequired(
+            GithubAppReauthorizationRequiredException e) {
+        log.warn("GitHub App 재인증 필요: {}", e.getMessage());
+        return ResponseEntity.status(ErrorCode.GITHUB_APP_REAUTHORIZATION_REQUIRED.getStatus())
+                .body(ApiResponse.error(ErrorCode.GITHUB_APP_REAUTHORIZATION_REQUIRED, e.getMessage()));
+    }
+
     @ExceptionHandler(GithubRepositoryAccessDeniedException.class)
     public ResponseEntity<ApiResponse<Void>> handleGithubRepoAccessDenied(GithubRepositoryAccessDeniedException e) {
         log.warn("GitHub repository access denied: {}", e.getMessage());

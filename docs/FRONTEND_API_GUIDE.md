@@ -151,6 +151,7 @@ function unwrapResponse(body: unknown): unknown {
 | 401 | `REVOKED_REFRESH_TOKEN` | 이미 회전(rotation)되어 폐기된 refreshToken 재사용 | `POST /auth/refresh` — 재로그인 유도 |
 | 403 | `FORBIDDEN` | 인증은 됐지만 권한 없음 | `ForbiddenException` |
 | 403 | `GITHUB_APP_NOT_INSTALLED` | GitHub App 미설치 상태에서 App 필요 작업 시도 | (정의는 있으나 현재 코드에서 직접 throw하는 지점은 제한적 — `githubAppInstalled` 필드로 사전 분기 권장) |
+| 403 | `GITHUB_APP_REAUTHORIZATION_REQUIRED` | App 은 설치돼 있으나 사용자 GitHub 토큰을 쓸 수 없음(토큰 없음 · GitHub 가 리프레시 거부). 저장소 생성 · 도메인 연결(Pages) · 토큰 갱신 경로 | **설치가 아니라 재인증** 진입점(`reauthorize-url`)으로 보낸다. 직후 `/users/me` 의 `githubAppReauthorizationRequired` 가 true (#516, FE #151) |
 | 404 | `NOT_FOUND` | 리소스 없음/소유권 불일치(존재 자체를 숨김) | 잘못된 ID, 다른 유저 소유 리소스 |
 | 405 | `METHOD_NOT_ALLOWED` | 지원하지 않는 HTTP 메서드 | 라우트는 있으나 메서드 불일치 |
 | 409 | `CONFLICT` | 상태 충돌(낙관적 락 경합, 이미 처리된 승인, 잘못된 상태 전이 등) | 동시 수정 경합(I45), 이미 결정된 Approval 재결정, FAILED가 아닌 배포 재시도, PENDING 승인이 남아있거나 attempt가 maxAttempts에 도달한 `/retry` 호출, `WAITING_RESULT_APPROVAL`이 아닌 태스크의 결과 승인 재개 시도, **RESULT 승인 approve 중 preview↔main GitHub merge 충돌/실패**(승인은 PENDING으로 롤백 유지 — 재시도 또는 거절 필요), **REPOSITORY_BINDING 승인 approve 중 저장소 생성/push 실패**(마찬가지로 PENDING 유지. 프리뷰 컨테이너가 이미 만료됐다면 재시도해도 실패하므로 거절로 정리), **`preview`와 병합 대상 브랜치에 공통 조상이 없거나 병합 대상 브랜치가 없음**(저장소 연결이 잘못된 상태 — 메시지에 저장소·브랜치 이름이 담기며, 재시도해도 같은 오류라 저장소 설정을 고쳐야 함) 등 |

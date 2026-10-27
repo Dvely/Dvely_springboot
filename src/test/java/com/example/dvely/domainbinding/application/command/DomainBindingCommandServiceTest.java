@@ -10,6 +10,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.common.exception.GithubAppNotInstalledException;
+import com.example.dvely.common.exception.GithubAppReauthorizationRequiredException;
 import com.example.dvely.audit.application.AuditEvent;
 import com.example.dvely.audit.application.AuditRecorder;
 import com.example.dvely.audit.domain.value.AuditAction;
@@ -108,6 +110,32 @@ class DomainBindingCommandServiceTest {
         // lenient 로 둔다. 그렇지 않으면 그 테스트가 UnnecessaryStubbing 으로 깨진다.
         lenient().when(hostingAdapterRegistry.resolve(DomainHostingTarget.GITHUB_PAGES))
                 .thenReturn(hostingAdapter);
+    }
+
+    @Test
+    void bindDomain_installedUserWithoutAUserTokenIsAskedToReauthorize() {
+        // 예전에는 IllegalArgumentException(400) 이었다. 요청이 아니라 사용자 토큰이 문제다(#516).
+        Project project = boundProject("https://octo.github.io/repo/");
+        User noToken = new User(1L, new GithubId("123"), "octo", null, 100L, null, null, null);
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(noToken));
+
+        assertThatThrownBy(() -> commandService.bindDomain(
+                1L, 11L, new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "my-project", null, null)))
+                .isInstanceOf(GithubAppReauthorizationRequiredException.class);
+        verifyNoInteractions(cloudflareDnsPort);
+    }
+
+    @Test
+    void bindDomain_userWithoutAnInstallationIsAskedToInstall() {
+        Project project = boundProject("https://octo.github.io/repo/");
+        User notInstalled = new User(1L, new GithubId("123"), "octo", null, null, null, null, null);
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(project));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(notInstalled));
+
+        assertThatThrownBy(() -> commandService.bindDomain(
+                1L, 11L, new BindDomainCommand(DomainType.MANAGED_SUBDOMAIN, "my-project", null, null)))
+                .isInstanceOf(GithubAppNotInstalledException.class);
     }
 
     @Test

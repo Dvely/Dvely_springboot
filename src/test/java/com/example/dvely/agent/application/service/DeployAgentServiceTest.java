@@ -128,13 +128,13 @@ class DeployAgentServiceTest {
                 "cd /workspace/app && git diff --cached --quiet || "
                         + "git commit -m 'feat: apply Qeploy Agent task task123'"
         );
-        // push 는 자격이 필요해 env 를 함께 넘기는 3-인자 exec 로 가고, authed() 가 `git push` 를
-        // `git -c credential.helper=... push` 로 쪼갠다 (#413). 명령 전문 대신 서브커맨드로 맞춘다.
+        // push 는 자격이 필요해 env 를 함께 넘기는 3-인자 exec 로 가고, authed() 가 설정 검사를 앞에 두고
+        // `git -c ... -c credential.helper=... push` 로 쪼갠다 (#413). 명령 전문 대신 서브커맨드로 맞춘다.
         verify(dockerService).execWithExitCode(eq("container-1"),
-                contains("cd /workspace/app && git -c credential.helper="),
+                contains("git -c core.hooksPath=/dev/null -c credential.helper= -c credential.helper="),
                 org.mockito.ArgumentMatchers.any());
         verify(dockerService).execWithExitCode(eq("container-1"),
-                contains("push -u origin preview"), org.mockito.ArgumentMatchers.any());
+                contains(" HEAD:refs/heads/preview"), org.mockito.ArgumentMatchers.any());
         verify(dockerService, never()).execWithExitCode(anyString(), contains("--force"));
         verify(dockerService, never()).execWithExitCode(anyString(), contains("origin main"));
         verify(deploymentFacade).deploy(
