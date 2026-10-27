@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 import org.apache.commons.io.input.BoundedInputStream;
 import java.util.TreeMap;
@@ -61,6 +62,10 @@ public final class ServerGitWorkspace implements AutoCloseable {
     private static final String BASE_REF_PREFIX = "refs/remotes/base/";
     private static final List<String> ALWAYS_EXCLUDED_SEGMENTS = List.of(".git", "node_modules");
     private static final long MAX_GITIGNORE_BYTES = 1024 * 1024;
+    /** 작업 디렉터리 이름 접두. 정리 작업({@link ServerGitWorkDirSweeper})은 이 접두만 본다. */
+    static final String DIRECTORY_PREFIX = "qeploy-git-";
+    /** 지금 열려 있는 작업 디렉터리. 정리 작업이 진행 중인 것을 건드리지 않게 한다. */
+    private static final Set<Path> OPEN = ConcurrentHashMap.newKeySet();
 
     private final Path directory;
     private final Repository repository;
@@ -75,7 +80,8 @@ public final class ServerGitWorkspace implements AutoCloseable {
     public static ServerGitWorkspace create(Path parent, ServerGitProperties limits) {
         try {
             Files.createDirectories(parent);
-            Path directory = Files.createTempDirectory(parent, "qeploy-git-");
+            Path directory = Files.createTempDirectory(parent, DIRECTORY_PREFIX);
+            OPEN.add(directory.toAbsolutePath().normalize());
             Repository repository = FileRepositoryBuilder.create(directory.toFile());
             repository.create(true);
             // 작업 단위로 만들고 지우는 저장소다. 자동 gc 가 뒤에서 돌면 지우는 도중 파일이 생기고 사라진다.
@@ -394,8 +400,13 @@ public final class ServerGitWorkspace implements AutoCloseable {
         return repository;
     }
 
+    static boolean isOpen(Path directory) {
+        return OPEN.contains(directory.toAbsolutePath().normalize());
+    }
+
     @Override
     public void close() {
+        OPEN.remove(directory.toAbsolutePath().normalize());
         repository.close();
         try (Stream<Path> paths = Files.walk(directory)) {
             paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
