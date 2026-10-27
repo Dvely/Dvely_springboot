@@ -5,6 +5,7 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.git.ServerGitProperties;
 import com.example.dvely.agent.infrastructure.git.ServerGitPublisher;
 import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Inspection;
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.ProtectedChangeRequiresApprovalException;
 import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Published;
 import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Request;
 import com.example.dvely.auth.application.command.AuthCommandService;
@@ -71,8 +72,17 @@ public class ServerPreviewBranch {
         if (isNew) {
             PreviewBranchPushService.writeDefaultGitignore(dockerService, containerId);
         }
-        return publisher.publish(request(containerId, repoFullName, username, userToken, taskId), approvedTree,
-                allowProtected, Set.of());
+        try {
+            return publisher.publish(request(containerId, repoFullName, username, userToken, taskId), approvedTree,
+                    allowProtected, Set.of());
+        } catch (ProtectedChangeRequiresApprovalException e) {
+            // 사용자에게 "작업 중 오류가 발생했습니다: …" 로 보인다. 새 저장소의 첫 반영에는 결과 승인 단계가
+            // 없으므로(미연결 프로젝트) 따를 수 있는 안내를 따로 준다.
+            throw new ProtectedChangeRequiresApprovalException(e.paths(), isNew
+                    ? "새 저장소에 처음 올리는 결과에는 .github 아래 파일을 넣을 수 없습니다. 그 파일을 빼 달라고 다시 요청하거나, "
+                            + "저장소를 연결한 뒤 결과 승인을 거쳐 추가해 주세요."
+                    : "작업을 다시 요청하면 결과 승인 단계에서 변경 내역을 확인한 뒤 반영됩니다.");
+        }
     }
 
     private Request request(String containerId, String repoFullName, String username, String userToken, String taskId) {

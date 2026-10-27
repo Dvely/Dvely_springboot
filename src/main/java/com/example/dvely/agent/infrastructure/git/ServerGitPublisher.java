@@ -145,10 +145,18 @@ public class ServerGitPublisher {
         private final List<String> paths;
 
         public ProtectedChangeRequiresApprovalException(List<String> paths) {
-            super("작업 결과에 .github 아래 변경(" + String.join(", ", paths.subList(0, Math.min(3, paths.size())))
-                    + (paths.size() > 3 ? " 외 " + (paths.size() - 3) + "개" : "")
-                    + ")이 있어 결과 승인 없이 저장소에 반영하지 않았습니다. 결과 승인을 거쳐 반영해 주세요.", null);
+            this(paths, "결과 승인을 거쳐 반영해 주세요.");
+        }
+
+        /** @param guidance 상황에 맞는 다음 행동 안내(경로 목록 뒤에 붙는다) */
+        public ProtectedChangeRequiresApprovalException(List<String> paths, String guidance) {
+            super("작업 결과에 .github 아래 변경(" + describe(paths) + ")이 있어 저장소에 올리지 않았습니다. " + guidance, null);
             this.paths = List.copyOf(paths);
+        }
+
+        private static String describe(List<String> paths) {
+            return String.join(", ", paths.subList(0, Math.min(3, paths.size())))
+                    + (paths.size() > 3 ? " 외 " + (paths.size() - 3) + "개" : "");
         }
 
         public List<String> paths() {
