@@ -74,6 +74,8 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
 
     private static final String CONF_DIR = "/etc/tinyproxy";
     private static final String ALLOW_ENTRY = "qeploy-allow.txt";
+    /** 세션 tinyproxy 가 바인딩 뒤 내려가는 사용자. 설정의 {@code User nobody} 와 같아야 한다. */
+    static final String TINYPROXY_USER = "nobody";
     /** 프리뷰 컨테이너의 세션 라벨. DockerContainerService 가 붙인다. */
     static final String PREVIEW_SESSION_ID_LABEL = "qeploy.previewSessionId";
     /** Qeploy 가 만든 세션 egress 네트워크 표시. 정리 작업은 이 라벨(또는 아래 예전 형식)만 고른다. */
@@ -360,10 +362,14 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
             // pid 파일만으로는 부족하다 — 같은 세션에 attach 가 다시 불리면 bind 에 실패하고 죽는 새 프로세스가
             // pid 파일을 덮어써, 파일이 이미 없는 pid 를 가리킬 수 있다(#529, dev 에서 설정 파일은 지워졌는데
             // 프로세스가 남았다). 그래서 이 세션 설정 파일로 뜬 프로세스를 명령줄로도 찾아 내린다.
-            awaitExec(properties.proxyName(),
+            // 종료는 tinyproxy 와 같은 uid(nobody)로 보낸다. 프록시 컨테이너는 CapDrop ALL 이라 root 에도
+            // CAP_KILL 이 없어, root 가 다른 uid 의 프로세스에 보내는 신호는 "Operation not permitted" 로
+            // 막힌다(#529, dev 실측). 그래서 #466 이후 세션 프로세스가 한 번도 회수되지 않았다.
+            awaitExec(properties.proxyName(), TINYPROXY_USER,
                     "[ -f " + pidPath + " ] && kill $(cat " + pidPath + ") 2>/dev/null; "
-                            + "pkill -f '" + sessionProcessPattern(confPath) + "' 2>/dev/null; "
-                            + "rm -f " + pidPath + " " + confPath + "; true");
+                            + "pkill -f '" + sessionProcessPattern(confPath) + "' 2>/dev/null; true");
+            // 설정·pid 파일은 root 소유라 지우는 것은 root 로 한다.
+            awaitExec(properties.proxyName(), "rm -f " + pidPath + " " + confPath + "; true");
         } catch (NotFoundException e) {
             log.debug("egress 프록시 컨테이너가 이미 없어 세션 프로세스 정리를 생략합니다: session={}", previewSessionId);
         } catch (RuntimeException e) {
@@ -542,7 +548,16 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
 
     /** 끝날 때까지 기다린다. 뒤따르는 단계가 이 결과에 기대는 경우에 쓴다. */
     private void awaitExec(String containerId, String command) {
-        var created = dockerClient.execCreateCmd(containerId)
+        awaitExec(containerId, null, command);
+    }
+
+    /** {@code user} 가 null 이면 컨테이너 기본 사용자(root)로 돈다. */
+    private void awaitExec(String containerId, String user, String command) {
+        var create = dockerClient.execCreateCmd(containerId);
+        if (user != null) {
+            create = create.withUser(user);
+        }
+        var created = create
                 .withCmd("sh", "-c", command)
                 .withAttachStdout(true)
                 .withAttachStderr(true)
