@@ -94,11 +94,16 @@ public class ChangeService {
                 .orElse(null);
     }
 
-    /** 결과 승인 게이트가 push 를 승인 뒤로 미뤘다. 승인한 뒤 반영할 트리를 남긴다. */
+    /**
+     * 결과 승인 게이트가 push 를 승인 뒤로 미뤘다. 승인한 뒤 반영할 트리와, 사용자가 볼 diff 를 <b>같은
+     * 스냅샷</b>에서 남긴다 — 앞서 record 가 남긴 diff 는 그 사이 작업 트리가 바뀌었을 수 있어 덮어쓴다.
+     * 그래야 사용자가 검토한 diff 와 승인 뒤 올라가는 트리가 어긋나지 않는다.
+     */
     @Transactional
-    public void deferPush(String taskId, String snapshotTree) {
+    public void deferPush(String taskId, Inspection inspection) {
         changeRepository.findByTaskId(taskId).ifPresent(change -> {
-            change.deferPush(snapshotTree);
+            change.update(change.getSummary(), truncate(inspection.diff(), MAX_DIFF_CHARS));
+            change.deferPush(inspection.tree().name());
             changeRepository.save(change);
         });
     }

@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
 
@@ -396,7 +397,11 @@ class ResultApprovalGateTest {
 
         assertThat(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).isTrue();
 
-        verify(changeService).deferPush("task-1", tree.name());
+        // 승인 뒤 올라갈 트리와 사용자가 볼 diff 가 같은 검사에서 나온다.
+        ArgumentCaptor<Inspection> deferred = ArgumentCaptor.forClass(Inspection.class);
+        verify(changeService).deferPush(eq("task-1"), deferred.capture());
+        assertThat(deferred.getValue().tree()).isEqualTo(tree);
+        assertThat(deferred.getValue().diff()).isEqualTo("diff");
         verifyNoInteractions(previewBranchPushService);
         verify(approvalRepository).save(any(Approval.class));
     }
@@ -413,7 +418,7 @@ class ResultApprovalGateTest {
                 ObjectId.zeroId(), List.of("README.md"), List.of(), "diff"));
 
         assertThat(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).isFalse();
-        verify(changeService, never()).deferPush(anyString(), anyString());
+        verify(changeService, never()).deferPush(anyString(), any());
     }
 
     @Test

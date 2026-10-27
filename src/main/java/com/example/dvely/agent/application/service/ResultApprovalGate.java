@@ -115,7 +115,7 @@ public class ResultApprovalGate {
         }
 
         if (deferPush) {
-            changeService.deferPush(taskId, inspection.tree().name());
+            changeService.deferPush(taskId, inspection);
             log.info("[ResultApprovalGate] .github 아래 변경이 있어 push 를 결과 승인 뒤로 미룬다 taskId={} paths={}",
                     taskId, inspection.requiringApproval());
         } else {

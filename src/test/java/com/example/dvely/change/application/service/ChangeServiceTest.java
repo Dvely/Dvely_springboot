@@ -225,4 +225,21 @@ class ChangeServiceTest {
         assertThat(saved.getValue().getSnapshotTree()).isEqualTo(tree.name());
         org.mockito.Mockito.verifyNoInteractions(docker);   // 컨테이너 git 을 부르지 않는다
     }
+
+    @Test
+    void deferringBindsTheReviewedDiffAndTheTreeToOneSnapshot() {
+        SpringDataChangeRepository repository = mock(SpringDataChangeRepository.class);
+        ChangeService service = new ChangeService(repository, mock(TaskStore.class), mock(PreviewSessionService.class),
+                mock(DockerContainerService.class), mock(ProjectRepository.class), mock(ServerPreviewBranch.class));
+        ChangeEntity change = new ChangeEntity(1L, 11L, 21L, "task-1", "s-1", "요약", "older diff from record()");
+        when(repository.findByTaskId("task-1")).thenReturn(Optional.of(change));
+        ObjectId tree = ObjectId.fromString("0123456789abcdef0123456789abcdef01234567");
+
+        service.deferPush("task-1", new Inspection(tree, List.of(".github/workflows/x.yml"),
+                List.of(".github/workflows/x.yml"), "diff of the bound tree"));
+
+        assertThat(change.getDiffText()).isEqualTo("diff of the bound tree");
+        assertThat(change.getSnapshotTree()).isEqualTo(tree.name());
+        assertThat(change.isPushDeferred()).isTrue();
+    }
 }
