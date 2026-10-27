@@ -1,5 +1,8 @@
 package com.example.dvely.agent.application.service;
 
+import org.eclipse.jgit.lib.ObjectId;
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Inspection;
+import com.example.dvely.change.application.service.ChangeService;
 import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -62,11 +65,13 @@ class ResultApprovalGateTest {
     private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
     private final AgentMessageService agentMessageService = mock(AgentMessageService.class);
     private final AuditRecorder auditRecorder = mock(AuditRecorder.class);
+    private final ServerPreviewBranch serverPreviewBranch = mock(ServerPreviewBranch.class);
+    private final ChangeService changeService = mock(ChangeService.class);
 
     private final ResultApprovalGate gate = new ResultApprovalGate(
             projectRepository, policyRepository, previewSessionService, previewBranchPushService,
             userRepository, authCommandService, taskStore, approvalRepository, agentMessageService,
-            auditRecorder
+            auditRecorder, serverPreviewBranch, changeService
     );
 
     @Test
@@ -372,5 +377,55 @@ class ResultApprovalGateTest {
     private Approval approval(Long id) {
         return new Approval(id, 1L, 11L, 21L, "task-1", ApprovalType.RESULT, ApprovalStatus.PENDING,
                 "[결과 반영] 요약", LocalDateTime.now(), null);
+    }
+
+    // ---------------------------------------------------------------- 서버 측 git(#523)
+
+    @Test
+    void withServerGitOnAProtectedChangeOpensTheApprovalEvenWithThePolicyOffAndDoesNotPush() {
+        AgentPlan plan = codePlan();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(boundProject()));
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, false, false, false, false, false)));
+        stubPreviewSessionAndUser();
+        when(serverPreviewBranch.enabled()).thenReturn(true);
+        ObjectId tree = ObjectId.fromString("0123456789abcdef0123456789abcdef01234567");
+        when(serverPreviewBranch.inspect("container-1", 1L, "octo/repo")).thenReturn(new Inspection(
+                tree, List.of(".github/workflows/ci.yml"), List.of(".github/workflows/ci.yml"), "diff"));
+        when(approvalRepository.save(any(Approval.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        assertThat(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).isTrue();
+
+        verify(changeService).deferPush("task-1", tree.name());
+        verifyNoInteractions(previewBranchPushService);
+        verify(approvalRepository).save(any(Approval.class));
+    }
+
+    @Test
+    void withServerGitOnAnOrdinaryChangeStillFollowsThePolicy() {
+        AgentPlan plan = codePlan();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(boundProject()));
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, false, false, false, false, false)));
+        stubPreviewSessionAndUser();
+        when(serverPreviewBranch.enabled()).thenReturn(true);
+        when(serverPreviewBranch.inspect("container-1", 1L, "octo/repo")).thenReturn(new Inspection(
+                ObjectId.zeroId(), List.of("README.md"), List.of(), "diff"));
+
+        assertThat(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).isFalse();
+        verify(changeService, never()).deferPush(anyString(), anyString());
+    }
+
+    @Test
+    void withServerGitOffTheGateNeverInspectsOnTheServer() {
+        AgentPlan plan = codePlan();
+        stubBoundPolicyOnProject();
+        stubPreviewSessionAndUser();
+        when(approvalRepository.save(any(Approval.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        assertThat(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).isTrue();
+
+        verify(serverPreviewBranch, never()).inspect(any(), any(), any());
+        verify(previewBranchPushService).push(eq("container-1"), any(), any(), eq("octo/repo"), eq(false), eq("task-1"));
     }
 }

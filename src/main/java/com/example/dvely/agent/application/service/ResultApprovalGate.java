@@ -7,7 +7,9 @@ import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.approval.domain.model.Approval;
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Inspection;
 import com.example.dvely.audit.application.AuditEvent;
+import com.example.dvely.change.application.service.ChangeService;
 import com.example.dvely.audit.application.AuditRecorder;
 import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.audit.domain.value.AuditActorType;
@@ -56,6 +58,8 @@ public class ResultApprovalGate {
     private final ApprovalRepository approvalRepository;
     private final AgentMessageService agentMessageService;
     private final AuditRecorder auditRecorder;
+    private final ServerPreviewBranch serverPreviewBranch;
+    private final ChangeService changeService;
 
     /**
      * @param stepIndex zero-based index, within {@code plan.steps()}, of the CODE step that just
@@ -89,7 +93,11 @@ public class ResultApprovalGate {
         }
         ProjectApprovalPolicy policy = policyRepository.findByProjectId(projectId)
                 .orElseGet(() -> new ProjectApprovalPolicy(projectId));
-        if (!policy.isResultApprovalRequired()) {
+        // 서버 측 git(#523)이 켜져 있으면 서버가 만든 트리로 .github 아래 변경을 본다. 그런 변경은 정책과
+        // 무관하게 사람이 확인하고, 승인 전에는 저장소에 올리지 않는다(push 를 승인 뒤로 미룬다).
+        Inspection inspection = inspectOnServer(taskId, userId, project);
+        boolean deferPush = inspection != null && !inspection.requiringApproval().isEmpty();
+        if (!policy.isResultApprovalRequired() && !deferPush) {
             return false;
         }
 
@@ -106,6 +114,28 @@ public class ResultApprovalGate {
             return false;
         }
 
+        if (deferPush) {
+            changeService.deferPush(taskId, inspection.tree().name());
+            log.info("[ResultApprovalGate] .github 아래 변경이 있어 push 를 결과 승인 뒤로 미룬다 taskId={} paths={}",
+                    taskId, inspection.requiringApproval());
+        } else {
+            pushAndRecord(taskId, userId, projectId, project);
+        }
+
+        completeAndOpenApproval(stepIndex, taskId, userId, projectId, deferPush);
+        return true;
+    }
+
+    private Inspection inspectOnServer(String taskId, Long userId, Project project) {
+        if (!serverPreviewBranch.enabled()) {
+            return null;
+        }
+        return previewSessionService.findByTaskId(taskId)
+                .map(session -> serverPreviewBranch.inspect(session.containerId(), userId, project.getSourceRepository()))
+                .orElse(null);
+    }
+
+    private void pushAndRecord(String taskId, Long userId, Long projectId, Project project) {
         pushPreviewBranch(taskId, userId, project);
         // H5 (design §4): the gate's own push is a real GitHub write too (design F5) — recorded
         // right after it succeeds, before any of the state transitions below.
@@ -122,7 +152,10 @@ public class ResultApprovalGate {
                 null,
                 null
         ));
+    }
 
+    private void completeAndOpenApproval(int stepIndex, String taskId, Long userId, Long projectId,
+                                         boolean deferred) {
         // §5.2 ordering: completeStep only after the push above has actually succeeded, so a push
         // failure (network/token — caught by AgentPlanExecutor's outer catch-all, which marks the
         // task FAILED without reaching this point) leaves currentStep pointing at this CODE step
@@ -155,10 +188,9 @@ public class ResultApprovalGate {
                 taskId, approval.getId(), projectId);
         agentMessageService.appendAssistant(
                 task == null ? null : task.conversationId(),
-                buildGateMessage()
+                buildGateMessage(deferred)
         ,
                 ChatMessageKind.APPROVAL_REQUESTED, taskId);
-        return true;
     }
 
     /**
@@ -230,7 +262,12 @@ public class ResultApprovalGate {
      * <p>안내조차 남기지 않은 이유: 승인 카드가 이미 화면에 프리뷰와 함께 뜬다. 주소도 안내도
      * 중복이고, 주소는 거기에 해롭기까지 했다.</p>
      */
-    private String buildGateMessage() {
+    private String buildGateMessage(boolean deferred) {
+        if (deferred) {
+            return "작업 결과가 준비되었습니다. 미리보기와 변경 내역을 확인해 주세요.\n"
+                    + ".github 아래 변경이 있어 승인 전에는 저장소에 올리지 않았습니다. "
+                    + "승인하면 지금 작업 내용을 preview에 올린 뒤 main에 반영합니다. 거절하면 아무것도 올리지 않습니다.";
+        }
         // 마지막 줄에 있던 "- [ID] RESULT: summary" 는 뺐다(#457). 원시 enum 이 채팅에 드러났고,
         // 위 두 문장이 이미 무엇을 기다리는지 말한다. 승인 ID 는 승인 탭이 들고 있다.
         return "작업 결과가 preview에 준비되었습니다. 미리보기와 변경 내역을 확인해 주세요.\n"

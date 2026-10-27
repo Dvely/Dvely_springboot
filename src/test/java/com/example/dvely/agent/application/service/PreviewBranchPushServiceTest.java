@@ -31,7 +31,7 @@ class PreviewBranchPushServiceTest {
     @BeforeEach
     void setUp() {
         dockerService = mock(DockerContainerService.class);
-        service = new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService));
+        service = new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class));
         // .git 이 없는 상태 → init 경로를 탄다.
         lenient().when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
         lenient().when(dockerService.execWithExitCode(eq(CONTAINER_ID), anyString(),
@@ -121,7 +121,7 @@ class PreviewBranchPushServiceTest {
      */
     @Test
     void installingGitIsAllowedToFail() {
-        service = new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService));
+        service = new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class));
 
         assertThatCode(this::push).doesNotThrowAnyException();
 
@@ -168,5 +168,19 @@ class PreviewBranchPushServiceTest {
     @ValueSource(strings = {"octo/app;id", "octo/app app", "../app", "octo", "octo/app/x", "octo/$(id)"})
     void rejectsRepositoryNamesThatCouldEscapeTheCommand(String name) {
         assertThatThrownBy(() -> PreviewBranchPushService.githubUrl(name)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void withServerGitOnThePushGoesToTheServerAndNotToContainerGit() {
+        DockerContainerService docker = mock(DockerContainerService.class);
+        ServerPreviewBranch server = mock(ServerPreviewBranch.class);
+        when(server.enabled()).thenReturn(true);
+        PreviewBranchPushService pushService =
+                new PreviewBranchPushService(docker, new ContainerGitCredentials(docker), server);
+
+        pushService.push("c-1", "token", "octo", "octo/app", true, "task-1");
+
+        verify(server).publish("c-1", "token", "octo", "octo/app", "task-1", true, java.util.Optional.empty(), false);
+        org.mockito.Mockito.verifyNoInteractions(docker);
     }
 }

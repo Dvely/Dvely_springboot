@@ -1,5 +1,9 @@
 package com.example.dvely.change.application.service;
 
+import java.util.List;
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Inspection;
+import org.eclipse.jgit.lib.ObjectId;
+import com.example.dvely.agent.application.service.ServerPreviewBranch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -38,7 +42,8 @@ class ChangeServiceTest {
                 taskStore,
                 previewSessionService,
                 dockerService,
-                mock(ProjectRepository.class)
+                mock(ProjectRepository.class),
+                mock(ServerPreviewBranch.class)
         );
         when(taskStore.get("task-1")).thenReturn(new AgentTask(
                 "task-1",
@@ -181,7 +186,8 @@ class ChangeServiceTest {
         PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
         DockerContainerService docker = mock(DockerContainerService.class);
         ChangeService service = new ChangeService(
-                repository, taskStore, previewSessionService, docker, mock(ProjectRepository.class));
+                repository, taskStore, previewSessionService, docker, mock(ProjectRepository.class),
+                mock(ServerPreviewBranch.class));
         when(taskStore.get("task-1")).thenReturn(new AgentTask(
                 "task-1", 1L, 11L, 21L, TaskStatus.RUNNING, null, null, null, null, Instant.now()));
         when(previewSessionService.findByTaskId("task-1")).thenReturn(Optional.of(
@@ -189,5 +195,34 @@ class ChangeServiceTest {
                         "https://preview.qeploy.test/preview-1/", LocalDateTime.now().plusMinutes(30))));
         when(repository.findByTaskId("task-1")).thenReturn(Optional.empty());
         return new Fixture(service, repository, docker);
+    }
+
+    @Test
+    void withServerGitOnTheDiffAndTreeComeFromTheServer() {
+        SpringDataChangeRepository repository = mock(SpringDataChangeRepository.class);
+        TaskStore taskStore = mock(TaskStore.class);
+        PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
+        DockerContainerService docker = mock(DockerContainerService.class);
+        ProjectRepository projects = mock(ProjectRepository.class);
+        ServerPreviewBranch server = mock(ServerPreviewBranch.class);
+        ChangeService service = new ChangeService(repository, taskStore, previewSessionService, docker, projects, server);
+        when(server.enabled()).thenReturn(true);
+        when(taskStore.get("task-1")).thenReturn(new AgentTask(
+                "task-1", 1L, 11L, 21L, TaskStatus.RUNNING, null, null, null, null, Instant.now()));
+        when(previewSessionService.findByTaskId("task-1")).thenReturn(Optional.of(new PreviewSessionInfo(
+                "session-1", 1L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
+                "https://preview.qeploy.test/session-1/", java.time.LocalDateTime.now().plusMinutes(30))));
+        ObjectId tree = ObjectId.fromString("0123456789abcdef0123456789abcdef01234567");
+        when(server.inspect("container-1", 1L, null)).thenReturn(
+                new Inspection(tree, List.of("a.txt"), List.of(), "diff --git a/a.txt b/a.txt"));
+        when(repository.findByTaskId("task-1")).thenReturn(Optional.empty());
+
+        service.record("task-1", "요약");
+
+        ArgumentCaptor<ChangeEntity> saved = ArgumentCaptor.forClass(ChangeEntity.class);
+        verify(repository).save(saved.capture());
+        assertThat(saved.getValue().getDiffText()).isEqualTo("diff --git a/a.txt b/a.txt");
+        assertThat(saved.getValue().getSnapshotTree()).isEqualTo(tree.name());
+        org.mockito.Mockito.verifyNoInteractions(docker);   // 컨테이너 git 을 부르지 않는다
     }
 }

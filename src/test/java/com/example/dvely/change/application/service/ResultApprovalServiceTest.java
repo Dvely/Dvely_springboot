@@ -1,5 +1,12 @@
 package com.example.dvely.change.application.service;
 
+import com.example.dvely.preview.application.result.PreviewSessionInfo;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.inOrder;
+import org.mockito.InOrder;
+import org.eclipse.jgit.lib.ObjectId;
+import com.example.dvely.preview.application.service.PreviewSessionService;
+import com.example.dvely.agent.application.service.ServerPreviewBranch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -43,10 +50,12 @@ class ResultApprovalServiceTest {
     private final GithubRepoPort githubRepoPort = mock(GithubRepoPort.class);
     private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
     private final AuditRecorder auditRecorder = mock(AuditRecorder.class);
+    private final ServerPreviewBranch serverPreviewBranch = mock(ServerPreviewBranch.class);
+    private final PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
 
     private final ResultApprovalService service = new ResultApprovalService(
             changeRepository, projectRepository, userRepository, authCommandService, githubRepoPort,
-            approvalRepository, auditRecorder
+            approvalRepository, auditRecorder, serverPreviewBranch, previewSessionService
     );
 
     @Test
@@ -269,5 +278,61 @@ class ResultApprovalServiceTest {
     private User activeUser() {
         return new User(1L, new GithubId("123"), "octo", null, 100L, "gh-token", "refresh-token",
                 LocalDateTime.now().plusHours(1));
+    }
+
+    // ---------------------------------------------------------------- 서버 측 git(#523): 미룬 push
+
+    @Test
+    void aDeferredChangeIsPublishedWithTheReviewedTreeBeforeTheMerge() {
+        ChangeEntity change = changeEntity();
+        String reviewed = "0123456789abcdef0123456789abcdef01234567";
+        change.deferPush(reviewed);
+        when(changeRepository.findByTaskId("task-1")).thenReturn(Optional.of(change));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(boundProject()));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(previewSessionService.findByTaskId("task-1")).thenReturn(Optional.of(previewSession()));
+        when(githubRepoPort.hasNewCommits("gh-token", "octo/repo", "main", "preview")).thenReturn(true);
+        when(githubRepoPort.createOrGetPullRequest(any(), any(), any(), any(), any())).thenReturn(77);
+        when(githubRepoPort.mergePullRequest("gh-token", "octo/repo", 77)).thenReturn("sha");
+        when(changeRepository.save(any(ChangeEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.reflect(approval(9L));
+
+        InOrder order = inOrder(serverPreviewBranch, githubRepoPort);
+        order.verify(serverPreviewBranch).publish("container-1", 1L, "octo/repo", "task-1",
+                Optional.of(ObjectId.fromString(reviewed)), true);
+        order.verify(githubRepoPort).mergePullRequest("gh-token", "octo/repo", 77);
+    }
+
+    @Test
+    void aChangeThatWasNotDeferredIsNotPublishedAgain() {
+        ChangeEntity change = changeEntity();
+        when(changeRepository.findByTaskId("task-1")).thenReturn(Optional.of(change));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(boundProject()));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(activeUser()));
+        when(githubRepoPort.hasNewCommits("gh-token", "octo/repo", "main", "preview")).thenReturn(false);
+        when(githubRepoPort.getHeadCommitSha("gh-token", "octo/repo", "main")).thenReturn("sha");
+        when(changeRepository.save(any(ChangeEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.reflect(approval(9L));
+
+        verifyNoInteractions(serverPreviewBranch);
+    }
+
+    @Test
+    void aDeferredChangeWhosePreviewIsGoneCannotBeMerged() {
+        ChangeEntity change = changeEntity();
+        change.deferPush("0123456789abcdef0123456789abcdef01234567");
+        when(changeRepository.findByTaskId("task-1")).thenReturn(Optional.of(change));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(boundProject()));
+        when(previewSessionService.findByTaskId("task-1")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.reflect(approval(9L))).isInstanceOf(IllegalStateException.class);
+        verify(githubRepoPort, never()).mergePullRequest(any(), any(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    private PreviewSessionInfo previewSession() {
+        return new PreviewSessionInfo("session-1", 1L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
+                "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30));
     }
 }

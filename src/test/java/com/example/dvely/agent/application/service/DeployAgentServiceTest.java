@@ -78,7 +78,7 @@ class DeployAgentServiceTest {
                 projectRepository,
                 deploymentFacade,
                 mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class)),
                 auditRecorder
         );
         Project project = boundProject();
@@ -175,7 +175,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)), auditRecorder
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class)), auditRecorder
         );
         when(previewSessionService.findByTaskId("task123"))
                 .thenReturn(Optional.of(new PreviewSessionInfo(
@@ -234,7 +234,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -285,7 +285,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -336,7 +336,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -388,7 +388,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class)),
                 mock(AuditRecorder.class)
         );
         Project notBound = notBoundProject();
@@ -435,7 +435,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class)),
                 mock(AuditRecorder.class)
         );
         Project project = boundProject();
@@ -476,7 +476,7 @@ class DeployAgentServiceTest {
         DeployAgentService service = new DeployAgentService(
                 dockerService, previewSessionService, githubRepositoryPort, userRepository,
                 authCommandService, projectRepository, deploymentFacade, mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class)),
                 mock(AuditRecorder.class)
         );
         Project project = boundProject();
@@ -513,7 +513,7 @@ class DeployAgentServiceTest {
                 projectRepository,
                 deploymentFacade,
                 mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class)),
                 mock(AuditRecorder.class)
         );
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());
@@ -554,7 +554,7 @@ class DeployAgentServiceTest {
                 projectRepository,
                 deploymentFacade,
                 mock(InputWaitStore.class),
-                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService)),
+                new PreviewBranchPushService(dockerService, new ContainerGitCredentials(dockerService), mock(ServerPreviewBranch.class)),
                 mock(AuditRecorder.class)
         );
         when(previewSessionService.findByTaskId("task123")).thenReturn(Optional.empty());

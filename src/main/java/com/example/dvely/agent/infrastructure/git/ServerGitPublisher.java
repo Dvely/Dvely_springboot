@@ -7,6 +7,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -35,9 +37,11 @@ public class ServerGitPublisher {
     private final ServerGitProperties properties;
     private final ProtectedPathPolicy protectedPathPolicy;
 
+    private final ConcurrentHashMap<String, ReentrantLock> repositoryLocks = new ConcurrentHashMap<>();
+
     public Inspection inspect(Request request, Set<ObjectId> serverGenerated) {
         try (ServerGitWorkspace workspace = open()) {
-            RevCommit base = fetchBase(workspace, request);
+            RevCommit base = request.remoteUrl() == null ? null : fetchBase(workspace, request);
             Snapshot snapshot = snapshot(workspace, request, base);
             List<ChangedPath> changes = workspace.changedPaths(base, snapshot.tree());
             return new Inspection(
@@ -48,21 +52,42 @@ public class ServerGitPublisher {
         }
     }
 
-    public Published publish(Request request, Optional<ObjectId> expectedTree) {
+    /**
+     * @param expectedTree    승인한 트리. 있으면 다시 뜬 스냅샷이 그것과 같을 때만 push 한다
+     * @param allowProtected  보호 경로 변경을 그대로 push 해도 되는지. false 면 승인이 필요한 경로가 있을 때
+     *                        push 하지 않고 {@link ProtectedChangeRequiresApprovalException} 을 던진다
+     */
+    public Published publish(Request request, Optional<ObjectId> expectedTree, boolean allowProtected,
+                             Set<ObjectId> serverGenerated) {
+        // 같은 저장소로 가는 push 는 한 번에 하나만 — 서로의 base 를 밀어내며 재시도를 반복하지 않게 한다.
+        ReentrantLock lock = repositoryLocks.computeIfAbsent(request.remoteUrl(), url -> new ReentrantLock());
+        lock.lock();
         try {
-            return publishOnce(request, expectedTree);
-        } catch (NonFastForwardException first) {
-            log.info("[ServerGit] 원격 {} 이 그 사이 바뀌어 base 를 다시 받아 재시도합니다", request.targetBranch());
-            return publishOnce(request, expectedTree);
+            try {
+                return publishOnce(request, expectedTree, allowProtected, serverGenerated);
+            } catch (NonFastForwardException first) {
+                log.info("[ServerGit] 원격 {} 이 그 사이 바뀌어 base 를 다시 받아 재시도합니다", request.targetBranch());
+                return publishOnce(request, expectedTree, allowProtected, serverGenerated);
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
-    private Published publishOnce(Request request, Optional<ObjectId> expectedTree) {
+    private Published publishOnce(Request request, Optional<ObjectId> expectedTree, boolean allowProtected,
+                                  Set<ObjectId> serverGenerated) {
         try (ServerGitWorkspace workspace = open()) {
             RevCommit base = fetchBase(workspace, request);
             Snapshot snapshot = snapshot(workspace, request, base);
             if (expectedTree.isPresent() && !expectedTree.get().equals(snapshot.tree())) {
                 throw new SnapshotChangedException();
+            }
+            if (!allowProtected) {
+                List<String> protectedPaths = protectedPathPolicy.requiringApproval(
+                        workspace.changedPaths(base, snapshot.tree()), serverGenerated);
+                if (!protectedPaths.isEmpty()) {
+                    throw new ProtectedChangeRequiresApprovalException(protectedPaths);
+                }
             }
             Optional<ObjectId> commit = workspace.commit(base, snapshot.tree(), request.commitMessage(), AGENT);
             commit.ifPresent(id -> workspace.push(request.remoteUrl(), request.credentials(), id, request.targetBranch()));
@@ -80,6 +105,11 @@ public class ServerGitPublisher {
             if (base.isPresent()) {
                 return base.get();
             }
+        }
+        // 후보가 하나도 없으면 원격의 기본 브랜치(HEAD 가 가리키는 것)를 쓴다 — main 이 아닌 저장소도 있다.
+        Optional<String> defaultBranch = workspace.defaultBranch(request.remoteUrl(), request.credentials());
+        if (defaultBranch.isPresent() && !request.baseBranches().contains(defaultBranch.get())) {
+            return workspace.fetchBase(request.remoteUrl(), request.credentials(), defaultBranch.get()).orElse(null);
         }
         return null;   // 빈 저장소 — 첫 커밋이 된다
     }
@@ -108,6 +138,22 @@ public class ServerGitPublisher {
     }
 
     public record Published(Optional<ObjectId> commit, ObjectId tree) {
+    }
+
+    /** 승인 없이 반영하면 안 되는 경로가 바뀌었다. 메시지는 사용자에게 그대로 보인다. */
+    public static class ProtectedChangeRequiresApprovalException extends ServerGitException {
+        private final List<String> paths;
+
+        public ProtectedChangeRequiresApprovalException(List<String> paths) {
+            super("작업 결과에 .github 아래 변경(" + String.join(", ", paths.subList(0, Math.min(3, paths.size())))
+                    + (paths.size() > 3 ? " 외 " + (paths.size() - 3) + "개" : "")
+                    + ")이 있어 결과 승인 없이 저장소에 반영하지 않았습니다. 결과 승인을 거쳐 반영해 주세요.", null);
+            this.paths = List.copyOf(paths);
+        }
+
+        public List<String> paths() {
+            return paths;
+        }
     }
 
     /** 승인 뒤 다시 뜬 스냅샷이 승인한 것과 다르다. 다시 검토를 받아야 한다. */

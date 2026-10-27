@@ -41,7 +41,7 @@ class ServerGitPublisherTest {
         RevCommit base = remote.commit("preview", Map.of("README.md", "v1"));
 
         Published published = publisher.publish(request(new TarBuilder().file("README.md", "v2").file("a.txt", "a")),
-                Optional.empty());
+                Optional.empty(), true, Set.of());
 
         RevCommit tip = remote.tip("preview");
         assertThat(published.commit()).contains(tip.getId());
@@ -55,7 +55,7 @@ class ServerGitPublisherTest {
     void nothingIsPushedWhenTheTreeIsUnchanged() throws Exception {
         RevCommit base = remote.commit("preview", Map.of("README.md", "v1"));
 
-        Published published = publisher.publish(request(new TarBuilder().file("README.md", "v1")), Optional.empty());
+        Published published = publisher.publish(request(new TarBuilder().file("README.md", "v1")), Optional.empty(), true, Set.of());
 
         assertThat(published.commit()).isEmpty();
         assertThat(remote.tip("preview").getId()).isEqualTo(base.getId());
@@ -65,7 +65,7 @@ class ServerGitPublisherTest {
     void fallsBackToMainAndCreatesPreviewWhenItDoesNotExist() throws Exception {
         RevCommit main = remote.commit("main", Map.of("README.md", "main"));
 
-        publisher.publish(request(new TarBuilder().file("README.md", "changed")), Optional.empty());
+        publisher.publish(request(new TarBuilder().file("README.md", "changed")), Optional.empty(), true, Set.of());
 
         assertThat(remote.tip("preview").getParent(0).getId()).isEqualTo(main.getId());
         assertThat(remote.tip("main").getId()).isEqualTo(main.getId());
@@ -89,7 +89,7 @@ class ServerGitPublisherTest {
         };
 
         publisher.publish(new Request(remote.url(), null, "preview", List.of("preview", "main"), archive,
-                "feat: apply Qeploy Agent task t-1"), Optional.empty());
+                "feat: apply Qeploy Agent task t-1"), Optional.empty(), true, Set.of());
 
         assertThat(opened.get()).isEqualTo(4);   // 시도마다 두 번(목록·본문), 재시도 1회
         assertThat(remote.files("preview")).containsEntry("README.md", "mine");
@@ -103,11 +103,11 @@ class ServerGitPublisherTest {
         Inspection inspected = publisher.inspect(request(new TarBuilder().file("README.md", "reviewed")), Set.of());
 
         assertThatThrownBy(() -> publisher.publish(request(new TarBuilder().file("README.md", "changed later")),
-                Optional.of(inspected.tree())))
+                Optional.of(inspected.tree()), true, Set.of()))
                 .isInstanceOf(ServerGitPublisher.SnapshotChangedException.class);
         assertThat(remote.tip("preview").getId()).isEqualTo(base.getId());
 
-        publisher.publish(request(new TarBuilder().file("README.md", "reviewed")), Optional.of(inspected.tree()));
+        publisher.publish(request(new TarBuilder().file("README.md", "reviewed")), Optional.of(inspected.tree()), true, Set.of());
         assertThat(remote.files("preview")).containsEntry("README.md", "reviewed");
     }
 
@@ -128,5 +128,53 @@ class ServerGitPublisherTest {
         byte[] bytes = tar.bytes();
         return new Request(remote.url(), null, "preview", List.of("preview", "main"),
                 () -> new java.io.ByteArrayInputStream(bytes), "feat: apply Qeploy Agent task t-1");
+    }
+
+    @Test
+    void aProtectedChangeIsRefusedUnlessTheCallerAllowsIt() throws Exception {
+        RevCommit base = remote.commit("preview", Map.of("README.md", "v1"));
+        TarBuilder tar = new TarBuilder().file("README.md", "v1").file(".github/workflows/ci.yml", "on: push");
+
+        assertThatThrownBy(() -> publisher.publish(request(tar), Optional.empty(), false, Set.of()))
+                .isInstanceOf(ServerGitPublisher.ProtectedChangeRequiresApprovalException.class)
+                .hasMessageContaining(".github/workflows/ci.yml");
+        assertThat(remote.tip("preview").getId()).isEqualTo(base.getId());
+
+        publisher.publish(request(tar), Optional.empty(), true, Set.of());
+        assertThat(remote.files("preview")).containsKey(".github/workflows/ci.yml");
+    }
+
+    @Test
+    void publishesToTheSameRepositoryRunOneAtATime() throws Exception {
+        remote.commit("preview", Map.of("README.md", "v1"));
+        java.util.concurrent.atomic.AtomicInteger inside = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger maxInside = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        try {
+            List<java.util.concurrent.Future<Published>> results = new java.util.ArrayList<>();
+            for (int i = 0; i < 4; i++) {
+                byte[] tar = new TarBuilder().file("README.md", "writer-" + i).bytes();
+                Supplier<InputStream> archive = () -> {
+                    // 잠금 안에서만 열린다 — 동시에 안에 있는 수가 1을 넘으면 직렬화가 깨진 것이다.
+                    maxInside.accumulateAndGet(inside.incrementAndGet(), Math::max);
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    inside.decrementAndGet();
+                    return new java.io.ByteArrayInputStream(tar);
+                };
+                Request request = new Request(remote.url(), null, "preview", List.of("preview", "main"), archive, "m");
+                results.add(pool.submit(() -> publisher.publish(request, Optional.empty(), true, Set.of())));
+            }
+            for (var result : results) {
+                assertThat(result.get(60, java.util.concurrent.TimeUnit.SECONDS).commit()).isPresent();
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(maxInside.get()).isEqualTo(1);
+        assertThat(remote.files("preview").get("README.md")).startsWith("writer-");
     }
 }
