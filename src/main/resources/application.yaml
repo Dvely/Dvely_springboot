@@ -212,6 +212,12 @@ qeploy:
       network-prefix: ${QEPLOY_PREVIEW_EGRESS_NETWORK_PREFIX:qeploy-preview-}
       # 통째로 일치해야 한다 — github.com 이 github.com.evil.test 까지 열지 않는다.
       # 여기서 빠진 호스트는 "설치가 안 된다" 로만 드러나므로 실제 빌드로 확인하고 좁힌다.
+      # 2026-10-27 dev 실측(같은 tinyproxy 필터)으로 더한 것:
+      #   release-assets.githubusercontent.com — Gradle wrapper 배포본(services.gradle.org 가 GitHub 릴리스로 보낸다)
+      #   plugins-artifacts.gradle.org         — Gradle 플러그인 포털이 아티팩트를 이리로 보낸다(Spring dependency-management 등)
+      #   binaries.prisma.sh                   — Prisma 엔진. 없으면 설치는 끝나도 prisma generate·실행이 실패한다
+      # 일부러 넣지 않은 것: storage.googleapis.com(puppeteer 의 Chrome — 버킷 전체가 열린다),
+      #   download.cypress.io(테스트 도구 바이너리 — 프리뷰에 필요 없다).
       allowed-hosts: >-
         ${QEPLOY_PREVIEW_EGRESS_ALLOWED_HOSTS:
         dl-cdn.alpinelinux.org,
@@ -221,9 +227,12 @@ qeploy:
         codeload.github.com,
         raw.githubusercontent.com,
         objects.githubusercontent.com,
+        release-assets.githubusercontent.com,
         repo.maven.apache.org,
         plugins.gradle.org,
+        plugins-artifacts.gradle.org,
         services.gradle.org,
+        binaries.prisma.sh,
         dvely.github.io}
       # 프록시 컨테이너는 하나지만(#466) 그 안에서 세션마다 tinyproxy 프로세스를 따로 띄워, 접속
       # 상한이 전역이 아니라 세션별로 걸리게 한다 — 한 프리뷰가 상한을 다 써도 다른 세션의 설치는
