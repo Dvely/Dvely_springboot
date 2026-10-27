@@ -76,6 +76,10 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
     private static final String ALLOW_ENTRY = "qeploy-allow.txt";
     /** 프리뷰 컨테이너의 세션 라벨. DockerContainerService 가 붙인다. */
     static final String PREVIEW_SESSION_ID_LABEL = "qeploy.previewSessionId";
+    /** Qeploy 가 만든 세션 egress 네트워크 표시. 정리 작업은 이 라벨(또는 아래 예전 형식)만 고른다. */
+    static final String EGRESS_NETWORK_LABEL = "qeploy.preview.egressNetwork";
+    private static final Pattern UUID_SUFFIX =
+            Pattern.compile("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
     private static final Pattern SESSION_CONF = Pattern.compile(CONF_DIR + "/s-([A-Za-z0-9_-]+)\\.conf");
     /** 프록시 컨테이너가 어떤 모양·상한으로 만들어졌는지. {@link #ensureProxyRunning()} 이 재사용 여부를 이것으로 정한다. */
     static final String SHAPE_LABEL = "qeploy.egressProxy.shape";
@@ -106,7 +110,7 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
     @Override
     public String attachNetwork(String previewSessionId) {
         String network = properties.networkName(previewSessionId);
-        createInternalNetwork(network);
+        createInternalNetwork(network, previewSessionId);
         startSessionProxy(previewSessionId, network);
         return network;
     }
@@ -179,11 +183,10 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
         Set<String> withNetwork = new HashSet<>();
         Set<String> orphans = new TreeSet<>();
         for (Network network : dockerClient.listNetworksCmd().exec()) {
-            String name = network.getName();
-            if (name == null || !name.startsWith(properties.networkPrefix())) {
-                continue;
+            String sessionId = qeployEgressSessionOf(network);
+            if (sessionId == null) {
+                continue;   // Qeploy 가 만든 세션 egress 네트워크가 아니다 — 건드리지 않는다
             }
-            String sessionId = name.substring(properties.networkPrefix().length());
             withNetwork.add(sanitizeSessionId(sessionId));
             Date created = network.getCreated();
             boolean young = created != null && created.toInstant().isAfter(now.minus(grace));
@@ -203,6 +206,27 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
             log.info("[PreviewEgress] 끝난 세션의 egress 자원을 거뒀습니다: {}개 {}", orphans.size(), orphans);
         }
         return orphans.size();
+    }
+
+    /**
+     * Qeploy 가 만든 세션 egress 네트워크면 그 세션 id, 아니면 null.
+     *
+     * <p>라벨이 있으면 라벨로 판단한다. 라벨을 붙이기 전(#529 이전)에 만든 것은 이름이 정확히
+     * "접두 + UUID" 이고 internal 인 것만 고른다 — bridge·host, 같은 호스트의 다른 사용자 네트워크,
+     * 공유 프리뷰 네트워크, coding-agent egress 네트워크는 이 조건에 걸리지 않는다.</p>
+     */
+    String qeployEgressSessionOf(Network network) {
+        Map<String, String> labels = network.getLabels();
+        if (labels != null && "true".equals(labels.get(EGRESS_NETWORK_LABEL))) {
+            String sessionId = labels.get(PREVIEW_SESSION_ID_LABEL);
+            return sessionId == null || sessionId.isBlank() ? null : sessionId;
+        }
+        String name = network.getName();
+        if (name == null || !name.startsWith(properties.networkPrefix())) {
+            return null;
+        }
+        String suffix = name.substring(properties.networkPrefix().length());
+        return UUID_SUFFIX.matcher(suffix).matches() && Boolean.TRUE.equals(network.getInternal()) ? suffix : null;
     }
 
     Set<String> liveSessionIds() {
@@ -256,7 +280,7 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
         return out.toString(StandardCharsets.UTF_8);
     }
 
-    private void createInternalNetwork(String name) {
+    private void createInternalNetwork(String name, String previewSessionId) {
         boolean exists = dockerClient.listNetworksCmd().withNameFilter(name).exec().stream()
                 .anyMatch(network -> name.equals(network.getName()));
         if (exists) {
@@ -265,7 +289,9 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
         try {
             // internal 이 바깥으로 나가는 경로를 없앤다. icc 는 건드리지 않는다 — 이 네트워크에는
             // 프리뷰 하나와 프록시만 있고, 프리뷰끼리는 애초에 같은 네트워크에 있지 않다.
-            dockerClient.createNetworkCmd().withName(name).withDriver("bridge").withInternal(true).exec();
+            dockerClient.createNetworkCmd().withName(name).withDriver("bridge").withInternal(true)
+                    .withLabels(Map.of(EGRESS_NETWORK_LABEL, "true", PREVIEW_SESSION_ID_LABEL, previewSessionId))
+                    .exec();
             log.info("[PreviewEgress] 세션 네트워크 생성: {}", name);
         } catch (ConflictException e) {
             log.debug("egress 네트워크 동시 생성 레이스: name={}", name);
@@ -336,7 +362,7 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
             // 프로세스가 남았다). 그래서 이 세션 설정 파일로 뜬 프로세스를 명령줄로도 찾아 내린다.
             awaitExec(properties.proxyName(),
                     "[ -f " + pidPath + " ] && kill $(cat " + pidPath + ") 2>/dev/null; "
-                            + "pkill -f '" + confPath + "' 2>/dev/null; "
+                            + "pkill -f '" + sessionProcessPattern(confPath) + "' 2>/dev/null; "
                             + "rm -f " + pidPath + " " + confPath + "; true");
         } catch (NotFoundException e) {
             log.debug("egress 프록시 컨테이너가 이미 없어 세션 프로세스 정리를 생략합니다: session={}", previewSessionId);
@@ -472,6 +498,15 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
         }
         String cleaned = sessionId.replaceAll("[^a-zA-Z0-9_-]", "_");
         return cleaned.isEmpty() ? "unknown" : cleaned;
+    }
+
+    /**
+     * 이 세션 프로세스만 잡는 {@code pkill -f} 패턴. {@code -f} 는 정규식이라 점을 이스케이프하고 명령줄
+     * 전체를 앞뒤로 고정한다 — 다른 세션의 프로세스가 걸리지 않는다. 세션 id 는 이미
+     * {@link #sanitizeSessionId} 로 영숫자·{@code _}·{@code -} 만 남았다.
+     */
+    static String sessionProcessPattern(String confPath) {
+        return "^tinyproxy -d -c " + confPath.replace(".", "\\.") + "$";
     }
 
     private static String confEntry(String sanitizedSessionId) {
