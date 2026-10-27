@@ -2,9 +2,7 @@ package com.example.dvely.agent.infrastructure.git;
 
 import com.example.dvely.agent.infrastructure.git.ServerGitWorkspace.ChangedPath;
 import com.example.dvely.agent.infrastructure.git.ServerGitWorkspace.Snapshot;
-import java.io.IOException;
 import java.io.InputStream;
-import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
@@ -87,11 +85,7 @@ public class ServerGitPublisher {
     }
 
     private static Snapshot snapshot(ServerGitWorkspace workspace, Request request, RevCommit base) {
-        try (InputStream archive = request.archive().get()) {
-            return workspace.snapshotTree(archive, base);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+        return workspace.snapshotTree(request.archive(), base);
     }
 
     /**
@@ -99,7 +93,7 @@ public class ServerGitPublisher {
      * @param credentials   서버에서만 쓰는 GitHub 자격
      * @param targetBranch  push 할 브랜치(보통 {@code preview})
      * @param baseBranches  base 로 쓸 브랜치 후보. 앞에서부터 처음 있는 것을 쓴다(예: preview, main)
-     * @param archive       컨테이너 작업 디렉터리 tar 를 여는 함수. 재시도 때 다시 부른다
+     * @param archive       컨테이너 작업 디렉터리 tar 를 여는 함수. 스냅샷 한 번에 두 번, 재시도 때 다시 부른다
      * @param commitMessage 스냅샷 커밋 메시지
      */
     public record Request(String remoteUrl,

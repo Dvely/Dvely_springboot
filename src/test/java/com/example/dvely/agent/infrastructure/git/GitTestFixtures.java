@@ -34,7 +34,13 @@ final class GitTestFixtures {
     }
 
     static ServerGitProperties limits(int maxFiles, long maxBytes, Path workDir) {
-        return new ServerGitProperties(false, false, maxFiles, maxBytes, workDir.toString());
+        return limits(maxFiles, maxBytes, workDir, 100_000, 1L << 30, 1L << 32);
+    }
+
+    static ServerGitProperties limits(int maxFiles, long maxBytes, Path workDir,
+                                      int rawMaxEntries, long rawMaxBytes, long archiveMaxBytes) {
+        return new ServerGitProperties(false, false, maxFiles, maxBytes, workDir.toString(),
+                rawMaxEntries, rawMaxBytes, archiveMaxBytes);
     }
 
     /** docker archive 처럼 첫 구간이 디렉터리 이름(app/)인 tar. */
@@ -53,6 +59,11 @@ final class GitTestFixtures {
 
         TarBuilder symlink(String path, String target) {
             entries.put(path, new Object[]{"link", target, 0777});
+            return this;
+        }
+
+        TarBuilder hardlink(String path, String target) {
+            entries.put(path, new Object[]{"hard", target, 0644});
             return this;
         }
 
@@ -84,6 +95,11 @@ final class GitTestFixtures {
                             yield link;
                         }
                         case "device" -> new TarArchiveEntry(name, TarConstants.LF_CHR);
+                        case "hard" -> {
+                            TarArchiveEntry link = new TarArchiveEntry(name, TarConstants.LF_LINK);
+                            link.setLinkName("app/" + content);
+                            yield link;
+                        }
                         default -> new TarArchiveEntry(name);
                     };
                     entry.setMode(mode);

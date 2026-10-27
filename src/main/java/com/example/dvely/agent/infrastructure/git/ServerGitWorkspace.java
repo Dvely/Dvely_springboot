@@ -13,6 +13,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.function.Supplier;
+import org.apache.commons.io.input.BoundedInputStream;
 import java.util.TreeMap;
 import java.util.stream.Stream;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
@@ -56,6 +60,7 @@ public final class ServerGitWorkspace implements AutoCloseable {
 
     private static final String BASE_REF_PREFIX = "refs/remotes/base/";
     private static final List<String> ALWAYS_EXCLUDED_SEGMENTS = List.of(".git", "node_modules");
+    private static final long MAX_GITIGNORE_BYTES = 1024 * 1024;
 
     private final Path directory;
     private final Repository repository;
@@ -109,77 +114,78 @@ public final class ServerGitWorkspace implements AutoCloseable {
      * <p>포함 규칙은 {@code git add -A} 와 같다. base 에 있는 경로는 ignore 와 무관하게 작업 트리에 있으면
      * 갱신하고 없으면 삭제한다. base 에 없는 경로에만 {@code .git}·{@code node_modules} 제외와
      * {@code .gitignore} 를 적용한다 — 그래서 {@code .gitignore} 한 줄로 추적 중인 파일이 지워지지 않는다.</p>
+     *
+     * <p><b>tar 를 두 번 읽는다.</b> 첫 번째는 헤더만(경로·모드·크기·링크, {@code .gitignore} 본문) 읽어 무엇을
+     * 넣을지 정한다. 이때 원시 상한(엔트리 수·바이트)을 넘으면 그 자리에서 멈춘다. 두 번째는 넣기로 정한
+     * 파일만 본문을 읽어 저장한다 — ignore 로 빠질 빌드 산출물·캐시는 서버 저장소에 쌓이지 않는다.
+     * 스트림 자체에도 읽기 상한을 건다.</p>
+     *
+     * @param archive tar 를 여는 함수. 두 번 부른다
      */
-    public Snapshot snapshotTree(InputStream directoryTar, RevCommit base) {
+    public Snapshot snapshotTree(Supplier<InputStream> archive, RevCommit base) {
         Map<String, BaseEntry> basePaths = base == null ? Map.of() : readBasePaths(base);
-        Map<String, Candidate> candidates = new HashMap<>();
-        Map<String, byte[]> gitignores = new HashMap<>();
+        Plan plan = plan(archive, basePaths);
+        Map<String, IgnoreNode> ignoreNodes = parseIgnores(plan.gitignores());
+
+        TreeMap<String, Header> included = new TreeMap<>();
+        for (Header h : plan.headers().values()) {
+            if (h.tracked() || !isIgnored(h.path(), ignoreNodes)) {
+                included.put(h.path(), h);
+            }
+        }
+        // 하드링크는 tar 안에서 먼저 나온 정규 파일의 내용을 쓴다. 풀리지 않으면 추적 파일은 실패, 새 경로는 뺀다.
+        Set<String> needContent = new HashSet<>();
+        for (Header h : List.copyOf(included.values())) {
+            if (h.kind() != Kind.HARDLINK) {
+                continue;
+            }
+            Header target = plan.headers().get(h.linkTarget());
+            boolean resolvable = target != null && target.kind() == Kind.FILE && target.order() < h.order();
+            if (!resolvable) {
+                if (h.tracked()) {
+                    throw new ServerGitException("하드링크를 해석하지 못했습니다: " + h.path(), null);
+                }
+                included.remove(h.path());
+                continue;
+            }
+            needContent.add(target.path());
+        }
         long bytes = 0;
+        for (Header h : included.values()) {
+            bytes += h.kind() == Kind.HARDLINK ? plan.headers().get(h.linkTarget()).size() : h.size();
+        }
+        if (included.size() > limits.maxFiles() || bytes > limits.maxBytes()) {
+            throw new SnapshotLimitExceededException(included.size(), limits.maxFiles(), bytes, limits.maxBytes());
+        }
+        for (Header h : included.values()) {
+            if (h.kind() == Kind.FILE) {
+                needContent.add(h.path());
+            }
+        }
 
-        try (ObjectInserter inserter = repository.newObjectInserter();
-             TarArchiveInputStream tar = new TarArchiveInputStream(directoryTar)) {
-            TarArchiveEntry entry;
-            while ((entry = tar.getNextEntry()) != null) {
-                String path = stripTopDirectory(entry.getName());
-                if (path == null || entry.isDirectory()) {
-                    continue;
-                }
-                requireSafePath(path);
-                boolean tracked = basePaths.containsKey(path);
-                if (insideGitlink(path, basePaths)) {
-                    continue;
-                }
-                if (!tracked && hasExcludedSegment(path)) {
-                    continue;
-                }
-                if (entry.isCharacterDevice() || entry.isBlockDevice() || entry.isFIFO() || entry.isLink()) {
-                    continue;   // 장치 파일·FIFO·하드링크는 트리에 넣지 않는다(commons-compress 는 이것들도 isFile 로 본다)
-                }
-                FileMode mode;
-                byte[] content;
-                if (entry.isSymbolicLink()) {
-                    mode = FileMode.SYMLINK;
-                    content = entry.getLinkName().getBytes(StandardCharsets.UTF_8);
-                } else if (entry.isFile()) {
-                    mode = (entry.getMode() & 0100) != 0 ? FileMode.EXECUTABLE_FILE : FileMode.REGULAR_FILE;
-                    if (entry.getSize() > limits.maxBytes()) {
-                        // 혼자서 상한을 넘는 파일은 읽지 않는다. ignore 로 빠지면 문제없고, 포함되면 아래에서 실패한다.
-                        candidates.put(path, new Candidate(mode, null, entry.getSize(), tracked));
-                        continue;
-                    }
-                    content = tar.readAllBytes();
-                } else {
-                    continue;
-                }
-                if (path.equals(".gitignore") || path.endsWith("/.gitignore")) {
-                    gitignores.put(parentOf(path), content);
-                }
-                candidates.put(path, new Candidate(mode, inserter.insert(Constants.OBJ_BLOB, content),
-                        content.length, tracked));
-            }
-
-            Map<String, IgnoreNode> ignoreNodes = parseIgnores(gitignores);
-            TreeMap<String, Candidate> included = new TreeMap<>();
-            for (Map.Entry<String, Candidate> c : candidates.entrySet()) {
-                if (c.getValue().tracked() || !isIgnored(c.getKey(), ignoreNodes)) {
-                    included.put(c.getKey(), c.getValue());
-                }
-            }
-            for (Candidate c : included.values()) {
-                bytes += c.size();
-            }
-            if (included.size() > limits.maxFiles() || bytes > limits.maxBytes()) {
-                throw new SnapshotLimitExceededException(included.size(), limits.maxFiles(), bytes, limits.maxBytes());
-            }
-
+        try (ObjectInserter inserter = repository.newObjectInserter()) {
+            Map<String, ObjectId> blobs = readContents(archive, plan, needContent, inserter);
             DirCache index = DirCache.newInCore();
             DirCacheBuilder builder = index.builder();
-            TreeMap<String, DirCacheEntry> sorted = new TreeMap<>(Comparator.naturalOrder());
-            for (Map.Entry<String, Candidate> c : included.entrySet()) {
-                DirCacheEntry e = new DirCacheEntry(c.getKey());
-                e.setFileMode(c.getValue().mode());
-                e.setObjectId(c.getValue().blob());
-                sorted.put(c.getKey(), e);
+            TreeMap<String, DirCacheEntry> sorted = new TreeMap<>();
+            for (Header h : included.values()) {
+                DirCacheEntry e = new DirCacheEntry(h.path());
+                switch (h.kind()) {
+                    case SYMLINK -> {
+                        e.setFileMode(FileMode.SYMLINK);
+                        e.setObjectId(inserter.insert(Constants.OBJ_BLOB, h.linkTarget().getBytes(StandardCharsets.UTF_8)));
+                    }
+                    case HARDLINK -> {
+                        Header target = plan.headers().get(h.linkTarget());
+                        e.setFileMode(target.mode());
+                        e.setObjectId(blobs.get(target.path()));
+                    }
+                    default -> {
+                        e.setFileMode(h.mode());
+                        e.setObjectId(blobs.get(h.path()));
+                    }
+                }
+                sorted.put(h.path(), e);
             }
             // 서브모듈은 스냅샷으로 만들 수 없다 — base 의 가리킴을 그대로 둔다.
             basePaths.forEach((path, baseEntry) -> {
@@ -197,6 +203,96 @@ public final class ServerGitWorkspace implements AutoCloseable {
             return new Snapshot(tree, included.size(), bytes);
         } catch (IOException e) {
             throw new ServerGitException("작업 트리 스냅샷을 만들지 못했습니다", e);
+        }
+    }
+
+    /** 1패스: 헤더만 읽는다. 원시 상한을 넘으면 즉시 멈춘다. */
+    private Plan plan(Supplier<InputStream> archive, Map<String, BaseEntry> basePaths) {
+        Map<String, Header> headers = new HashMap<>();
+        Map<String, byte[]> gitignores = new HashMap<>();
+        long rawBytes = 0;
+        int order = 0;
+        try (InputStream raw = archive.get();
+             TarArchiveInputStream tar = new TarArchiveInputStream(bounded(raw))) {
+            TarArchiveEntry entry;
+            while ((entry = tar.getNextEntry()) != null) {
+                String path = stripTopDirectory(entry.getName());
+                if (path == null || entry.isDirectory()) {
+                    continue;
+                }
+                requireSafePath(path);
+                boolean tracked = basePaths.containsKey(path);
+                if (insideGitlink(path, basePaths) || (!tracked && hasExcludedSegment(path))) {
+                    continue;
+                }
+                Kind kind;
+                String linkTarget = null;
+                if (entry.isCharacterDevice() || entry.isBlockDevice() || entry.isFIFO()) {
+                    continue;   // commons-compress 는 이것들도 isFile 로 본다
+                } else if (entry.isLink()) {
+                    kind = Kind.HARDLINK;
+                    linkTarget = stripTopDirectory(entry.getLinkName());
+                } else if (entry.isSymbolicLink()) {
+                    kind = Kind.SYMLINK;
+                    linkTarget = entry.getLinkName();
+                } else if (entry.isFile()) {
+                    kind = Kind.FILE;
+                } else {
+                    continue;
+                }
+                order++;
+                rawBytes += kind == Kind.FILE ? entry.getSize() : 0;
+                if (order > limits.rawMaxEntries() || rawBytes > limits.rawMaxBytes()) {
+                    throw new SnapshotLimitExceededException(order, limits.rawMaxEntries(), rawBytes, limits.rawMaxBytes());
+                }
+                FileMode mode = (entry.getMode() & 0100) != 0 ? FileMode.EXECUTABLE_FILE : FileMode.REGULAR_FILE;
+                headers.put(path, new Header(path, kind, mode, entry.getSize(), linkTarget, tracked, order));
+                if (kind == Kind.FILE && (path.equals(".gitignore") || path.endsWith("/.gitignore"))) {
+                    if (entry.getSize() > MAX_GITIGNORE_BYTES) {
+                        throw new SnapshotLimitExceededException(order, limits.rawMaxEntries(), entry.getSize(), MAX_GITIGNORE_BYTES);
+                    }
+                    gitignores.put(parentOf(path), tar.readAllBytes());
+                }
+            }
+            return new Plan(headers, gitignores);
+        } catch (IOException e) {
+            throw new ServerGitException("작업 트리 목록을 읽지 못했습니다", e);
+        }
+    }
+
+    /** 2패스: 넣기로 정한 정규 파일만 본문을 읽어 저장한다. 1패스와 크기가 다르면 그 사이 바뀐 것이다. */
+    private Map<String, ObjectId> readContents(Supplier<InputStream> archive, Plan plan, Set<String> needContent,
+                                               ObjectInserter inserter) throws IOException {
+        Map<String, ObjectId> blobs = new HashMap<>();
+        try (InputStream raw = archive.get();
+             TarArchiveInputStream tar = new TarArchiveInputStream(bounded(raw))) {
+            TarArchiveEntry entry;
+            while ((entry = tar.getNextEntry()) != null && blobs.size() < needContent.size()) {
+                String path = stripTopDirectory(entry.getName());
+                if (path == null || !needContent.contains(path) || !entry.isFile() || entry.isLink()
+                        || entry.isCharacterDevice() || entry.isBlockDevice() || entry.isFIFO()) {
+                    continue;
+                }
+                if (entry.getSize() != plan.headers().get(path).size()) {
+                    throw new WorkTreeChangedException(path);
+                }
+                blobs.put(path, inserter.insert(Constants.OBJ_BLOB, tar.readAllBytes()));
+            }
+        }
+        if (blobs.size() != needContent.size()) {
+            throw new WorkTreeChangedException(needContent.stream().filter(p -> !blobs.containsKey(p)).findFirst().orElse(""));
+        }
+        return blobs;
+    }
+
+    private InputStream bounded(InputStream raw) {
+        try {
+            return BoundedInputStream.builder().setInputStream(raw).setMaxCount(limits.archiveMaxBytes())
+                    .setOnMaxCount((max, count) -> {
+                        throw new SnapshotLimitExceededException(0, limits.rawMaxEntries(), count, max);
+                    }).get();
+        } catch (IOException e) {
+            throw new ServerGitException("작업 트리 스트림을 열지 못했습니다", e);
         }
     }
 
@@ -355,11 +451,15 @@ public final class ServerGitWorkspace implements AutoCloseable {
         return false;
     }
 
-    private static Map<String, IgnoreNode> parseIgnores(Map<String, byte[]> gitignores) throws IOException {
+    private static Map<String, IgnoreNode> parseIgnores(Map<String, byte[]> gitignores) {
         Map<String, IgnoreNode> nodes = new HashMap<>();
         for (Map.Entry<String, byte[]> e : gitignores.entrySet()) {
             IgnoreNode node = new IgnoreNode();
-            node.parse(new java.io.ByteArrayInputStream(e.getValue()));
+            try {
+                node.parse(new java.io.ByteArrayInputStream(e.getValue()));
+            } catch (IOException ex) {
+                throw new ServerGitException(".gitignore 를 읽지 못했습니다: " + e.getKey(), ex);
+            }
             nodes.put(e.getKey(), node);
         }
         return nodes;
@@ -424,7 +524,19 @@ public final class ServerGitWorkspace implements AutoCloseable {
     private record BaseEntry(FileMode mode, ObjectId id) {
     }
 
-    private record Candidate(FileMode mode, ObjectId blob, long size, boolean tracked) {
+    private enum Kind { FILE, SYMLINK, HARDLINK }
+
+    private record Header(String path, Kind kind, FileMode mode, long size, String linkTarget, boolean tracked, int order) {
+    }
+
+    private record Plan(Map<String, Header> headers, Map<String, byte[]> gitignores) {
+    }
+
+    /** 두 번 읽는 사이 작업 트리가 바뀌었다. 다시 시도하면 된다. */
+    public static class WorkTreeChangedException extends ServerGitException {
+        public WorkTreeChangedException(String path) {
+            super("스냅샷을 뜨는 동안 작업 트리가 바뀌었습니다: " + path, null);
+        }
     }
 
     public record Snapshot(ObjectId tree, int fileCount, long bytes) {

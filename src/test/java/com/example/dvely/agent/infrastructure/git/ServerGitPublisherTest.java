@@ -91,7 +91,7 @@ class ServerGitPublisherTest {
         publisher.publish(new Request(remote.url(), null, "preview", List.of("preview", "main"), archive,
                 "feat: apply Qeploy Agent task t-1"), Optional.empty());
 
-        assertThat(opened.get()).isEqualTo(2);
+        assertThat(opened.get()).isEqualTo(4);   // 시도마다 두 번(목록·본문), 재시도 1회
         assertThat(remote.files("preview")).containsEntry("README.md", "mine");
         // 두 번째 시도는 움직인 끝 위에 쌓는다 — 남이 올린 커밋을 덮어쓰지 않는다.
         assertThat(remote.tip("preview").getParent(0).getId()).isEqualTo(moved.get().getId());
