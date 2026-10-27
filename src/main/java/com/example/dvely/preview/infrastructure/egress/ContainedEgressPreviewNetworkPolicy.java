@@ -6,12 +6,23 @@ import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.exception.ConflictException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.Capability;
+import com.github.dockerjava.api.model.Container;
 import com.github.dockerjava.api.model.ContainerNetwork;
 import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.Network;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import java.util.Map;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
@@ -63,11 +74,18 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
 
     private static final String CONF_DIR = "/etc/tinyproxy";
     private static final String ALLOW_ENTRY = "qeploy-allow.txt";
+    /** 프리뷰 컨테이너의 세션 라벨. DockerContainerService 가 붙인다. */
+    static final String PREVIEW_SESSION_ID_LABEL = "qeploy.previewSessionId";
+    /** Qeploy 가 만든 세션 egress 네트워크 표시. 정리 작업은 이 라벨(또는 아래 예전 형식)만 고른다. */
+    static final String EGRESS_NETWORK_LABEL = "qeploy.preview.egressNetwork";
+    private static final Pattern UUID_SUFFIX =
+            Pattern.compile("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    private static final Pattern SESSION_CONF = Pattern.compile(CONF_DIR + "/s-([A-Za-z0-9_-]+)\\.conf");
     /** 프록시 컨테이너가 어떤 모양·상한으로 만들어졌는지. {@link #ensureProxyRunning()} 이 재사용 여부를 이것으로 정한다. */
     static final String SHAPE_LABEL = "qeploy.egressProxy.shape";
 
     // DockerClient 는 스프링 빈이 아니다 — 직접 만든다(DockerClients 참고).
-    private final DockerClient dockerClient = DockerClients.createLocal();
+    private final DockerClient dockerClient;
     private final PreviewEgressProperties properties;
 
     /**
@@ -78,14 +96,21 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
      */
     private final ReentrantLock proxyLock = new ReentrantLock();
 
+    @org.springframework.beans.factory.annotation.Autowired
     public ContainedEgressPreviewNetworkPolicy(PreviewEgressProperties properties) {
+        this(properties, DockerClients.createLocal());
+    }
+
+    /** 테스트용 — 도커 클라이언트를 바꿔 끼운다. */
+    ContainedEgressPreviewNetworkPolicy(PreviewEgressProperties properties, DockerClient dockerClient) {
         this.properties = properties;
+        this.dockerClient = dockerClient;
     }
 
     @Override
     public String attachNetwork(String previewSessionId) {
         String network = properties.networkName(previewSessionId);
-        createInternalNetwork(network);
+        createInternalNetwork(network, previewSessionId);
         startSessionProxy(previewSessionId, network);
         return network;
     }
@@ -143,7 +168,119 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
         }
     }
 
-    private void createInternalNetwork(String name) {
+    /**
+     * 끝난 세션이 남긴 egress 자원(세션 네트워크·프록시 안 세션 프로세스)을 거둔다(#529). 멱등이다.
+     *
+     * <p>살아 있는 세션은 프리뷰 컨테이너(실행 중이든 멈춰 있든)의 세션 라벨로 판단한다. 막 만들어진
+     * 세션은 네트워크와 프록시 프로세스가 컨테이너보다 먼저 생기므로, {@code grace} 보다 젊은 네트워크는
+     * 건드리지 않는다. 네트워크 없이 프로세스만 남은 세션은 나이와 무관하게 끝난 것이다 — 새 세션은
+     * 네트워크를 먼저 만든다.</p>
+     *
+     * @return 거둔 세션 수
+     */
+    public int sweepOrphans(Duration grace, Instant now) {
+        Set<String> live = liveSessionIds();
+        Set<String> withNetwork = new HashSet<>();
+        Set<String> orphans = new TreeSet<>();
+        for (Network network : dockerClient.listNetworksCmd().exec()) {
+            String sessionId = qeployEgressSessionOf(network);
+            if (sessionId == null) {
+                continue;   // Qeploy 가 만든 세션 egress 네트워크가 아니다 — 건드리지 않는다
+            }
+            withNetwork.add(sanitizeSessionId(sessionId));
+            Date created = network.getCreated();
+            boolean young = created != null && created.toInstant().isAfter(now.minus(grace));
+            if (!live.contains(sessionId) && !young) {
+                orphans.add(sessionId);
+            }
+        }
+        for (String sanitized : sessionsWithProxyProcess()) {
+            if (!live.contains(sanitized) && !withNetwork.contains(sanitized)) {
+                orphans.add(sanitized);
+            }
+        }
+        for (String sessionId : orphans) {
+            release(sessionId);
+        }
+        if (!orphans.isEmpty()) {
+            log.info("[PreviewEgress] 끝난 세션의 egress 자원을 거뒀습니다: {}개 {}", orphans.size(), orphans);
+        }
+        return orphans.size();
+    }
+
+    /**
+     * Qeploy 가 만든 세션 egress 네트워크면 그 세션 id, 아니면 null.
+     *
+     * <p>라벨이 있으면 라벨로 판단한다. 라벨을 붙이기 전(#529 이전)에 만든 것은 이름이 정확히
+     * "접두 + UUID" 이고 internal 인 것만 고른다 — bridge·host, 같은 호스트의 다른 사용자 네트워크,
+     * 공유 프리뷰 네트워크, coding-agent egress 네트워크는 이 조건에 걸리지 않는다.</p>
+     */
+    String qeployEgressSessionOf(Network network) {
+        Map<String, String> labels = network.getLabels();
+        if (labels != null && "true".equals(labels.get(EGRESS_NETWORK_LABEL))) {
+            String sessionId = labels.get(PREVIEW_SESSION_ID_LABEL);
+            return sessionId == null || sessionId.isBlank() ? null : sessionId;
+        }
+        String name = network.getName();
+        if (name == null || !name.startsWith(properties.networkPrefix())) {
+            return null;
+        }
+        String suffix = name.substring(properties.networkPrefix().length());
+        return UUID_SUFFIX.matcher(suffix).matches() && Boolean.TRUE.equals(network.getInternal()) ? suffix : null;
+    }
+
+    Set<String> liveSessionIds() {
+        Set<String> live = new HashSet<>();
+        for (Container container : dockerClient.listContainersCmd().withShowAll(true)
+                .withLabelFilter(List.of(PREVIEW_SESSION_ID_LABEL)).exec()) {
+            String sessionId = container.getLabels() == null ? null : container.getLabels().get(PREVIEW_SESSION_ID_LABEL);
+            if (sessionId != null && !sessionId.isBlank()) {
+                live.add(sessionId);
+                live.add(sanitizeSessionId(sessionId));
+            }
+        }
+        return live;
+    }
+
+    /** 프록시 컨테이너 안에서 도는 세션 tinyproxy 의 세션 id(정리된 형태). 프록시가 없으면 비어 있다. */
+    Set<String> sessionsWithProxyProcess() {
+        Set<String> sessions = new HashSet<>();
+        try {
+            String ps = execOutput(properties.proxyName(), "ps -o args | grep '[t]inyproxy -d -c " + CONF_DIR + "/s-'");
+            Matcher matcher = SESSION_CONF.matcher(ps);
+            while (matcher.find()) {
+                sessions.add(matcher.group(1));
+            }
+        } catch (NotFoundException e) {
+            log.debug("egress 프록시 컨테이너가 없어 세션 프로세스 점검을 건너뜁니다");
+        }
+        return sessions;
+    }
+
+    private String execOutput(String containerId, String command) {
+        var created = dockerClient.execCreateCmd(containerId)
+                .withCmd("sh", "-c", command)
+                .withAttachStdout(true)
+                .withAttachStderr(false)
+                .exec();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try {
+            dockerClient.execStartCmd(created.getId())
+                    .withDetach(false)
+                    .exec(new com.github.dockerjava.api.async.ResultCallback.Adapter<com.github.dockerjava.api.model.Frame>() {
+                        @Override
+                        public void onNext(com.github.dockerjava.api.model.Frame frame) {
+                            out.writeBytes(frame.getPayload());
+                        }
+                    })
+                    .awaitCompletion(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return out.toString(StandardCharsets.UTF_8);
+    }
+
+    private void createInternalNetwork(String name, String previewSessionId) {
         boolean exists = dockerClient.listNetworksCmd().withNameFilter(name).exec().stream()
                 .anyMatch(network -> name.equals(network.getName()));
         if (exists) {
@@ -152,7 +289,9 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
         try {
             // internal 이 바깥으로 나가는 경로를 없앤다. icc 는 건드리지 않는다 — 이 네트워크에는
             // 프리뷰 하나와 프록시만 있고, 프리뷰끼리는 애초에 같은 네트워크에 있지 않다.
-            dockerClient.createNetworkCmd().withName(name).withDriver("bridge").withInternal(true).exec();
+            dockerClient.createNetworkCmd().withName(name).withDriver("bridge").withInternal(true)
+                    .withLabels(Map.of(EGRESS_NETWORK_LABEL, "true", PREVIEW_SESSION_ID_LABEL, previewSessionId))
+                    .exec();
             log.info("[PreviewEgress] 세션 네트워크 생성: {}", name);
         } catch (ConflictException e) {
             log.debug("egress 네트워크 동시 생성 레이스: name={}", name);
@@ -218,8 +357,12 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
         try {
             // pid 파일이 있으면 그 pid 를 죽이고, 없거나 이미 죽은 프로세스를 가리켜도(kill 실패)
             // 전체 명령은 성공으로 끝낸다 — 그다음 rm -f 로 남은 conf/pid 파일을 정리한다.
+            // pid 파일만으로는 부족하다 — 같은 세션에 attach 가 다시 불리면 bind 에 실패하고 죽는 새 프로세스가
+            // pid 파일을 덮어써, 파일이 이미 없는 pid 를 가리킬 수 있다(#529, dev 에서 설정 파일은 지워졌는데
+            // 프로세스가 남았다). 그래서 이 세션 설정 파일로 뜬 프로세스를 명령줄로도 찾아 내린다.
             awaitExec(properties.proxyName(),
                     "[ -f " + pidPath + " ] && kill $(cat " + pidPath + ") 2>/dev/null; "
+                            + "pkill -f '" + sessionProcessPattern(confPath) + "' 2>/dev/null; "
                             + "rm -f " + pidPath + " " + confPath + "; true");
         } catch (NotFoundException e) {
             log.debug("egress 프록시 컨테이너가 이미 없어 세션 프로세스 정리를 생략합니다: session={}", previewSessionId);
@@ -355,6 +498,15 @@ public class ContainedEgressPreviewNetworkPolicy implements PreviewNetworkPolicy
         }
         String cleaned = sessionId.replaceAll("[^a-zA-Z0-9_-]", "_");
         return cleaned.isEmpty() ? "unknown" : cleaned;
+    }
+
+    /**
+     * 이 세션 프로세스만 잡는 {@code pkill -f} 패턴. {@code -f} 는 정규식이라 점을 이스케이프하고 명령줄
+     * 전체를 앞뒤로 고정한다 — 다른 세션의 프로세스가 걸리지 않는다. 세션 id 는 이미
+     * {@link #sanitizeSessionId} 로 영숫자·{@code _}·{@code -} 만 남았다.
+     */
+    static String sessionProcessPattern(String confPath) {
+        return "^tinyproxy -d -c " + confPath.replace(".", "\\.") + "$";
     }
 
     private static String confEntry(String sanitizedSessionId) {

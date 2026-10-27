@@ -943,6 +943,14 @@ public class DockerContainerService {
     }
 
     /**
+     * 컨테이너 디렉터리를 데몬이 만든 tar 스트림으로 연다(첫 경로 구간이 디렉터리 이름). 컨테이너 안의
+     * 도구를 거치지 않는다. 호출자가 닫는다 — 서버 측 git 스냅샷(#523)이 쓴다.
+     */
+    public InputStream openDirectoryArchive(String containerId, String containerPath) {
+        return dockerClient.copyArchiveFromContainerCmd(containerId, containerPath).exec();
+    }
+
+    /**
      * 컨테이너 안의 파일 하나를 호스트로 꺼낸다. Docker 의 copy 는 tar 스트림을 주므로, 그 안의 첫
      * 정규 파일 엔트리를 destFile 로 푼다(빌드 산출물 jar 를 EC2 로 넘기기 전에 컨트롤 플레인으로
      * 추출하는 용도 — 빌드 컨테이너에는 클라우드 자격을 주지 않기 위함이다).
@@ -1040,9 +1048,18 @@ public class DockerContainerService {
     }
 
     public void removeContainer(String containerId) {
-        // 컨테이너를 지우기 전에 세션 몫의 네트워크를 되돌린다. 지운 뒤에는 라벨을 읽을 수 없어
-        // 어느 세션의 것인지 알 방법이 사라진다.
-        releasePreviewNetwork(containerId);
+        // 세션 id 는 지우기 전에 읽어 둔다(지운 뒤에는 라벨을 읽을 수 없다). 네트워크는 컨테이너를 지운
+        // <b>뒤에</b> 되돌린다 — 프리뷰가 아직 붙어 있으면 네트워크 제거가 "사용 중" 으로 실패해 고아로
+        // 남는다(#529, dev 에서 세션 네트워크 7개 중 6개가 그렇게 남았다).
+        String sessionId = previewSessionIdOf(containerId);
+        try {
+            removeContainerOnly(containerId);
+        } finally {
+            releasePreviewNetwork(sessionId);
+        }
+    }
+
+    private void removeContainerOnly(String containerId) {
         try {
             dockerClient.stopContainerCmd(containerId).withTimeout(5).exec();
         } catch (NotFoundException e) {
@@ -1066,18 +1083,29 @@ public class DockerContainerService {
      * <p>실패를 삼킨다 — 여기서 던지면 정작 컨테이너 회수가 멈춘다. 회수되지 못한 네트워크는
      * 정책 쪽 로그로 드러난다.</p>
      */
-    private void releasePreviewNetwork(String containerId) {
+    private String previewSessionIdOf(String containerId) {
         if (previewNetworkPolicy == null) {
-            return;
+            return null;
         }
         try {
             var labels = dockerClient.inspectContainerCmd(containerId).exec().getConfig().getLabels();
             String sessionId = labels == null ? null : labels.get(PREVIEW_SESSION_ID_LABEL);
-            if (sessionId != null && !sessionId.isBlank()) {
-                previewNetworkPolicy.release(sessionId);
-            }
+            return sessionId == null || sessionId.isBlank() ? null : sessionId;
         } catch (RuntimeException e) {
-            log.debug("프리뷰 네트워크 회수 생략: containerId={} 사유={}", containerId, e.toString());
+            log.debug("프리뷰 세션 라벨을 읽지 못했습니다(네트워크는 정리 작업이 거둔다): containerId={} 사유={}",
+                    containerId, e.toString());
+            return null;
+        }
+    }
+
+    private void releasePreviewNetwork(String sessionId) {
+        if (previewNetworkPolicy == null || sessionId == null) {
+            return;
+        }
+        try {
+            previewNetworkPolicy.release(sessionId);
+        } catch (RuntimeException e) {
+            log.debug("프리뷰 네트워크 회수 생략: session={} 사유={}", sessionId, e.toString());
         }
     }
 

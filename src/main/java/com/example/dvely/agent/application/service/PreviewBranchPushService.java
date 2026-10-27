@@ -29,6 +29,7 @@ public class PreviewBranchPushService {
 
     private final DockerContainerService dockerService;
     private final ContainerGitCredentials gitCredentials;
+    private final ServerPreviewBranch serverPreviewBranch;
 
     /**
      * @param isNew 이 컨테이너에 재사용할 .git 이 없어 새로 init 해야 하면 true. 시작용 .gitignore 를
@@ -41,6 +42,12 @@ public class PreviewBranchPushService {
                      String repoFullName,
                      boolean isNew,
                      String taskId) {
+        // 서버 측 git(#523)이 켜져 있으면 컨테이너 git 을 쓰지 않는다. 보호 경로 변경은 승인 없이 올리지 않는다.
+        if (serverPreviewBranch.enabled()) {
+            serverPreviewBranch.publish(containerId, userToken, username, repoFullName, taskId, isNew,
+                    java.util.Optional.empty(), false);
+            return;
+        }
         // apk 는 이미 git 이 있거나 이미지가 alpine 이 아닐 수 있어 실패를 허용한다. 정말 git 이
         // 없으면 아래 strict 명령들이 대신 드러낸다.
         dockerService.installPackages(containerId, "git");
@@ -160,6 +167,11 @@ public class PreviewBranchPushService {
     }
 
     private void writeGitignore(String containerId) {
+        writeDefaultGitignore(dockerService, containerId);
+    }
+
+    /** 새 저장소의 시작용 .gitignore. 서버 측 경로(ServerPreviewBranch)도 같은 내용을 쓴다. */
+    static void writeDefaultGitignore(DockerContainerService dockerService, String containerId) {
         String content = "node_modules/\ndist/\nbuild/\nout/\n.env\n.env.local\n";
         String b64     = Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
         dockerService.exec(containerId,

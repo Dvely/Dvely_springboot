@@ -1,6 +1,10 @@
 package com.example.dvely.change.application.service;
 
+import com.example.dvely.agent.application.service.ServerPreviewBranch;
 import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Inspection;
+import com.example.dvely.project.domain.model.Project;
+import com.example.dvely.project.domain.value.RepositoryBindingStatus;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
@@ -31,6 +35,7 @@ public class ChangeService {
     private final PreviewSessionService previewSessionService;
     private final DockerContainerService dockerService;
     private final ProjectRepository projectRepository;
+    private final ServerPreviewBranch serverPreviewBranch;
 
     /**
      * 트랜잭션을 걸지 않는다 — {@link #captureDiff} 가 Docker exec 를 두 번 돌고 그중 하나는
@@ -45,6 +50,10 @@ public class ChangeService {
         AgentTask task = taskStore.get(taskId);
         PreviewSessionInfo preview = previewSessionService.findByTaskId(taskId)
                 .orElseThrow(() -> new IllegalStateException("Change에 연결할 PreviewSession이 없습니다."));
+        if (serverPreviewBranch.enabled()) {
+            recordFromServer(task, preview, summary);
+            return;
+        }
         String diff = captureDiff(preview.containerId());
         ChangeEntity change = changeRepository.findByTaskId(taskId)
                 .orElseGet(() -> new ChangeEntity(
@@ -58,6 +67,45 @@ public class ChangeService {
                 ));
         change.update(summary, diff);
         changeRepository.save(change);
+    }
+
+    /**
+     * 서버 측 git(#523)이 켜져 있으면 diff 를 서버가 만든다. 기준은 연결된 저장소의 preview(없으면 기본 브랜치),
+     * 저장소가 없으면 빈 트리다. 그 스냅샷 트리 id 도 남겨 결과 승인 뒤 반영 때 대조한다.
+     */
+    private void recordFromServer(AgentTask task, PreviewSessionInfo preview, String summary) {
+        Inspection inspection = serverPreviewBranch.inspect(
+                preview.containerId(), task.ownerUserId(), boundRepository(task.projectId(), task.ownerUserId()));
+        String diff = truncate(inspection.diff(), MAX_DIFF_CHARS);
+        ChangeEntity change = changeRepository.findByTaskId(task.taskId())
+                .orElseGet(() -> new ChangeEntity(task.ownerUserId(), task.projectId(), task.conversationId(),
+                        task.taskId(), preview.sessionId(), summary, diff));
+        change.updateFromServerSnapshot(summary, diff, inspection.tree().name());
+        changeRepository.save(change);
+    }
+
+    private String boundRepository(Long projectId, Long ownerUserId) {
+        if (projectId == null) {
+            return null;
+        }
+        return projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, ownerUserId)
+                .filter(project -> project.getRepositoryBindingStatus() == RepositoryBindingStatus.BOUND)
+                .map(Project::getSourceRepository)
+                .orElse(null);
+    }
+
+    /**
+     * 결과 승인 게이트가 push 를 승인 뒤로 미뤘다. 승인한 뒤 반영할 트리와, 사용자가 볼 diff 를 <b>같은
+     * 스냅샷</b>에서 남긴다 — 앞서 record 가 남긴 diff 는 그 사이 작업 트리가 바뀌었을 수 있어 덮어쓴다.
+     * 그래야 사용자가 검토한 diff 와 승인 뒤 올라가는 트리가 어긋나지 않는다.
+     */
+    @Transactional
+    public void deferPush(String taskId, Inspection inspection) {
+        changeRepository.findByTaskId(taskId).ifPresent(change -> {
+            change.update(change.getSummary(), truncate(inspection.diff(), MAX_DIFF_CHARS));
+            change.deferPush(inspection.tree().name());
+            changeRepository.save(change);
+        });
     }
 
     /** 저장할 diff 의 상한. 넘으면 잘라서 표시한다 — 컬럼이 MEDIUMTEXT(16MB) 라 넘기면 저장이 통째로 실패한다. */
