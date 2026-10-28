@@ -1493,6 +1493,12 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - `ApprovalResponse.rejectOption`(V69 `approvals.reject_option`) 추가
 - 아직 dev 실측 전이다. 운영은 서버 측 git 플래그가 꺼져 있어 REVERT 가 비활성으로 내려간다
 
+## 4.38 서버 측 push 가 준비 뒤 바뀐 원격을 되돌리지 않게 한다 (Issue #523)
+
+- 작업 트리를 준비한 뒤 원격 preview 가 움직이면, 서버 push 가 새 tip 위에 옛 트리를 올려 그 변경을 되돌렸다. non-fast-forward 재시도가 base 를 다시 받으면서 생긴 PR-2 회귀다(옛 컨테이너 push 는 거부됐다). 반영 범위 화면에도 드러나지 않는다
+- 준비할 때 base 를 `/workspace/.qeploy-base` 에 남기고, 서버 push 가 받은 base 가 다르면 반영하지 않고 실패한다(재시도 포함). 성공하면 표시를 올린 커밋으로 갱신한다
+- 표시가 없는 컨테이너는 검사하지 않는다. 상세는 `docs/server-side-git-design.md` 4.3
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

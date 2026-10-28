@@ -28,6 +28,17 @@ public final class ContainerPaths {
     public static final String APP_DIR = "/workspace/app";
 
     /**
+     * 작업 트리를 준비할 때의 저장소 base 커밋(#523). 서버 측 push 가 받은 base 가 이것과 다르면 반영하지 않는다 —
+     * 스냅샷은 트리를 통째로 갈아끼우므로 그 사이 원격에 생긴 변경을 되돌린다. 빈 저장소면 {@link #EMPTY_BASE}.
+     * 작업 트리 밖에 둔다(스냅샷에 섞이지 않게).
+     */
+    public static final String BASE_MARKER = "/workspace/.qeploy-base";
+    public static final String EMPTY_BASE = "EMPTY";
+
+    /** 작업 트리를 어느 저장소에서 받았는지(서버 측 clone). 지우면 다음 준비가 새로 받는다. */
+    public static final String SOURCE_MARKER = "/workspace/.qeploy-source";
+
+    /**
      * 변경 내역을 뜨는 데 쓰는 일회용 git 디렉터리. <b>작업 트리 밖</b>에 둔다 — 워크스페이스에
      * {@code .git} 을 만들면 {@code PreviewBranchPushService} 가 "이미 저장소가 있다" 로 분기해
      * remote 도 없는 상태에서 push 가 통째로 실패한다.
