@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -118,12 +119,9 @@ public class ContainerImageBuilder {
         }
         boolean ok;
         try {
-            ok = new ProcessBuilder("docker", "buildx", "version")
-                    .redirectErrorStream(true).start().waitFor() == 0;
-        } catch (IOException | InterruptedException e) {
-            if (e instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
-            }
+            ok = BoundedProcess.await(new ProcessBuilder("docker", "buildx", "version").redirectErrorStream(true).start(),
+                    SHORT_COMMAND_TIMEOUT, "buildx 확인", () -> { }).exitCode() == 0;
+        } catch (IOException | BackendBuildException e) {
             ok = false;
         }
         buildxAvailable = ok;
@@ -152,7 +150,8 @@ public class ContainerImageBuilder {
         Path outDir = createTempDir("qeploy-out-");
         try {
             extractContext(contextTar, ctxDir);
-            List<String> cmd = kanikoBase(ctxDir);
+            String name = kanikoContainerName();
+            List<String> cmd = kanikoBase(ctxDir, name);
             cmd.add("-v");
             cmd.add(outDir + ":/out");
             cmd.add(KANIKO_IMAGE);
@@ -160,7 +159,7 @@ public class ContainerImageBuilder {
             cmd.add("--no-push");
             cmd.add("--tar-path=/out/image.tar");
             cmd.add("--destination=" + imageTag);   // tar 안 이미지 태그(load 시 이 이름으로 복원)
-            runCli(cmd.toArray(String[]::new), null, "이미지 빌드(kaniko)");
+            runCli(cmd.toArray(String[]::new), null, "이미지 빌드(kaniko)", () -> removeContainerQuietly(name));
             Path result = createTempFile("qeploy-image-", ".tar");
             Files.move(outDir.resolve("image.tar"), result,
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING);
@@ -183,13 +182,14 @@ public class ContainerImageBuilder {
         try {
             extractContext(contextTar, ctxDir);
             writeDockerConfig(cfg, auth);
-            List<String> cmd = kanikoBase(ctxDir);
+            String name = kanikoContainerName();
+            List<String> cmd = kanikoBase(ctxDir, name);
             cmd.add("-v");
             cmd.add(cfg + ":/kaniko/.docker/config.json:ro");
             cmd.add(KANIKO_IMAGE);
             kanikoArgs(cmd);
             cmd.add("--destination=" + imageRef);
-            runCli(cmd.toArray(String[]::new), null, "이미지 빌드·푸시(kaniko)");
+            runCli(cmd.toArray(String[]::new), null, "이미지 빌드·푸시(kaniko)", () -> removeContainerQuietly(name));
         } catch (IOException e) {
             throw new BackendBuildException("kaniko 이미지 push 처리 실패: " + e.getMessage());
         } finally {
@@ -198,11 +198,22 @@ public class ContainerImageBuilder {
         }
     }
 
-    /** kaniko 컨테이너 공통 앞부분: docker run --rm + 컨텍스트 디렉터리 read-only 마운트. */
-    private List<String> kanikoBase(Path ctxDir) {
-        List<String> cmd = new ArrayList<>(List.of("docker", "run", "--rm",
+    /**
+     * kaniko 컨테이너 공통 앞부분: docker run --rm + 이름 + 컨텍스트 디렉터리 read-only 마운트. 이름을 붙이는 것은
+     * 시간 초과 때 지우기 위해서다 — docker CLI 를 죽여도 데몬이 띄운 컨테이너는 계속 돈다(#507).
+     */
+    private List<String> kanikoBase(Path ctxDir, String name) {
+        List<String> cmd = new ArrayList<>(List.of("docker", "run", "--rm", "--name", name,
                 "-v", ctxDir + ":/workspace:ro"));
         return cmd;
+    }
+
+    private static String kanikoContainerName() {
+        return "qeploy-kaniko-" + java.util.UUID.randomUUID();
+    }
+
+    private void removeContainerQuietly(String name) {
+        runCliQuiet(new String[]{"docker", "rm", "-f", name});
     }
 
     /** kaniko executor 공통 인자: 컨텍스트·Dockerfile. */
@@ -225,14 +236,22 @@ public class ContainerImageBuilder {
 
     // ── 공용 프로세스 실행 ────────────────────────────────────────────────────────────
 
+    /** 정리용·짧은 CLI(로그인·로그아웃·rm·buildx 확인)를 기다리는 상한. */
+    static final Duration SHORT_COMMAND_TIMEOUT = Duration.ofMinutes(2);
+
     /** CLI 실행. stdinFile 을 stdin 으로 스트리밍한다(빌드 컨텍스트 tar — 대용량이라 파일 리다이렉트). */
     private void runCli(String[] cmd, Path stdinFile, String what) {
+        runCli(cmd, stdinFile, what, () -> { });
+    }
+
+    /** @param onTimeout 시간 초과로 프로세스를 죽인 뒤 부른다(프로세스 밖에 남는 자원 정리) */
+    private void runCli(String[] cmd, Path stdinFile, String what, Runnable onTimeout) {
         ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
         if (stdinFile != null) {
             pb.redirectInput(stdinFile.toFile());
         }
         try {
-            waitAndCheck(pb.start(), what);
+            check(BoundedProcess.await(pb.start(), properties.imageBuildTimeoutOrDefault(), what, onTimeout), what);
         } catch (IOException e) {
             throw new BackendBuildException(what + " 실행 실패: " + e.getMessage());
         }
@@ -246,36 +265,27 @@ public class ContainerImageBuilder {
             try (var os = p.getOutputStream()) {
                 os.write(stdin);
             }
-            waitAndCheck(p, what);
+            check(BoundedProcess.await(p, SHORT_COMMAND_TIMEOUT, what, () -> { }), what);
         } catch (IOException e) {
             throw new BackendBuildException(what + " 실행 실패: " + e.getMessage());
         }
     }
 
-    /** best-effort CLI(정리용 — 예: docker logout). 실패해도 던지지 않고 경고만. */
+    /** best-effort CLI(정리용 — 예: docker logout). 실패·시간 초과해도 던지지 않고 경고만. */
     private void runCliQuiet(String[] cmd) {
         try {
-            new ProcessBuilder(cmd).redirectErrorStream(true).start().waitFor();
-        } catch (IOException e) {
+            BoundedProcess.await(new ProcessBuilder(cmd).redirectErrorStream(true).start(),
+                    SHORT_COMMAND_TIMEOUT, "정리 명령", () -> { });
+        } catch (IOException | BackendBuildException e) {
             log.warn("정리 명령 실패(무시): {}", String.join(" ", cmd));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
         }
     }
 
-    /** 출력을 다 읽고 종료코드를 확인한다(출력 소비가 있어야 파이프가 안 막힌다). 비-0 이면 예외. */
-    private void waitAndCheck(Process p, String what) {
-        try {
-            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            int code = p.waitFor();
-            if (code != 0) {
-                throw new BackendBuildException(what + " 실패(exit " + code + "): " + BackendSourceClone.tail(out));
-            }
-        } catch (IOException e) {
-            throw new BackendBuildException(what + " 출력 읽기 실패: " + e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new BackendBuildException(what + " 중단");
+    /** 비-0 종료면 출력 끝부분과 함께 실패로 만든다. */
+    private static void check(BoundedProcess.Result result, String what) {
+        if (result.exitCode() != 0) {
+            throw new BackendBuildException(what + " 실패(exit " + result.exitCode() + "): "
+                    + BackendSourceClone.tail(result.output()));
         }
     }
 
