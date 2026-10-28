@@ -21,8 +21,10 @@ public class AgentMessageService {
      */
     private static final String CURRENT_REQUEST_LABEL = "[지금 처리할 요청]\n";
     private static final String PAST_REQUEST_LABEL = "[참고: 이전 요청]\n";
+    private static final String DO_NOT_REAPPLY = ". 다시 적용하지 말 것]\n";
 
     private final ChatMessageRepository chatMessageRepository;
+    private final RequestOutcomeResolver outcomeResolver;
 
     /** 종류를 붙이지 않는 줄(순수 대화 답변 등). */
     @Transactional
@@ -120,9 +122,25 @@ public class AgentMessageService {
         return ConversationWindow.apply(java.util.stream.IntStream.range(0, userMessages.size())
                 .mapToObj(index -> new LlmMessage(
                         ChatRole.USER.toStorage(),
-                        (index == last ? CURRENT_REQUEST_LABEL : PAST_REQUEST_LABEL)
+                        (index == last ? CURRENT_REQUEST_LABEL : pastLabel(userMessages.get(index).getTaskId()))
                                 + userMessages.get(index).getContent()
                 ))
                 .toList());
+    }
+
+    /**
+     * 지난 요청에 그 결과를 붙인다. "[참고: 이전 요청]" 만으로는 모델이 지난 요청을 아직 안 한 일로 읽고 이번 지시에
+     * 다시 취합했다 — 사용자가 결과를 거절하고 되돌린 요청까지 되살아났다(2026-10-28 dev). 거절·취소·실패한 요청은
+     * 다시 적용하면 안 된다는 것을 표시로 남긴다.
+     */
+    private String pastLabel(String taskId) {
+        return switch (outcomeResolver.resolve(taskId)) {
+            case REVERTED -> "[참고: 이전 요청 — 사용자가 결과를 거절하고 되돌림" + DO_NOT_REAPPLY;
+            case REJECTED -> "[참고: 이전 요청 — 사용자가 거절함" + DO_NOT_REAPPLY;
+            case CANCELLED -> "[참고: 이전 요청 — 취소됨" + DO_NOT_REAPPLY;
+            case FAILED -> "[참고: 이전 요청 — 실패해 반영되지 않음" + DO_NOT_REAPPLY;
+            case DONE -> "[참고: 이전 요청 — 처리 완료]\n";
+            case UNKNOWN -> PAST_REQUEST_LABEL;
+        };
     }
 }
