@@ -72,6 +72,23 @@ class DecisionAgentServiceTest {
     }
 
     @Test
+    void 지금_요청만_계획하고_거절된_이전_요청은_다시_적용하지_않게_한다() {
+        // 2026-10-28 dev: 이전 요청(되돌림·push 거부 포함)을 모두 취합해 한 CODE 지시로 다시 썼다.
+        // 표시의 뜻을 프롬프트가 정의하지 않으면 모델은 [참고: 이전 요청] 도 할 일로 읽는다.
+        answers(VALID_PLAN);
+
+        decide();
+
+        ArgumentCaptor<String> systemPrompt = ArgumentCaptor.forClass(String.class);
+        verify(llmPort).complete(systemPrompt.capture(), anyList(), any());
+        assertThat(systemPrompt.getValue())
+                .contains("ONLY the one marked [지금 처리할 요청] is the request to plan")
+                .contains("Never fold an earlier request's changes into a step's instruction")
+                .contains("\"다시 적용하지 말 것\"")
+                .contains("explicitly asks to redo it");
+    }
+
+    @Test
     void instruction_도_사용자의_언어로_쓰게_한다() {
         // 하위 에이전트는 instruction 의 언어로 사용자에게 답한다. 여기서 언어를 정하지 않으면
         // 한국어 요청이 영어 instruction 이 되고 결과 메시지가 영어로 나온다(#469).
