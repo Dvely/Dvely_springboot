@@ -1516,6 +1516,14 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 출력은 별도 스레드가 읽고 끝부분 64KB 만 남긴다(파이프 막힘과 대기를 분리)
 - kaniko 이미지 digest 고정(이슈 PR-2)은 아직이다
 
+## 4.41 이미지 빌드 격리 기본값 kaniko + 이미지 digest 고정 (Issue #507 PR-2)
+
+- `qeploy.provisioning.ec2.build-isolation` 기본값을 BUILDX → **KANIKO** 로 바꿨다. BUILDX 는 명시할 때만 쓴다. 그 밖의 값도 KANIKO 로 본다
+- kaniko 는 amd64 컨트롤 플레인에서만 빌드한다. 다른 arch 에서는 빌드를 거부하고 BUILDX 설정을 안내한다(예전처럼 엉뚱한 arch 이미지를 내보내지 않게)
+- buildx 플러그인이 없을 때의 호스트 `docker build` 는 `qeploy.provisioning.ec2.allow-native-build=true` 일 때만 허용한다(기본 거부)
+- kaniko 이미지: `ghcr.io/osscontainertools/kaniko` v1.29.0 을 digest 로 고정(원 프로젝트는 2025-06 아카이브)
+- 운영·dev 모두 build-isolation 설정이 없어 이 변경이 나가면 KANIKO 로 빌드한다. 운영·dev 호스트는 x86_64 다
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증
