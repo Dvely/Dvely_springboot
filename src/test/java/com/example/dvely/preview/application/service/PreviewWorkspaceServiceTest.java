@@ -1,5 +1,6 @@
 package com.example.dvely.preview.application.service;
 
+import com.example.dvely.agent.application.service.ServerRepositoryCheckout;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -27,7 +28,8 @@ class PreviewWorkspaceServiceTest {
             new ContainerGitCredentials(dockerService),
             mock(ProjectRepository.class),
             mock(UserRepository.class),
-            mock(AuthCommandService.class)
+            mock(AuthCommandService.class),
+            mock(ServerRepositoryCheckout.class)
     );
 
     // startPreviewServer 가 반환하면 호출자가 세션을 ACTIVE 로 올린다. 그래서 "반환됐다 = 열면
@@ -129,7 +131,8 @@ class PreviewWorkspaceServiceTest {
         ProjectRepository projects = mock(ProjectRepository.class);
         UserRepository users = mock(UserRepository.class);
         PreviewWorkspaceService target =
-                new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker), projects, users, mock(AuthCommandService.class));
+                new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker), projects, users, mock(AuthCommandService.class),
+                        mock(ServerRepositoryCheckout.class));
 
         when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
         when(users.findById(7L)).thenReturn(java.util.Optional.of(tokenUser()));
@@ -160,13 +163,124 @@ class PreviewWorkspaceServiceTest {
         });
     }
 
+    // ---------------------------------------------------------------- 서버 측 clone(#523 PR-3)
+
+    @Test
+    void serverSideCheckoutNeedsNoCredentialsInTheContainer() {
+        DockerContainerService docker = mock(DockerContainerService.class);
+        ProjectRepository projects = mock(ProjectRepository.class);
+        ServerRepositoryCheckout checkout = mock(ServerRepositoryCheckout.class);
+        PreviewWorkspaceService target = new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker),
+                projects, mock(UserRepository.class), mock(AuthCommandService.class), checkout);
+        when(checkout.enabled()).thenReturn(true);
+        when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
+        when(docker.exec(eq(CONTAINER_ID), anyString())).thenReturn("__none__");
+
+        target.prepareProject(CONTAINER_ID, 7L, 11L);
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(docker, checkout);
+        order.verify(docker).exec(eq(CONTAINER_ID), contains("rm -rf /workspace/app"));
+        order.verify(checkout).intoPreview(CONTAINER_ID, 7L, "octo/repo");
+        // 자격이 붙는 exec 가 한 번도 없다 — 컨테이너 안 인증 git 0
+        verify(docker, org.mockito.Mockito.never())
+                .execWithExitCode(anyString(), anyString(), org.mockito.ArgumentMatchers.any());
+        ArgumentCaptor<String> plain = ArgumentCaptor.forClass(String.class);
+        verify(docker, org.mockito.Mockito.atLeastOnce()).exec(eq(CONTAINER_ID), plain.capture());
+        assertThat(plain.getAllValues()).noneSatisfy(c -> assertThat(c).containsAnyOf(" clone ", " fetch ", "credential"));
+    }
+
+    @Test
+    void serverSideCheckoutKeepsTheSameRepositorysWorkingTree() {
+        // 한 작업에서 CODE 스텝이 다시 돌면 같은 컨테이너를 다시 준비한다. 그 트리에는 아직 push 하지 않은 앞 스텝의 작업이 있다.
+        DockerContainerService docker = mock(DockerContainerService.class);
+        ProjectRepository projects = mock(ProjectRepository.class);
+        ServerRepositoryCheckout checkout = mock(ServerRepositoryCheckout.class);
+        PreviewWorkspaceService target = new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker),
+                projects, mock(UserRepository.class), mock(AuthCommandService.class), checkout);
+        when(checkout.enabled()).thenReturn(true);
+        when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
+        when(docker.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
+        when(docker.exec(eq(CONTAINER_ID), contains(".qeploy-source"))).thenReturn("octo/repo\n");
+
+        target.prepareProject(CONTAINER_ID, 7L, 11L);
+
+        verify(checkout, org.mockito.Mockito.never()).intoPreview(anyString(), org.mockito.ArgumentMatchers.anyLong(), anyString());
+        verify(docker, org.mockito.Mockito.never()).exec(eq(CONTAINER_ID), contains("rm -rf"));
+    }
+
+    @Test
+    void aKeptTreeKeepsItsRecordedBaseAndIsFetchedAgainOnceItsSourceMarkerIsGone() {
+        // #539 와 서버 clone 의 조합: 같은 저장소 트리를 그대로 둘 때는 준비 시점 base 표시도 그대로여야 push 직전 검사가
+        // 맞다. 원격이 바뀌어 push 가 멈추면 source 표시가 지워지고(ServerPreviewBranch), 다음 준비는 다시 받아 base 를 새로 쓴다.
+        DockerContainerService docker = mock(DockerContainerService.class);
+        ProjectRepository projects = mock(ProjectRepository.class);
+        ServerRepositoryCheckout checkout = mock(ServerRepositoryCheckout.class);
+        PreviewWorkspaceService target = new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker),
+                projects, mock(UserRepository.class), mock(AuthCommandService.class), checkout);
+        when(checkout.enabled()).thenReturn(true);
+        when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
+        when(docker.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
+
+        // 1) 같은 저장소 트리 → 그대로, base 표시를 쓰지 않는다
+        when(docker.exec(eq(CONTAINER_ID), contains(".qeploy-source"))).thenReturn("octo/repo");
+        target.prepareProject(CONTAINER_ID, 7L, 11L);
+        verify(checkout, org.mockito.Mockito.never()).intoPreview(anyString(), org.mockito.ArgumentMatchers.anyLong(), anyString());
+        verify(docker, org.mockito.Mockito.never()).exec(eq(CONTAINER_ID), contains("> /workspace/.qeploy-base"));
+        verify(docker, org.mockito.Mockito.never()).exec(eq(CONTAINER_ID), contains("rm -rf"));
+
+        // 2) push 가 멈춰 source 표시가 지워진 뒤 → 비우고 다시 받는다(새 base 는 checkout 이 tar 에 함께 넣는다)
+        when(docker.exec(eq(CONTAINER_ID), contains(".qeploy-source"))).thenReturn("__none__");
+        when(docker.exec(eq(CONTAINER_ID), contains("remote get-url"))).thenReturn("__none__");
+        target.prepareProject(CONTAINER_ID, 7L, 11L);
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(docker, checkout);
+        order.verify(docker).exec(eq(CONTAINER_ID), contains("rm -rf /workspace/app"));
+        order.verify(checkout).intoPreview(CONTAINER_ID, 7L, "octo/repo");
+    }
+
+    @Test
+    void serverSideCheckoutAlsoKeepsATreeClonedBeforeTheFlag() {
+        DockerContainerService docker = mock(DockerContainerService.class);
+        ProjectRepository projects = mock(ProjectRepository.class);
+        ServerRepositoryCheckout checkout = mock(ServerRepositoryCheckout.class);
+        PreviewWorkspaceService target = new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker),
+                projects, mock(UserRepository.class), mock(AuthCommandService.class), checkout);
+        when(checkout.enabled()).thenReturn(true);
+        when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
+        when(docker.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
+        when(docker.exec(eq(CONTAINER_ID), contains(".qeploy-source"))).thenReturn("__none__");
+        when(docker.exec(eq(CONTAINER_ID), contains("remote get-url"))).thenReturn("https://github.com/octo/repo.git");
+
+        target.prepareProject(CONTAINER_ID, 7L, 11L);
+
+        verify(checkout, org.mockito.Mockito.never()).intoPreview(anyString(), org.mockito.ArgumentMatchers.anyLong(), anyString());
+    }
+
+    @Test
+    void anotherRepositorysTreeIsReplaced() {
+        DockerContainerService docker = mock(DockerContainerService.class);
+        ProjectRepository projects = mock(ProjectRepository.class);
+        ServerRepositoryCheckout checkout = mock(ServerRepositoryCheckout.class);
+        PreviewWorkspaceService target = new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker),
+                projects, mock(UserRepository.class), mock(AuthCommandService.class), checkout);
+        when(checkout.enabled()).thenReturn(true);
+        when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
+        when(docker.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
+        when(docker.exec(eq(CONTAINER_ID), contains(".qeploy-source"))).thenReturn("octo/other");
+
+        target.prepareProject(CONTAINER_ID, 7L, 11L);
+
+        verify(docker).exec(eq(CONTAINER_ID), contains("rm -rf /workspace/app"));
+        verify(checkout).intoPreview(CONTAINER_ID, 7L, "octo/repo");
+    }
+
     @Test
     void theCheckedOutBaseIsRecordedForTheServerSidePush() {
         DockerContainerService docker = mock(DockerContainerService.class);
         ProjectRepository projects = mock(ProjectRepository.class);
         UserRepository users = mock(UserRepository.class);
         PreviewWorkspaceService target =
-                new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker), projects, users, mock(AuthCommandService.class));
+                new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker), projects, users, mock(AuthCommandService.class),
+                        mock(ServerRepositoryCheckout.class));
         when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
         when(users.findById(7L)).thenReturn(java.util.Optional.of(tokenUser()));
         when(docker.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
@@ -191,7 +305,8 @@ class PreviewWorkspaceServiceTest {
         ProjectRepository projects = mock(ProjectRepository.class);
         UserRepository users = mock(UserRepository.class);
         PreviewWorkspaceService target =
-                new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker), projects, users, mock(AuthCommandService.class));
+                new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker), projects, users, mock(AuthCommandService.class),
+                        mock(ServerRepositoryCheckout.class));
         when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
         when(users.findById(7L)).thenReturn(java.util.Optional.of(tokenUser()));
         // exec 결과에 .trim() 을 부르는 지점이 여러 곳이라 기본값을 준다.

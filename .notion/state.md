@@ -1499,6 +1499,23 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 준비할 때 base 를 `/workspace/.qeploy-base` 에 남기고, 서버 push 가 받은 base 가 다르면 반영하지 않고 실패한다(재시도 포함). 성공하면 표시를 올린 커밋으로 갱신한다
 - 표시가 없는 컨테이너는 검사하지 않는다. 상세는 `docs/server-side-git-design.md` 4.3
 
+## 4.39 저장소 clone·fetch 를 서버로 옮김 — 플래그 (Issue #523 PR-3)
+
+- 플래그 `qeploy.git.server-side.clone-enabled`(기본 꺼짐). push 플래그도 켜져 있을 때만 동작한다
+- 켜지면 프리뷰 작업 공간(`PreviewWorkspaceService`)과 배포 빌드(`BackendSourceClone`·태그 배포)의 소스를 서버가 받아 tar 로 넣는다. 컨테이너 안에서 인증이 필요한 git 호출이 없다
+- 같은 저장소의 작업 트리가 이미 있으면 그대로 둔다(앞 CODE 스텝의 미반영 작업 보호)
+- 서버가 넣는 tar 에 base 표시(넣은 커밋)를 트리와 함께 담는다(§4.38). 트리를 그대로 둘 때는 base 표시도 그대로 둔다
+- 옛 경로 제거는 운영에서 이 플래그까지 켠 뒤 별도 PR. 상세는 `docs/server-side-git-design.md` 4.2
+- 아직 dev 실측 전이다(특히 node 소유로 풀리는지)
+
+## 4.40 이미지 빌드 프로세스 대기에 시간 제한 (Issue #507 PR-1)
+
+- `ContainerImageBuilder` 의 모든 외부 프로세스 대기(buildx·docker build/save/push·kaniko·tar·login)가 `BoundedProcess` 를 거친다. 예전에는 출력을 다 읽고 `waitFor()` 를 무기한 기다려, 빌드가 멈추면 워커 스레드가 묶였다
+- 상한 `qeploy.provisioning.ec2.image-build-timeout`(env `QEPLOY_PROVISIONING_EC2_IMAGE_BUILD_TIMEOUT`, 기본 30분). 정리·로그인 같은 짧은 명령은 2분
+- 넘기면 자식 프로세스까지 강제 종료하고 빌드를 실패로 끝낸다. kaniko 는 이름을 붙여 띄우고 시간 초과 때 `docker rm -f` 로 지운다(CLI 를 죽여도 데몬의 컨테이너는 계속 돈다)
+- 출력은 별도 스레드가 읽고 끝부분 64KB 만 남긴다(파이프 막힘과 대기를 분리)
+- kaniko 이미지 digest 고정(이슈 PR-2)은 아직이다
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

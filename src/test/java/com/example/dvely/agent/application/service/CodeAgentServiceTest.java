@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.service;
 
+import com.example.dvely.agent.application.service.ServerRepositoryCheckout;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -91,7 +92,7 @@ class CodeAgentServiceTest {
         // 지키려는 것도 "빌드 안 된 워크스페이스를 서빙하지 않는다"는 그 동작이다.
         PreviewWorkspaceService previewWorkspaceService = new PreviewWorkspaceService(
                 dockerService, new ContainerGitCredentials(dockerService),
-                projectRepository, userRepository, authCommandService);
+                projectRepository, userRepository, authCommandService, mock(ServerRepositoryCheckout.class));
         // 이 테스트들은 projectId=null 로 실행하므로 런처는 정적 serve 로 라우팅한다(런타임 설정은
         // 프로젝트 단위라 null 이면 조회하지 않는다). 그래서 실제 런처 + 실물 워크스페이스를 써
         // "빌드 안 된 워크스페이스를 서빙하지 않는다"는 기존 동작을 그대로 검증한다.

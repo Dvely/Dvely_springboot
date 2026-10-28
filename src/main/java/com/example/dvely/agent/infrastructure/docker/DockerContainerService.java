@@ -1026,6 +1026,19 @@ public class DockerContainerService {
                 .exec();
     }
 
+    /**
+     * tar 스트림을 컨테이너의 {@code remotePath} 밑에 푼다(#523 PR-3, 서버가 받은 저장소 트리). 소유자는 tar 헤더가
+     * 아니라 컨테이너의 실행 사용자로 맞춘다 — 프리뷰는 node 로 돌고 DAC_OVERRIDE 가 없어, root 소유로 풀리면
+     * 에이전트가 파일을 고치지 못한다.
+     */
+    public void copyArchiveToContainer(String containerId, InputStream tar, String remotePath) {
+        dockerClient.copyArchiveToContainerCmd(containerId)
+                .withTarInputStream(tar)
+                .withRemotePath(remotePath)
+                .withCopyUIDGID(true)
+                .exec();
+    }
+
     private boolean hasSkippedSegment(String entryName, Set<String> skipSegments) {
         for (String segment : entryName.split("/")) {
             if (skipSegments.contains(segment)) {
