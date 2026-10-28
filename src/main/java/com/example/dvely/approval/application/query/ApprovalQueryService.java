@@ -99,7 +99,8 @@ public class ApprovalQueryService {
                 approval.getSummary(),
                 inputFor(approval),
                 approval.getCreatedAt(),
-                approval.getDecidedAt()
+                approval.getDecidedAt(),
+                approval.getRejectOption() == null ? null : approval.getRejectOption().name()
         );
     }
 }

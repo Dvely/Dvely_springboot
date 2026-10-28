@@ -174,6 +174,15 @@ final class GitTestFixtures {
             }
         }
 
+        /** from 브랜치의 끝을 가리키는 새 브랜치를 만든다. */
+        void branch(String name, String from) throws Exception {
+            try (Repository repo = Git.open(bare.toFile()).getRepository()) {
+                RefUpdate update = repo.updateRef("refs/heads/" + name);
+                update.setNewObjectId(repo.resolve("refs/heads/" + from));
+                update.forceUpdate();
+            }
+        }
+
         RevCommit tip(String branch) throws Exception {
             try (Repository repo = Git.open(bare.toFile()).getRepository(); RevWalk walk = new RevWalk(repo)) {
                 ObjectId id = repo.resolve("refs/heads/" + branch);

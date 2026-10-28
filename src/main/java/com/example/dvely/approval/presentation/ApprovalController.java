@@ -4,6 +4,8 @@ import com.example.dvely.approval.application.facade.ApprovalFacade;
 import com.example.dvely.approval.application.result.ApprovalResult;
 import com.example.dvely.approval.presentation.dto.ApprovalDecisionRequest;
 import com.example.dvely.approval.presentation.dto.ApprovalInputResponse;
+import com.example.dvely.approval.presentation.dto.ApprovalRejectRequest;
+import com.example.dvely.change.application.result.ResultScope;
 import com.example.dvely.approval.presentation.dto.ApprovalResponse;
 import com.example.dvely.common.paging.CursorResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -82,15 +84,34 @@ public class ApprovalController {
             summary = "Agent 작업 거절",
             description = "PENDING 승인을 REJECTED로 확정합니다. 해당 taskId를 취소시킵니다. " +
                           "PENDING이 아닌 승인에 호출하면 409를 반환합니다.\n\n" +
+                          "RESULT 승인은 본문 `option`(KEEP 기본 | REVERT)을 받습니다. REVERT 는 preview 를 main 과 같은 상태로 " +
+                          "되돌리는 커밋을 먼저 올리고 거절합니다. 그 환경에서 쓸 수 없으면 409 RESULT_REVERT_UNAVAILABLE, " +
+                          "올리지 못하면 502 RESULT_REVERT_FAILED 이며 둘 다 승인은 PENDING 그대로입니다.\n\n" +
                           "단 REPOSITORY_BINDING 승인만 예외입니다 — 이미 성공한 CODE 작업물을 저장소에 남길지 묻는 승인이라 " +
                           "거절은 '저장소를 만들지 않는다'는 뜻일 뿐이고, task는 취소되지 않고 그대로 재개·완료됩니다."
     )
     @PostMapping("/api/v1/approvals/{approvalId}/reject")
     public ApprovalResponse reject(
             @AuthenticationPrincipal Long ownerUserId,
+            @PathVariable Long approvalId,
+            @RequestBody(required = false) ApprovalRejectRequest request
+    ) {
+        return toResponse(approvalFacade.reject(ownerUserId, approvalId, request == null ? null : request.option()));
+    }
+
+    @Operation(
+            summary = "결과 승인 반영 범위 조회",
+            description = "RESULT 승인이 main 에 실제로 반영할 범위(main...preview)를 서버가 계산해 돌려줍니다. 이번 작업 외의 " +
+                          "변경(다른 작업·이전에 거절한 작업·직접 올린 커밋)이 함께 반영되는지를 보여 주며, 화면 문구(notice, " +
+                          "rejectOptions)도 서버가 만듭니다. PENDING 이 아니면 결정 당시 기록을 돌려줍니다(scopeState=DECIDED). " +
+                          "범위 계산에 실패해도 200 이며 scopeState=UNAVAILABLE 입니다. RESULT 가 아닌 승인은 400."
+    )
+    @GetMapping("/api/v1/approvals/{approvalId}/result-scope")
+    public ResultScope getResultScope(
+            @AuthenticationPrincipal Long ownerUserId,
             @PathVariable Long approvalId
     ) {
-        return toResponse(approvalFacade.reject(ownerUserId, approvalId));
+        return approvalFacade.getResultScope(ownerUserId, approvalId);
     }
 
     private ApprovalResponse toResponse(ApprovalResult result) {
@@ -104,7 +125,8 @@ public class ApprovalController {
                 result.summary(),
                 ApprovalInputResponse.from(result.input()),
                 result.createdAt(),
-                result.decidedAt()
+                result.decidedAt(),
+                result.rejectOption()
         );
     }
 }

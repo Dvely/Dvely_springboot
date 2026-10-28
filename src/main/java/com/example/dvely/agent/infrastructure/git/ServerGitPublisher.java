@@ -81,6 +81,44 @@ public class ServerGitPublisher {
         }
     }
 
+    /**
+     * {@code targetBranch} 를 {@code sourceBranch} 와 같은 내용으로 되돌리는 커밋을 올린다(#532 거절 REVERT).
+     * 강제 push 가 아니다. 커밋의 부모는 target 의 현재 head 와 source 의 head 둘이고 트리는 source 와 같다 —
+     * 두 번째 부모 덕에 되돌린 뒤의 {@code source...target} 비교가 비어 보인다. 이미 같은 내용이면 아무것도
+     * 올리지 않는다(재시도해도 같은 결과).
+     */
+    public Optional<ObjectId> resetTo(String remoteUrl, CredentialsProvider credentials, String targetBranch,
+                                      String sourceBranch, String commitMessage) {
+        ReentrantLock lock = repositoryLocks.computeIfAbsent(remoteUrl, url -> new ReentrantLock());
+        lock.lock();
+        try {
+            try {
+                return resetOnce(remoteUrl, credentials, targetBranch, sourceBranch, commitMessage);
+            } catch (NonFastForwardException first) {
+                log.info("[ServerGit] 원격 {} 이 그 사이 바뀌어 다시 받아 되돌립니다", targetBranch);
+                return resetOnce(remoteUrl, credentials, targetBranch, sourceBranch, commitMessage);
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private Optional<ObjectId> resetOnce(String remoteUrl, CredentialsProvider credentials, String targetBranch,
+                                         String sourceBranch, String commitMessage) {
+        try (ServerGitWorkspace workspace = open()) {
+            Optional<RevCommit> target = workspace.fetchBase(remoteUrl, credentials, targetBranch);
+            if (target.isEmpty()) {
+                return Optional.empty();   // 되돌릴 브랜치가 없다
+            }
+            RevCommit source = workspace.fetchBase(remoteUrl, credentials, sourceBranch)
+                    .orElseThrow(() -> new ServerGitException("기준 브랜치가 저장소에 없습니다: " + sourceBranch, null));
+            Optional<ObjectId> commit = workspace.mergeCommit(
+                    target.get(), source, source.getTree().getId(), commitMessage, agent());
+            commit.ifPresent(id -> workspace.push(remoteUrl, credentials, id, targetBranch));
+            return commit;
+        }
+    }
+
     private Published publishOnce(Request request, Optional<ObjectId> expectedTree, boolean allowProtected,
                                   Set<ObjectId> serverGenerated) {
         try (ServerGitWorkspace workspace = open()) {

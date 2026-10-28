@@ -2,6 +2,7 @@ package com.example.dvely.approval.domain.model;
 
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.approval.domain.value.RejectOption;
 import java.time.LocalDateTime;
 import java.util.Objects;
 
@@ -17,6 +18,7 @@ public class Approval {
     private final String summary;
     private final LocalDateTime createdAt;
     private LocalDateTime decidedAt;
+    private RejectOption rejectOption;
 
     public Approval(Long ownerUserId,
                     Long projectId,
@@ -48,6 +50,21 @@ public class Approval {
                     String summary,
                     LocalDateTime createdAt,
                     LocalDateTime decidedAt) {
+        this(id, ownerUserId, projectId, conversationId, taskId, type, status, summary, createdAt, decidedAt, null);
+    }
+
+    /** @param rejectOption RESULT 승인을 거절할 때 고른 옵션(#532). 그 외에는 null */
+    public Approval(Long id,
+                    Long ownerUserId,
+                    Long projectId,
+                    Long conversationId,
+                    String taskId,
+                    ApprovalType type,
+                    ApprovalStatus status,
+                    String summary,
+                    LocalDateTime createdAt,
+                    LocalDateTime decidedAt,
+                    RejectOption rejectOption) {
         this.id = id;
         this.ownerUserId = Objects.requireNonNull(ownerUserId, "ownerUserId must not be null");
         this.projectId = projectId;
@@ -62,6 +79,7 @@ public class Approval {
         this.summary = normalizeSummary(summary);
         this.createdAt = createdAt;
         this.decidedAt = decidedAt;
+        this.rejectOption = rejectOption;
     }
 
     /**
@@ -99,6 +117,15 @@ public class Approval {
 
     public void reject() {
         decide(ApprovalStatus.REJECTED);
+    }
+
+    /** RESULT 승인 거절(#532). 고른 옵션을 함께 남긴다. */
+    public void reject(RejectOption option) {
+        if (type != ApprovalType.RESULT) {
+            throw new IllegalStateException("거절 옵션은 RESULT 승인에만 있습니다. approvalId=" + id);
+        }
+        decide(ApprovalStatus.REJECTED);
+        rejectOption = Objects.requireNonNull(option, "option must not be null");
     }
 
     public void cancel() {
@@ -156,4 +183,5 @@ public class Approval {
     public String getSummary() { return summary; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getDecidedAt() { return decidedAt; }
+    public RejectOption getRejectOption() { return rejectOption; }
 }

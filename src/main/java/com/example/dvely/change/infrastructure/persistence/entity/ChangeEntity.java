@@ -74,6 +74,10 @@ public class ChangeEntity {
     @Column(name = "push_deferred", nullable = false)
     private boolean pushDeferred;
 
+    /** V69(#532): 결과 승인을 결정할 때 계산한 반영 범위(JSON). 계산에 실패했으면 비어 있다. */
+    @Column(name = "decided_scope", columnDefinition = "MEDIUMTEXT")
+    private String decidedScope;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
@@ -147,6 +151,10 @@ public class ChangeEntity {
     public void markRejected(Long approvalId) {
         this.status = ChangeStatus.REJECTED.name();
         this.approvalId = approvalId;
+    }
+
+    public void recordDecidedScope(String decidedScope) {
+        this.decidedScope = decidedScope;
     }
 
     public ChangeResult toResult() {

@@ -20,6 +20,7 @@ public record ApprovalResult(
         String summary,
         ApprovalInput input,
         LocalDateTime createdAt,
-        LocalDateTime decidedAt
+        LocalDateTime decidedAt,
+        String rejectOption
 ) {
 }
