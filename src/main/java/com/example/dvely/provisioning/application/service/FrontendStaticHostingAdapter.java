@@ -50,8 +50,7 @@ public class FrontendStaticHostingAdapter implements FrontendStaticHostingPort {
                 request.ownerUserId(), sessionId, request.projectId(), null, null,
                 DockerContainerService.JAVA_MEMORY_LIMIT_BYTES);
         try {
-            sourceClone.cloneInto(containerId, request.ownerUserId(), request.sourceRepo());
-            checkoutIfRequested(containerId, request.checkoutRef());
+            sourceClone.cloneAt(containerId, request.ownerUserId(), request.sourceRepo(), request.checkoutRef());
 
             String feDir = detectFrontendDir(containerId);
             requireExec(containerId,
@@ -91,27 +90,6 @@ public class FrontendStaticHostingAdapter implements FrontendStaticHostingPort {
             throw new IllegalStateException("클라우드 연결이 CONNECTED 상태가 아닙니다. 연결을 확인한 뒤 다시 시도해주세요.");
         }
         return connection;
-    }
-
-    /**
-     * 특정 버전(태그) 배포면 그 태그를 받아 체크아웃한다. null 이면 clone 된 기본 브랜치를 그대로 쓴다
-     * (LATEST). ref 는 셸 명령에 들어가므로 화이트리스트 검증으로 주입을 막는다 — 값 자체는 우리가
-     * 만든 순차 태그(v1, v2 …)지만 방어로 둔다.
-     */
-    private void checkoutIfRequested(String containerId, String checkoutRef) {
-        if (checkoutRef == null || checkoutRef.isBlank()) {
-            return;
-        }
-        if (!checkoutRef.matches("[A-Za-z0-9._/-]+")) {
-            throw new BackendBuildException("허용되지 않는 버전 ref 형식입니다: " + checkoutRef);
-        }
-        ExecResult co = dockerService.execWithExitCode(containerId,
-                "cd " + APP_DIR + " && git fetch --depth 1 origin tag " + checkoutRef
-                        + " && git checkout " + checkoutRef);
-        if (!co.succeeded()) {
-            throw new BackendBuildException(
-                    "버전 체크아웃 실패(" + checkoutRef + "): " + BackendSourceClone.tail(co.output()));
-        }
     }
 
     /**

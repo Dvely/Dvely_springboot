@@ -114,6 +114,26 @@ public final class ServerGitWorkspace implements AutoCloseable {
         }
     }
 
+    /** 태그 하나를 얕게 받는다(#523 PR-3, 특정 버전 배포). 주석 태그면 가리키는 커밋을 돌려준다. 없으면 비어 있다. */
+    public Optional<RevCommit> fetchTag(String remoteUrl, CredentialsProvider credentials, String tag) {
+        String remoteRef = Constants.R_TAGS + tag;
+        try (Git git = Git.wrap(repository)) {
+            boolean exists = git.lsRemote().setRemote(remoteUrl).setCredentialsProvider(credentials).setTags(true)
+                    .call().stream().map(Ref::getName).anyMatch(remoteRef::equals);
+            if (!exists) {
+                return Optional.empty();
+            }
+            git.fetch().setRemote(remoteUrl).setCredentialsProvider(credentials).setDepth(1)
+                    .setRefSpecs(new RefSpec("+" + remoteRef + ":" + BASE_REF_PREFIX + "tags/" + tag)).call();
+            ObjectId id = repository.resolve(BASE_REF_PREFIX + "tags/" + tag);
+            try (RevWalk walk = new RevWalk(repository)) {
+                return Optional.of(walk.parseCommit(id));
+            }
+        } catch (GitAPIException | IOException e) {
+            throw new ServerGitException("태그를 받지 못했습니다: " + tag, e);
+        }
+    }
+
     /** 원격 HEAD 가 가리키는 기본 브랜치 이름. 빈 저장소면 비어 있다. */
     public Optional<String> defaultBranch(String remoteUrl, CredentialsProvider credentials) {
         try (Git git = Git.wrap(repository)) {
