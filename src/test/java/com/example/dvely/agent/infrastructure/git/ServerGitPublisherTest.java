@@ -93,8 +93,72 @@ class ServerGitPublisherTest {
 
         assertThat(opened.get()).isEqualTo(4);   // 시도마다 두 번(목록·본문), 재시도 1회
         assertThat(remote.files("preview")).containsEntry("README.md", "mine");
-        // 두 번째 시도는 움직인 끝 위에 쌓는다 — 남이 올린 커밋을 덮어쓰지 않는다.
+        // 준비 시점 base 를 모르면(기록 없는 컨테이너) 움직인 끝 위에 쌓는다. 이력은 남지만 남이 바꾼 내용은
+        // 스냅샷으로 되돌려진다 — 그래서 base 를 아는 경우는 아래처럼 거부한다.
         assertThat(remote.tip("preview").getParent(0).getId()).isEqualTo(moved.get().getId());
+    }
+
+    // ---------------------------------------------------------------- 준비 시점 base(#523)
+
+    @Test
+    void publishesWhenTheRemoteIsStillAtThePreparedBase() throws Exception {
+        RevCommit base = remote.commit("preview", Map.of("README.md", "v1"));
+
+        publisher.publish(request(new TarBuilder().file("README.md", "v2")), Optional.empty(), true, Set.of(),
+                ServerGitPublisher.ExpectedBase.of(base.getId()));
+
+        assertThat(remote.tip("preview").getParent(0).getId()).isEqualTo(base.getId());
+        assertThat(remote.files("preview")).containsEntry("README.md", "v2");
+    }
+
+    @Test
+    void refusesWhenTheRemoteMovedAfterTheWorkTreeWasPrepared() throws Exception {
+        RevCommit prepared = remote.commit("preview", Map.of("README.md", "v1"));
+        RevCommit edited = remote.commit("preview", Map.of("README.md", "v1", "NOTE.md", "edited on GitHub"));
+
+        assertThatThrownBy(() -> publisher.publish(request(new TarBuilder().file("README.md", "mine")),
+                Optional.empty(), true, Set.of(), ServerGitPublisher.ExpectedBase.of(prepared.getId())))
+                .isInstanceOf(ServerGitPublisher.RemoteMovedException.class)
+                .hasMessageContaining("덮어쓰지 않으려고");
+        // 원격에서 생긴 변경(NOTE.md)이 그대로다
+        assertThat(remote.tip("preview").getId()).isEqualTo(edited.getId());
+        assertThat(remote.files("preview")).containsEntry("NOTE.md", "edited on GitHub");
+    }
+
+    @Test
+    void aNonFastForwardRetryDoesNotOverwriteAKnownBase() throws Exception {
+        RevCommit prepared = remote.commit("preview", Map.of("README.md", "v1"));
+        AtomicInteger opened = new AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<RevCommit> moved = new java.util.concurrent.atomic.AtomicReference<>();
+        byte[] tar = new TarBuilder().file("README.md", "mine").bytes();
+        Supplier<InputStream> archive = () -> {
+            if (opened.getAndIncrement() == 0) {
+                try {
+                    moved.set(remote.commit("preview", Map.of("README.md", "someone-else")));   // push 직전에 원격이 움직인다
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);
+                }
+            }
+            return new java.io.ByteArrayInputStream(tar);
+        };
+
+        assertThatThrownBy(() -> publisher.publish(new Request(remote.url(), null, "preview", List.of("preview", "main"),
+                archive, "feat: apply Qeploy Agent task t-1"), Optional.empty(), true, Set.of(),
+                ServerGitPublisher.ExpectedBase.of(prepared.getId())))
+                .isInstanceOf(ServerGitPublisher.RemoteMovedException.class);
+        assertThat(remote.tip("preview").getId()).isEqualTo(moved.get().getId());
+        assertThat(remote.files("preview")).containsEntry("README.md", "someone-else");
+    }
+
+    @Test
+    void aBranchCreatedAfterPreparingFromAnEmptyRepositoryIsNotOverwritten() throws Exception {
+        RevCommit created = remote.commit("main", Map.of("README.md", "someone pushed first"));
+
+        assertThatThrownBy(() -> publisher.publish(request(new TarBuilder().file("index.html", "mine")),
+                Optional.empty(), true, Set.of(), ServerGitPublisher.ExpectedBase.emptyRepository()))
+                .isInstanceOf(ServerGitPublisher.RemoteMovedException.class);
+        assertThat(remote.tip("main").getId()).isEqualTo(created.getId());
+        assertThat(remote.tip("preview")).isNull();
     }
 
     @Test

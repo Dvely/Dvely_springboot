@@ -66,15 +66,26 @@ public class ServerGitPublisher {
      */
     public Published publish(Request request, Optional<ObjectId> expectedTree, boolean allowProtected,
                              Set<ObjectId> serverGenerated) {
+        return publish(request, expectedTree, allowProtected, serverGenerated, ExpectedBase.UNKNOWN);
+    }
+
+    /**
+     * @param expectedBase 작업 트리를 준비할 때의 base. 받은 base 가 이것과 다르면 push 하지 않는다 — 스냅샷은 트리를
+     *                     통째로 갈아끼우므로, 그 사이 원격에 생긴 변경을 새 커밋이 조용히 되돌린다. 원격이 움직여 다시
+     *                     시도할 때도 같은 검사를 받는다
+     * @throws RemoteMovedException 원격 base 가 준비 시점과 다르다
+     */
+    public Published publish(Request request, Optional<ObjectId> expectedTree, boolean allowProtected,
+                             Set<ObjectId> serverGenerated, ExpectedBase expectedBase) {
         // 같은 저장소로 가는 push 는 한 번에 하나만 — 서로의 base 를 밀어내며 재시도를 반복하지 않게 한다.
         ReentrantLock lock = repositoryLocks.computeIfAbsent(request.remoteUrl(), url -> new ReentrantLock());
         lock.lock();
         try {
             try {
-                return publishOnce(request, expectedTree, allowProtected, serverGenerated);
+                return publishOnce(request, expectedTree, allowProtected, serverGenerated, expectedBase);
             } catch (NonFastForwardException first) {
                 log.info("[ServerGit] 원격 {} 이 그 사이 바뀌어 base 를 다시 받아 재시도합니다", request.targetBranch());
-                return publishOnce(request, expectedTree, allowProtected, serverGenerated);
+                return publishOnce(request, expectedTree, allowProtected, serverGenerated, expectedBase);
             }
         } finally {
             lock.unlock();
@@ -120,9 +131,12 @@ public class ServerGitPublisher {
     }
 
     private Published publishOnce(Request request, Optional<ObjectId> expectedTree, boolean allowProtected,
-                                  Set<ObjectId> serverGenerated) {
+                                  Set<ObjectId> serverGenerated, ExpectedBase expectedBase) {
         try (ServerGitWorkspace workspace = open()) {
             RevCommit base = fetchBase(workspace, request);
+            if (!expectedBase.matches(base)) {
+                throw new RemoteMovedException(request.targetBranch());
+            }
             Snapshot snapshot = snapshot(workspace, request, base);
             if (expectedTree.isPresent() && !expectedTree.get().equals(snapshot.tree())) {
                 throw new SnapshotChangedException();
@@ -183,6 +197,39 @@ public class ServerGitPublisher {
     }
 
     public record Published(Optional<ObjectId> commit, ObjectId tree) {
+    }
+
+    /**
+     * 작업 트리를 준비한 시점의 base. {@link #UNKNOWN} 이면 검사하지 않는다(기록이 없는 컨테이너 — 이 장치 이전에 준비됐다).
+     *
+     * @param commit null 이면 빈 저장소에서 준비했다는 뜻이다(known 일 때)
+     */
+    public record ExpectedBase(boolean known, ObjectId commit) {
+
+        public static final ExpectedBase UNKNOWN = new ExpectedBase(false, null);
+
+        public static ExpectedBase emptyRepository() {
+            return new ExpectedBase(true, null);
+        }
+
+        public static ExpectedBase of(ObjectId commit) {
+            return new ExpectedBase(true, commit);
+        }
+
+        boolean matches(RevCommit base) {
+            if (!known) {
+                return true;
+            }
+            return commit == null ? base == null : base != null && commit.equals(base.getId());
+        }
+    }
+
+    /** 작업 트리를 준비한 뒤 원격이 바뀌었다. 덮어쓰면 그 변경이 되돌려지므로 반영하지 않는다. 메시지는 사용자에게 그대로 보인다. */
+    public static class RemoteMovedException extends ServerGitException {
+        public RemoteMovedException(String branch) {
+            super("작업하는 동안 저장소의 " + branch + " 브랜치가 바뀌어(직접 수정했거나 다른 작업이 먼저 반영됨), 그 변경을 "
+                    + "덮어쓰지 않으려고 반영을 멈췄습니다. 작업을 다시 요청하면 최신 상태에서 시작합니다.", null);
+        }
     }
 
     /** 승인 없이 반영하면 안 되는 경로가 바뀌었다. 메시지는 사용자에게 그대로 보인다. */
