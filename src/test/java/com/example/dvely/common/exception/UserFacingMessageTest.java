@@ -33,6 +33,16 @@ class UserFacingMessageTest {
     }
 
     @Test
+    void keepsTheAlreadyConnectedRepositoryMessageTheFrontendParses() {
+        // FE(githubRepository.utils.ts)가 이 문장에서 owner/repo 를 읽는다 — ProjectCommandService#connectRepository 의 409.
+        // 키=값 꼬리가 아니라 떼지 않지만, FE 가 기대는 계약이라 고정해 둔다.
+        assertThat(UserFacingMessage.of("이미 GitHub 저장소가 연결된 프로젝트입니다: octo/blog-app"))
+                .isEqualTo("이미 GitHub 저장소가 연결된 프로젝트입니다: octo/blog-app");
+        assertThat(UserFacingMessage.of("이미 GitHub 저장소가 연결된 프로젝트입니다: octo/status-page"))
+                .isEqualTo("이미 GitHub 저장소가 연결된 프로젝트입니다: octo/status-page");
+    }
+
+    @Test
     void neverReturnsAnEmptyMessage() {
         assertThat(UserFacingMessage.of("status=FAILED")).isEqualTo("status=FAILED");
     }
