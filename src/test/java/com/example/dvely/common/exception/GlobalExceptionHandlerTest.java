@@ -54,7 +54,7 @@ class GlobalExceptionHandlerTest {
                         new ConcurrentDeleteController(), new ConflictController(),
                         new MissingPathController(), new ClientGoneController(),
                         new UnexpectedErrorController(), new GithubReauthorizationController(),
-                        new UserLimitController())
+                        new UserLimitController(), new InternalTailController())
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -136,6 +136,14 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.status").value(429))
                 .andExpect(jsonPath("$.code").value("PREVIEW_LIMIT_EXCEEDED"))
                 .andExpect(jsonPath("$.message").value("열린 프리뷰가 3개라 새 프리뷰를 띄울 수 없습니다."));
+    }
+
+    @Test
+    void theResponseMessageCarriesNoInternalIdOrStatusTail() throws Exception {
+        // FE 는 message 를 화면 문구로 그대로 쓴다. 꼬리는 로그에만 남는다.
+        mockMvc.perform(get("/contract/internal-tail"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요."));
     }
 
     @Test
@@ -252,6 +260,15 @@ class GlobalExceptionHandlerTest {
             throw new com.example.dvely.common.limit.UserLimitExceededException(
                     com.example.dvely.common.response.ErrorCode.PREVIEW_LIMIT_EXCEEDED,
                     "열린 프리뷰가 3개라 새 프리뷰를 띄울 수 없습니다.");
+        }
+    }
+
+    @RestController
+    private static class InternalTailController {
+
+        @GetMapping("/contract/internal-tail")
+        Long tail() {
+            throw new IllegalStateException("종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요. status=EXPIRED");
         }
     }
 

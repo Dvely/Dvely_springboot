@@ -240,8 +240,12 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
         PreviewSessionEntity session = repository.findByIdAndOwnerUserId(sessionId, ownerUserId)
                 .orElseThrow(() -> new NotFoundException("PreviewSession을 찾을 수 없습니다. sessionId=" + sessionId));
         if (!PreviewSessionStatus.ACTIVE.name().equals(session.getStatus())) {
+            // FE 가 이 문장을 화면 문구로 그대로 쓴다. 상태 꼬리는 로그용이고 응답에서는 떼어진다(UserFacingMessage).
             throw new IllegalStateException(
-                    "종료되었거나 아직 준비 중인 프리뷰입니다. status=" + session.getStatus());
+                    (PreviewSessionStatus.PROVISIONING.name().equals(session.getStatus())
+                            ? "아직 준비 중인 프리뷰입니다. 준비가 끝나면 다시 열어 주세요."
+                            : "종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요.")
+                            + " status=" + session.getStatus());
         }
 
         String rotatedToken = UUID.randomUUID().toString().replace("-", "");
