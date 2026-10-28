@@ -21,6 +21,7 @@ import com.example.dvely.change.application.result.ResultScope.Scope;
 import com.example.dvely.change.application.result.ResultScope.Totals;
 import com.example.dvely.change.domain.value.ChangeStatus;
 import com.example.dvely.change.infrastructure.persistence.entity.ChangeEntity;
+import com.example.dvely.change.infrastructure.persistence.entity.ServerPushedCommitEntity;
 import com.example.dvely.change.infrastructure.persistence.repository.SpringDataChangeRepository;
 import com.example.dvely.change.infrastructure.persistence.repository.SpringDataChangeRepository.TaskDecisionView;
 import com.example.dvely.common.exception.GithubAppReauthorizationRequiredException;
@@ -61,7 +62,6 @@ public class ResultScopeService {
     /** 커밋별 파일을 따로 읽는 상한. 넘으면 파일별 origin 을 좁히지 않고 잘린 것으로 표시한다. */
     static final int COMMIT_LOOKUP_LIMIT = 30;
 
-    static final String REVERT_MESSAGE_PREFIX = "revert: preview 를 ";
     private static final Pattern TASK_IN_MESSAGE = Pattern.compile("Qeploy Agent task (\\S+)");
 
     static final String UNAVAILABLE_NOTICE = "반영 범위를 불러오지 못했습니다. 지금 승인하면 이번 작업 외의 변경이 함께 "
@@ -75,6 +75,7 @@ public class ResultScopeService {
     private final AuthCommandService authCommandService;
     private final GithubComparePort githubComparePort;
     private final ServerPreviewBranch serverPreviewBranch;
+    private final ServerPushLedger pushLedger;
     private final ObjectMapper objectMapper;
 
     /** GET /approvals/{id}/result-scope */
@@ -127,12 +128,21 @@ public class ResultScopeService {
         Comparison comparison = repo == null ? Comparison.empty()
                 : githubComparePort.compare(token, repo, BASE, HEAD);
 
-        List<GithubComparePort.Commit> effective = effectiveCommits(comparison.commits());
-        Map<String, String> taskBySha = new LinkedHashMap<>();
-        for (GithubComparePort.Commit commit : effective) {
-            taskBySha.put(commit.sha(), taskIdOf(commit.message()));
+        Map<String, ServerPushedCommitEntity> pushed = new HashMap<>();
+        if (repo != null) {
+            pushLedger.find(repo, comparison.commits().stream().map(GithubComparePort.Commit::sha).toList())
+                    .forEach(entry -> pushed.put(entry.getCommitSha(), entry));
         }
-        Set<String> otherTasks = new HashSet<>(taskBySha.values());
+        Set<String> reverts = new HashSet<>();
+        pushed.values().stream().filter(ServerPushedCommitEntity::isRevert)
+                .forEach(entry -> reverts.add(entry.getCommitSha()));
+        List<GithubComparePort.Commit> effective = effectiveCommits(comparison.commits(), reverts);
+        Map<String, Attribution> taskBySha = new LinkedHashMap<>();
+        for (GithubComparePort.Commit commit : effective) {
+            taskBySha.put(commit.sha(), attribute(commit, pushed.get(commit.sha()), approval.getTaskId()));
+        }
+        Set<String> otherTasks = new HashSet<>();
+        taskBySha.values().forEach(a -> otherTasks.add(a.taskId()));
         otherTasks.remove(null);
         otherTasks.remove(approval.getTaskId());
         Map<String, TaskDecisionView> decisions = new HashMap<>();
@@ -165,19 +175,39 @@ public class ResultScopeService {
     }
 
     /**
-     * 되돌리는 커밋(거절 REVERT)과 그 조상은 뺀다. 되돌린 뒤 preview 는 main 과 같은 내용이라, 그 앞의 커밋들은
-     * 비교 목록에는 남아도 이번 승인으로 반영되는 내용이 아니다.
+     * 서버가 올린 거절 REVERT 커밋과 그 조상은 뺀다. 되돌린 뒤 preview 는 main 과 같은 내용이라, 그 앞의 커밋들은
+     * 비교 목록에는 남아도 이번 승인으로 반영되는 내용이 아니다. REVERT 인지는 서버가 남긴 push 기록으로만 정한다 —
+     * 메시지만 흉내 낸 커밋으로 앞의 변경을 목록에서 숨길 수 없게 한다.
      */
-    static List<GithubComparePort.Commit> effectiveCommits(List<GithubComparePort.Commit> commits) {
+    static List<GithubComparePort.Commit> effectiveCommits(List<GithubComparePort.Commit> commits, Set<String> reverts) {
         Map<String, GithubComparePort.Commit> bySha = new HashMap<>();
         commits.forEach(c -> bySha.put(c.sha(), c));
         Set<String> neutralized = new HashSet<>();
         for (GithubComparePort.Commit commit : commits) {
-            if (isRevert(commit)) {
+            if (reverts.contains(commit.sha())) {
                 markAncestors(commit.sha(), bySha, neutralized);
             }
         }
         return commits.stream().filter(c -> !neutralized.contains(c.sha())).toList();
+    }
+
+    /**
+     * 커밋이 어느 작업의 것인지. 서버 push 기록이 있으면 그것을 믿는다. 없으면 메시지의 taskId 를 쓰되,
+     * 메시지가 이번 작업이라고 주장하는 것은 믿지 않는다 — 누구나 그렇게 써서 다른 변경을 "이번 작업"으로
+     * 보이게 할 수 있다. 메시지로는 경고가 커지는 쪽(다른 작업·거절된 작업)으로만 분류된다.
+     */
+    static Attribution attribute(GithubComparePort.Commit commit, ServerPushedCommitEntity pushed, String thisTask) {
+        if (pushed != null && !pushed.isRevert() && pushed.getTaskId() != null) {
+            return new Attribution(pushed.getTaskId(), true);
+        }
+        String claimed = taskIdOf(commit.message());
+        if (claimed == null || claimed.equals(thisTask)) {
+            return new Attribution(null, false);
+        }
+        return new Attribution(claimed, false);
+    }
+
+    record Attribution(String taskId, boolean recorded) {
     }
 
     private static void markAncestors(String sha, Map<String, GithubComparePort.Commit> bySha, Set<String> marked) {
@@ -192,20 +222,18 @@ public class ResultScopeService {
         }
     }
 
-    static boolean isRevert(GithubComparePort.Commit commit) {
-        return commit.parents().size() == 2 && commit.message().startsWith(REVERT_MESSAGE_PREFIX);
-    }
-
     static String taskIdOf(String message) {
         Matcher matcher = TASK_IN_MESSAGE.matcher(message);
         return matcher.find() ? matcher.group(1) : null;
     }
 
-    static CommitView commitView(String sha, String taskId, String thisTask, Map<String, TaskDecisionView> decisions) {
+    static CommitView commitView(String sha, Attribution attribution, String thisTask,
+                                 Map<String, TaskDecisionView> decisions) {
+        String taskId = attribution.taskId();
         if (taskId == null) {
             return new CommitView(sha, null, Origin.UNKNOWN, null);
         }
-        if (taskId.equals(thisTask)) {
+        if (taskId.equals(thisTask) && attribution.recorded()) {
             return new CommitView(sha, taskId, Origin.THIS_TASK, null);
         }
         TaskDecisionView decision = decisions.get(taskId);

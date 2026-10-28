@@ -188,7 +188,8 @@ public class ResultApprovalService {
         }
         try {
             Optional<ObjectId> commit = serverPreviewBranch.revertTo(
-                    approval.getOwnerUserId(), project.getSourceRepository(), MAIN_BRANCH, approval.getId());
+                    approval.getOwnerUserId(), project.getSourceRepository(), MAIN_BRANCH, approval.getId(),
+                    approval.getTaskId());
             log.info("[ResultApproval] preview 되돌림 | taskId={} approvalId={} pushed={}",
                     approval.getTaskId(), approval.getId(), commit.isPresent());
         } catch (ServerGitException e) {

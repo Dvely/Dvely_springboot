@@ -70,7 +70,7 @@ class ResultApprovalSchemaTest {
     }
 
     @Test
-    void v69AddsTheRejectOptionAndTheDecidedScope() {
+    void v69AndV70AddTheResultScopeColumnsAndThePushLedger() {
         Integer columnCount = jdbcTemplate.queryForObject(
                 """
                         select count(*)
@@ -84,6 +84,19 @@ class ResultApprovalSchemaTest {
         );
 
         assertEquals(2, columnCount);
+
+        Integer keyColumns = jdbcTemplate.queryForObject(
+                """
+                        select count(*)
+                        from information_schema.key_column_usage
+                        where table_schema = database()
+                          and table_name = 'server_pushed_commits'
+                          and constraint_name = 'PRIMARY'
+                          and column_name in ('commit_sha', 'repository')
+                        """,
+                Integer.class
+        );
+        assertEquals(2, keyColumns);
     }
 
     @Test

@@ -11,6 +11,7 @@ import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Request;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
+import com.example.dvely.change.application.service.ServerPushLedger;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -37,6 +38,7 @@ public class ServerPreviewBranch {
     private final DockerContainerService dockerService;
     private final UserRepository userRepository;
     private final AuthCommandService authCommandService;
+    private final ServerPushLedger pushLedger;
 
     public boolean enabled() {
         return properties.pushEnabled();
@@ -73,8 +75,10 @@ public class ServerPreviewBranch {
             PreviewBranchPushService.writeDefaultGitignore(dockerService, containerId);
         }
         try {
-            return publisher.publish(request(containerId, repoFullName, username, userToken, taskId), approvedTree,
-                    allowProtected, Set.of());
+            Published published = publisher.publish(request(containerId, repoFullName, username, userToken, taskId),
+                    approvedTree, allowProtected, Set.of());
+            published.commit().ifPresent(commit -> pushLedger.recordTask(repoFullName, commit.name(), taskId));
+            return published;
         } catch (ProtectedChangeRequiresApprovalException e) {
             // 사용자에게 "작업 중 오류가 발생했습니다: …" 로 보인다. 새 저장소의 첫 반영에는 결과 승인 단계가
             // 없으므로(미연결 프로젝트) 따를 수 있는 안내를 따로 준다.
@@ -89,14 +93,17 @@ public class ServerPreviewBranch {
      * preview 를 {@code baseBranch} 와 같은 내용으로 되돌리는 커밋을 올린다(#532 거절 REVERT). 이미 같으면 올리지 않는다.
      * 플래그와 무관하게 동작하지만, 호출부는 플래그가 켜진 환경에서만 이 옵션을 연다.
      */
-    public Optional<ObjectId> revertTo(Long ownerUserId, String repoFullName, String baseBranch, Long approvalId) {
+    public Optional<ObjectId> revertTo(Long ownerUserId, String repoFullName, String baseBranch, Long approvalId,
+                                       String taskId) {
         Credentials credentials = credentials(ownerUserId);
-        return publisher.resetTo(
+        Optional<ObjectId> commit = publisher.resetTo(
                 PreviewBranchPushService.githubUrl(repoFullName),
                 new UsernamePasswordCredentialsProvider(credentials.username(), credentials.token()),
                 PREVIEW,
                 baseBranch,
                 "revert: preview 를 " + baseBranch + " 상태로 되돌림 (approval " + approvalId + ")");
+        commit.ifPresent(id -> pushLedger.recordRevert(repoFullName, id.name(), taskId));
+        return commit;
     }
 
     private Request request(String containerId, String repoFullName, String username, String userToken, String taskId) {

@@ -26,6 +26,7 @@ import com.example.dvely.change.application.port.out.GithubComparePort.File;
 import com.example.dvely.change.application.result.ResultScope;
 import com.example.dvely.change.application.result.ResultScope.Origin;
 import com.example.dvely.change.infrastructure.persistence.entity.ChangeEntity;
+import com.example.dvely.change.infrastructure.persistence.entity.ServerPushedCommitEntity;
 import com.example.dvely.change.infrastructure.persistence.repository.SpringDataChangeRepository;
 import com.example.dvely.change.infrastructure.persistence.repository.SpringDataChangeRepository.TaskDecisionView;
 import com.example.dvely.common.exception.GithubAppReauthorizationRequiredException;
@@ -52,10 +53,12 @@ class ResultScopeServiceTest {
     private final UserRepository userRepository = mock(UserRepository.class);
     private final GithubComparePort compare = mock(GithubComparePort.class);
     private final ServerPreviewBranch serverPreviewBranch = mock(ServerPreviewBranch.class);
+    private final ServerPushLedger ledger = mock(ServerPushLedger.class);
+    private final List<ServerPushedCommitEntity> recorded = new ArrayList<>();
 
     private final ResultScopeService service = new ResultScopeService(
             approvalRepository, changeRepository, projectRepository, userRepository, mock(AuthCommandService.class),
-            compare, serverPreviewBranch, new ObjectMapper().findAndRegisterModules());
+            compare, serverPreviewBranch, ledger, new ObjectMapper().findAndRegisterModules());
 
     @BeforeEach
     void setUp() {
@@ -63,6 +66,9 @@ class ResultScopeServiceTest {
         when(userRepository.findById(1L)).thenReturn(Optional.of(user()));
         when(serverPreviewBranch.enabled()).thenReturn(true);
         when(changeRepository.findByTaskId("task-1")).thenReturn(Optional.of(change()));
+        // 이번 작업의 커밋은 서버가 push 하며 남긴 기록이 있다
+        recorded.add(new ServerPushedCommitEntity("c1", "octo/repo", "task-1", ServerPushedCommitEntity.TASK));
+        when(ledger.find(any(), any())).thenReturn(recorded);
     }
 
     @Test
@@ -131,6 +137,7 @@ class ResultScopeServiceTest {
     @Test
     void commitsBehindARevertAreNotCountedAsIncluded() {
         pending();
+        recorded.add(new ServerPushedCommitEntity("rv", "octo/repo", "task-0", ServerPushedCommitEntity.REVERT));
         when(compare.compare(any(), any(), any(), any())).thenReturn(new Comparison(List.of(
                 commit("r1", "feat: apply Qeploy Agent task task-0"),
                 new Commit("rv", "revert: preview 를 main 상태로 되돌림 (approval 5)", List.of("r1", "m0")),
@@ -142,6 +149,39 @@ class ResultScopeServiceTest {
         assertThat(scope.commits()).extracting(ResultScope.CommitView::sha).containsExactly("c1");
         assertThat(scope.includesRejected()).isFalse();
         assertThat(scope.includesOtherWork()).isFalse();
+    }
+
+    @Test
+    void aMessageClaimingThisTaskIsNotTrustedWithoutTheServersRecord() {
+        pending();
+        when(compare.compare(any(), any(), any(), any())).thenReturn(new Comparison(List.of(
+                commit("c1", "feat: apply Qeploy Agent task task-1"),
+                commit("x1", "feat: apply Qeploy Agent task task-1")), 2,
+                List.of(new File("README.md", "modified", 1, 0, null))));
+        when(compare.commitFiles(any(), any(), any())).thenReturn(List.of("README.md"));
+
+        ResultScope.Scope scope = service.view(1L, 9L).scope();
+
+        assertThat(scope.commits()).extracting(ResultScope.CommitView::origin)
+                .containsExactly(Origin.THIS_TASK, Origin.UNKNOWN);
+        assertThat(scope.commits().get(1).taskId()).isNull();
+        assertThat(scope.includesOtherWork()).isTrue();
+    }
+
+    @Test
+    void aCommitThatOnlyLooksLikeARevertHidesNothing() {
+        pending();
+        when(compare.compare(any(), any(), any(), any())).thenReturn(new Comparison(List.of(
+                commit("h1", "add tracking script by hand"),
+                new Commit("rv", "revert: preview 를 main 상태로 되돌림 (approval 5)", List.of("h1", "m0")),
+                commit("c1", "feat: apply Qeploy Agent task task-1", "rv")), 3,
+                List.of(new File("tracker.js", "added", 3, 0, null))));
+        when(compare.commitFiles(any(), any(), any())).thenReturn(List.of());
+
+        ResultScope.Scope scope = service.view(1L, 9L).scope();
+
+        assertThat(scope.commits()).extracting(ResultScope.CommitView::sha).containsExactly("h1", "rv", "c1");
+        assertThat(scope.includesOtherWork()).isTrue();
     }
 
     @Test

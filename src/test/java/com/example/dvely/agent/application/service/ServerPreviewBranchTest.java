@@ -1,5 +1,10 @@
 package com.example.dvely.agent.application.service;
 
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verify;
+import org.eclipse.jgit.lib.ObjectId;
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Published;
+import com.example.dvely.change.application.service.ServerPushLedger;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -20,9 +25,30 @@ import org.junit.jupiter.api.Test;
 class ServerPreviewBranchTest {
 
     private final ServerGitPublisher publisher = mock(ServerGitPublisher.class);
+    private final ServerPushLedger ledger = mock(ServerPushLedger.class);
     private final ServerPreviewBranch branch = new ServerPreviewBranch(
             mock(ServerGitProperties.class), publisher, mock(DockerContainerService.class),
-            mock(UserRepository.class), mock(AuthCommandService.class));
+            mock(UserRepository.class), mock(AuthCommandService.class), ledger);
+
+    @Test
+    void aPushedCommitIsRecordedAsThisTasks() {
+        ObjectId commit = ObjectId.fromString("0123456789abcdef0123456789abcdef01234567");
+        when(publisher.publish(any(), any(), anyBoolean(), any())).thenReturn(new Published(Optional.of(commit), commit));
+
+        branch.publish("c", "t", "u", "octo/app", "task-1", false, Optional.empty(), false);
+
+        verify(ledger).recordTask("octo/app", commit.name(), "task-1");
+    }
+
+    @Test
+    void nothingIsRecordedWhenNothingWasPushed() {
+        ObjectId tree = ObjectId.fromString("0123456789abcdef0123456789abcdef01234567");
+        when(publisher.publish(any(), any(), anyBoolean(), any())).thenReturn(new Published(Optional.empty(), tree));
+
+        branch.publish("c", "t", "u", "octo/app", "task-1", false, Optional.empty(), false);
+
+        verifyNoInteractions(ledger);
+    }
 
     @Test
     void anExistingRepositoryGetsTheReviewGuidance() {
