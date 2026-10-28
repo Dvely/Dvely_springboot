@@ -66,7 +66,7 @@ public class ClaudeToolClient {
         body.put("system",   AnthropicPromptCache.systemBlocks(systemPrompt));
         body.put("tools",    AnthropicPromptCache.toolsWithCacheControl(toolsPayload));
         body.put("messages", AnthropicPromptCache.messagesWithRollingCacheControl(messages));
-        LlmRequestOptions.applyAnthropic(body, modelOptions, MAX_TOKENS);
+        LlmRequestOptions.applyAnthropic(body, model, modelOptions, MAX_TOKENS);
 
         String raw = LlmProviderErrors.translate(ClaudeClient.PROVIDER_NAME, aiProperties.getRetry(), () -> LlmHttp.client()
                 .post()

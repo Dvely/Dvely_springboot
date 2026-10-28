@@ -11,12 +11,77 @@ import org.junit.jupiter.api.Test;
 class LlmRequestOptionsTest {
 
     private static final int BASE_MAX_TOKENS = 8_192;
+    /** budget_tokens 만 받는 모델(운영 기본값). 아래 extended 단언은 이 모델 기준이다. */
+    private static final String EXTENDED_MODEL = "claude-opus-4-5-20251101";
+
+    // ── #510: 모델별 thinking 형식 ────────────────────────────────────────────────
+
+    @Test
+    void readsTheThinkingFormFromTheModelIdAsAnthropicsTableDoes() {
+        // 2026-10-28 공식 표: 4.6 이상은 adaptive(4.6 은 budget_tokens 도 받지만 폐기 예정), 4.7 이상은 budget_tokens 가 400,
+        // 4.5 이하는 adaptive 가 400.
+        for (String adaptive : java.util.List.of("claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-7", "claude-opus-4-8",
+                "claude-opus-5", "claude-opus-5-5", "claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+                "claude-fable-5", "claude-fable-5-1", "claude-mythos-5-1", "claude-mythos-preview",
+                "us.anthropic.claude-opus-4-6-v1:0", "claude-sonnet-4-6@20260101")) {
+            assertThat(LlmRequestOptions.usesAdaptiveThinking(adaptive)).as(adaptive).isTrue();
+        }
+        for (String extended : java.util.List.of("claude-opus-4-5-20251101", "claude-opus-4-5", "claude-sonnet-4-5-20250929",
+                "claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-opus-4-1-20250805", "claude-sonnet-4-20250514",
+                "claude-opus-4-20250514", "claude-3-7-sonnet-20250219", "claude-3-5-haiku-20241022",
+                "anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-opus-4-5@20251101")) {
+            assertThat(LlmRequestOptions.usesAdaptiveThinking(extended)).as(extended).isFalse();
+        }
+    }
+
+    @Test
+    void newerModelsGetAdaptiveThinkingWithEffortInsteadOfABudget() {
+        Map<String, Object> body = new HashMap<>();
+
+        LlmRequestOptions.applyAnthropic(body, "claude-opus-5-5", options(ThinkingLevel.HIGH), BASE_MAX_TOKENS);
+
+        assertThat(body).containsEntry("thinking", Map.of("type", "adaptive"))
+                .containsEntry("output_config", Map.of("effort", "high"));
+        // 4.7 이상은 budget_tokens 가 들어가면 400 이다
+        assertThat(body.toString()).doesNotContain("budget_tokens").doesNotContain("enabled");
+        // 생각도 max_tokens 에서 쓰므로 같은 여유를 준다
+        assertThat((int) body.get("max_tokens")).isGreaterThan(BASE_MAX_TOKENS);
+    }
+
+    @Test
+    void thinkingLevelsMapOntoEffortLevels() {
+        for (var entry : Map.of(ThinkingLevel.LOW, "low", ThinkingLevel.MEDIUM, "medium", ThinkingLevel.HIGH, "high").entrySet()) {
+            Map<String, Object> body = new HashMap<>();
+            LlmRequestOptions.applyAnthropic(body, "claude-sonnet-4-6", options(entry.getKey()), BASE_MAX_TOKENS);
+            assertThat(body).as("level=%s", entry.getKey()).containsEntry("output_config", Map.of("effort", entry.getValue()));
+        }
+    }
+
+    @Test
+    void olderModelsKeepTheBudgetFormBecauseAdaptiveIsRejectedThere() {
+        Map<String, Object> body = new HashMap<>();
+
+        LlmRequestOptions.applyAnthropic(body, "claude-haiku-4-5", options(ThinkingLevel.LOW), BASE_MAX_TOKENS);
+
+        assertThat(body.get("thinking")).isEqualTo(Map.of("type", "enabled", "budget_tokens", 2_048));
+        assertThat(body).doesNotContainKey("output_config");
+    }
+
+    @Test
+    void thinkingOffSendsNoThinkingOnAnyModel() {
+        // 일부 새 모델은 "disabled" 를 400 으로 거부한다 — 보내지 않는 것만이 모든 모델이 받는 형태다
+        for (String model : java.util.List.of("claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-4-5-20251101")) {
+            Map<String, Object> body = new HashMap<>();
+            LlmRequestOptions.applyAnthropic(body, model, options(ThinkingLevel.OFF), BASE_MAX_TOKENS);
+            assertThat(body).as(model).containsOnlyKeys("max_tokens");
+        }
+    }
 
     @Test
     void leavesAnthropicsOutputAllowanceAloneWhenThinkingIsOff() {
         Map<String, Object> body = new HashMap<>();
 
-        LlmRequestOptions.applyAnthropic(body, options(ThinkingLevel.OFF), BASE_MAX_TOKENS);
+        LlmRequestOptions.applyAnthropic(body, EXTENDED_MODEL, options(ThinkingLevel.OFF), BASE_MAX_TOKENS);
 
         assertThat(body).containsEntry("max_tokens", BASE_MAX_TOKENS).doesNotContainKey("thinking");
     }
@@ -28,7 +93,7 @@ class LlmRequestOptionsTest {
         // the full allowance it had before thinking was switched on.
         Map<String, Object> body = new HashMap<>();
 
-        LlmRequestOptions.applyAnthropic(body, options(ThinkingLevel.HIGH), BASE_MAX_TOKENS);
+        LlmRequestOptions.applyAnthropic(body, EXTENDED_MODEL, options(ThinkingLevel.HIGH), BASE_MAX_TOKENS);
 
         @SuppressWarnings("unchecked")
         Map<String, Object> thinking = (Map<String, Object>) body.get("thinking");
@@ -143,7 +208,7 @@ class LlmRequestOptionsTest {
 
     private int budgetFor(ThinkingLevel level) {
         Map<String, Object> body = new HashMap<>();
-        LlmRequestOptions.applyAnthropic(body, options(level), BASE_MAX_TOKENS);
+        LlmRequestOptions.applyAnthropic(body, EXTENDED_MODEL, options(level), BASE_MAX_TOKENS);
         @SuppressWarnings("unchecked")
         Map<String, Object> thinking = (Map<String, Object>) body.get("thinking");
         return (int) thinking.get("budget_tokens");
