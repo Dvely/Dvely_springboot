@@ -425,7 +425,11 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 | `PREVIEW_LIMIT_EXCEEDED` | 429 | `POST /projects/{id}/preview-session` | `message` 표시. 열린 프리뷰를 닫을 수 있게 안내(`DELETE /preview-sessions/{id}`) |
 
 - 승인·되묻기를 기다리는 작업은 "진행 중"으로 세지 않습니다. 작업 상한은 `PENDING`·`QUEUED`·`RETRY_WAIT`·`RUNNING` 만 셉니다. 대신 기다리던 작업을 다시 돌리는 순간(계획 승인, 되묻기 답, 재시도)에 상한을 봅니다. 결과 승인·저장소 연결 승인은 상한을 보지 않습니다.
-- 프리뷰는 자리가 없으면 서버가 먼저 **끝난 작업의 프리뷰**를 오래 안 본 순서로 닫습니다(`EXPIRED`). 그래서 대개는 거절 없이 새로 뜨고, 대신 오래된 작업 결과 프리뷰가 닫혀 있을 수 있습니다.
+- 프리뷰는 자리가 없으면 서버가 먼저 **끝난 작업의 프리뷰**를 오래 안 본 순서로 닫습니다(`EXPIRED`). 그래서 대개는 거절 없이 새로 뜨고, 대신 오래된 작업 결과 프리뷰가 닫혀 있을 수 있습니다. 닫힌 프리뷰는 TTL 로 만료된 것과 똑같이 보입니다(닫힌 이유는 따로 내려가지 않습니다):
+  - 다시 열기 `POST /preview-sessions/{id}/access` → **409** `CONFLICT`, `message` "종료되었거나 아직 준비 중인 프리뷰입니다. status=EXPIRED" — "프리뷰가 닫혔습니다" 로 보여 주고, 프로젝트 프리뷰라면 `POST /projects/{id}/preview-session` 으로 다시 띄우게 안내
+  - 상태 `GET /preview-sessions/{id}/status` → 200, `sessionStatus: "EXPIRED"`, `containerRunning: false`
+  - 이미 떠 있던 iframe 은 다음 문서 요청부터 게이트웨이 **404**
+  - `GET /projects/{id}/preview-session` 은 닫힌 세션을 고르지 않는다(남은 세션이 있으면 그것, 없으면 204)
 - CODE 단계가 프리뷰 상한에 걸리면 위 AI 제공자 오류와 같은 방식입니다: 태스크가 `FAILED` 가 되고 같은 문장이 `TASK_FAILED` 어시스턴트 메시지로 남습니다.
 
 ### 4.6 Deployment — `com.example.dvely.deployment.presentation` (10)
