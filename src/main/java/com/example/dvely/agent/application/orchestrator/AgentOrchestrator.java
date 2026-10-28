@@ -174,6 +174,10 @@ public class AgentOrchestrator {
             throw new IllegalStateException(
                     "승인 완료 처리를 진행할 수 없는 상태입니다. taskId=" + taskId + " status=" + task.status());
         }
+        // 승인 대기·실패는 동시 런 상한(#509)이 세지 않는 상태라, 여기서 실행으로 올리면 런이 하나 는다. 넘으면 429 로
+        // 승인 전체가 롤백돼 승인은 PENDING 으로 남는다(사용자가 나중에 다시 누르면 된다). 호출부(approve)는 태스크 행을
+        // 이미 잠갔고 이 뒤에 토큰 갱신(사용자 행을 별도 트랜잭션에서 잠금)을 부르지 않는다.
+        activeRunLimit.check(task.ownerUserId());
         if (task.status() == TaskStatus.FAILED) {
             if (!taskStore.retry(taskId, task.ownerUserId())) {
                 throw new IllegalStateException("재시도할 수 없는 Agent task입니다. taskId=" + taskId);
@@ -820,7 +824,15 @@ public class AgentOrchestrator {
      *
      * @return 태스크가 답을 받아들였으면 true. false 면 호출부가 404 로 응답한다
      */
+    @Transactional
     public boolean supplyInput(String taskId, Long userId, Long conversationId, String value) {
+        // 되묻기 대기는 동시 런 상한(#509)이 세지 않는 상태라, 답을 받으면 런이 하나 는다. 태스크 행 → 사용자 행 순서로
+        // 잠근다(retryByOwner 와 같다). 남의 것·이미 답한 것은 상한을 보지 않고 아래 supply 가 false 로 돌려보낸다.
+        AgentTask task = taskStore.get(taskId);
+        if (task != null && userId.equals(task.ownerUserId())
+                && taskStore.lockTask(taskId).status() == TaskStatus.WAITING_INPUT) {
+            activeRunLimit.check(userId);
+        }
         if (!inputWaitStore.supply(taskId, userId, value)) {
             return false;
         }

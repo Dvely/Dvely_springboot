@@ -101,13 +101,13 @@
 
 | 상한 | 기본 | 세는 것 | 거는 곳 |
 |---|---|---|---|
-| `max-active-runs` | 2 | 기계가 일하고 있는 런 — `PENDING`·`QUEUED`·`RETRY_WAIT`·`RUNNING`. 승인·되묻기를 기다리는 런은 세지 않는다 | 새 런이 생기는 모든 곳(`POST /conversations/{id}/messages`, `POST /agent/tasks`, 도메인 연결·해제 제출)과 `POST /agent/tasks/{taskId}/retry` → `429 ACTIVE_RUN_LIMIT_EXCEEDED` |
+| `max-active-runs` | 2 | 기계가 일하고 있는 런 — `PENDING`·`QUEUED`·`RETRY_WAIT`·`RUNNING`. 승인·되묻기를 기다리는 런은 세지 않는다 | 세지 않는 상태에서 세는 상태로 올리는 곳 전부: 새 런(`POST /conversations/{id}/messages`, `POST /agent/tasks`, 도메인 연결·해제 제출), 재시도(`POST /agent/tasks/{taskId}/retry`), 계획 승인 완료(`POST /approvals/{id}/approve` 가 런을 실행으로 올릴 때 — 승인은 PENDING 그대로), 되묻기 답(`POST /agent/tasks/{taskId}/input` — 답은 저장되지 않음) → `429 ACTIVE_RUN_LIMIT_EXCEEDED` |
 | `max-live-previews` | 3 | `ACTIVE`·`PROVISIONING` 프리뷰 세션 | 새 컨테이너가 뜨는 곳: `POST /projects/{projectId}/preview-session` → `429 PREVIEW_LIMIT_EXCEEDED`. Agent CODE 스텝 → 태스크가 `FAILED` 로 끝나고 대화에 같은 문장이 `TASK_FAILED` 로 남는다 |
 
 - 이미 떠 있는 세션에 붙는 프리뷰 요청은 컨테이너가 늘지 않으므로 세지 않는다
 - 프리뷰 자리가 없으면 먼저 **끝난(DONE·CANCELLED) 작업의 프리뷰**를 오래 안 본 순서로 닫아(`EXPIRED`) 자리를 만든다. 사용자가 연 프로젝트 프리뷰, 진행 중·결과 승인 대기·실패(재시도가 작업물을 이어 씀) 작업의 프리뷰는 닫지 않는다. 그래도 자리가 없을 때만 거절한다
 - 같은 사용자의 동시 요청도 상한을 넘지 못한다. 런은 사용자 행 잠금으로 한 줄로 세우고, 프리뷰는 행을 저장한 뒤 다시 세어 넘친 쪽이 물러난다(동시에 몰리면 둘 다 물러날 수 있다 — 다시 시도하면 된다)
-- 거는 곳이 아닌 전이(승인 → 실행, 되묻기 답 → 재개, 빌드 실패 자동 복구)는 상한을 보지 않는다. 이미 받은 런의 진행이라 거기서 거절하면 사용자 결정이 허공에 뜬다
+- 상한을 보지 않는 전이: 결과 승인·저장소 연결 승인 뒤의 재개(런마다 한 번, 이미 실행된 런의 남은 단계. 그 승인 처리는 GitHub 반영 중 토큰 갱신이 사용자 행을 잠글 수 있어 같은 잠금을 쥘 수 없다), 빌드 실패 자동 복구, 멈춘 승인 복구 스윕
 
 ## 3. Auth API
 

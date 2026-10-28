@@ -848,6 +848,90 @@ class AgentOrchestratorTest {
     }
 
     @Test
+    void approvingAWaitingRunChecksTheLimitBeforeQueueingAndARefusalQueuesNothing() {
+        // 승인 대기는 세지 않는 상태라 승인 → 실행은 런이 하나 느는 전이다. 넘으면 아무것도 큐에 넣지 않고 던져
+        // 승인 트랜잭션 전체가 롤백된다(승인은 PENDING 으로 남는다).
+        TaskStore taskStore = mock(TaskStore.class);
+        ActiveRunLimit activeRunLimit = mock(ActiveRunLimit.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class),
+                activeRunLimit
+        );
+        when(taskStore.get("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_APPROVAL));
+        when(taskStore.getPlan("task-1")).thenReturn(new AgentPlan(List.of(), "reason", AiProvider.OPENAI, 11L));
+        org.mockito.Mockito.doThrow(new com.example.dvely.common.limit.UserLimitExceededException(
+                        com.example.dvely.common.response.ErrorCode.ACTIVE_RUN_LIMIT_EXCEEDED, "limit"))
+                .when(activeRunLimit).check(1L);
+
+        assertThatThrownBy(() -> orchestrator.executeApproved("task-1"))
+                .isInstanceOf(com.example.dvely.common.limit.UserLimitExceededException.class);
+        verify(taskStore, never()).enqueue(anyString());
+        verify(taskStore, never()).retry(anyString(), anyLong());
+    }
+
+    @Test
+    void answeringAClarificationChecksTheLimitAfterLockingTheTaskAndARefusalStoresNoAnswer() {
+        TaskStore taskStore = mock(TaskStore.class);
+        InputWaitStore inputWaitStore = mock(InputWaitStore.class);
+        ActiveRunLimit activeRunLimit = mock(ActiveRunLimit.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class),
+                inputWaitStore,
+                activeRunLimit
+        );
+        AgentTask waiting = taskWithStatus(TaskStatus.WAITING_INPUT);
+        when(taskStore.get("task-1")).thenReturn(waiting);
+        when(taskStore.lockTask("task-1")).thenReturn(waiting);
+        when(inputWaitStore.supply("task-1", 1L, "답")).thenReturn(true);
+
+        assertThat(orchestrator.supplyInput("task-1", 1L, 21L, "답")).isTrue();
+        InOrder order = inOrder(taskStore, activeRunLimit, inputWaitStore);
+        order.verify(taskStore).lockTask("task-1");
+        order.verify(activeRunLimit).check(1L);
+        order.verify(inputWaitStore).supply("task-1", 1L, "답");
+
+        org.mockito.Mockito.clearInvocations(inputWaitStore);
+        org.mockito.Mockito.doThrow(new com.example.dvely.common.limit.UserLimitExceededException(
+                        com.example.dvely.common.response.ErrorCode.ACTIVE_RUN_LIMIT_EXCEEDED, "limit"))
+                .when(activeRunLimit).check(1L);
+        assertThatThrownBy(() -> orchestrator.supplyInput("task-1", 1L, 21L, "답"))
+                .isInstanceOf(com.example.dvely.common.limit.UserLimitExceededException.class);
+        verifyNoInteractions(inputWaitStore);
+    }
+
+    @Test
+    void anAnswerToSomeoneElsesTaskNeverConsultsTheLimit() {
+        TaskStore taskStore = mock(TaskStore.class);
+        ActiveRunLimit activeRunLimit = mock(ActiveRunLimit.class);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(
+                taskStore,
+                mock(ProjectRepository.class),
+                mock(ConversationRepository.class),
+                mock(ProjectApprovalPolicyRepository.class),
+                mock(ApprovalRepository.class),
+                mock(AgentMessageService.class),
+                mock(InputWaitStore.class),
+                activeRunLimit
+        );
+        when(taskStore.get("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_INPUT));
+
+        assertThat(orchestrator.supplyInput("task-1", 2L, 21L, "답")).isFalse();
+        verifyNoInteractions(activeRunLimit);
+        verify(taskStore, never()).lockTask(anyString());
+    }
+
+    @Test
     void findPendingApprovalIdReturnsNullWhenEveryApprovalOnTheTaskIsAlreadyDecided() {
         ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
         AgentOrchestrator orchestrator = new AgentOrchestrator(

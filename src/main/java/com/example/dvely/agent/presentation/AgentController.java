@@ -222,7 +222,8 @@ public class AgentController {
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "입력 수신 완료, 에이전트 재개"),
             @ApiResponse(responseCode = "400", description = "태스크가 WAITING_INPUT 상태가 아님"),
-            @ApiResponse(responseCode = "404", description = "존재하지 않는 taskId 또는 입력 대기 만료")
+            @ApiResponse(responseCode = "404", description = "존재하지 않는 taskId 또는 입력 대기 만료"),
+            @ApiResponse(responseCode = "429", description = "ACTIVE_RUN_LIMIT_EXCEEDED — 사용자별 동시 런 상한(#509). 답은 저장되지 않는다")
     })
     @PostMapping("/tasks/{taskId}/input")
     public ResponseEntity<Void> submitInput(

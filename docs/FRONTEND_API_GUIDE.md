@@ -421,10 +421,10 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 
 | code | HTTP | 나오는 곳 | FE 처리 |
 |---|---|---|---|
-| `ACTIVE_RUN_LIMIT_EXCEEDED` | 429 | `POST /conversations/{id}/messages`, `POST /agent/tasks`, 도메인 연결·해제, `POST /agent/tasks/{taskId}/retry` | `message` 표시. 메시지 전송이면 **메시지가 저장되지 않았으므로** 입력창 내용을 지우지 않는다 |
+| `ACTIVE_RUN_LIMIT_EXCEEDED` | 429 | `POST /conversations/{id}/messages`, `POST /agent/tasks`, 도메인 연결·해제, `POST /agent/tasks/{taskId}/retry`, `POST /approvals/{id}/approve`(계획 승인이 작업을 시작시킬 때), `POST /agent/tasks/{taskId}/input` | `message` 표시. 아무것도 반영되지 않았다 — 메시지 전송이면 **메시지가 저장되지 않았으므로** 입력창을 지우지 않고, 승인이면 카드가 PENDING 그대로라 나중에 다시 누르면 되고, 되묻기 답이면 폼을 닫지 않는다 |
 | `PREVIEW_LIMIT_EXCEEDED` | 429 | `POST /projects/{id}/preview-session` | `message` 표시. 열린 프리뷰를 닫을 수 있게 안내(`DELETE /preview-sessions/{id}`) |
 
-- 승인·되묻기를 기다리는 작업은 "진행 중"으로 세지 않습니다. 작업 상한은 `PENDING`·`QUEUED`·`RETRY_WAIT`·`RUNNING` 만 셉니다.
+- 승인·되묻기를 기다리는 작업은 "진행 중"으로 세지 않습니다. 작업 상한은 `PENDING`·`QUEUED`·`RETRY_WAIT`·`RUNNING` 만 셉니다. 대신 기다리던 작업을 다시 돌리는 순간(계획 승인, 되묻기 답, 재시도)에 상한을 봅니다. 결과 승인·저장소 연결 승인은 상한을 보지 않습니다.
 - 프리뷰는 자리가 없으면 서버가 먼저 **끝난 작업의 프리뷰**를 오래 안 본 순서로 닫습니다(`EXPIRED`). 그래서 대개는 거절 없이 새로 뜨고, 대신 오래된 작업 결과 프리뷰가 닫혀 있을 수 있습니다.
 - CODE 단계가 프리뷰 상한에 걸리면 위 AI 제공자 오류와 같은 방식입니다: 태스크가 `FAILED` 가 되고 같은 문장이 `TASK_FAILED` 어시스턴트 메시지로 남습니다.
 

@@ -1537,10 +1537,10 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 ## 4.44 사용자별 동시 런·프리뷰 상한 (Issue #509 PR-1)
 
 - 예전에는 한 사용자가 런과 프리뷰 컨테이너를 얼마든지 열 수 있었다(429 는 LLM 제공자 오류 매핑에만 있었다). 이제 넘으면 `429 ACTIVE_RUN_LIMIT_EXCEEDED` / `429 PREVIEW_LIMIT_EXCEEDED` 다(api.md §2.6)
-- 런: `qeploy.limits.per-user.max-active-runs` 기본 2. PENDING·QUEUED·RETRY_WAIT·RUNNING 만 센다. 새 런이 생기는 곳(`AgentOrchestrator.savePendingTask` — 채팅 전송·`POST /agent/tasks`·도메인 제출)과 사용자 재시도(`retryByOwner`)에서 건다. 사용자 행을 잠근 뒤 새 트랜잭션에서 센다 — 같은 트랜잭션에서 세면 잠금 전에 잡힌 REPEATABLE READ 스냅샷 때문에 동시 요청 둘이 다 통과한다(통합 테스트가 그 상황을 재현한다)
+- 런: `qeploy.limits.per-user.max-active-runs` 기본 2. PENDING·QUEUED·RETRY_WAIT·RUNNING 만 센다. 세지 않는 상태에서 세는 상태로 올리는 곳에서 건다 — 새 런(`AgentOrchestrator.savePendingTask` — 채팅 전송·`POST /agent/tasks`·도메인 제출), 사용자 재시도(`retryByOwner`), 계획 승인 완료(`executeApproved`), 되묻기 답(`supplyInput`). 사용자 행을 잠근 뒤 새 트랜잭션에서 센다 — 같은 트랜잭션에서 세면 잠금 전에 잡힌 REPEATABLE READ 스냅샷 때문에 동시 요청 둘이 다 통과한다(통합 테스트가 그 상황을 재현한다)
 - 프리뷰: `max-live-previews` 기본 3. ACTIVE·PROVISIONING 을 센다. 새 컨테이너를 띄우는 두 곳(프로젝트 프리뷰 `provision`, CODE 스텝 `acquire`)에서 건다. 자리가 없으면 끝난(DONE·CANCELLED) 작업의 프리뷰를 오래 안 본 순서로 먼저 닫는다. 저장 뒤 다시 세어 동시 요청의 초과를 되돌린다
 - CODE 스텝이 프리뷰 상한에 걸리면 태스크는 FAILED, 대화에 상한 문장이 접두 없이 남고 로그는 WARN 이다(#541 과 같은 처리)
-- 승인 → 실행, 되묻기 답 → 재개, 빌드 실패 자동 복구는 상한을 보지 않는다
+- 결과 승인·저장소 연결 승인 뒤의 재개, 빌드 실패 자동 복구, 멈춘 승인 복구 스윕은 상한을 보지 않는다. 앞의 둘은 승인 처리 중 토큰 갱신이 별도 트랜잭션에서 사용자 행을 잠글 수 있어 같은 잠금을 쥘 수 없다(쥐면 자기 자신을 기다린다). 런마다 한 번뿐인 남은 단계라 우회 여지가 작다
 - 인증 경로 nginx `limit_req`(같은 이슈의 서버 작업)는 저장소 밖이라 이 PR 에 없다. dev·운영 둘 다 손대야 한다
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
