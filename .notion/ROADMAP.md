@@ -10,15 +10,17 @@
 
 ## 1. 현재 상태
 
-- 2026-10-28: **서버 측 git(#523 P0) 운영 완결 — push·clone 플래그 모두 ON, 결과 승인 반영 범위(#532) 운영 반영, 빌드 격리(#507)·계획 재적용(#546)은 develop.**
+- 2026-10-28: **서버 측 git(#523 P0) 운영 완결 — push·clone 플래그 모두 ON, 결과 승인 반영 범위(#532) 운영 반영. 빌드 격리(#507)·계획 재적용(#546)·thinking 형식(#510)·사용자별 동시 상한(#509)은 develop.**
   - 운영 릴리스 6차 #540(#537 결과 승인 반영 범위·거절 REVERT, V69·V70 / #539 서버 push 가 준비 뒤 바뀐 원격을 되돌리지 않게) · 7차 #543(#538 서버 측 clone·fetch 플래그 / #542 이미지 빌드 대기 상한 30분)
   - 운영 env: `QEPLOY_GIT_SERVERSIDE_PUSHENABLED`(10-28 09:57) · `…_CLONEENABLED`(16:16) 둘 다 true. 백업 `ecosystem.config.js.bak-20261028095646` · `.bak-20261028161613`. dev 도 둘 다 ON
   - dev 실측 통과: #537(READY·REVERT·KEEP·DECIDED, FE 카드 #159 포함) / #539(작업 도중 원격 커밋 → push 거부, 원격 보존) / #538(서버 checkout, 작업 공간 전부 node 소유, 컨테이너 인증 git 0, base 표시 갱신)
-  - develop 에만 있음(8차 대기): #544 build-isolation 기본 KANIKO + `ghcr.io/osscontainertools/kaniko` v1.29.0 digest 고정 + 호스트 docker build 폴백은 `allow-native-build=true` 일 때만 / #547 계획 입력의 지난 요청에 결과(되돌림·거절·취소·실패 → 다시 적용하지 말 것) 표시 + 프롬프트 규칙
+  - develop 에만 있음(8차 대기): #544 build-isolation 기본 KANIKO + `ghcr.io/osscontainertools/kaniko` v1.29.0 digest 고정 + 호스트 docker build 폴백은 `allow-native-build=true` 일 때만 / #547 계획 입력의 지난 요청에 결과(되돌림·거절·취소·실패 → 다시 적용하지 말 것) 표시 + 프롬프트 규칙 / #549 원격이 바뀌어 멈춘 push 를 오류 아닌 안내로(#541) / #550 Anthropic thinking 모델별 형식(4.6+ adaptive+effort, 4.5 이하 budget — 기본 모델 4.5 라 기본 경로 불변. 기본 모델 상향은 사용자 결정 대기) / #551 사용자별 동시 런 2·프리뷰 3 상한, 넘으면 429 `ACTIVE_RUN_LIMIT_EXCEEDED`·`PREVIEW_LIMIT_EXCEEDED` / #552 #545 설계 문서
+  - dev 확인(10-28 22:40, develop `8c2d6d20` = #551 까지): 배포 성공, health UP, 기동 뒤 ERROR 0. 429 동작 자체는 단위·MySQL 통합 테스트로만 확인했다(dev 실측은 FE 429 처리 뒤에)
+  - **8차 조건(10-28 수정)**: FE #161 + **FE 429 처리**(지금 FE 는 메시지 전송 429 에 입력을 비우고, 되묻기 답 429 에 일반 메시지로 재전송한다 — #551 이 운영에 나가기 전에 FE main 반영 필수) → 버튼으로 EC2 Docker e2e → 8차
   - 운영 사실(10-28 확인): build-isolation 미설정 → 8차 전까지 운영 이미지 빌드는 기존 경로(호스트 `docker build`) 그대로. 운영 컨트롤 플레인에 AWS 자격이 없어 ROLE_ARN 방식 클라우드 연결이 운영에서 동작하지 않을 수 있음(확인 필요). 보안 관련 확인 결과는 비공개 Advisory 에만 둔다
-  - 이슈: #541(정상 push 거부가 ERROR 로 남음) · #545(이미지 빌드를 컨트롤 플레인 밖으로, 설계) · #546(계획 재적용, PR #547) · FE #161(서버 생성 요청에 deployMode·bundledDbEngine 없음)
+  - 이슈: #545(설계 머지됨 — 결정 4개 사용자 대기, 결정 전 구현 착수 금지) · #509(앱 PR-1 머지, nginx `limit_req` 는 dev·운영 서버 작업이라 사용자 결정 대기) · FE #161(서버 생성 요청에 deployMode·bundledDbEngine 없음)
 
-  **다음 세션이 볼 것**: ①FE #161 → 버튼으로 프로젝트 42 EC2 Docker 배포 e2e(번들 MySQL, t3.micro, 1시간 안 정리) → 8차(#544 + #547) ②운영 인스턴스 설정 변경 1건(사용자 결정 — 비공개 Advisory 참고) ③#547 dev 실측(되돌린 요청 뒤 새 요청, BYOK) ④운영 clone 첫 실사용(프리뷰·배포 빌드 각 1건) 관찰 → 옛 경로 제거 PR(`ContainerGitCredentials`·컨테이너 push 분기) → #523·#508 종료, Advisory 정리 ⑤#541
+  **다음 세션이 볼 것**: ①FE #161 + FE 429 처리 → 버튼으로 프로젝트 42 EC2 Docker 배포 e2e(번들 MySQL, t3.micro, 1시간 안 정리) → 8차(#544·#547·#549·#550·#551) ②운영 인스턴스 설정 변경 1건(사용자 결정 — 비공개 Advisory 참고) — 결정 전 운영 무변경 ③#547 dev 실측(되돌린 요청 뒤 새 요청, BYOK) ④운영 clone 첫 실사용(checkout·CODE·결과 게이트 각 1건 이상, ERROR 0) 관찰 → 옛 경로 제거 PR(`ContainerGitCredentials`·컨테이너 push 분기) → #523·#508 종료, Advisory 정리 ⑤#545 결정 → 구현 이슈 ⑥#509 nginx `limit_req`(사용자 결정) ⑦기본 모델 상향(사용자 결정)
 
   **실측에서 두 번 잘못 읽었다** — README 에 거절된 줄이 다시 보인 것을 "git 누수"로, 그다음 "지시문이 과거 문구를 나열"로 읽었다. 실제는 계획 단계가 이력을 취합한 것(#546). 결과를 해석하기 전에 CODE 로그의 instruction 과 사용자 원문을 먼저 대조한다.
 
