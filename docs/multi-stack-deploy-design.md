@@ -75,6 +75,9 @@ push 메커니즘(로컬 registry) 확인. **실 ECR+kaniko e2e 는 amd64 컨트
 
 소스 clone 은 두 방식 모두 격리 샌드박스(`DockerContainerService`)에서 한다.
 
+다음 단계: 빌드 자체를 컨트롤 플레인 밖(대상 EC2 또는 사용자 계정의 일회용 빌더)으로 옮기는 설계는
+`docs/image-build-offload-design.md`(#545).
+
 ## 별도 트랙 (이 설계와 분리)
 
 - **되묻기(C2)**: 개발 전 스택·아키텍처·배포모드를 물음. 여기 "배포 모드 명시 선택"과 만난다.
