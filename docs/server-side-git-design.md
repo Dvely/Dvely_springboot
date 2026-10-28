@@ -150,6 +150,7 @@
 - 소유자: `copyUIDGID` 로 컨테이너 실행 사용자(프리뷰는 node)에게 맞추고, 상위 디렉터리를 모두 tar 항목으로 명시한다. 암묵적으로 만들어진 디렉터리는 root 소유가 될 수 있고, 프리뷰는 DAC_OVERRIDE 가 없어 그 아래에 쓰지 못한다.
 - 프리뷰(`PreviewWorkspaceService`): preview(없으면 기본 브랜치). 같은 저장소의 작업 트리가 이미 있으면 **그대로 둔다** — 한 작업에서 CODE 스텝이 다시 돌면 같은 컨테이너를 다시 준비하는데, 그 트리에는 아직 push 하지 않은 앞 스텝의 작업이 있다(3.2 표의 "비우고 넣는다"에서 바꿨다). 어느 저장소인지는 `/workspace/.qeploy-source` 표시 파일로, 플래그 전에 clone 한 트리는 `origin` 으로 본다. 다른 저장소면 비우고 넣는다.
 - 배포 빌드(`BackendSourceClone.cloneAt`): 기본 브랜치, 또는 지정 태그. 태그 체크아웃(`FrontendStaticHostingAdapter`)도 서버가 자격을 붙여 받으므로, 옛 경로가 자격 없이 `origin` 에서 태그를 받던 문제(6절 2번)가 이 경로에서는 없다.
+- 4.3 의 base 표시와 맞물린다. 서버가 넣는 tar 에 `.qeploy-source`(저장소)와 `.qeploy-base`(넣은 커밋, 빈 저장소면 `EMPTY`)를 트리와 함께 담는다 — 같은 tar 라 트리와 base 가 어긋난 채 들어가지 않는다. 같은 저장소 트리를 그대로 두는 분기는 base 표시도 덮어쓰지 않는다(그 트리를 준비한 시점의 base 라야 push 직전 검사가 맞다). push 가 `RemoteMovedException` 으로 멈추면 `.qeploy-source` 가 지워져, 다음 준비는 비우고 다시 받아 base 를 새로 쓴다.
 - 옛 경로(`ContainerGitCredentials`·컨테이너 clone·`PreviewBranchPushService` 의 컨테이너 push)는 운영에서 clone 플래그까지 켠 뒤 별도 PR 로 지운다.
 
 ### 4.3 준비 시점 base 검사(되돌림 방지)

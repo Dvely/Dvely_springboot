@@ -209,6 +209,35 @@ class PreviewWorkspaceServiceTest {
     }
 
     @Test
+    void aKeptTreeKeepsItsRecordedBaseAndIsFetchedAgainOnceItsSourceMarkerIsGone() {
+        // #539 와 서버 clone 의 조합: 같은 저장소 트리를 그대로 둘 때는 준비 시점 base 표시도 그대로여야 push 직전 검사가
+        // 맞다. 원격이 바뀌어 push 가 멈추면 source 표시가 지워지고(ServerPreviewBranch), 다음 준비는 다시 받아 base 를 새로 쓴다.
+        DockerContainerService docker = mock(DockerContainerService.class);
+        ProjectRepository projects = mock(ProjectRepository.class);
+        ServerRepositoryCheckout checkout = mock(ServerRepositoryCheckout.class);
+        PreviewWorkspaceService target = new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker),
+                projects, mock(UserRepository.class), mock(AuthCommandService.class), checkout);
+        when(checkout.enabled()).thenReturn(true);
+        when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
+        when(docker.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
+
+        // 1) 같은 저장소 트리 → 그대로, base 표시를 쓰지 않는다
+        when(docker.exec(eq(CONTAINER_ID), contains(".qeploy-source"))).thenReturn("octo/repo");
+        target.prepareProject(CONTAINER_ID, 7L, 11L);
+        verify(checkout, org.mockito.Mockito.never()).intoPreview(anyString(), org.mockito.ArgumentMatchers.anyLong(), anyString());
+        verify(docker, org.mockito.Mockito.never()).exec(eq(CONTAINER_ID), contains("> /workspace/.qeploy-base"));
+        verify(docker, org.mockito.Mockito.never()).exec(eq(CONTAINER_ID), contains("rm -rf"));
+
+        // 2) push 가 멈춰 source 표시가 지워진 뒤 → 비우고 다시 받는다(새 base 는 checkout 이 tar 에 함께 넣는다)
+        when(docker.exec(eq(CONTAINER_ID), contains(".qeploy-source"))).thenReturn("__none__");
+        when(docker.exec(eq(CONTAINER_ID), contains("remote get-url"))).thenReturn("__none__");
+        target.prepareProject(CONTAINER_ID, 7L, 11L);
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(docker, checkout);
+        order.verify(docker).exec(eq(CONTAINER_ID), contains("rm -rf /workspace/app"));
+        order.verify(checkout).intoPreview(CONTAINER_ID, 7L, "octo/repo");
+    }
+
+    @Test
     void serverSideCheckoutAlsoKeepsATreeClonedBeforeTheFlag() {
         DockerContainerService docker = mock(DockerContainerService.class);
         ProjectRepository projects = mock(ProjectRepository.class);
@@ -250,7 +279,8 @@ class PreviewWorkspaceServiceTest {
         ProjectRepository projects = mock(ProjectRepository.class);
         UserRepository users = mock(UserRepository.class);
         PreviewWorkspaceService target =
-                new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker), projects, users, mock(AuthCommandService.class));
+                new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker), projects, users, mock(AuthCommandService.class),
+                        mock(ServerRepositoryCheckout.class));
         when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
         when(users.findById(7L)).thenReturn(java.util.Optional.of(tokenUser()));
         when(docker.exec(eq(CONTAINER_ID), anyString())).thenReturn("");

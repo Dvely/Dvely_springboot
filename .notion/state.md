@@ -1504,6 +1504,7 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 플래그 `qeploy.git.server-side.clone-enabled`(기본 꺼짐). push 플래그도 켜져 있을 때만 동작한다
 - 켜지면 프리뷰 작업 공간(`PreviewWorkspaceService`)과 배포 빌드(`BackendSourceClone`·태그 배포)의 소스를 서버가 받아 tar 로 넣는다. 컨테이너 안에서 인증이 필요한 git 호출이 없다
 - 같은 저장소의 작업 트리가 이미 있으면 그대로 둔다(앞 CODE 스텝의 미반영 작업 보호)
+- 서버가 넣는 tar 에 base 표시(넣은 커밋)를 트리와 함께 담는다(§4.38). 트리를 그대로 둘 때는 base 표시도 그대로 둔다
 - 옛 경로 제거는 운영에서 이 플래그까지 켠 뒤 별도 PR. 상세는 `docs/server-side-git-design.md` 4.2
 - 아직 dev 실측 전이다(특히 node 소유로 풀리는지)
 

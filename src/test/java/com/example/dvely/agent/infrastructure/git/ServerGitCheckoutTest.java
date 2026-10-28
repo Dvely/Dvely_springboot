@@ -73,6 +73,35 @@ class ServerGitCheckoutTest {
     }
 
     @Test
+    void extrasAreBuiltFromTheCommitThatIsCheckedOut() throws Exception {
+        // base 표시가 트리와 같은 tar 에 들어가야 둘이 어긋나지 않는다(#539)
+        RevCommit preview = remote.commit("preview", Map.of("README.md", "p"));
+        Archive archive = new Archive();
+        java.util.List<String> seen = new ArrayList<>();
+        archive.commit = checkout.checkout(remote.url(), null, Target.branchesThenDefault("preview"), "app",
+                commit -> {
+                    seen.add(commit);
+                    return Map.of(".qeploy-base", bytes(commit));
+                }, archive::read);
+
+        assertThat(seen).containsExactly(preview.name());
+        assertThat(archive.content(".qeploy-base")).isEqualTo(preview.name());
+    }
+
+    @Test
+    void anEmptyRepositoryHandsNoCommitToTheExtras() throws Exception {
+        Archive archive = new Archive();
+        java.util.List<String> seen = new ArrayList<>();
+        checkout.checkout(remote.url(), null, Target.branchesThenDefault("preview"), "app",
+                commit -> {
+                    seen.add(String.valueOf(commit));
+                    return Map.of();
+                }, archive::read);
+
+        assertThat(seen).containsExactly("null");
+    }
+
+    @Test
     void fallsBackToTheDefaultBranchWithoutPreview() throws Exception {
         RevCommit main = remote.commit("main", Map.of("README.md", "main"));
 
@@ -138,7 +167,7 @@ class ServerGitCheckoutTest {
 
     private Archive run(Target target, Map<String, byte[]> extras) {
         Archive archive = new Archive();
-        archive.commit = checkout.checkout(remote.url(), null, target, "app", extras, archive::read);
+        archive.commit = checkout.checkout(remote.url(), null, target, "app", commit -> extras, archive::read);
         return archive;
     }
 

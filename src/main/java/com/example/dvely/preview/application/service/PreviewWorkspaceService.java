@@ -120,9 +120,9 @@ public class PreviewWorkspaceService {
      */
     private void syncOnServer(String containerId, Long userId, String sourceRepo) {
         String existing = dockerService.exec(containerId,
-                "[ -d " + APP_DIR + " ] && cat " + ServerRepositoryCheckout.PARENT + "/"
-                        + ServerRepositoryCheckout.SOURCE_MARKER + " 2>/dev/null || echo __none__").trim();
+                "[ -d " + APP_DIR + " ] && cat " + ContainerPaths.SOURCE_MARKER + " 2>/dev/null || echo __none__").trim();
         if (existing.equals(sourceRepo) || sameRepositoryClone(containerId, existing, sourceRepo)) {
+            // base 표시도 그대로 둔다 — 그 트리가 준비된 시점의 base 라야 push 직전 검사가 맞다(#539)
             log.info("[PreviewWorkspace] 같은 저장소의 작업 트리가 있어 그대로 둠: {}", sourceRepo);
             return;
         }

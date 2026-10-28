@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import lombok.RequiredArgsConstructor;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.transport.CredentialsProvider;
@@ -26,21 +27,23 @@ public class ServerGitCheckout {
 
     /**
      * @param prefix 트리를 넣을 디렉터리 이름(tar 안 첫 구간, 예: {@code app})
-     * @param extras prefix 밖에 함께 넣을 작은 파일
+     * @param extras prefix 밖에 함께 넣을 작은 파일. 넣을 커밋(없으면 null)을 받아 만든다 — 트리와 그 base 표시를
+     *               같은 tar 에 담아, 둘이 어긋난 채 컨테이너에 들어가는 일이 없게 한다
      * @param sink   tar 를 받아 컨테이너에 넣는다. 작업 디렉터리가 열려 있는 동안 불린다
      * @return 넣은 커밋. 대상 브랜치가 없거나 빈 저장소면 비어 있다(이때도 빈 prefix 디렉터리는 넣는다)
      * @throws ServerGitException 태그가 없거나, 받지 못했거나, 상한을 넘었다
      */
     public Optional<String> checkout(String remoteUrl, CredentialsProvider credentials, Target target, String prefix,
-                                     Map<String, byte[]> extras, Consumer<InputStream> sink) {
+                                     Function<String, Map<String, byte[]>> extras, Consumer<InputStream> sink) {
         try (ServerGitWorkspace workspace = ServerGitWorkspace.create(Path.of(properties.workDir()), properties)) {
             RevCommit commit = resolve(workspace, remoteUrl, credentials, target);
             Path tar = workspace.repository().getDirectory().toPath().resolve("checkout.tar");
             try (OutputStream out = Files.newOutputStream(tar)) {
+                Map<String, byte[]> files = extras.apply(commit == null ? null : commit.name());
                 if (commit == null) {
-                    TreeArchive.writeEmpty(prefix, extras, out);
+                    TreeArchive.writeEmpty(prefix, files, out);
                 } else {
-                    TreeArchive.write(workspace.repository(), commit, prefix, extras,
+                    TreeArchive.write(workspace.repository(), commit, prefix, files,
                             properties.maxFiles(), properties.maxBytes(), out);
                 }
             }
