@@ -46,6 +46,32 @@ class BoundedProcessTest {
     }
 
     @Test
+    void anInterruptedWaitAlsoKillsTheProcessAndRunsTheCleanUp() throws Exception {
+        Process process = new ProcessBuilder("sh", "-c", "sleep 300 & echo $!; wait").redirectErrorStream(true).start();
+        AtomicBoolean cleaned = new AtomicBoolean();
+        java.util.concurrent.atomic.AtomicReference<Throwable> thrown = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean interruptKept = new java.util.concurrent.atomic.AtomicBoolean();
+        Thread waiter = new Thread(() -> {
+            try {
+                BoundedProcess.await(process, Duration.ofMinutes(5), "이미지 빌드", () -> cleaned.set(true));
+            } catch (Throwable t) {
+                thrown.set(t);
+                interruptKept.set(Thread.currentThread().isInterrupted());
+            }
+        });
+        waiter.start();
+        Thread.sleep(300);
+
+        waiter.interrupt();
+        waiter.join(20_000);
+
+        assertThat(thrown.get()).isInstanceOf(BackendBuildException.class).hasMessageContaining("이미지 빌드 중단");
+        assertThat(process.isAlive()).isFalse();
+        assertThat(cleaned).isTrue();          // 데몬 쪽 자원 정리가 중단 경로에서도 돈다
+        assertThat(interruptKept).isTrue();    // 인터럽트 표시를 되살린다
+    }
+
+    @Test
     void largeOutputDoesNotBlockAndOnlyTheTailIsKept() throws Exception {
         // 파이프 버퍼(수십 KB)를 훨씬 넘는 출력. 읽는 쪽이 없으면 프로세스가 쓰다 멈춘다
         Process process = new ProcessBuilder("sh", "-c", "i=0; while [ $i -lt 20000 ]; do echo line-$i; i=$((i+1)); done")

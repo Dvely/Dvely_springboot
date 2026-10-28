@@ -200,7 +200,7 @@ public class ContainerImageBuilder {
 
     /**
      * kaniko 컨테이너 공통 앞부분: docker run --rm + 이름 + 컨텍스트 디렉터리 read-only 마운트. 이름을 붙이는 것은
-     * 시간 초과 때 지우기 위해서다 — docker CLI 를 죽여도 데몬이 띄운 컨테이너는 계속 돈다(#507).
+     * 시간 초과·중단 때 지우기 위해서다 — docker CLI 를 죽여도 데몬이 띄운 컨테이너는 계속 돈다(#507).
      */
     private List<String> kanikoBase(Path ctxDir, String name) {
         List<String> cmd = new ArrayList<>(List.of("docker", "run", "--rm", "--name", name,
@@ -244,14 +244,14 @@ public class ContainerImageBuilder {
         runCli(cmd, stdinFile, what, () -> { });
     }
 
-    /** @param onTimeout 시간 초과로 프로세스를 죽인 뒤 부른다(프로세스 밖에 남는 자원 정리) */
-    private void runCli(String[] cmd, Path stdinFile, String what, Runnable onTimeout) {
+    /** @param onAbort 시간 초과·중단으로 프로세스를 죽인 뒤 부른다(프로세스 밖에 남는 자원 정리) */
+    private void runCli(String[] cmd, Path stdinFile, String what, Runnable onAbort) {
         ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
         if (stdinFile != null) {
             pb.redirectInput(stdinFile.toFile());
         }
         try {
-            check(BoundedProcess.await(pb.start(), properties.imageBuildTimeoutOrDefault(), what, onTimeout), what);
+            check(BoundedProcess.await(pb.start(), properties.imageBuildTimeoutOrDefault(), what, onAbort), what);
         } catch (IOException e) {
             throw new BackendBuildException(what + " 실행 실패: " + e.getMessage());
         }

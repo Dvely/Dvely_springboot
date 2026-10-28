@@ -14,8 +14,9 @@ import java.util.concurrent.TimeUnit;
  * <ul>
  *   <li>출력은 별도 스레드가 읽는다 — 파이프가 차서 프로세스가 멈추는 것과 기다리는 것을 떼어 놓는다.
  *       남기는 것은 끝부분(오류 요약용)뿐이라 출력이 커도 메모리가 늘지 않는다.</li>
- *   <li>시간을 넘기면 자식 프로세스까지 강제 종료한다. {@code onTimeout} 은 그 뒤에 부른다 — 프로세스 밖에
- *       남는 자원(예: 데몬이 띄운 빌드 컨테이너)을 정리하는 자리다.</li>
+ *   <li>시간을 넘기거나 기다리던 스레드가 중단되면 자식 프로세스까지 강제 종료한다. {@code onAbort} 는 그 뒤에
+ *       부른다 — 프로세스 밖에 남는 자원(예: 데몬이 띄운 빌드 컨테이너)을 정리하는 자리다. 두 경로 모두에서 부른다:
+ *       CLI 만 죽이고 끝내면 데몬 쪽 컨테이너가 계속 돈다.</li>
  * </ul>
  */
 final class BoundedProcess {
@@ -29,10 +30,11 @@ final class BoundedProcess {
     }
 
     /**
+     * @param onAbort 시간 초과·중단으로 프로세스를 죽인 뒤 부르는 정리(정상 종료 때는 부르지 않는다)
      * @return 프로세스의 종료 코드와 출력 끝부분
      * @throws BackendBuildException 시간을 넘겼거나 기다리는 중 중단됐다
      */
-    static Result await(Process process, Duration timeout, String what, Runnable onTimeout) {
+    static Result await(Process process, Duration timeout, String what, Runnable onAbort) {
         TailReader reader = new TailReader(process.getInputStream());
         Thread thread = new Thread(reader, "build-output-" + process.pid());
         thread.setDaemon(true);
@@ -40,19 +42,26 @@ final class BoundedProcess {
         try {
             if (!process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
                 kill(process);
-                try {
-                    onTimeout.run();
-                } catch (RuntimeException ignored) {
-                    // 정리는 best-effort — 시간 초과 자체를 가리지 않는다
-                }
+                cleanUp(onAbort);
                 throw new BackendBuildException(what + " 시간 초과(" + describe(timeout) + ") — 중단했습니다");
             }
             thread.join(READER_JOIN.toMillis());
             return new Result(process.exitValue(), reader.tail());
         } catch (InterruptedException e) {
+            // 인터럽트 표시는 이 catch 에서 지워진 상태다. 정리(자기도 프로세스를 기다릴 수 있다)를 먼저 끝내고 되살린다
             kill(process);
+            cleanUp(onAbort);
             Thread.currentThread().interrupt();
             throw new BackendBuildException(what + " 중단");
+        }
+    }
+
+    /** 정리는 best-effort — 시간 초과·중단 자체를 가리지 않는다. */
+    private static void cleanUp(Runnable onAbort) {
+        try {
+            onAbort.run();
+        } catch (RuntimeException ignored) {
+            // 남은 자원은 다음 정리(운영자·sweep)에 맡긴다
         }
     }
 
