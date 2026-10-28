@@ -1,5 +1,6 @@
 package com.example.dvely.provisioning.infrastructure.config;
 
+import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -18,8 +19,22 @@ public record Ec2ProvisioningProperties(
         String instanceProfileOverride,
         String tlsAskBaseUrl,
         String imageTransfer,
-        String buildIsolation
+        String buildIsolation,
+        Duration imageBuildTimeout
 ) {
+    /** 이미지 빌드·push·save 한 번을 기다리는 상한의 기본값(#507). 정상 빌드는 수 분이다. */
+    static final Duration DEFAULT_IMAGE_BUILD_TIMEOUT = Duration.ofMinutes(30);
+
+    /**
+     * 이미지 빌드 프로세스 하나를 기다리는 상한({@code qeploy.provisioning.ec2.image-build-timeout}, 예: 45m).
+     * 비었거나 0 이하면 기본 30분. 넘기면 프로세스를 강제 종료하고 빌드를 실패로 끝낸다 — 무기한 기다리면 워커
+     * 스레드가 묶인다.
+     */
+    public Duration imageBuildTimeoutOrDefault() {
+        return imageBuildTimeout == null || imageBuildTimeout.isZero() || imageBuildTimeout.isNegative()
+                ? DEFAULT_IMAGE_BUILD_TIMEOUT : imageBuildTimeout;
+    }
+
     public boolean hasInstanceProfileOverride() {
         return instanceProfileOverride != null && !instanceProfileOverride.isBlank();
     }
