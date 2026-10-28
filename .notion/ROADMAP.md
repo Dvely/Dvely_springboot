@@ -1,6 +1,6 @@
 # Qeploy 단위(Unit) 파이프라인 로드맵
 
-> 기준일: 2026-10-23 · 기준 커밋: e973afc · 코드 실측 기반
+> 기준일: 2026-10-28 · 기준 커밋: 5f7e1cfc(develop) · 코드 실측 기반
 
 이 문서는 `danto/<도메인>` 단위 작업 파이프라인의 SSOT다. 우선순위, 진행 상태, 세션 인계 정보를 이 문서 하나로 관리한다.
 
@@ -9,6 +9,18 @@
 ---
 
 ## 1. 현재 상태
+
+- 2026-10-28: **서버 측 git(#523 P0) 운영 완결 — push·clone 플래그 모두 ON, 결과 승인 반영 범위(#532) 운영 반영, 빌드 격리(#507)·계획 재적용(#546)은 develop.**
+  - 운영 릴리스 6차 #540(#537 결과 승인 반영 범위·거절 REVERT, V69·V70 / #539 서버 push 가 준비 뒤 바뀐 원격을 되돌리지 않게) · 7차 #543(#538 서버 측 clone·fetch 플래그 / #542 이미지 빌드 대기 상한 30분)
+  - 운영 env: `QEPLOY_GIT_SERVERSIDE_PUSHENABLED`(10-28 09:57) · `…_CLONEENABLED`(16:16) 둘 다 true. 백업 `ecosystem.config.js.bak-20261028095646` · `.bak-20261028161613`. dev 도 둘 다 ON
+  - dev 실측 통과: #537(READY·REVERT·KEEP·DECIDED, FE 카드 #159 포함) / #539(작업 도중 원격 커밋 → push 거부, 원격 보존) / #538(서버 checkout, 작업 공간 전부 node 소유, 컨테이너 인증 git 0, base 표시 갱신)
+  - develop 에만 있음(8차 대기): #544 build-isolation 기본 KANIKO + `ghcr.io/osscontainertools/kaniko` v1.29.0 digest 고정 + 호스트 docker build 폴백은 `allow-native-build=true` 일 때만 / #547 계획 입력의 지난 요청에 결과(되돌림·거절·취소·실패 → 다시 적용하지 말 것) 표시 + 프롬프트 규칙
+  - 운영 사실(10-28 확인): build-isolation 미설정 → 8차 전까지 운영 이미지 빌드는 기존 경로(호스트 `docker build`) 그대로. 운영 컨트롤 플레인에 AWS 자격이 없어 ROLE_ARN 방식 클라우드 연결이 운영에서 동작하지 않을 수 있음(확인 필요). 보안 관련 확인 결과는 비공개 Advisory 에만 둔다
+  - 이슈: #541(정상 push 거부가 ERROR 로 남음) · #545(이미지 빌드를 컨트롤 플레인 밖으로, 설계) · #546(계획 재적용, PR #547) · FE #161(서버 생성 요청에 deployMode·bundledDbEngine 없음)
+
+  **다음 세션이 볼 것**: ①FE #161 → 버튼으로 프로젝트 42 EC2 Docker 배포 e2e(번들 MySQL, t3.micro, 1시간 안 정리) → 8차(#544 + #547) ②운영 인스턴스 설정 변경 1건(사용자 결정 — 비공개 Advisory 참고) ③#547 dev 실측(되돌린 요청 뒤 새 요청, BYOK) ④운영 clone 첫 실사용(프리뷰·배포 빌드 각 1건) 관찰 → 옛 경로 제거 PR(`ContainerGitCredentials`·컨테이너 push 분기) → #523·#508 종료, Advisory 정리 ⑤#541
+
+  **실측에서 두 번 잘못 읽었다** — README 에 거절된 줄이 다시 보인 것을 "git 누수"로, 그다음 "지시문이 과거 문구를 나열"로 읽었다. 실제는 계획 단계가 이력을 취합한 것(#546). 결과를 해석하기 전에 CODE 로그의 instruction 과 사용자 원문을 먼저 대조한다.
 
 - 2026-10-23(2차): **만료된 자격 확인 → 연결 자격 교체·가이드 체크박스·해제 가드.** 로그 전수: 만료 연결은 dev 연결 2(임시 자격, 10-04 ExpiredToken) 하나, 그로 묶인 실패 자원은 DB 12(`qeploy-49-fgqtk7wo`). 운영은 자격 오류 0. 그런데 **자격을 바꾸는 API 가 없어** 자원(연결 id 에 묶임)을 되찾을 길이 없었다 → #491/PR #492 `PUT /cloud-connections/{id}/credentials`(id·리전·계정 고정, ASIA 거부, 세션 토큰 비움). 사용자 요청으로 대화 우측 연결 가이드를 자격 종류 카드 + 권한 체크박스로 → #493/PR #494 `credentialCases`·`policyModules`(`aws/qeploy-aws-policy-modules.json`, 기본 묶음 합 = 전체본 테스트). SDK 호출 전수 대조 중 **서빙 정책에 `iam:CreateServiceLinkedRole`(RDS 첫 사용 계정) 누락** 발견·수정. FE 세션 질문으로 **연결 해제가 자원을 고아로 만듦**(자원 테이블에 연결 FK 없음) 발견 → #495/PR #496 409. 409 문구의 '자격 교체' 안내는 **FE 버튼이 운영에 나간 뒤 넣는다**(운영 FE 가 message 를 그대로 띄우므로, FE 세션 요청). FE(dvely-fe-a1): Session Token 칸 제거·해제 두 단계 확인(푸시 승인 대기), 카드·체크박스·교체 버튼은 dev 배포 후. **남은 것**: dev 연결 2 자격 교체 → DB 12 삭제(사용자 키 발급 후), 409 문장 추가(FE 운영 후), 운영 릴리스(사용자).
 - 2026-10-23: **`#344` 9-2(AWS 클라이언트 재사용)는 측정 후 닫았다(not planned).** 호출마다 새 클라이언트 vs 재사용: 서울 40ms→12ms, 싱가포르 270ms→85ms — 20~30초 주기 폴러에서는 무의미하고, S3 업로드는 이미 업로드당 클라이언트 하나다(PUT 마다 핸드셰이크 여부는 가짜 자격으로 판단 불가 — 업로드가 느리다는 관측이 생기면 실자격으로 다시 잰다). 측정 중 찾은 진짜 문제: 자격이 만료된 연결로 도는 폴러가 30초마다 WARN(dev 하루 ~2,800줄) — #487 / PR #488: #429 `AwsCredentialFailureReporter` 를 `RdsProvisionStatusWorker`·`DockerDbProvisionStatusWorker`·`CdnDeletionReaper`·`ServerReplacementService` 에 연결(확정적 자격 실패면 연결을 `INVALID_CREDENTIAL` 로 표시하고 debug, 재시도는 유지). `S3CdnProvisionWorker`(시한 후 FAILED)·`ProvisionedDatabaseExpiryWorker`(1회 실패로 EXPIRED)·`DeploymentCommandService`(폴러 아님)는 제외. `RdsProvisionStatusWorkerTest` 가 로그를 직접 본다(되돌리면 실패). dev 배포 완료, 운영 릴리스 PR #489 대기. **dev DB 12 는 여전히 PROVISIONING** — 그 연결의 자격을 갱신하면 이어지고, 아니면 삭제(사용자 결정, 데이터 손대지 않음). **남은 것**: #489 운영 머지(사용자), WRITE PAT 403 실측·Cloudflare(사용자).
