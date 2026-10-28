@@ -2,6 +2,7 @@ package com.example.dvely.common.exception;
 
 import com.example.dvely.change.application.service.ResultRevertFailedException;
 import com.example.dvely.change.application.service.ResultRevertUnavailableException;
+import com.example.dvely.common.limit.UserLimitExceededException;
 import com.example.dvely.common.response.ApiResponse;
 import com.example.dvely.common.response.ErrorCode;
 import lombok.extern.slf4j.Slf4j;
@@ -230,6 +231,14 @@ public class GlobalExceptionHandler {
         log.warn("LLM provider unavailable: provider={} reason={}", e.providerName(), e.reason());
         return ResponseEntity.status(errorCode.getStatus())
                 .body(ApiResponse.error(errorCode, e.getMessage()));
+    }
+
+    // 429 - 사용자별 동시 실행 상한(#509). 정상 거부라 스택 없이 WARN 한 줄만 남긴다.
+    @ExceptionHandler(UserLimitExceededException.class)
+    public ResponseEntity<ApiResponse<Void>> handleUserLimitExceeded(UserLimitExceededException e) {
+        log.warn("User limit exceeded: code={}", e.errorCode().getCode());
+        return ResponseEntity.status(e.errorCode().getStatus())
+                .body(ApiResponse.error(e.errorCode(), e.getMessage()));
     }
 
     // 503 - 프리뷰 실행 환경(Docker) 접근 실패

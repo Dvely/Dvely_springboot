@@ -54,6 +54,7 @@ class ProjectPreviewServiceTest {
     @Mock private DockerContainerService dockerService;
     @Mock private ProjectPreviewProvisioner provisioner;
     @Mock private PreviewRuntimeConfigService runtimeConfigService;
+    @Mock private PreviewCapacity capacity;
 
     private ProjectPreviewService service;
     private final List<PreviewSessionEntity> saved = new ArrayList<>();
@@ -67,7 +68,7 @@ class ProjectPreviewServiceTest {
                 properties, new CorsProperties(List.of(), List.of()));
         service = new ProjectPreviewService(
                 repository, projectRepository, dockerService, properties, gatewayUrlResolver,
-                provisioner, runtimeConfigService);
+                provisioner, runtimeConfigService, capacity);
         // 저장된 런타임 타입 없음 → 기본 메모리로 컨테이너 생성.
         when(runtimeConfigService.storedRuntimeType(any())).thenReturn(Optional.empty());
         // 목 생성/스터빙을 when(...) 인자 안에서 하면 Mockito 가 중첩 스터빙으로 보고 실패한다.
@@ -184,6 +185,52 @@ class ProjectPreviewServiceTest {
         verify(dockerService).createAndStartContainer(eq(ContainerRole.PREVIEW), eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong());
         verify(provisioner).provision(anyString());
         assertThat(outcome.started()).isTrue();
+    }
+
+    // ── #509: 사용자별 프리뷰 상한 ──────────────────────────────────────────────────────────
+
+    @Test
+    void aNewContainerIsCheckedAgainstTheUserLimitBeforeItStartsAndAfterTheRowIsSaved() {
+        when(repository.findByProjectIdAndOwnerUserIdAndStatusIn(eq(PROJECT_ID), eq(USER_ID), any()))
+                .thenAnswer(invocation -> saved.stream()
+                        .filter(s -> PreviewSessionStatus.PROVISIONING.name().equals(s.getStatus()))
+                        .toList());
+        when(dockerService.createAndStartContainer(eq(ContainerRole.PREVIEW), eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong()))
+                .thenReturn("container-new");
+        when(dockerService.getContainerIp("container-new")).thenReturn("172.18.0.6");
+
+        service.provision(PROJECT_ID, USER_ID, true);
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(capacity, dockerService, repository, provisioner);
+        order.verify(capacity).makeRoom(USER_ID);
+        order.verify(dockerService).createAndStartContainer(any(), any(), anyString(), any(), any(), any(), anyLong());
+        order.verify(repository).save(any(PreviewSessionEntity.class));
+        order.verify(capacity).confirm(eq(USER_ID), any(PreviewSessionEntity.class));
+        order.verify(provisioner).provision(anyString());
+    }
+
+    @Test
+    void overTheUserLimitNoContainerStarts() {
+        org.mockito.Mockito.doThrow(new com.example.dvely.common.limit.UserLimitExceededException(
+                        com.example.dvely.common.response.ErrorCode.PREVIEW_LIMIT_EXCEEDED, "limit"))
+                .when(capacity).makeRoom(USER_ID);
+
+        assertThatThrownBy(() -> service.provision(PROJECT_ID, USER_ID, true))
+                .isInstanceOf(com.example.dvely.common.limit.UserLimitExceededException.class);
+        verify(dockerService, never()).createAndStartContainer(any(), any(), anyString(), any(), any(), any(), anyLong());
+        verify(provisioner, never()).provision(anyString());
+    }
+
+    @Test
+    void attachingToALiveSessionAddsNoContainerSoTheLimitIsNotConsulted() {
+        when(repository.findFirstByProjectIdAndOwnerUserIdAndStatusInOrderByLastAccessedAtDesc(
+                eq(PROJECT_ID), eq(USER_ID), any()))
+                .thenReturn(Optional.of(session(PreviewSessionStatus.ACTIVE, "container-1", "task-1")));
+        when(dockerService.isContainerRunning("container-1")).thenReturn(true);
+
+        service.provision(PROJECT_ID, USER_ID, false);
+
+        org.mockito.Mockito.verifyNoInteractions(capacity);
     }
 
     @Test

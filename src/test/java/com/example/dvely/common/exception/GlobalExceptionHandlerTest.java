@@ -53,7 +53,8 @@ class GlobalExceptionHandlerTest {
                         new PathVariableController(), new QueryParamController(),
                         new ConcurrentDeleteController(), new ConflictController(),
                         new MissingPathController(), new ClientGoneController(),
-                        new UnexpectedErrorController(), new GithubReauthorizationController())
+                        new UnexpectedErrorController(), new GithubReauthorizationController(),
+                        new UserLimitController())
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -125,6 +126,16 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.status").value(403))
                 .andExpect(jsonPath("$.code").value("GITHUB_APP_REAUTHORIZATION_REQUIRED"))
                 .andExpect(jsonPath("$.message").value(GithubAppReauthorizationRequiredException.DEFAULT_MESSAGE));
+    }
+
+    @Test
+    void aUserLimitIsA429WithItsOwnCodeAndTheSentenceToShow() throws Exception {
+        // #509: 상한 초과는 서버 오류가 아니라 "지금은 못 받는다"다. FE 는 code 로 런·프리뷰를 가르고 메시지를 그대로 보인다.
+        mockMvc.perform(get("/contract/user-limit"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.status").value(429))
+                .andExpect(jsonPath("$.code").value("PREVIEW_LIMIT_EXCEEDED"))
+                .andExpect(jsonPath("$.message").value("열린 프리뷰가 3개라 새 프리뷰를 띄울 수 없습니다."));
     }
 
     @Test
@@ -230,6 +241,17 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/contract/github-reauthorize")
         Long reauthorize() {
             throw new GithubAppReauthorizationRequiredException();
+        }
+    }
+
+    @RestController
+    private static class UserLimitController {
+
+        @GetMapping("/contract/user-limit")
+        Long limit() {
+            throw new com.example.dvely.common.limit.UserLimitExceededException(
+                    com.example.dvely.common.response.ErrorCode.PREVIEW_LIMIT_EXCEEDED,
+                    "열린 프리뷰가 3개라 새 프리뷰를 띄울 수 없습니다.");
         }
     }
 

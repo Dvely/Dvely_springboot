@@ -37,6 +37,7 @@ import com.example.dvely.agent.infrastructure.usage.LlmUsageScope;
 import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
 import com.example.dvely.common.exception.LlmProviderException;
+import com.example.dvely.common.limit.UserLimitExceededException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -236,6 +237,21 @@ public class AgentPlanExecutor {
                     taskId
             );
             log.warn("=== AgentPlan 반영 중단(원격 preview 가 작업 중 바뀜): taskId={} ===", taskId);
+        } catch (UserLimitExceededException exception) {
+            // 사용자별 프리뷰 상한(#509)에 걸려 CODE 스텝이 컨테이너를 못 띄운 것 — 바로 위와 같은 정상 거부다. 메시지에
+            // 상한과 다음 행동이 들어 있으므로 접두 없이 그대로 남기고, ERROR 가 아니라 WARN 으로 둔다.
+            if (taskStore.isCancelled(taskId)) {
+                return;
+            }
+            taskStore.markFailed(taskId, exception.getMessage());
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    exception.getMessage(),
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
+            );
+            log.warn("=== AgentPlan 중단(사용자별 상한): taskId={} code={} ===", taskId, exception.errorCode().getCode());
         } catch (Exception e) {
             if (taskStore.isCancelled(taskId)) {
                 log.info("=== AgentPlan 취소됨: taskId={} ===", taskId);

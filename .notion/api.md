@@ -63,6 +63,7 @@
 - `405 Method Not Allowed`: `METHOD_NOT_ALLOWED`
 - `409 Conflict`: 중복 생성 등 상태 충돌 (예: 동일 (project, scope, key) 환경변수 재생성). `IllegalStateException` 전반과 낙관적 잠금 경합(`@Version`, "다른 요청과 동시에 수정되어…")도 409다
 - `429`/`502`/`503`: AI 제공자 호출 실패 — `AI_PROVIDER_RATE_LIMITED`(429) · `AI_PROVIDER_ERROR`(502) · `AI_PROVIDER_UNAVAILABLE`(503)
+- `429 Too Many Requests`: 사용자별 동시 실행 상한(#509) — `ACTIVE_RUN_LIMIT_EXCEEDED`(새 런) · `PREVIEW_LIMIT_EXCEEDED`(새 프리뷰 컨테이너). 메시지에 지금 수·상한·다음 행동이 들어 있으니 그대로 보여 주면 된다. 시간이 지나면 풀리는 것이 아니라 진행 중인 것이 끝나거나 닫혀야 풀리므로 `Retry-After` 는 없다. 아래 §2.6
 - `503 Service Unavailable`: `PREVIEW_ENVIRONMENT_UNAVAILABLE`(Docker 접근 불가), `TEMPLATE_CATALOG_UNAVAILABLE`(§17.3)
 - `500 Internal Server Error`: 처리되지 않은 외부 연동/서버 오류
 
@@ -93,6 +94,20 @@
 - Provisioning (Server, Database)
 
 ---
+
+### 2.6 사용자별 동시 실행 상한 (Issue #509)
+
+한 사용자가 실행 스레드와 프리뷰 컨테이너를 독점하지 않게 한다. 값은 `qeploy.limits.per-user.*`(env `QEPLOY_LIMITS_PER_USER_*`), 1 미만이면 기동을 멈춘다.
+
+| 상한 | 기본 | 세는 것 | 거는 곳 |
+|---|---|---|---|
+| `max-active-runs` | 2 | 기계가 일하고 있는 런 — `PENDING`·`QUEUED`·`RETRY_WAIT`·`RUNNING`. 승인·되묻기를 기다리는 런은 세지 않는다 | 새 런이 생기는 모든 곳(`POST /conversations/{id}/messages`, `POST /agent/tasks`, 도메인 연결·해제 제출)과 `POST /agent/tasks/{taskId}/retry` → `429 ACTIVE_RUN_LIMIT_EXCEEDED` |
+| `max-live-previews` | 3 | `ACTIVE`·`PROVISIONING` 프리뷰 세션 | 새 컨테이너가 뜨는 곳: `POST /projects/{projectId}/preview-session` → `429 PREVIEW_LIMIT_EXCEEDED`. Agent CODE 스텝 → 태스크가 `FAILED` 로 끝나고 대화에 같은 문장이 `TASK_FAILED` 로 남는다 |
+
+- 이미 떠 있는 세션에 붙는 프리뷰 요청은 컨테이너가 늘지 않으므로 세지 않는다
+- 프리뷰 자리가 없으면 먼저 **끝난(DONE·CANCELLED) 작업의 프리뷰**를 오래 안 본 순서로 닫아(`EXPIRED`) 자리를 만든다. 사용자가 연 프로젝트 프리뷰, 진행 중·결과 승인 대기·실패(재시도가 작업물을 이어 씀) 작업의 프리뷰는 닫지 않는다. 그래도 자리가 없을 때만 거절한다
+- 같은 사용자의 동시 요청도 상한을 넘지 못한다. 런은 사용자 행 잠금으로 한 줄로 세우고, 프리뷰는 행을 저장한 뒤 다시 세어 넘친 쪽이 물러난다(동시에 몰리면 둘 다 물러날 수 있다 — 다시 시도하면 된다)
+- 거는 곳이 아닌 전이(승인 → 실행, 되묻기 답 → 재개, 빌드 실패 자동 복구)는 상한을 보지 않는다. 이미 받은 런의 진행이라 거기서 거절하면 사용자 결정이 허공에 뜬다
 
 ## 3. Auth API
 
@@ -532,7 +547,7 @@ Base path: `/api/v1/projects/{projectId}/environment-variables`
 | POST | `/api/v1/trash/conversations/{conversationId}/restore` | 대화 복구 |
 | DELETE | `/api/v1/trash/conversations/{conversationId}` | 휴지통 대화 즉시 영구 삭제 |
 | GET | `/api/v1/conversations/{conversationId}/messages` | 메시지 목록(생성순, `limit`·`after` 커서) |
-| POST | `/api/v1/conversations/{conversationId}/messages` | USER 메시지 저장 후 Agent task를 비동기 제출(`201`, `taskId` 즉시 반환) |
+| POST | `/api/v1/conversations/{conversationId}/messages` | USER 메시지 저장 후 Agent task를 비동기 제출(`201`, `taskId` 즉시 반환). 동시 런 상한이면 `429 ACTIVE_RUN_LIMIT_EXCEEDED` — 메시지도 저장되지 않는다(§2.6) |
 
 메시지 생성:
 
@@ -654,7 +669,7 @@ Base path: `/api/v1/agent`
 |---|---|---|
 | GET | `/api/v1/agent/tasks/{taskId}/events?afterEventId={id}` | event ID 기반 polling(`afterEventId` 기본 0, 시간순). `type`은 생명주기(CREATED/QUEUED/STARTED/COMPLETED/FAILED/CANCELLED/WAITING_APPROVAL/WAITING_INPUT/WAITING_RESULT_APPROVAL/REPLANNED/INPUT_RECEIVED/RETRY_QUEUED)와 스텝(STEP_STARTED/STEP_COMPLETED). 스텝 이벤트만 `stepIndex`·`stepTotal`·`agentType`을 싣는다. 모르는 type은 무시 |
 | GET | `/api/v1/agent/tasks/{taskId}/events/stream` | 영속 이벤트 SSE. 여는 즉시 주석 프레임 `:hb` 를 쓰고 유휴 시 15초마다 반복한다(#370 — 이것이 없으면 보낼 이벤트가 없는 재연결이 응답 헤더를 못 내보내 프록시에 끊긴다). `data:` 가 없으므로 이벤트가 아니다 |
-| POST | `/api/v1/agent/tasks/{taskId}/retry` | 실패 task 수동 재시도. 성공 `202`. FAILED가 아니거나, attempt가 소진됐거나, PENDING 승인이 남았거나(`pendingApprovalId` non-null — 먼저 그 승인을 처리해야 함), 없는·남의 task면 모두 `409`(404가 아니다). `retryable:true`일 때만 호출할 것 |
+| POST | `/api/v1/agent/tasks/{taskId}/retry` | 실패 task 수동 재시도. 성공 `202`. FAILED가 아니거나, attempt가 소진됐거나, PENDING 승인이 남았거나(`pendingApprovalId` non-null — 먼저 그 승인을 처리해야 함), 없는·남의 task면 모두 `409`(404가 아니다). 재시도할 수 있는데 동시 런 상한이면 `429 ACTIVE_RUN_LIMIT_EXCEEDED`(§2.6). `retryable:true`일 때만 호출할 것 |
 
 ### 9.3 실제 Agent 동작
 
@@ -1035,7 +1050,7 @@ DELETE /agent/session
 
 ```text
 GET  /projects/{projectId}/preview-session      # 프로젝트의 현재 프리뷰(없으면 204)
-POST /projects/{projectId}/preview-session      # 프리뷰 띄우기(200 연결 / 202 준비 시작 / 409 저장소 미연결 / 503 Docker). ?force=true 는 기존 세션을 닫고 항상 새로 빌드(202)
+POST /projects/{projectId}/preview-session      # 프리뷰 띄우기(200 연결 / 202 준비 시작 / 409 저장소 미연결 / 429 프리뷰 상한(§2.6) / 503 Docker). ?force=true 는 기존 세션을 닫고 항상 새로 빌드(202)
 POST /preview-sessions/{sessionId}/access       # 열람 권한 발급 — iframe 표시 직전 필수(404 없음·타유저 / 409 종료·준비중)
 GET  /preview-sessions/{sessionId}/status
 GET  /preview-sessions/{sessionId}/logs

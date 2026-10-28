@@ -626,7 +626,6 @@ Docker preview 성공률, 배포 성공률, build 실패 해결률, Agent intent
     ⚠️ `authed()` 가 `git clone` 을 `git -c credential.helper=... clone` 으로 **쪼갠다.** 명령을 문자열로 매칭하는 코드·테스트는 서브커맨드로 맞춰야 한다.
     **이슈 종료 뒤에도 남은 관찰 둘**(2026-10-20 코드 기준 그대로): 토큰이 여전히 **installation 토큰이 아니라 사용자 OAuth 액세스 토큰**이다(`GithubProjectClient.getRepositoryAccessToken`, #414 와 함께 볼 것). 그리고 `qeploy.preview.egress.enabled` 가 **기본 `false`** 다(코딩 에이전트 쪽은 `true`) — 의도인지 누락인지 미판단
 
-
 ---
 
 # 4. 수정해야 할 것
@@ -1261,7 +1260,6 @@ READ·WRITE 가 똑같이 기본 90일·최대 365일이었다. 유출됐을 때
 
 `.notion/ROADMAP.md`가 단위(Unit) 단위 실행 순서의 SSOT다. 아래는 지금까지 진행해 온 Phase 이력이며, U1~U7·Issue #45·Cost & Budget·Cloud Ops Agent·Issue #56·Issue #55·Issue #57·Issue #74(Audit Log)·Issue #76(Preview 외부 노출 차단, BI-081/G1)·Issue #77(게이트웨이 인가, G2·G4)이 모두 완료된 이후 신규 작업은 ROADMAP의 "이후 백로그"(`BI-163~165` Project Settings 나머지)와 U-sec 단위를 따른다.
 
-
 ## 4.29 퍼블리싱 템플릿 — 카탈로그 + 씨딩 (Issue #318, PR-1~4)
 
 **되는 것**
@@ -1287,7 +1285,6 @@ READ·WRITE 가 똑같이 기본 90일·최대 365일이었다. 유출됐을 때
 
 이전에는 `startMode`/`templateType` 이 검증·저장되기만 하고 읽는 코드가 없었다. 사용자가 템플릿을 골라도 조용히 무시되고 백지 생성됐다. 설계는 `docs/template-architecture-design.md`.
 
-
 ## 4.27 프리뷰 게이트웨이 프록시 타깃을 컨테이너 IP 로 (Issue #358)
 
 **되는 것**
@@ -1310,8 +1307,6 @@ egress 와 한 PR 로 묶지 않은 이유는 게이트웨이가 #274(회수/sel
 **아직 안 되는 것**
 
 - egress 허용목록 자체 (#332 4단계). 이 단위가 그 선행 조건을 푼 것이고, 네트워크를 `--internal` 로 바꾸는 것은 다음이다
-
-
 
 ## 4.28 프리뷰 egress 허용목록 (Issue #332 4단계) — 기본 비활성
 
@@ -1367,8 +1362,6 @@ busybox `wget` 은 프록시 CONNECT 터널링을 하지 않는다. egress 를 �
 - **기본이 꺼짐이다.** 허용목록이 좁으면 빌드가 깨지고 그 실패는 사용자 프로젝트마다 다르게 나타난다 — dev 에서 정적·Node·JAVA_FULLSTACK 을 실제로 태워 목록을 확인한 뒤 켠다
 - 고아 네트워크 정리는 컨테이너 회수에 얹혀 있다(`removeContainer` 가 라벨로 세션을 찾아 되돌린다). 컨테이너가 이미 사라진 뒤 남은 네트워크를 거두는 주기 작업은 없다
 - 프록시 컨테이너가 죽어 `ensureProxyRunning` 이 재생성하면, 그 시점에 살아 있던 세션들의 tinyproxy 프로세스도 컨테이너와 함께 사라진다. 재연결(살아 있는 세션에 새 프로세스를 다시 붙이는 것)은 범위 밖이다 — 바뀌기 전과 같은 제약이다
-
-
 
 ## 4.30 프리뷰 컨테이너를 node 로 돌린다 (Issue #332 1~3단계)
 
@@ -1540,6 +1533,15 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
   - adaptive 도 생각을 `max_tokens` 에서 쓰므로 수준별 여유(2k/4k/8k)를 그대로 더한다
 - 판별은 모델 id 의 버전(`claude-opus-4-5-20251101`, `claude-3-7-sonnet-…`, `us.anthropic.claude-…-v1:0`, `…@날짜`)으로 하고, 버전을 못 읽으면 adaptive 로 본다
 - 기본 모델(`claude-opus-4-5-20251101`)·`thinking-models` 기본값은 그대로다 — 운영 동작 변화 없음
+
+## 4.44 사용자별 동시 런·프리뷰 상한 (Issue #509 PR-1)
+
+- 예전에는 한 사용자가 런과 프리뷰 컨테이너를 얼마든지 열 수 있었다(429 는 LLM 제공자 오류 매핑에만 있었다). 이제 넘으면 `429 ACTIVE_RUN_LIMIT_EXCEEDED` / `429 PREVIEW_LIMIT_EXCEEDED` 다(api.md §2.6)
+- 런: `qeploy.limits.per-user.max-active-runs` 기본 2. PENDING·QUEUED·RETRY_WAIT·RUNNING 만 센다. 새 런이 생기는 곳(`AgentOrchestrator.savePendingTask` — 채팅 전송·`POST /agent/tasks`·도메인 제출)과 사용자 재시도(`retryByOwner`)에서 건다. 사용자 행을 잠근 뒤 새 트랜잭션에서 센다 — 같은 트랜잭션에서 세면 잠금 전에 잡힌 REPEATABLE READ 스냅샷 때문에 동시 요청 둘이 다 통과한다(통합 테스트가 그 상황을 재현한다)
+- 프리뷰: `max-live-previews` 기본 3. ACTIVE·PROVISIONING 을 센다. 새 컨테이너를 띄우는 두 곳(프로젝트 프리뷰 `provision`, CODE 스텝 `acquire`)에서 건다. 자리가 없으면 끝난(DONE·CANCELLED) 작업의 프리뷰를 오래 안 본 순서로 먼저 닫는다. 저장 뒤 다시 세어 동시 요청의 초과를 되돌린다
+- CODE 스텝이 프리뷰 상한에 걸리면 태스크는 FAILED, 대화에 상한 문장이 접두 없이 남고 로그는 WARN 이다(#541 과 같은 처리)
+- 승인 → 실행, 되묻기 답 → 재개, 빌드 실패 자동 복구는 상한을 보지 않는다
+- 인증 경로 nginx `limit_req`(같은 이슈의 서버 작업)는 저장소 밖이라 이 PR 에 없다. dev·운영 둘 다 손대야 한다
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
 

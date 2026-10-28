@@ -49,6 +49,7 @@ public class AgentOrchestrator {
     private final ApprovalRepository approvalRepository;
     private final AgentMessageService agentMessageService;
     private final InputWaitStore     inputWaitStore;
+    private final ActiveRunLimit     activeRunLimit;
 
     /**
      * 계획이 이미 있는 동기 제출 경로(AgentFacade·DomainBindingSubmissionService). PENDING 태스크를
@@ -134,6 +135,8 @@ public class AgentOrchestrator {
     }
 
     private void savePendingTask(String taskId, Long userId, Long projectId, Long conversationId) {
+        // 새 런이 생기는 곳은 여기 하나다(submit·createPending). 상한을 넘으면 429 로 돌려보낸다(#509).
+        activeRunLimit.check(userId);
         taskStore.save(new AgentTask(
                 taskId,
                 userId,
@@ -571,6 +574,23 @@ public class AgentOrchestrator {
      * that becomes this transaction's first non-locking read: it is taken while this transaction is
      * already the row's sole lock holder, so no concurrent writer can be racing it.
      */
+    /**
+     * 사용자가 실패한 런을 다시 돌릴 때(AgentController). {@link #retry} 와 같지만 동시 런 상한(#509)을 먼저 본다 —
+     * FAILED 는 세지 않는 상태라, 재시도는 새 런을 만드는 것과 같은 효과다. 빌드 실패 자동 복구는 이미 돌던 런의
+     * 연장이라 {@link #retry} 를 그대로 쓴다.
+     *
+     * <p>잠금 순서는 태스크 행 → 사용자 행이다. 다른 결정 경로가 태스크 행을 먼저 잡는 것과 같은 순서다. 어차피
+     * 재시도할 수 없는 런(남의 것·FAILED 아님)은 상한을 보지 않고 {@link #retry} 의 거절(409)로 보낸다.</p>
+     */
+    @Transactional
+    public boolean retryByOwner(String taskId, Long ownerUserId) {
+        AgentTask task = taskStore.lockTask(taskId);
+        if (task.status() == TaskStatus.FAILED && task.ownerUserId().equals(ownerUserId)) {
+            activeRunLimit.check(ownerUserId);
+        }
+        return retry(taskId, ownerUserId);
+    }
+
     @Transactional
     public boolean retry(String taskId, Long ownerUserId) {
         // ADR-Y1 lock order: task row first, before any approvals read (mirrors

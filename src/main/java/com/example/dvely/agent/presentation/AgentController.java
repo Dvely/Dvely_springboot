@@ -272,14 +272,15 @@ public class AgentController {
     )
     @ApiResponses({
             @ApiResponse(responseCode = "202", description = "재시도 큐에 등록 완료"),
-            @ApiResponse(responseCode = "409", description = "재시도 불가 — PENDING 승인이 남아있거나 attempt가 maxAttempts에 도달함")
+            @ApiResponse(responseCode = "409", description = "재시도 불가 — PENDING 승인이 남아있거나 attempt가 maxAttempts에 도달함"),
+            @ApiResponse(responseCode = "429", description = "ACTIVE_RUN_LIMIT_EXCEEDED — 사용자별 동시 런 상한(#509)")
     })
     @PostMapping("/tasks/{taskId}/retry")
     public ResponseEntity<Void> retryTask(
             @AuthenticationPrincipal Long userId,
             @PathVariable String taskId
     ) {
-        if (!agentOrchestrator.retry(taskId, userId)) {
+        if (!agentOrchestrator.retryByOwner(taskId, userId)) {
             throw new IllegalStateException("재시도할 수 없는 Agent task입니다. taskId=" + taskId);
         }
         return ResponseEntity.accepted().build();
