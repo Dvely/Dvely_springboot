@@ -23,6 +23,7 @@ import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import java.util.List;
 import java.util.Optional;
+import com.example.dvely.agent.infrastructure.git.ServerGitException;
 import org.eclipse.jgit.lib.ObjectId;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -55,6 +56,7 @@ public class ResultApprovalService {
     private final AuditRecorder auditRecorder;
     private final ServerPreviewBranch serverPreviewBranch;
     private final PreviewSessionService previewSessionService;
+    private final ResultScopeService resultScopeService;
 
     /**
      * @throws IllegalStateException (-> 409, E-RA-05) if no Change row exists for the approval's
@@ -90,6 +92,8 @@ public class ResultApprovalService {
                         "RESULT 승인의 프로젝트를 찾을 수 없습니다. projectId=" + approval.getProjectId()));
         String repoFullName = project.getSourceRepository();
         publishDeferred(change, approval, repoFullName);
+        // 미룬 push 를 올린 뒤에 센다 — 이번 작업 파일도 이제 preview 의 커밋이다. merge 하면 비교가 비므로 그 전에 센다.
+        String decidedScope = resultScopeService.snapshotJson(approval);
         String userToken = resolveUserToken(approval.getOwnerUserId());
 
         long startedAt = System.currentTimeMillis();
@@ -112,6 +116,7 @@ public class ResultApprovalService {
                     approval.getTaskId(), mergeCommitSha);
         }
         change.markMerged(approval.getId(), prNumber, mergeCommitSha);
+        change.recordDecidedScope(decidedScope);
         changeRepository.save(change);
         if (prNumber != null) {
             // H6 (design §4): only the real-merge path — the idempotent no-diff branch above
@@ -145,10 +150,52 @@ public class ResultApprovalService {
      */
     @Transactional
     public void markRejected(Approval approval) {
+        markRejected(approval, null);
+    }
+
+    /** @param decidedScope 거절 직전에 남긴 반영 범위(#532). 없으면 null */
+    @Transactional
+    public void markRejected(Approval approval, String decidedScope) {
         changeRepository.findByTaskId(approval.getTaskId()).ifPresent(change -> {
             change.markRejected(approval.getId());
+            change.recordDecidedScope(decidedScope);
             changeRepository.save(change);
         });
+    }
+
+    /** 거절 직전의 반영 범위(JSON). 실패하면 null — 거절을 막지 않는다. */
+    public String snapshotScope(Approval approval) {
+        return resultScopeService.snapshotJson(approval);
+    }
+
+    /**
+     * 거절 REVERT(#532): preview 를 main 과 같은 내용으로 되돌리는 커밋을 올린다. 승인 상태를 바꾸기 전에 부른다 —
+     * 여기서 실패하면 승인은 PENDING 그대로다. 이미 같은 내용이면 아무것도 올리지 않는다.
+     *
+     * @throws ResultRevertUnavailableException 서버 측 git 이 꺼진 환경
+     * @throws ResultRevertFailedException      되돌리는 커밋을 올리지 못했다
+     */
+    public void revertPreview(Approval approval) {
+        if (!serverPreviewBranch.enabled()) {
+            throw new ResultRevertUnavailableException();
+        }
+        Project project = projectRepository
+                .findByIdAndOwnerUserIdAndDeletedFalse(approval.getProjectId(), approval.getOwnerUserId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "RESULT 승인의 프로젝트를 찾을 수 없습니다. projectId=" + approval.getProjectId()));
+        if (project.getSourceRepository() == null) {
+            return;   // 저장소가 없으면 preview 도 없다
+        }
+        try {
+            Optional<ObjectId> commit = serverPreviewBranch.revertTo(
+                    approval.getOwnerUserId(), project.getSourceRepository(), MAIN_BRANCH, approval.getId());
+            log.info("[ResultApproval] preview 되돌림 | taskId={} approvalId={} pushed={}",
+                    approval.getTaskId(), approval.getId(), commit.isPresent());
+        } catch (ServerGitException e) {
+            log.warn("[ResultApproval] preview 되돌림 실패 | taskId={} approvalId={} cause={}",
+                    approval.getTaskId(), approval.getId(), e.getClass().getSimpleName());
+            throw new ResultRevertFailedException(e);
+        }
     }
 
     /**

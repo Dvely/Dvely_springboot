@@ -722,7 +722,10 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 - 게이트가 발동하면: CODE 결과를 `preview` 브랜치에 push → task를 `WAITING_RESULT_APPROVAL`로 전환 → `ApprovalType.RESULT` Approval 생성 → "미리보기와 변경 내역을 확인해 주세요" assistant 메시지 발송.
 - 여러 CODE step이 있는 plan(예: 실패 후 재시도)도 RESULT 승인은 1번만 열리며, 마지막 CODE step까지의 누적 결과 전체를 대상으로 한다.
 - **승인**: `POST /approvals/{approvalId}/approve` → `preview`에 `main` 대비 새 커밋이 있으면 PR 생성+merge, 없으면(멱등 재시도) main HEAD SHA만 기록 → `Change`가 `MERGED`로 전환(`prNumber`/`mergeCommitSha`/`mergedAt` 기록) → task가 이어서 재개(남은 step 계속 또는 `DONE`).
-- **거절**: `POST /approvals/{approvalId}/reject` → `Change`가 `REJECTED`로 전환(merge 없음) → task `CANCELLED`. 거절된 커밋은 `preview` 브랜치에서 지우지 않는다(**누적 시맨틱**) — 다음 작업은 그 위에 이어서 커밋되고, 다음 RESULT 승인은 그 시점 `preview` 브랜치 전체 상태를 main에 반영한다(거절분이 되돌려지지 않은 채 함께 반영될 수 있음).
+- **거절**: `POST /approvals/{approvalId}/reject` → `Change`가 `REJECTED`로 전환(merge 없음) → task `CANCELLED`. 본문 `{ "option": "KEEP" | "REVERT" }`(선택, 없으면 `KEEP`, #532)로 preview를 어떻게 둘지 고른다.
+  - `KEEP`: 거절된 커밋은 `preview` 브랜치에서 지우지 않는다(**누적 시맨틱**) — 다음 작업은 그 위에 이어서 커밋되고, 다음 RESULT 승인은 그 시점 `preview` 브랜치 전체 상태를 main에 반영한다(거절분이 함께 반영될 수 있음).
+  - `REVERT`: 승인 상태를 바꾸기 **전에** preview에 "main과 같은 내용"의 커밋을 하나 올린다(강제 push 아님. 부모는 이전 preview와 main 둘이라 이후 `main...preview` 비교가 빈다). 메시지 `revert: preview 를 main 상태로 되돌림 (approval <id>)`. 이미 같으면 올리지 않는다. 서버 측 git 플래그가 꺼진 환경이면 `409 RESULT_REVERT_UNAVAILABLE`, 올리지 못하면 `502 RESULT_REVERT_FAILED` — 둘 다 승인은 PENDING 그대로다.
+- **반영 범위**: `GET /approvals/{approvalId}/result-scope`(#532) — 승인하면 main에 실제로 들어갈 범위(`main...preview`)를 서버가 계산한다. 이번 작업 외의 변경(다른 작업·이전에 거절한 작업·직접 올린 커밋)이 섞였는지를 커밋 메시지 `Qeploy Agent task <taskId>`와 변경 기록으로 가린다. 결정할 때(승인 merge 직전·거절 직전) 계산한 범위를 `project_changes.decided_scope`에 남기고, 결정 뒤에는 다시 계산하지 않고 그것을 돌려준다. 응답 모양은 §14.3.
 
 `GET /projects/{projectId}/changes` 응답 상태값에 `MERGED`/`REJECTED`가 추가되었다(기존 `PREVIEW_READY`/`DEPLOYED`에 더해). `MERGED` 항목은 `approvalId`/`prNumber`/`mergeCommitSha`/`mergedAt`을 포함한다.
 
@@ -1199,7 +1202,41 @@ Preview URL은 `/api/v1/previews/{previewSessionId}/{accessToken}/...` gateway �
 - `GET /api/v1/projects/{projectId}/approvals` — 상태와 무관하게 최신순. `limit` 기본 200·최대 500, 더 있으면 `X-Qeploy-Next-Cursor` 헤더, `after`로 넘기면 그보다 오래된 것
 - `GET /api/v1/approvals/{approvalId}`
 - `POST /api/v1/approvals/{approvalId}/approve`
-- `POST /api/v1/approvals/{approvalId}/reject`
+- `POST /api/v1/approvals/{approvalId}/reject` — 본문 선택 `{ "option": "KEEP" | "REVERT" }`(RESULT 전용, §9.5)
+- `GET /api/v1/approvals/{approvalId}/result-scope` — RESULT 승인의 반영 범위(#532)
+
+`result-scope` 응답(`data`, 최상위 모양은 상태와 무관하게 같다):
+
+```json
+{
+  "approvalId": 215, "base": "main", "head": "preview",
+  "status": "PENDING",
+  "scopeState": "READY",
+  "notice": "승인하면 이번 작업 외의 변경도 함께 main 에 반영됩니다: 파일 2개(+13 −3). 그중 1건은 이전에 거절한 변경입니다.",
+  "scope": {
+    "pendingPush": false,
+    "files": [ { "path": "styles.css", "status": "modified", "additions": 12, "deletions": 3, "previousPath": null,
+                 "origins": ["THIS_TASK", "PREVIOUSLY_REJECTED"] } ],
+    "totals": { "files": 2, "additions": 13, "deletions": 3 },
+    "commits": [ { "sha": "b7ded48…", "taskId": "e9da3431dae2", "origin": "PREVIOUSLY_REJECTED",
+                   "decision": { "approvalId": 213, "status": "REJECTED" } } ],
+    "includesOtherWork": true, "includesRejected": true, "truncated": false
+  },
+  "decidedSnapshot": null,
+  "rejectOptions": [
+    { "option": "KEEP", "label": "preview 에 남기기", "description": "…", "available": true, "default": true, "unavailableReason": null },
+    { "option": "REVERT", "label": "preview 되돌리기", "description": "…", "available": true, "default": false, "unavailableReason": null }
+  ]
+}
+```
+
+- `scopeState`: PENDING 이 아니면 `DECIDED`(`decidedSnapshot = { option, decidedAt, notice, scope|null }`, `scope`는 결정 당시 기록이고 계산 실패였으면 null). PENDING이고 계산에 성공하면 `READY`, GitHub 비교가 실패하면 `UNAVAILABLE`(200, 경고 `notice`, 승인·거절은 막지 않고 `rejectOptions`도 준다). 재인증이 필요하면 `403 GITHUB_APP_REAUTHORIZATION_REQUIRED`.
+- `origin`: `THIS_TASK` · `PREVIOUSLY_REJECTED`(거절된 RESULT의 작업) · `OTHER`(다른 작업, 결정 전이거나 기록 없음) · `UNKNOWN`(작업을 알 수 없는 커밋). `origins`는 그 파일을 바꾼 커밋들의 origin 집합이며 이 순서로 고정된다.
+- 거절 REVERT 커밋과 그 조상은 `commits`에서 빠진다(되돌린 뒤 preview 는 main 과 같은 내용이라 반영 대상이 아니다).
+- `truncated`: GitHub 비교 상한(파일 300 · 커밋 250)에 걸렸거나 커밋별 파일 조회 상한(30)을 넘었다. 이때 `totals = null`이고 `notice`에 숫자가 없다. 줄 수를 GitHub가 세지 않은 파일(바이너리)은 `additions/deletions = null`.
+- `pendingPush`: `.github` 변경 때문에 push를 승인 뒤로 미룬 작업(#527). 이번 작업 파일은 서버 diff에서 와 `origins: ["THIS_TASK"]`로 더해진다.
+- `notice`·`rejectOptions[].label/description/unavailableReason`: 화면 문구는 서버가 만든다. 서버 측 git 플래그가 꺼진 환경에서는 `REVERT`가 `available: false` + `unavailableReason`.
+- `ApprovalResponse`에 `rejectOption`(`KEEP`|`REVERT`, REJECTED인 RESULT만, 그 외 null)이 추가됐다(`approvals.reject_option`, V69).
 
 승인 유형:
 

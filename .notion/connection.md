@@ -597,11 +597,26 @@ approve
 → Change.markMerged (approvalId/prNumber/mergeCommitSha/mergedAt 기록, 상태 MERGED)
 → AgentOrchestrator.resumeAfterResult → task를 currentStep부터 재개(남은 step 있으면 계속, 없으면 DONE)
 
-reject
-→ Change.markRejected (merge 없음, 상태 REJECTED)
+reject (본문 option: KEEP 기본 | REVERT, #532)
+→ ResultScopeService.snapshotJson (결정 직전 반영 범위, 실패하면 null — 거절을 막지 않음)
+→ REVERT 면 ResultApprovalService.revertPreview → ServerPreviewBranch.revertTo → ServerGitPublisher.resetTo
+   (preview 에 main 트리의 2-부모 커밋 push. 플래그 꺼짐 409 / push 실패 502 — 둘 다 승인 PENDING 유지)
+→ Approval.reject(option) → Change.markRejected + decided_scope 기록 (merge 없음, 상태 REJECTED)
 → task CANCELLED
-→ 거절된 커밋은 preview 브랜치에 그대로 남음(삭제/reset 안 함)
+→ KEEP: 거절된 커밋은 preview 브랜치에 그대로 남음 / REVERT: preview 는 main 과 같은 내용
 ```
+
+반영 범위 조회(`GET /approvals/{id}/result-scope`, #532):
+
+```text
+ApprovalController → ApprovalFacade → ResultScopeService.view
+→ PENDING: GithubComparePort.compare(main...preview) (+ 커밋 origin 이 섞였으면 commitFiles 로 파일별 origin)
+   + 커밋 메시지의 taskId → project_changes(상태·approvalId) 로 origin 판정
+   + push_deferred 면 change.diff_text 를 더함
+→ 결정됨: project_changes.decided_scope(JSON) 를 그대로
+```
+
+approve 경로는 `ResultApprovalService.reflect` 가 미룬 push 를 올린 뒤·merge 하기 전에 범위를 계산해 `decided_scope` 에 남긴다.
 
 **누적 시맨틱(중요)**: RESULT 승인의 대상은 "이 task의 변경분"이 아니라 "그 시점 preview 브랜치 전체 상태"다. 거절된 커밋도 preview에 남아 있으므로, 다음 작업이 그 위에 이어서 커밋되고 그 다음 RESULT 승인은 (과거 거절분을 포함한) preview 전체를 main에 반영한다. 되돌리려면 명시적으로 되돌리는 수정을 다시 요청해야 한다.
 

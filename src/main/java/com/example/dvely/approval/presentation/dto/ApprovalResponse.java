@@ -35,6 +35,10 @@ public record ApprovalResponse(
         ApprovalInputResponse input,
 
         @Schema(description = "승인 생성 시각") LocalDateTime createdAt,
-        @Schema(description = "APPROVED/REJECTED/CANCELLED로 확정된 시각. PENDING이면 null", nullable = true) LocalDateTime decidedAt
+        @Schema(description = "APPROVED/REJECTED/CANCELLED로 확정된 시각. PENDING이면 null", nullable = true) LocalDateTime decidedAt,
+
+        @Schema(description = "RESULT 승인을 거절할 때 고른 옵션. KEEP(preview 에 남김) 또는 REVERT(preview 를 main 으로 되돌림). " +
+                "REJECTED 인 RESULT 승인에만 있고 그 외에는 null", allowableValues = {"KEEP", "REVERT"}, nullable = true)
+        String rejectOption
 ) {
 }

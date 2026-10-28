@@ -52,10 +52,11 @@ class ResultApprovalServiceTest {
     private final AuditRecorder auditRecorder = mock(AuditRecorder.class);
     private final ServerPreviewBranch serverPreviewBranch = mock(ServerPreviewBranch.class);
     private final PreviewSessionService previewSessionService = mock(PreviewSessionService.class);
+    private final ResultScopeService resultScopeService = mock(ResultScopeService.class);
 
     private final ResultApprovalService service = new ResultApprovalService(
             changeRepository, projectRepository, userRepository, authCommandService, githubRepoPort,
-            approvalRepository, auditRecorder, serverPreviewBranch, previewSessionService
+            approvalRepository, auditRecorder, serverPreviewBranch, previewSessionService, resultScopeService
     );
 
     @Test

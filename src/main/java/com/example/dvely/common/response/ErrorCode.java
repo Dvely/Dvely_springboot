@@ -45,7 +45,12 @@ public enum ErrorCode {
     // 템플릿 카탈로그. 정본이 외부(템플릿 저장소의 Pages)에 있어 우리가 못 읽는 상황이 있다.
     // 갱신에 실패해도 직전 목록으로 계속 서비스하므로, 이 코드가 나가는 것은 한 번도 읽지
     // 못한 경우뿐이다. 요청은 정상이고 원인이 서버 쪽이라 4xx 가 아니다.
-    TEMPLATE_CATALOG_UNAVAILABLE(503, "TEMPLATE_CATALOG_UNAVAILABLE", "템플릿 카탈로그를 불러올 수 없습니다");
+    TEMPLATE_CATALOG_UNAVAILABLE(503, "TEMPLATE_CATALOG_UNAVAILABLE", "템플릿 카탈로그를 불러올 수 없습니다"),
+
+    // 결과 승인 거절 REVERT(#532). 둘 다 승인은 PENDING 그대로이고, 메시지를 그대로 보여 주면 된다.
+    // 앞은 환경이 이 옵션을 지원하지 않는 것(재시도해도 같다), 뒤는 GitHub 쪽 반영 실패(재시도할 수 있다)다.
+    RESULT_REVERT_UNAVAILABLE(409, "RESULT_REVERT_UNAVAILABLE", "이 환경에서는 preview 되돌리기를 쓸 수 없습니다"),
+    RESULT_REVERT_FAILED(502, "RESULT_REVERT_FAILED", "preview 를 되돌리지 못했습니다");
 
     private final int status;
     private final String code;

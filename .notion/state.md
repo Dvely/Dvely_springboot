@@ -1479,6 +1479,17 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 운영 드라이런(읽기만): 대상 8건, 제거 길이가 모두 117자로 같았다 — 행마다 정확히 한 번 매치됐다는 신호다. 표현식은 `DeadPreviewLinkStripExpressionTest` 가 지킨다
 - 안내 문구로 바꾸지 않고 줄 전체를 지운다. #391 과 같은 판단이다
 
+## 4.37 결과 승인 반영 범위와 거절 옵션 (Issue #532, V69)
+
+결과 승인은 preview 전체를 main 에 merge 한다. 그래서 이번 작업 외의 변경(다른 작업, 이전에 거절한 작업, 사람이 직접 올린 커밋)도 함께 들어가는데, 승인 화면은 이번 작업의 diff 만 보여 줬다.
+
+- `GET /approvals/{id}/result-scope` 가 `main...preview` 를 GitHub 비교로 계산해 파일·커밋별 출처(`THIS_TASK`·`PREVIOUSLY_REJECTED`·`OTHER`·`UNKNOWN`)와 서버 문구를 준다. 출처는 커밋 메시지의 `Qeploy Agent task <taskId>` 와 `project_changes` 로 가린다(두 push 경로가 같은 메시지를 쓴다). 그래서 계약 초안의 "push 커밋 sha 컬럼"은 두지 않았다
+- 계산 실패는 오류가 아니라 200 + `scopeState: UNAVAILABLE` 이다. 승인·거절은 막지 않는다. 재인증만 403 으로 올린다
+- 결정할 때(승인은 미룬 push 뒤·merge 전, 거절은 되돌리기 전) 범위를 `project_changes.decided_scope` 에 남긴다. 결정 뒤에는 다시 계산하지 않는다. 남기기 실패는 결정을 막지 않는다(그때 `decidedSnapshot.scope = null`)
+- 거절 본문 `option`: `KEEP`(기본, 이전과 같음) / `REVERT`. REVERT 는 승인 상태를 바꾸기 전에 preview 에 main 트리의 2-부모 커밋을 올린다(강제 push 아님). 두 번째 부모가 main 이라 되돌린 뒤 비교가 비고, 같은 내용이면 다시 올리지 않는다. 서버 측 git 플래그가 꺼진 환경에서는 409 `RESULT_REVERT_UNAVAILABLE`, push 실패는 502 `RESULT_REVERT_FAILED` 이며 둘 다 승인은 PENDING 이다
+- 되돌린 뒤의 새 작업은 새 프리뷰 컨테이너가 origin/preview 를 새로 받으므로 되돌린 상태에서 시작한다
+- `ApprovalResponse.rejectOption`(V69 `approvals.reject_option`) 추가
+- 아직 dev 실측 전이다. 운영은 서버 측 git 플래그가 꺼져 있어 REVERT 가 비활성으로 내려간다
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
 

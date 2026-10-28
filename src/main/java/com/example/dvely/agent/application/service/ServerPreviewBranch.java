@@ -85,6 +85,20 @@ public class ServerPreviewBranch {
         }
     }
 
+    /**
+     * preview 를 {@code baseBranch} 와 같은 내용으로 되돌리는 커밋을 올린다(#532 거절 REVERT). 이미 같으면 올리지 않는다.
+     * 플래그와 무관하게 동작하지만, 호출부는 플래그가 켜진 환경에서만 이 옵션을 연다.
+     */
+    public Optional<ObjectId> revertTo(Long ownerUserId, String repoFullName, String baseBranch, Long approvalId) {
+        Credentials credentials = credentials(ownerUserId);
+        return publisher.resetTo(
+                PreviewBranchPushService.githubUrl(repoFullName),
+                new UsernamePasswordCredentialsProvider(credentials.username(), credentials.token()),
+                PREVIEW,
+                baseBranch,
+                "revert: preview 를 " + baseBranch + " 상태로 되돌림 (approval " + approvalId + ")");
+    }
+
     private Request request(String containerId, String repoFullName, String username, String userToken, String taskId) {
         return new Request(
                 repoFullName == null ? null : PreviewBranchPushService.githubUrl(repoFullName),
