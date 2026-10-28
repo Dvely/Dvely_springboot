@@ -1531,6 +1531,16 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 시스템 프롬프트가 표시의 뜻을 정의한다: [지금 처리할 요청] 만 계획한다, 이전 요청의 변경을 지시에 섞지 않는다, "다시 적용하지 말 것" 은 되살리지 않는다, 지금 요청이 명시적으로 다시 해 달라고 할 때만 예외
 - 모델 행동 자체는 단위 테스트로 고정할 수 없다. 테스트는 모델에 넘기는 입력(표시·프롬프트 문구)을 고정한다. dev 실측으로 한 번 더 확인이 필요하다
 
+## 4.43 Anthropic thinking 요청을 모델별 형식으로 (Issue #510)
+
+- `LlmRequestOptions.applyAnthropic(body, model, options, baseMaxTokens)` 가 모델을 보고 형식을 고른다. 근거는 Anthropic 공식 thinking 문서의 모델별 표(2026-10-28 대조)
+  - 4.6 이상(Opus·Sonnet 4.6, Opus 4.7·4.8·5·5.5, Sonnet 5·5.5, Haiku 5.5, Fable·Mythos): `thinking: {type: "adaptive"}` + `output_config: {effort: low|medium|high}`. 4.7 이상은 `budget_tokens` 가 400, 4.6 은 받지만 폐기 예정
+  - 4.5 이하(Opus·Sonnet·Haiku 4.5, 4.1·4·3.x): `thinking: {type: "enabled", budget_tokens}` 유지. 이쪽은 adaptive 가 400
+  - thinking OFF 는 어떤 모델에도 `thinking` 을 보내지 않는다(새 모델 일부가 `"disabled"` 를 400 으로 거부)
+  - adaptive 도 생각을 `max_tokens` 에서 쓰므로 수준별 여유(2k/4k/8k)를 그대로 더한다
+- 판별은 모델 id 의 버전(`claude-opus-4-5-20251101`, `claude-3-7-sonnet-…`, `us.anthropic.claude-…-v1:0`, `…@날짜`)으로 하고, 버전을 못 읽으면 adaptive 로 본다
+- 기본 모델(`claude-opus-4-5-20251101`)·`thinking-models` 기본값은 그대로다 — 운영 동작 변화 없음
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

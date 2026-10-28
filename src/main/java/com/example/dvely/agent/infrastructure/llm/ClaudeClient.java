@@ -47,7 +47,7 @@ public class ClaudeClient {
         // 시스템 프롬프트는 블록 배열로 보낸다 — 문자열 형태로는 cache_control 을 달 수 없다.
         body.put("system",   AnthropicPromptCache.systemBlocks(systemPrompt));
         body.put("messages", AnthropicPromptCache.messagesWithRollingCacheControl(apiMessages));
-        LlmRequestOptions.applyAnthropic(body, modelOptions, aiProperties.getCompletionMaxTokens());
+        LlmRequestOptions.applyAnthropic(body, model, modelOptions, aiProperties.getCompletionMaxTokens());
 
         ClaudeResponse response = LlmProviderErrors.translate(PROVIDER_NAME, aiProperties.getRetry(), () -> LlmHttp.client()
                 .post()

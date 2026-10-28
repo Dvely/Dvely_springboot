@@ -8,7 +8,8 @@ import java.util.Map;
  * Writes a {@link AiModelOptions} into each provider's request body.
  *
  * <p>The providers spell the same idea differently — Anthropic takes a token budget for extended
- * thinking, OpenAI takes a {@code reasoning_effort} string, OpenRouter takes a {@code reasoning}
+ * thinking on older models and an effort level for adaptive thinking on newer ones, OpenAI takes a
+ * {@code reasoning_effort} string, OpenRouter takes a {@code reasoning}
  * object — and Anthropic additionally requires {@code max_tokens} to exceed the thinking budget,
  * since the budget is spent out of the same output allowance. Getting that wrong is a 400 from the
  * API, so the arithmetic lives here rather than in each client.</p>
@@ -53,20 +54,88 @@ final class LlmRequestOptions {
     }
 
     /**
-     * Sets Anthropic's {@code max_tokens}, and {@code thinking} when asked for.
+     * Sets Anthropic's {@code max_tokens}, and {@code thinking} when asked for, in the form the model accepts (#510).
      *
+     * <p>The two forms are not interchangeable: Claude 4.7 and later reject {@code {type: "enabled", budget_tokens}}
+     * with a 400, and Claude 4.5 and earlier reject {@code {type: "adaptive"}} with a 400. 4.6 takes both, with
+     * {@code budget_tokens} deprecated, so it gets adaptive. See {@link #usesAdaptiveThinking}.</p>
+     *
+     * <ul>
+     *   <li>Extended (4.5 and earlier): {@code thinking: {type: "enabled", budget_tokens: N}}.</li>
+     *   <li>Adaptive (4.6 and later): {@code thinking: {type: "adaptive"}} and {@code output_config: {effort}} —
+     *       the depth is set by effort, not by a token budget.</li>
+     * </ul>
+     *
+     * <p>Thinking off sends no {@code thinking} at all. Some newer models think whatever is sent (and reject
+     * {@code "disabled"}), so omitting it is the only form every model accepts.</p>
+     *
+     * @param model         the model the request goes to — decides the form
      * @param baseMaxTokens the client's normal output allowance, which stays exactly that when
-     *                      thinking is off; with thinking on, the budget is added on top so the
-     *                      answer itself still has the full allowance available
+     *                      thinking is off; with thinking on, the level's budget is added on top so the
+     *                      answer itself still has the full allowance available. Adaptive thinking also
+     *                      spends out of {@code max_tokens}, so it gets the same headroom
      */
-    static void applyAnthropic(Map<String, Object> body, AiModelOptions options, int baseMaxTokens) {
+    static void applyAnthropic(Map<String, Object> body, String model, AiModelOptions options, int baseMaxTokens) {
         if (!options.thinking().isEnabled()) {
             body.put("max_tokens", baseMaxTokens);
             return;
         }
         int budgetTokens = budgetTokens(options.thinking());
-        body.put("thinking", Map.of("type", "enabled", "budget_tokens", budgetTokens));
+        if (usesAdaptiveThinking(model)) {
+            body.put("thinking", Map.of("type", "adaptive"));
+            body.put("output_config", Map.of("effort", effort(options.thinking())));
+        } else {
+            body.put("thinking", Map.of("type", "enabled", "budget_tokens", budgetTokens));
+        }
         body.put("max_tokens", baseMaxTokens + budgetTokens);
+    }
+
+    /**
+     * Whether an Anthropic model takes adaptive thinking rather than a {@code budget_tokens} budget.
+     *
+     * <p>Follows the per-model table in Anthropic's thinking docs (checked 2026-10-28): adaptive on Claude 4.6
+     * and later (and the Fable/Mythos families), extended-only on 4.5 and earlier. Reads the version out of the id
+     * — {@code claude-opus-4-5-20251101}, {@code claude-sonnet-4-6}, {@code claude-opus-5-5},
+     * {@code claude-3-7-sonnet-20250219}, provider-prefixed ids such as {@code us.anthropic.claude-opus-4-6-v1:0}
+     * — ignoring the 8-digit date. An id it cannot read a version from is taken as adaptive: every model
+     * released since 4.6 is adaptive and the newer ones reject a budget outright.</p>
+     */
+    static boolean usesAdaptiveThinking(String model) {
+        if (model == null) {
+            return true;
+        }
+        String id = model.toLowerCase(java.util.Locale.ROOT);
+        int claude = id.indexOf("claude-");
+        if (claude >= 0) {
+            id = id.substring(claude + "claude-".length());
+        }
+        int major = -1;
+        int minor = 0;
+        for (String part : id.split("[-.:@]")) {
+            if (part.matches("\\d{1,2}")) {
+                if (major < 0) {
+                    major = Integer.parseInt(part);
+                } else {
+                    minor = Integer.parseInt(part);
+                    break;
+                }
+            } else if (major >= 0) {
+                break;   // 버전 뒤의 이름(3.x 표기의 family)·날짜·접미사
+            }
+        }
+        if (major < 0) {
+            return true;
+        }
+        return major > 4 || (major == 4 && minor >= 6);
+    }
+
+    private static String effort(ThinkingLevel thinking) {
+        return switch (thinking) {
+            case LOW -> "low";
+            case MEDIUM -> "medium";
+            case HIGH -> "high";
+            case OFF -> throw new IllegalStateException("도달할 수 없음: thinking OFF");
+        };
     }
 
     /** Sets OpenAI's {@code reasoning_effort}, or leaves the body untouched when thinking is off. */
