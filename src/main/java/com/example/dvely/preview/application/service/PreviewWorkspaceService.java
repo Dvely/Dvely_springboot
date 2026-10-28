@@ -1,5 +1,6 @@
 package com.example.dvely.preview.application.service;
 
+import com.example.dvely.agent.application.service.ServerRepositoryCheckout;
 import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
@@ -43,6 +44,7 @@ public class PreviewWorkspaceService {
     private final ProjectRepository projectRepository;
     private final UserRepository userRepository;
     private final AuthCommandService authCommandService;
+    private final ServerRepositoryCheckout serverCheckout;
 
     /**
      * 프로젝트의 GitHub 저장소를 컨테이너로 clone/fetch 하고 preview 브랜치로 맞춘 뒤 의존성을
@@ -56,6 +58,13 @@ public class PreviewWorkspaceService {
         String sourceRepo = project.getSourceRepository();
         if (sourceRepo == null || sourceRepo.isBlank()) {
             log.warn("[PreviewWorkspace] projectId={} 에 연결된 GitHub 저장소 없음, 신규 프로젝트로 진행", projectId);
+            return;
+        }
+
+        // 서버 측 git(#523 PR-3): 서버가 받아 넣는다. 컨테이너에 자격도 git 도 필요 없다.
+        if (serverCheckout.enabled()) {
+            syncOnServer(containerId, userId, sourceRepo);
+            installDependencies(containerId);
             return;
         }
 
@@ -91,11 +100,44 @@ public class PreviewWorkspaceService {
         syncRepository(containerId, sourceRepo, cloneUrl, username, userToken);
 
         // clone 후 의존성 설치 — 자격이 닿지 않는다.
+        installDependencies(containerId);
+    }
+
+    private void installDependencies(String containerId) {
         String pkgJson = dockerService.exec(containerId, "[ -f " + APP_DIR + "/package.json ] && echo yes || echo no").trim();
         if ("yes".equals(pkgJson)) {
             log.info("[PreviewWorkspace] npm install 실행");
             dockerService.exec(containerId, "cd " + APP_DIR + " && npm install");
         }
+    }
+
+    /**
+     * 서버가 preview(없으면 기본 브랜치) 트리를 넣는다.
+     *
+     * <p>같은 저장소의 작업 트리가 이미 있으면 그대로 둔다. 한 작업에서 CODE 스텝이 여러 번 돌면 같은 컨테이너를
+     * 다시 준비하는데, 그 트리에는 아직 push 하지 않은 앞 스텝의 작업이 들어 있다. 옛 경로도 그 변경을 지우지 않았다.
+     * 다른 저장소의 트리면 비우고 넣는다(옛 경로의 재clone 과 같다).</p>
+     */
+    private void syncOnServer(String containerId, Long userId, String sourceRepo) {
+        String existing = dockerService.exec(containerId,
+                "[ -d " + APP_DIR + " ] && cat " + ServerRepositoryCheckout.PARENT + "/"
+                        + ServerRepositoryCheckout.SOURCE_MARKER + " 2>/dev/null || echo __none__").trim();
+        if (existing.equals(sourceRepo) || sameRepositoryClone(containerId, existing, sourceRepo)) {
+            log.info("[PreviewWorkspace] 같은 저장소의 작업 트리가 있어 그대로 둠: {}", sourceRepo);
+            return;
+        }
+        dockerService.exec(containerId, "rm -rf " + APP_DIR + " && mkdir -p " + ServerRepositoryCheckout.PARENT);
+        serverCheckout.intoPreview(containerId, userId, sourceRepo);
+    }
+
+    /** 플래그를 켜기 전 옛 경로로 clone 한 트리(표시 파일 없음). origin 이 같은 저장소면 같은 것으로 본다. */
+    private boolean sameRepositoryClone(String containerId, String marker, String sourceRepo) {
+        if (!"__none__".equals(marker) && !marker.isEmpty()) {
+            return false;
+        }
+        String remote = dockerService.exec(containerId,
+                "git -C " + APP_DIR + " remote get-url origin 2>/dev/null || echo __none__").trim();
+        return remote.equals("https://github.com/" + sourceRepo + ".git");
     }
 
     /**

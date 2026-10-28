@@ -1,6 +1,8 @@
 package com.example.dvely.provisioning.application.service;
 
+import com.example.dvely.agent.application.service.ServerRepositoryCheckout;
 import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
+import com.example.dvely.agent.infrastructure.git.ServerGitException;
 import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService.ExecResult;
@@ -32,9 +34,33 @@ public class BackendSourceClone {
     private final ContainerGitCredentials gitCredentials;
     private final UserRepository userRepository;
     private final AuthCommandService authCommandService;
+    private final ServerRepositoryCheckout serverCheckout;
 
     /** 컨테이너 안 {@link #APP_DIR} 로 소스를 clone 한다. 실패는 {@link BackendBuildException}. */
     public void cloneInto(String containerId, Long ownerUserId, String sourceRepo) {
+        cloneAt(containerId, ownerUserId, sourceRepo, null);
+    }
+
+    /**
+     * {@link #cloneInto} 와 같되 특정 버전(태그)을 받는다. {@code tag} 가 null 이면 기본 브랜치다.
+     * 서버 측 git(#523 PR-3)이 켜져 있으면 서버가 받아 넣고, 컨테이너 안에서는 인증이 필요한 git 을 부르지 않는다.
+     */
+    public void cloneAt(String containerId, Long ownerUserId, String sourceRepo, String tag) {
+        if (serverCheckout.enabled()) {
+            dockerService.exec(containerId, "apk add --no-cache git openjdk21 2>/dev/null || true");
+            dockerService.exec(containerId, "mkdir -p /workspace");
+            try {
+                serverCheckout.intoBuild(containerId, ownerUserId, sourceRepo, tag);
+            } catch (ServerGitException e) {
+                throw new BackendBuildException("소스 가져오기 실패: " + e.getMessage());
+            }
+            return;
+        }
+        cloneInContainer(containerId, ownerUserId, sourceRepo);
+        checkoutTagInContainer(containerId, tag);
+    }
+
+    private void cloneInContainer(String containerId, Long ownerUserId, String sourceRepo) {
         User user = userRepository.findById(ownerUserId)
                 .orElseThrow(() -> new BackendBuildException("유저를 찾을 수 없습니다: " + ownerUserId));
         if (user.isUserAccessTokenExpired()) {
@@ -53,6 +79,24 @@ public class BackendSourceClone {
                 GIT_NO_PROMPT + "git clone --depth 1 https://github.com/" + sourceRepo + ".git " + APP_DIR);
         if (!clone.succeeded()) {
             throw new BackendBuildException("소스 clone 실패: " + tail(clone.output()));
+        }
+    }
+
+    /**
+     * 특정 버전(태그)이면 그 태그를 받아 체크아웃한다(옛 컨테이너 경로). ref 는 셸 명령에 들어가므로 화이트리스트
+     * 검증으로 주입을 막는다 — 값 자체는 우리가 만든 순차 태그(v1, v2 …)지만 방어로 둔다.
+     */
+    private void checkoutTagInContainer(String containerId, String tag) {
+        if (tag == null || tag.isBlank()) {
+            return;
+        }
+        if (!tag.matches("[A-Za-z0-9._/-]+")) {
+            throw new BackendBuildException("허용되지 않는 버전 ref 형식입니다: " + tag);
+        }
+        ExecResult co = dockerService.execWithExitCode(containerId,
+                "cd " + APP_DIR + " && git fetch --depth 1 origin tag " + tag + " && git checkout " + tag);
+        if (!co.succeeded()) {
+            throw new BackendBuildException("버전 체크아웃 실패(" + tag + "): " + tail(co.output()));
         }
     }
 

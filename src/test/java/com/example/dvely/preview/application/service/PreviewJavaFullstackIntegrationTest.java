@@ -79,7 +79,7 @@ class PreviewJavaFullstackIntegrationTest {
         dockerService.exec(containerId, "chmod 644 /tmp/fe/index.html");
 
         // 실제 메서드로 내부 nginx 를 3000 에 띄운다.
-        PreviewWorkspaceService workspace = new PreviewWorkspaceService(dockerService, new ContainerGitCredentials(dockerService), null, null, null);
+        PreviewWorkspaceService workspace = new PreviewWorkspaceService(dockerService, new ContainerGitCredentials(dockerService), null, null, null, null);
         workspace.startInternalNginxRouter(containerId, "/api", "/tmp/fe");
 
         // (2) 3000/api/* → BE, 3000/ → FE.

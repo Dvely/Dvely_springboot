@@ -88,7 +88,7 @@ class PreviewBackendRuntimeIntegrationTest {
         writeFile(APP_DIR + "/server.js", serverJs);
 
         String marker = "hello-be-" + System.nanoTime();
-        PreviewWorkspaceService workspace = new PreviewWorkspaceService(dockerService, new ContainerGitCredentials(dockerService), null, null, null);
+        PreviewWorkspaceService workspace = new PreviewWorkspaceService(dockerService, new ContainerGitCredentials(dockerService), null, null, null, null);
 
         workspace.startNodeServer(containerId, "node server.js",
                 List.of("MARKER=" + marker, "PORT=3000"));
