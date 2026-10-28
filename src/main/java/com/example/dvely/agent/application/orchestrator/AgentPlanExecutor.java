@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.orchestrator;
 
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher;
 import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
@@ -219,6 +220,22 @@ public class AgentPlanExecutor {
             );
             log.error("=== AgentPlan AI 제공자 실패: taskId={} provider={} reason={} ===",
                     taskId, exception.providerName(), exception.reason());
+        } catch (ServerGitPublisher.RemoteMovedException exception) {
+            // 작업하는 동안 원격 preview 가 바뀌어 덮어쓰지 않으려고 멈춘 것(#539) — 사용자가 다시 요청하면 되는 정상
+            // 거부다. ERROR 로 남기면 배포 건강 신호(ERROR 건수)가 흐려지고, "작업 중 오류가 발생했습니다" 접두는
+            // 원인과 다음 행동을 이미 담은 문장을 묻는다(#541). 그래서 LLM 제공자 실패처럼 전용 분기로 받는다.
+            if (taskStore.isCancelled(taskId)) {
+                return;
+            }
+            taskStore.markFailed(taskId, exception.getMessage());
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    exception.getMessage(),
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
+            );
+            log.warn("=== AgentPlan 반영 중단(원격 preview 가 작업 중 바뀜): taskId={} ===", taskId);
         } catch (Exception e) {
             if (taskStore.isCancelled(taskId)) {
                 log.info("=== AgentPlan 취소됨: taskId={} ===", taskId);

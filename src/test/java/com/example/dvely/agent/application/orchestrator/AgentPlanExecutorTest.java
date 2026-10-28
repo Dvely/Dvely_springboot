@@ -640,6 +640,37 @@ class AgentPlanExecutorTest {
         verify(taskStore, never()).markDone(any(), any(), any());
     }
 
+    @Test
+    void aRemoteThatMovedDuringTheTaskIsANoticeNotAnError() {
+        // #541: 작업 도중 원격 preview 가 바뀌어 push 를 멈춘 것은 정상 거부다. 메시지가 원인과 다음 행동을 이미 담고 있어
+        // 접두 없이 그대로 보이고, ERROR(배포 건강 신호)로 남지 않아야 한다.
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentPlanExecutor executor = executor(codeService, taskStore, messageService);
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        com.example.dvely.agent.infrastructure.git.ServerGitPublisher.RemoteMovedException moved =
+                new com.example.dvely.agent.infrastructure.git.ServerGitPublisher.RemoteMovedException("preview");
+        when(codeService.execute(eq(step), eq(AiProvider.ANTHROPIC), eq(1L), eq(11L), eq("task-1"), any())).thenThrow(moved);
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AgentPlanExecutor.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.ANTHROPIC, 11L), "task-1", 1L);
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        verify(taskStore).markFailed("task-1", moved.getMessage());
+        verify(messageService).appendAssistant(21L, moved.getMessage(), ChatMessageKind.TASK_FAILED, "task-1");
+        assertThat(appender.list).noneMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.ERROR);
+        assertThat(appender.list).anyMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.WARN
+                && event.getFormattedMessage().contains("task-1") && event.getThrowableProxy() == null);
+    }
+
     private AgentPlanExecutor executor(CodeAgentService codeService,
                                        TaskStore taskStore,
                                        AgentMessageService messageService) {
