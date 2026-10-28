@@ -3,6 +3,7 @@ package com.example.dvely.approval.infrastructure.persistence.entity;
 import com.example.dvely.approval.domain.model.Approval;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.approval.domain.value.RejectOption;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -58,6 +59,10 @@ public class ApprovalEntity {
     @Column(name = "decided_at")
     private LocalDateTime decidedAt;
 
+    /** V69(#532): RESULT 승인을 거절할 때 고른 옵션. 그 외에는 비어 있다. */
+    @Column(name = "reject_option", length = 10)
+    private String rejectOption;
+
     private ApprovalEntity(Long ownerUserId,
                            Long projectId,
                            Long conversationId,
@@ -89,6 +94,7 @@ public class ApprovalEntity {
     public void updateFrom(Approval approval) {
         status = approval.getStatus().name();
         decidedAt = approval.getDecidedAt();
+        rejectOption = approval.getRejectOption() == null ? null : approval.getRejectOption().name();
     }
 
     public Approval toDomain() {
@@ -102,7 +108,8 @@ public class ApprovalEntity {
                 ApprovalStatus.valueOf(status),
                 summary,
                 createdAt,
-                decidedAt
+                decidedAt,
+                rejectOption == null ? null : RejectOption.valueOf(rejectOption)
         );
     }
 }

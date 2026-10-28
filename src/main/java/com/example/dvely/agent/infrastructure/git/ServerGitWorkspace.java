@@ -375,6 +375,27 @@ public final class ServerGitWorkspace implements AutoCloseable {
         }
     }
 
+    /** 부모가 둘인 커밋. {@code first} 의 트리가 이미 {@code tree} 와 같으면 비어 있다. */
+    public Optional<ObjectId> mergeCommit(RevCommit first, RevCommit second, ObjectId tree, String message,
+                                          PersonIdent author) {
+        if (first.getTree().getId().equals(tree)) {
+            return Optional.empty();
+        }
+        try (ObjectInserter inserter = repository.newObjectInserter()) {
+            CommitBuilder commit = new CommitBuilder();
+            commit.setTreeId(tree);
+            commit.setParentIds(first, second);
+            commit.setAuthor(author);
+            commit.setCommitter(author);
+            commit.setMessage(message);
+            ObjectId id = inserter.insert(commit);
+            inserter.flush();
+            return Optional.of(id);
+        } catch (IOException e) {
+            throw new ServerGitException("커밋을 만들지 못했습니다", e);
+        }
+    }
+
     /** {@code branch} 로 fast-forward push. 원격이 그 사이 움직였으면 {@link NonFastForwardException}. */
     public void push(String remoteUrl, CredentialsProvider credentials, ObjectId commit, String branch) {
         try (Git git = Git.wrap(repository)) {

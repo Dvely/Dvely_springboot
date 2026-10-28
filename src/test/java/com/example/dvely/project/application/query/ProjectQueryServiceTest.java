@@ -125,7 +125,8 @@ class ProjectQueryServiceTest {
                         "운영 배포",
                         null,
                         now.minusMinutes(4),
-                        now.minusMinutes(3)
+                        now.minusMinutes(3),
+                        null
                 )));
         when(domainBindingQueryService.getProjectDomains(1L, 11L))
                 .thenReturn(List.of(

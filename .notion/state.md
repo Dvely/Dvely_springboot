@@ -1479,6 +1479,25 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 운영 드라이런(읽기만): 대상 8건, 제거 길이가 모두 117자로 같았다 — 행마다 정확히 한 번 매치됐다는 신호다. 표현식은 `DeadPreviewLinkStripExpressionTest` 가 지킨다
 - 안내 문구로 바꾸지 않고 줄 전체를 지운다. #391 과 같은 판단이다
 
+## 4.37 결과 승인 반영 범위와 거절 옵션 (Issue #532, V69)
+
+결과 승인은 preview 전체를 main 에 merge 한다. 그래서 이번 작업 외의 변경(다른 작업, 이전에 거절한 작업, 사람이 직접 올린 커밋)도 함께 들어가는데, 승인 화면은 이번 작업의 diff 만 보여 줬다.
+
+- `GET /approvals/{id}/result-scope` 가 `main...preview` 를 GitHub 비교로 계산해 파일·커밋별 출처(`THIS_TASK`·`PREVIOUSLY_REJECTED`·`OTHER`·`UNKNOWN`)와 서버 문구를 준다
+- **"이번 작업의 커밋"과 "거절 REVERT 커밋"은 서버가 push 하며 남긴 기록(V70 `server_pushed_commits`)과 sha 가 맞을 때만 그렇게 본다.** 커밋 메시지는 저장소에 push 할 수 있는 누구나 쓸 수 있어서, 메시지만 믿으면 다른 변경을 "이번 작업"으로 보이게 하거나 가짜 되돌림 커밋으로 앞의 커밋을 목록에서 숨길 수 있다. 메시지의 `Qeploy Agent task <taskId>` 는 경고가 커지는 쪽(다른 작업·거절된 작업)으로만 쓴다. 기록은 별도 트랜잭션의 보조 경로라 실패해도 push 를 막지 않고, 빠지면 그 커밋이 `UNKNOWN` 으로 보인다
+- 그래서 서버 측 git 플래그가 꺼진 환경(컨테이너 push)에서는 이번 작업의 커밋도 기록이 없어 `UNKNOWN` 으로 보이고, 문구가 "이번 작업 외의 변경도 함께"로 과하게 경고한다. 틀리는 방향이 경고 쪽이라 그대로 둔다
+- 계산 실패는 오류가 아니라 200 + `scopeState: UNAVAILABLE` 이다. 승인·거절은 막지 않는다. 재인증만 403 으로 올린다
+- 결정할 때(승인은 미룬 push 뒤·merge 전, 거절은 되돌리기 전) 범위를 `project_changes.decided_scope` 에 남긴다. 결정 뒤에는 다시 계산하지 않는다. 남기기 실패는 결정을 막지 않는다(그때 `decidedSnapshot.scope = null`)
+- 거절 본문 `option`: `KEEP`(기본, 이전과 같음) / `REVERT`. REVERT 는 승인 상태를 바꾸기 전에 preview 에 main 트리의 2-부모 커밋을 올린다(강제 push 아님). 두 번째 부모가 main 이라 되돌린 뒤 비교가 비고, 같은 내용이면 다시 올리지 않는다. 서버 측 git 플래그가 꺼진 환경에서는 409 `RESULT_REVERT_UNAVAILABLE`, push 실패는 502 `RESULT_REVERT_FAILED` 이며 둘 다 승인은 PENDING 이다
+- 되돌린 뒤의 새 작업은 새 프리뷰 컨테이너가 origin/preview 를 새로 받으므로 되돌린 상태에서 시작한다
+- `ApprovalResponse.rejectOption`(V69 `approvals.reject_option`) 추가
+- 아직 dev 실측 전이다. 운영은 서버 측 git 플래그가 꺼져 있어 REVERT 가 비활성으로 내려간다
+
+## 4.38 서버 측 push 가 준비 뒤 바뀐 원격을 되돌리지 않게 한다 (Issue #523)
+
+- 작업 트리를 준비한 뒤 원격 preview 가 움직이면, 서버 push 가 새 tip 위에 옛 트리를 올려 그 변경을 되돌렸다. non-fast-forward 재시도가 base 를 다시 받으면서 생긴 PR-2 회귀다(옛 컨테이너 push 는 거부됐다). 반영 범위 화면에도 드러나지 않는다
+- 준비할 때 base 를 `/workspace/.qeploy-base` 에 남기고, 서버 push 가 받은 base 가 다르면 반영하지 않고 실패한다(재시도 포함). 성공하면 표시를 올린 커밋으로 갱신한다
+- 표시가 없는 컨테이너는 검사하지 않는다. 상세는 `docs/server-side-git-design.md` 4.3
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
 

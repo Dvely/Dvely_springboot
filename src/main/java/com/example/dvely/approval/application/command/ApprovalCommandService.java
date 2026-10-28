@@ -13,6 +13,7 @@ import com.example.dvely.approval.domain.repository.ApprovalRepository;
 import com.example.dvely.approval.domain.repository.ApprovalRouting;
 import com.example.dvely.approval.domain.value.ApprovalStatus;
 import com.example.dvely.approval.domain.value.ApprovalType;
+import com.example.dvely.approval.domain.value.RejectOption;
 import com.example.dvely.change.application.service.ResultApprovalService;
 import com.example.dvely.common.exception.NotFoundException;
 import java.util.List;
@@ -180,6 +181,14 @@ public class ApprovalCommandService {
 
     @Transactional
     public ApprovalResult reject(Long ownerUserId, Long approvalId) {
+        return reject(ownerUserId, approvalId, null);
+    }
+
+    /**
+     * @param option RESULT 승인을 거절할 때 preview 를 어떻게 둘지(#532). null 이면 KEEP. 다른 유형에서는 무시한다.
+     */
+    @Transactional
+    public ApprovalResult reject(Long ownerUserId, Long approvalId, RejectOption option) {
         ApprovalRouting routing = routingFor(ownerUserId, approvalId);
         if (routing.isStandalone()) {
             Approval approval = findOwnedForDecide(ownerUserId, approvalId);
@@ -193,23 +202,11 @@ public class ApprovalCommandService {
         // and must serialize against a concurrent approve/reject/cancel/sweep on the same task.
         taskStore.lockTask(routing.taskId());
         Approval approval = findOwnedForDecide(ownerUserId, approvalId);
+        if (approval.getType() == ApprovalType.RESULT) {
+            return rejectResult(ownerUserId, approval, option == null ? RejectOption.KEEP : option);
+        }
         approval.reject();
         Approval saved = approvalRepository.save(approval);
-
-        if (saved.getType() == ApprovalType.RESULT) {
-            resultApprovalService.markRejected(saved);
-            // AgentOrchestrator.reject cascades to sibling PENDING approvals (Y6-a) — see its
-            // javadoc for why reject and cancel now share that behavior.
-            agentOrchestrator.reject(saved.getTaskId(), ownerUserId);
-            agentMessageService.appendAssistant(
-                    saved.getConversationId(),
-                    "결과가 거절되어 main에 반영하지 않았습니다. 변경은 preview 브랜치에만 남아 있습니다.\n"
-                            + "이어서 수정을 요청하면 현재 preview 상태 위에서 작업합니다.",
-                    ChatMessageKind.TASK_CANCELLED,
-                    saved.getTaskId()
-            );
-            return queryService.toResult(saved);
-        }
 
         if (saved.getType() == ApprovalType.REPOSITORY_BINDING) {
             // 다른 모든 거절과 달리 태스크를 취소하지 않는다. 이 승인은 실행을 막는 게이트가 아니라
@@ -282,6 +279,37 @@ public class ApprovalCommandService {
     // Approval#decide's PENDING guard (409) instead of silently overwriting the first outcome.
     // Plain reads (ApprovalQueryService) intentionally keep using the unlocked lookup — only
     // decision paths need the lock.
+    /**
+     * RESULT 거절(#532). 순서가 중요하다 — 범위를 먼저 남기고(되돌리면 비교가 비므로), REVERT 면 되돌리는 커밋을
+     * 올린 뒤에야 승인을 REJECTED 로 바꾼다. 되돌리기가 실패하면 예외로 끝나 승인은 PENDING 그대로다.
+     */
+    private ApprovalResult rejectResult(Long ownerUserId, Approval approval, RejectOption option) {
+        if (approval.getStatus() != ApprovalStatus.PENDING) {
+            throw new IllegalStateException("이미 처리된 승인입니다. approvalId=" + approval.getId());
+        }
+        String decidedScope = resultApprovalService.snapshotScope(approval);
+        if (option == RejectOption.REVERT) {
+            resultApprovalService.revertPreview(approval);
+        }
+        approval.reject(option);
+        Approval saved = approvalRepository.save(approval);
+        resultApprovalService.markRejected(saved, decidedScope);
+        // AgentOrchestrator.reject cascades to sibling PENDING approvals (Y6-a) — see its
+        // javadoc for why reject and cancel now share that behavior.
+        agentOrchestrator.reject(saved.getTaskId(), ownerUserId);
+        agentMessageService.appendAssistant(
+                saved.getConversationId(),
+                option == RejectOption.REVERT
+                        ? "결과가 거절되어 main에 반영하지 않았고, preview 브랜치를 main과 같은 상태로 되돌렸습니다.\n"
+                                + "이어서 수정을 요청하면 main과 같은 상태에서 작업합니다."
+                        : "결과가 거절되어 main에 반영하지 않았습니다. 변경은 preview 브랜치에만 남아 있습니다.\n"
+                                + "이어서 수정을 요청하면 현재 preview 상태 위에서 작업합니다.",
+                ChatMessageKind.TASK_CANCELLED,
+                saved.getTaskId()
+        );
+        return queryService.toResult(saved);
+    }
+
     private Approval findOwnedForDecide(Long ownerUserId, Long approvalId) {
         return approvalRepository.findByIdAndOwnerUserIdForUpdate(approvalId, ownerUserId)
                 .orElseThrow(() -> new NotFoundException("승인을 찾을 수 없습니다. approvalId=" + approvalId));

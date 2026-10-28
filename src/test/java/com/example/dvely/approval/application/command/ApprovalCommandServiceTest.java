@@ -1,5 +1,11 @@
 package com.example.dvely.approval.application.command;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.Mockito.doAnswer;
+import com.example.dvely.change.application.service.ResultRevertFailedException;
+import com.example.dvely.approval.domain.value.RejectOption;
 import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -450,7 +456,10 @@ class ApprovalCommandServiceTest {
 
         service.reject(7L, 9L);
 
-        verify(resultApprovalService).markRejected(approval);
+        // 본문이 없으면 KEEP — preview 는 건드리지 않는다(#532 이전과 같은 동작).
+        verify(resultApprovalService).markRejected(approval, null);
+        verify(resultApprovalService, never()).revertPreview(any());
+        assertThat(approval.getRejectOption()).isEqualTo(RejectOption.KEEP);
         verify(orchestrator).reject("task-1", 7L);
         verify(messageService).appendAssistant(
                 21L,
@@ -461,6 +470,71 @@ class ApprovalCommandServiceTest {
         // RESULT is never standalone (taskId always set by the gate) — must not divert to a
         // registered handler even though one exists for a different type.
         verifyNoInteractions(handler);
+    }
+
+    @Test
+    void resultRevertRecordsTheScopeThenRevertsBeforeRejecting() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        ApprovalQueryService queryService = mock(ApprovalQueryService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ResultApprovalService resultApprovalService = mock(ResultApprovalService.class);
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, queryService, orchestrator, messageService, List.of(),
+                resultApprovalService, mock(RepositoryBindingService.class), taskStore
+        );
+        Approval approval = approval(9L, ApprovalType.RESULT, 21L);
+        routingFor(repository, 9L, 7L, "task-1", ApprovalType.RESULT);
+        when(repository.findByIdAndOwnerUserIdForUpdate(9L, 7L)).thenReturn(Optional.of(approval));
+        when(repository.save(approval)).thenReturn(approval);
+        when(queryService.toResult(approval)).thenReturn(result(approval));
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_RESULT_APPROVAL));
+        when(resultApprovalService.snapshotScope(approval)).thenReturn("{\"files\":[]}");
+        // 되돌리는 시점에 승인은 아직 PENDING 이어야 한다 — 실패하면 그대로 남는다.
+        doAnswer(invocation -> {
+            assertThat(approval.getStatus()).isEqualTo(ApprovalStatus.PENDING);
+            return null;
+        }).when(resultApprovalService).revertPreview(approval);
+
+        service.reject(7L, 9L, RejectOption.REVERT);
+
+        InOrder order = inOrder(resultApprovalService, repository);
+        order.verify(resultApprovalService).snapshotScope(approval);
+        order.verify(resultApprovalService).revertPreview(approval);
+        order.verify(repository).save(approval);
+        order.verify(resultApprovalService).markRejected(approval, "{\"files\":[]}");
+        assertThat(approval.getStatus()).isEqualTo(ApprovalStatus.REJECTED);
+        assertThat(approval.getRejectOption()).isEqualTo(RejectOption.REVERT);
+        verify(orchestrator).reject("task-1", 7L);
+        verify(messageService).appendAssistant(eq(21L), contains("preview 브랜치를 main과 같은 상태로 되돌렸습니다"),
+                eq(ChatMessageKind.TASK_CANCELLED), eq("task-1"));
+    }
+
+    @Test
+    void aFailedRevertLeavesTheResultApprovalPending() {
+        ApprovalRepository repository = mock(ApprovalRepository.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        ResultApprovalService resultApprovalService = mock(ResultApprovalService.class);
+        TaskStore taskStore = mock(TaskStore.class);
+        ApprovalCommandService service = new ApprovalCommandService(
+                repository, mock(ApprovalQueryService.class), orchestrator, mock(AgentMessageService.class), List.of(),
+                resultApprovalService, mock(RepositoryBindingService.class), taskStore
+        );
+        Approval approval = approval(9L, ApprovalType.RESULT, 21L);
+        routingFor(repository, 9L, 7L, "task-1", ApprovalType.RESULT);
+        when(repository.findByIdAndOwnerUserIdForUpdate(9L, 7L)).thenReturn(Optional.of(approval));
+        when(taskStore.lockTask("task-1")).thenReturn(taskWithStatus(TaskStatus.WAITING_RESULT_APPROVAL));
+        doThrow(new ResultRevertFailedException(new RuntimeException("push rejected")))
+                .when(resultApprovalService).revertPreview(approval);
+
+        assertThatThrownBy(() -> service.reject(7L, 9L, RejectOption.REVERT))
+                .isInstanceOf(ResultRevertFailedException.class);
+
+        assertThat(approval.getStatus()).isEqualTo(ApprovalStatus.PENDING);
+        verify(repository, never()).save(any());
+        verify(resultApprovalService, never()).markRejected(any(), any());
+        verifyNoInteractions(orchestrator);
     }
 
     @Test
@@ -691,7 +765,8 @@ class ApprovalCommandServiceTest {
                 approval.getSummary(),
                 null,
                 approval.getCreatedAt(),
-                approval.getDecidedAt()
+                approval.getDecidedAt(),
+                null
         );
     }
 }

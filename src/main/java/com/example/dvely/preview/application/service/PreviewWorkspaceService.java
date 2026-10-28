@@ -138,6 +138,10 @@ public class PreviewWorkspaceService {
                 "cd " + APP_DIR + " && "
                         + "(git show-ref --verify --quiet refs/remotes/origin/preview "
                         + "&& git checkout -B preview origin/preview || git checkout -B preview)");
+        // 이 트리의 base 를 남긴다. 서버 측 push 가 그 사이 원격이 바뀌었는지 이것으로 본다(#523). 로컬 명령이라 자격이 필요 없다.
+        dockerService.exec(containerId,
+                "(git -C " + APP_DIR + " rev-parse -q --verify HEAD || echo " + ContainerPaths.EMPTY_BASE + ") > "
+                        + ContainerPaths.BASE_MARKER);
     }
 
     /**

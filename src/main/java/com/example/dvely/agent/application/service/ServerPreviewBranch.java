@@ -6,11 +6,14 @@ import com.example.dvely.agent.infrastructure.git.ServerGitProperties;
 import com.example.dvely.agent.infrastructure.git.ServerGitPublisher;
 import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Inspection;
 import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.ProtectedChangeRequiresApprovalException;
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.ExpectedBase;
 import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Published;
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.RemoteMovedException;
 import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Request;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
+import com.example.dvely.change.application.service.ServerPushLedger;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -37,6 +40,7 @@ public class ServerPreviewBranch {
     private final DockerContainerService dockerService;
     private final UserRepository userRepository;
     private final AuthCommandService authCommandService;
+    private final ServerPushLedger pushLedger;
 
     public boolean enabled() {
         return properties.pushEnabled();
@@ -73,8 +77,18 @@ public class ServerPreviewBranch {
             PreviewBranchPushService.writeDefaultGitignore(dockerService, containerId);
         }
         try {
-            return publisher.publish(request(containerId, repoFullName, username, userToken, taskId), approvedTree,
-                    allowProtected, Set.of());
+            Published published = publisher.publish(request(containerId, repoFullName, username, userToken, taskId),
+                    approvedTree, allowProtected, Set.of(), expectedBase(containerId));
+            published.commit().ifPresent(commit -> {
+                pushLedger.recordTask(repoFullName, commit.name(), taskId);
+                // 다음 push(같은 작업의 배포 단계 등)의 base 는 방금 올린 커밋이다
+                recordBase(containerId, commit.name());
+            });
+            return published;
+        } catch (RemoteMovedException e) {
+            // 다음 준비가 같은 트리를 그대로 두지 않고 최신 원격에서 다시 받게 한다
+            dockerService.exec(containerId, "rm -f " + ContainerPaths.SOURCE_MARKER);
+            throw e;
         } catch (ProtectedChangeRequiresApprovalException e) {
             // 사용자에게 "작업 중 오류가 발생했습니다: …" 로 보인다. 새 저장소의 첫 반영에는 결과 승인 단계가
             // 없으므로(미연결 프로젝트) 따를 수 있는 안내를 따로 준다.
@@ -82,6 +96,41 @@ public class ServerPreviewBranch {
                     ? "새 저장소에 처음 올리는 결과에는 .github 아래 파일을 넣을 수 없습니다. 그 파일을 빼 달라고 다시 요청하거나, "
                             + "저장소를 연결한 뒤 결과 승인을 거쳐 추가해 주세요."
                     : "작업을 다시 요청하면 결과 승인 단계에서 변경 내역을 확인한 뒤 반영됩니다.");
+        }
+    }
+
+    /**
+     * preview 를 {@code baseBranch} 와 같은 내용으로 되돌리는 커밋을 올린다(#532 거절 REVERT). 이미 같으면 올리지 않는다.
+     * 플래그와 무관하게 동작하지만, 호출부는 플래그가 켜진 환경에서만 이 옵션을 연다.
+     */
+    public Optional<ObjectId> revertTo(Long ownerUserId, String repoFullName, String baseBranch, Long approvalId,
+                                       String taskId) {
+        Credentials credentials = credentials(ownerUserId);
+        Optional<ObjectId> commit = publisher.resetTo(
+                PreviewBranchPushService.githubUrl(repoFullName),
+                new UsernamePasswordCredentialsProvider(credentials.username(), credentials.token()),
+                PREVIEW,
+                baseBranch,
+                "revert: preview 를 " + baseBranch + " 상태로 되돌림 (approval " + approvalId + ")");
+        commit.ifPresent(id -> pushLedger.recordRevert(repoFullName, id.name(), taskId));
+        return commit;
+    }
+
+    /**
+     * 작업 트리를 준비할 때 남긴 base(#523). 컨테이너의 표시 파일에서 읽는다 — 트리와 그 base 가 한 곳에 있어 서버
+     * 재시작에도 유지된다. 표시가 없거나 알아볼 수 없으면 검사하지 않는다(이 장치 이전에 준비된 컨테이너).
+     */
+    ExpectedBase expectedBase(String containerId) {
+        String recorded = dockerService.exec(containerId, "cat " + ContainerPaths.BASE_MARKER + " 2>/dev/null || true").trim();
+        if (ContainerPaths.EMPTY_BASE.equals(recorded)) {
+            return ExpectedBase.emptyRepository();
+        }
+        return ObjectId.isId(recorded) ? ExpectedBase.of(ObjectId.fromString(recorded)) : ExpectedBase.UNKNOWN;
+    }
+
+    private void recordBase(String containerId, String commit) {
+        if (ObjectId.isId(commit)) {
+            dockerService.exec(containerId, "printf %s " + commit + " > " + ContainerPaths.BASE_MARKER);
         }
     }
 

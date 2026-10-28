@@ -1,5 +1,7 @@
 package com.example.dvely.common.exception;
 
+import com.example.dvely.change.application.service.ResultRevertFailedException;
+import com.example.dvely.change.application.service.ResultRevertUnavailableException;
 import com.example.dvely.common.response.ApiResponse;
 import com.example.dvely.common.response.ErrorCode;
 import lombok.extern.slf4j.Slf4j;
@@ -123,6 +125,20 @@ public class GlobalExceptionHandler {
         log.warn("GitHub App 재인증 필요: {}", e.getMessage());
         return ResponseEntity.status(ErrorCode.GITHUB_APP_REAUTHORIZATION_REQUIRED.getStatus())
                 .body(ApiResponse.error(ErrorCode.GITHUB_APP_REAUTHORIZATION_REQUIRED, e.getMessage()));
+    }
+
+    @ExceptionHandler(ResultRevertUnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleResultRevertUnavailable(ResultRevertUnavailableException e) {
+        log.warn("결과 거절 REVERT 불가 환경");
+        return ResponseEntity.status(ErrorCode.RESULT_REVERT_UNAVAILABLE.getStatus())
+                .body(ApiResponse.error(ErrorCode.RESULT_REVERT_UNAVAILABLE, e.getMessage()));
+    }
+
+    @ExceptionHandler(ResultRevertFailedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleResultRevertFailed(ResultRevertFailedException e) {
+        log.warn("결과 거절 REVERT 실패: {}", e.getCause() == null ? "-" : e.getCause().getClass().getSimpleName());
+        return ResponseEntity.status(ErrorCode.RESULT_REVERT_FAILED.getStatus())
+                .body(ApiResponse.error(ErrorCode.RESULT_REVERT_FAILED, e.getMessage()));
     }
 
     @ExceptionHandler(GithubRepositoryAccessDeniedException.class)

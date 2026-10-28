@@ -14,6 +14,18 @@ public interface SpringDataChangeRepository extends JpaRepository<ChangeEntity, 
 
     Optional<ChangeEntity> findByTaskId(String taskId);
 
+    // #532: 반영 범위의 커밋이 어느 작업에서 왔는지 한 번에 찾는다. 상태·결정만 필요해 diff 는 읽지 않는다.
+    interface TaskDecisionView {
+        String getTaskId();
+        String getStatus();
+        Long getApprovalId();
+    }
+
+    @Query("select c.taskId as taskId, c.status as status, c.approvalId as approvalId "
+            + "from ChangeEntity c where c.projectId = :projectId and c.taskId in :taskIds")
+    List<TaskDecisionView> findTaskDecisions(@Param("projectId") Long projectId,
+                                             @Param("taskIds") Collection<String> taskIds);
+
     Optional<ChangeEntity> findByIdAndOwnerUserId(Long changeId, Long ownerUserId);
 
     // U6 6-1: 목록은 프로젝션으로만 읽는다. 엔티티로 읽으면 diff_text(MEDIUMTEXT, 행당 최대 1MB)까지

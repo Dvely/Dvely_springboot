@@ -161,6 +161,28 @@ class PreviewWorkspaceServiceTest {
     }
 
     @Test
+    void theCheckedOutBaseIsRecordedForTheServerSidePush() {
+        DockerContainerService docker = mock(DockerContainerService.class);
+        ProjectRepository projects = mock(ProjectRepository.class);
+        UserRepository users = mock(UserRepository.class);
+        PreviewWorkspaceService target =
+                new PreviewWorkspaceService(docker, new ContainerGitCredentials(docker), projects, users, mock(AuthCommandService.class));
+        when(projects.findByIdAndOwnerUserId(11L, 7L)).thenReturn(java.util.Optional.of(boundProject()));
+        when(users.findById(7L)).thenReturn(java.util.Optional.of(tokenUser()));
+        when(docker.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
+        when(docker.exec(eq(CONTAINER_ID), contains("/.git ]"))).thenReturn("no");
+        when(docker.execWithExitCode(eq(CONTAINER_ID), anyString(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new DockerContainerService.ExecResult(0, ""));
+
+        target.prepareProject(CONTAINER_ID, 7L, 11L);
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(docker);
+        order.verify(docker).exec(eq(CONTAINER_ID), contains("git checkout -B preview"));
+        order.verify(docker).exec(CONTAINER_ID,
+                "(git -C /workspace/app rev-parse -q --verify HEAD || echo EMPTY) > /workspace/.qeploy-base");
+    }
+
+    @Test
     void credentialsGoThroughExecEnvAndNeverIntoAFile() {
         // 예전 불변식은 "토큰은 base64 로 감싸 파일에만 들어간다" 였다. 그 파일이 컨테이너 수명
         // 내내 남아 같은 uid 로 도는 앱 코드가 읽을 수 있었던 것이 #413 이다. 이제 파일을 아예
