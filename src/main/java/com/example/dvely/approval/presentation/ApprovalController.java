@@ -63,7 +63,9 @@ public class ApprovalController {
     @Operation(
             summary = "Agent 작업 승인",
             description = "PENDING 승인을 APPROVED로 확정합니다. 해당 taskId의 모든 필요 승인이 완료되면 " +
-                          "대기 중이던 Agent task가 자동으로 재개(QUEUED)됩니다. PENDING이 아닌 승인에 호출하면 409를 반환합니다.\n\n" +
+                          "대기 중이던 Agent task가 자동으로 재개(QUEUED)됩니다. PENDING이 아닌 승인에 호출하면 409를 반환합니다. " +
+                          "그 재개로 사용자별 동시 런 상한을 넘으면 429 ACTIVE_RUN_LIMIT_EXCEEDED 이고 승인은 PENDING 그대로입니다" +
+                          "(결과 승인·저장소 연결 승인은 상한을 보지 않습니다, #509).\n\n" +
                           "요청 본문은 선택입니다. REPOSITORY_BINDING 승인일 때만 `repositoryName`으로 " +
                           "생성·연결할 저장소 이름을 지정할 수 있고, 생략하면 승인 요약에 표시된 후보 이름이 쓰입니다."
     )

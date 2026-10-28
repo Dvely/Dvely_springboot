@@ -44,6 +44,7 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
     private final PreviewGatewayUrlResolver gatewayUrlResolver;
     private final PreviewAccessCookies accessCookies;
     private final PreviewRuntimeConfigService runtimeConfigService;
+    private final PreviewCapacity capacity;
 
     // 필드 주입(null-safe). 단위 테스트는 Spring 없이 생성자로 만드므로 null 이면 도달 게이트를 건너뛴다.
     @Autowired(required = false)
@@ -63,6 +64,8 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
             return touch(existing.get()).toInfo();
         }
         existing.ifPresent(session -> expire(session, PreviewSessionStatus.EXPIRED));
+        // 사용자별 프리뷰 상한(#509). 넘치면 이 CODE 스텝이 실패하고, 실행기가 메시지를 그대로 대화에 남긴다.
+        capacity.makeRoom(task.ownerUserId());
 
         String sessionId = UUID.randomUUID().toString();
         String accessToken = UUID.randomUUID().toString().replace("-", "");
@@ -96,6 +99,7 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
                 PreviewSessionStatus.PROVISIONING
         );
         repository.save(created);
+        capacity.confirm(task.ownerUserId(), created);
         log.info("[PreviewSession] 생성: sessionId={} taskId={} projectId={} conversationId={}",
                 sessionId, taskId, task.projectId(), task.conversationId());
         return created.toInfo();

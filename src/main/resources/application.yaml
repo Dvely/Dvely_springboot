@@ -425,6 +425,22 @@ qeploy:
       base-delay-ms: ${QEPLOY_WORKER_POLL_BASE_DELAY_MS:1000}
       max-delay-ms: ${QEPLOY_WORKER_POLL_MAX_DELAY_MS:30000}
 
+  # #509 — 사용자별 동시 실행 상한. 넘으면 429(ACTIVE_RUN_LIMIT_EXCEEDED·PREVIEW_LIMIT_EXCEEDED).
+  #
+  # max-active-runs 는 기계가 일하고 있는 런(PENDING·QUEUED·RETRY_WAIT·RUNNING)만 센다. 승인·되묻기를
+  # 기다리는 런은 스레드를 쓰지 않는다. 기본 2 는 agent.executor.core-size 기본값 4 의 절반이다 —
+  # 한 사용자가 아무리 보내도 나머지 절반은 다른 사용자 몫으로 남는다. core-size 를 낮춘 환경은 같이 본다.
+  #
+  # max-live-previews 는 ACTIVE·PROVISIONING 프리뷰 세션 수다. 세션마다 컨테이너가 하나(메모리 상한 1 GiB,
+  # JAVA_FULLSTACK 2 GiB)라 메모리가 먼저 닿는다. 자리가 없으면 끝난(DONE·CANCELLED) 작업의 프리뷰부터
+  # 오래 안 본 순서로 닫아 자리를 만들고, 그래도 없을 때만 거절한다.
+  #
+  # 0 이하는 기동을 멈춘다(상한 없음으로 읽지 않는다). 끄려면 큰 값을 넣는다.
+  limits:
+    per-user:
+      max-active-runs: ${QEPLOY_LIMITS_PER_USER_MAX_ACTIVE_RUNS:2}
+      max-live-previews: ${QEPLOY_LIMITS_PER_USER_MAX_LIVE_PREVIEWS:3}
+
 # Cloudflare DNS - managed subdomain automation
 cloudflare:
   # 값은 서버 환경변수로만 넣는다 — 이 파일에 적으면 저장소로 새어 나간다.

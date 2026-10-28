@@ -50,7 +50,12 @@ public enum ErrorCode {
     // 결과 승인 거절 REVERT(#532). 둘 다 승인은 PENDING 그대로이고, 메시지를 그대로 보여 주면 된다.
     // 앞은 환경이 이 옵션을 지원하지 않는 것(재시도해도 같다), 뒤는 GitHub 쪽 반영 실패(재시도할 수 있다)다.
     RESULT_REVERT_UNAVAILABLE(409, "RESULT_REVERT_UNAVAILABLE", "이 환경에서는 preview 되돌리기를 쓸 수 없습니다"),
-    RESULT_REVERT_FAILED(502, "RESULT_REVERT_FAILED", "preview 를 되돌리지 못했습니다");
+    RESULT_REVERT_FAILED(502, "RESULT_REVERT_FAILED", "preview 를 되돌리지 못했습니다"),
+
+    // 사용자별 동시 실행 상한(#509). 요청은 정상이지만 지금은 받을 수 없다 — 진행 중인 작업이 끝나거나
+    // 열린 프리뷰를 닫으면 다시 받는다. 메시지에 상한과 다음 행동이 들어 있으므로 그대로 보여 주면 된다.
+    ACTIVE_RUN_LIMIT_EXCEEDED(429, "ACTIVE_RUN_LIMIT_EXCEEDED", "진행 중인 작업이 너무 많습니다"),
+    PREVIEW_LIMIT_EXCEEDED(429, "PREVIEW_LIMIT_EXCEEDED", "열린 프리뷰가 너무 많습니다");
 
     private final int status;
     private final String code;

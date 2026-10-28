@@ -63,6 +63,7 @@ public class ProjectPreviewService {
     private final PreviewGatewayUrlResolver gatewayUrlResolver;
     private final ProjectPreviewProvisioner provisioner;
     private final PreviewRuntimeConfigService runtimeConfigService;
+    private final PreviewCapacity capacity;
 
     /**
      * 프로젝트 화면이 열릴 때 부르는 조회. 지금 보여줄 프리뷰가 없으면 비어 있는 값을 준다.
@@ -122,6 +123,8 @@ public class ProjectPreviewService {
                 return attached.get();
             }
         }
+        // 여기서부터 컨테이너가 하나 는다. 사용자별 프리뷰 상한(#509)을 넘으면 429.
+        capacity.makeRoom(ownerUserId);
 
         String sessionId = UUID.randomUUID().toString();
         String accessToken = UUID.randomUUID().toString().replace("-", "");
@@ -163,6 +166,7 @@ public class ProjectPreviewService {
             // 승자도 준비 중인 세션이므로(아래 조회가 PROVISIONING 만 본다) 호출자는 폴링해야 한다.
             return new ProvisionOutcome(ProjectPreviewSessionResult.from(winner), true);
         }
+        capacity.confirm(ownerUserId, created);
 
         log.info("[ProjectPreview] 프로비저닝 시작: projectId={} sessionId={} repo={}",
                 projectId, sessionId, sourceRepo);

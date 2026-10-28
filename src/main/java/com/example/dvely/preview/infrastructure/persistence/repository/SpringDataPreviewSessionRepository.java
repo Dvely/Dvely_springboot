@@ -49,6 +49,13 @@ public interface SpringDataPreviewSessionRepository extends JpaRepository<Previe
     List<PreviewSessionEntity> findByProjectIdAndOwnerUserIdAndStatusIn(
             Long projectId, Long ownerUserId, Collection<String> statuses);
 
+    // #509 사용자별 프리뷰 상한(PreviewCapacity). 오래 안 본 순서로 읽어 회수 후보를 앞에서부터 고른다.
+    // 둘 다 idx_preview_sessions_owner_status(user_id, status) 로 좁힌다.
+    List<PreviewSessionEntity> findByOwnerUserIdAndStatusInOrderByLastAccessedAtAsc(
+            Long ownerUserId, Collection<String> statuses);
+
+    long countByOwnerUserIdAndStatusIn(Long ownerUserId, Collection<String> statuses);
+
     /**
      * 게이트웨이 접근 흔적만 갱신하는 단일 UPDATE (Issue #342, 7-1).
      *
