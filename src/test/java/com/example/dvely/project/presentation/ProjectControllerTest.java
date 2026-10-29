@@ -56,8 +56,8 @@ class ProjectControllerTest {
     @Test
     void getProjects_delegatesUsingAuthenticatedUserId() {
         LocalDateTime now = LocalDateTime.now();
-        ProjectSummaryResult result = new ProjectSummaryResult(1L, "my-project", "DRAFT", null, now);
-        ProjectSummaryResponse response = new ProjectSummaryResponse(1L, "my-project", "DRAFT", null, now, "방금 전");
+        ProjectSummaryResult result = new ProjectSummaryResult(1L, "my-project", "DRAFT", null, now, "blank", null);
+        ProjectSummaryResponse response = new ProjectSummaryResponse(1L, "my-project", "DRAFT", null, now, "방금 전", "blank", null);
 
         when(projectFacade.getProjects(1L)).thenReturn(List.of(result));
         when(projectMapper.toSummaryResponse(result)).thenReturn(response);
