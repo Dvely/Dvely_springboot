@@ -1,5 +1,6 @@
 plugins {
 	id 'java'
+	id 'jacoco'
 	id 'org.springframework.boot' version '4.0.5'
 	id 'io.spring.dependency-management' version '1.1.7'
 }
@@ -7,10 +8,16 @@ plugins {
 group = 'com.example'
 version = '0.0.1-SNAPSHOT'
 
+// 컴파일 대상(release)도 툴체인을 따른다. CI·배포 빌드·운영/dev 서버 런타임이 모두 25 라 따로 낮출 이유가 없다(#511 B10).
 java {
 	toolchain {
 		languageVersion = JavaLanguageVersion.of(25)
 	}
+}
+
+jacoco {
+	// 0.8.14 부터 Java 25 클래스 파일을 정식 지원한다
+	toolVersion = '0.8.15'
 }
 
 repositories {
@@ -81,6 +88,7 @@ dependencies {
 
 tasks.named('test') {
 	useJUnitPlatform()
+	finalizedBy tasks.named('jacocoTestReport')
 	// WorkflowPinningTest 가 워크플로 파일을 읽는다 — 입력으로 알려야 파일만 바뀌었을 때 테스트가 '최신'으로 건너뛰어지지 않는다.
 	inputs.dir('.github/workflows').withPropertyName('workflows').withPathSensitivity(PathSensitivity.RELATIVE)
 	// LocalDbProvisionerIntegrationTest 는 실행 중인 Docker 데몬을 요구해 기본 비활성이다.
@@ -100,6 +108,10 @@ tasks.named('test') {
 	systemProperty 'qeploy.webhook.worker.poll-interval-ms', '3600000'
 }
 
-tasks.withType(JavaCompile).configureEach {
-	options.release = 21
+// 커버리지는 리포트만 낸다(게이트 없음). CI 가 HTML 을 아티팩트로 올린다.
+tasks.named('jacocoTestReport') {
+	reports {
+		xml.required = true
+		html.required = true
+	}
 }
