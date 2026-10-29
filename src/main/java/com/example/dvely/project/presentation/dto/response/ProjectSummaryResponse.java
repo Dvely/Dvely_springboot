@@ -21,6 +21,13 @@ public record ProjectSummaryResponse(
         LocalDateTime updatedAt,
 
         @Schema(description = "마지막 수정 시각의 상대 표현", example = "2시간 전")
-        String updatedAtRelativeText
+        String updatedAtRelativeText,
+
+        // 상세(GET /projects/{id})와 같은 이름·값. 목록 카드가 템플릿 표시에 쓴다 — 빠져 있으면 모든 카드가 "템플릿 미설정"으로 보인다.
+        @Schema(description = "프로젝트 시작 방식", example = "blank")
+        String startMode,
+
+        @Schema(description = "템플릿 유형")
+        String templateType
 ) {
 }
