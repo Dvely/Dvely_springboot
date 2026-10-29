@@ -46,6 +46,9 @@ public class DeploymentOutcomeService {
 
     @Transactional
     public void applySuccess(DeploymentHistory history, Project project) {
+        if (!settle(history, DeployStatus.LIVE)) {
+            return;
+        }
         history.complete();
         if (history.getTaskId() != null) {
             changeService.markDeployed(history.getTaskId());
@@ -57,9 +60,25 @@ public class DeploymentOutcomeService {
     @Transactional
     public void applyFailure(DeploymentHistory history, Project project,
                              DeployFailureCode failureCode, String reason) {
+        if (!settle(history, DeployStatus.FAILED)) {
+            return;
+        }
         history.fail(failureCode, reason);
         updateProjectIfLatest(history, project, DeployStatus.FAILED);
         finish(history);
+    }
+
+    /**
+     * 확정은 이력당 한 번만 통과시킨다(#511 B10). 웹훅과 회수 워커가 같은 이력을 동시에 확정하려 들면
+     * 둘 다 호출자 쪽 상태 가드를 지나므로, 여기서 DB 조건부 UPDATE 로 한쪽만 남긴다. 진 쪽은 아무것도
+     * 쓰지 않는다 — 이력·프로젝트·대화·감사 모두 이긴 쪽이 이미 남겼다.
+     */
+    private boolean settle(DeploymentHistory history, DeployStatus outcome) {
+        if (deploymentHistoryRepository.settle(history.getId(), outcome)) {
+            return true;
+        }
+        log.info("이미 확정된 배포 — 이번 확정은 건너뜀: historyId={} 시도={}", history.getId(), outcome);
+        return false;
     }
 
     private void updateProjectIfLatest(DeploymentHistory history, Project project, DeployStatus status) {

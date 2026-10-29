@@ -75,4 +75,15 @@ public interface DeploymentHistoryRepository {
      * 부르지 않는다 — 실행 중인 배포가 없는데 0행짜리 UPDATE 를 30초마다 내보낼 이유가 없다.</p>
      */
     void renewLeases(String workerId, Collection<Long> historyIds);
+
+    /**
+     * 열린(PENDING·IN_PROGRESS) 이력을 최종 상태로 옮긴다 — 같은 이력의 확정은 한 번만 통과한다(#511 B10).
+     *
+     * <p>확정을 부르는 곳이 웹훅과 StuckDeploymentRecoveryWorker 둘이고, 둘 다 메모리에 읽어 둔 상태로만
+     * 걸렀다. 같은 순간 둘이 들어오면 둘 다 통과해 대화 알림·감사 기록이 두 번 남는다. 조건부 UPDATE 는 행을
+     * 잠근 뒤 최신 커밋 값으로 조건을 다시 보므로, 뒤에 온 쪽은 앞쪽이 커밋할 때까지 기다렸다가 0행이 된다.</p>
+     *
+     * @return 이 호출이 확정했으면 true. false 는 다른 경로가 이미 확정했다는 뜻이다.
+     */
+    boolean settle(Long historyId, DeployStatus outcome);
 }

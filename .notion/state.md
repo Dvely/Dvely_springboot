@@ -1578,6 +1578,12 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 서버에 `image_build_location`(V71, NATIVE·이전 행 NULL)
 - 운영·dev 기본값은 그대로 CONTROL_PLANE. 켜기 전에 dev e2e(비용, 사용자 승인) 필요. CONTROL_PLANE 경로 제거는 약 2주 뒤 별도 PR
 
+## 4.49 배포 결과 확정은 이력당 한 번 (Issue #511 B10)
+
+- 확정을 부르는 곳은 workflow_run 웹훅, `StuckDeploymentRecoveryWorker`, S3 정적 배포 세 곳이다. 지금까지는 메모리에 읽어 둔 상태로만 걸러서, 웹훅과 회수 워커가 같은 순간 들어오면 둘 다 통과해 대화 알림·감사 기록이 두 번 남을 수 있었다(단일 인스턴스에서도 드물게, 다중 인스턴스면 상시)
+- `DeploymentOutcomeService` 가 확정 전에 `DeploymentHistoryRepository.settle` — `UPDATE … SET status=? WHERE id=? AND status IN (PENDING, IN_PROGRESS)` 를 부른다. 0행이면 다른 경로가 이미 확정한 것이라 이력·프로젝트·대화·감사 어느 것도 쓰지 않는다. 뒤에 온 쪽은 행 잠금에 막혔다가 앞쪽 커밋 뒤 0행이 된다(`DeploymentHistorySettleIntegrationTest` 가 실제 MySQL 로 확인)
+- 같은 점검에서 `OrphanCloudFrontSweeper` 는 손대지 않았다: 겹친 스윕이 같은 배포를 두 번 큐에 넣어도 `CdnDeletionReaper` 가 "이미 없음"을 정상 처리해 결과가 같다. ShedLock 은 다중 인스턴스로 갈 때 검토한다
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증
