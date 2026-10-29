@@ -13,6 +13,8 @@ import com.example.dvely.provisioning.domain.repository.ProvisionedServerReposit
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.provisioning.domain.value.ProvisionStatus;
 import com.example.dvely.provisioning.domain.value.ServerDeployMode;
+import com.example.dvely.provisioning.infrastructure.BuildStatusReport;
+import com.example.dvely.provisioning.domain.value.ImageBuildLocation;
 import com.example.dvely.provisioning.infrastructure.Ec2InstanceRoleProvisioner;
 import com.example.dvely.provisioning.application.port.out.FrontendOriginPort;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
@@ -80,9 +82,11 @@ public class BackendDeployRunner {
             return;
         }
         boolean docker = server.getDeployMode() == ServerDeployMode.DOCKER;
+        // DOCKER 이미지를 대상 EC2 에서 빌드하는가(#556). 그러면 이미지를 전달할 일이 없으므로 ECR 보다 앞선다.
+        boolean targetBuild = docker && ec2Properties.buildOnTarget();
         // DOCKER 모드의 이미지 전달: 기본 S3(docker save→S3→load), 설정으로 켜면 ECR(build→push→pull).
         // NATIVE(jar)는 항상 S3. useEcr 는 이후 IAM 권한·정리 방식까지 가른다.
-        boolean useEcr = docker && ec2Properties.useEcr();
+        boolean useEcr = docker && !targetBuild && ec2Properties.useEcr();
         // 번들 DB·웹 컨테이너: DOCKER 배포에서 같은 EC2 에 DB·프론트 컨테이너를 docker compose 로 함께
         // 띄운다(submit 이 DOCKER 강제). 둘 중 하나라도 있으면 단일 docker run 대신 compose 를 쓴다.
         DatabaseEngine bundledDb = server.getBundledDbEngine();
@@ -122,6 +126,43 @@ public class BackendDeployRunner {
                                 bundledDb, projectId, port, tlsAsk)
                         : ecrUserDataScript(connection.getRegion(), auth.registry(), appRef,
                                 projectId, port, tlsAsk);
+                server.assignImageBuildLocation(ImageBuildLocation.CONTROL_PLANE);
+            } else if (targetBuild) {
+                // 대상 EC2 빌드(#556): 컨텍스트만 S3 로 올리고, 이미지는 그 인스턴스가 부팅하며 직접 만든다.
+                // 컨트롤 플레인은 사용자 Dockerfile 을 실행하지 않는다(clone·Dockerfile 확인만).
+                String appKey = null;
+                if (!webOnly) {
+                    DockerImageBuildService.TargetContext context =
+                            imageBuildService.prepareTargetContext(ownerUserId, projectId);
+                    artifact = context.contextTar();
+                    if (context.jvm() && TargetBuildSizing.tooSmallForJvm(server.getInstanceType())) {
+                        throw new BackendBuildException(TargetBuildSizing.jvmTooSmallMessage(server.getInstanceType()));
+                    }
+                    appKey = s3.appContextKeyFor(projectId);
+                }
+                s3.ensureBucket(connection, bucket);
+                if (appKey != null) {
+                    s3.uploadJar(connection, bucket, appKey, artifact);
+                }
+                String webKey = null;
+                if (web) {
+                    webKey = s3.webContextKeyFor(projectId);
+                    Path webContext = webImageBuildService.prepareTargetContext(
+                            ownerUserId, projectId, frontendRepo, frontendDir, apiPrefix, webOnly);
+                    try {
+                        s3.uploadJar(connection, bucket, webKey, webContext);
+                    } finally {
+                        try { Files.deleteIfExists(webContext); } catch (IOException ignored) { }
+                    }
+                }
+                TargetBuild build = new TargetBuild(connection.getRegion(), projectId, bucket,
+                        appKey, webOnly ? null : DockerImageBuildService.imageTagFor(projectId),
+                        webKey, web ? WebImageBuildService.webImageTagFor(projectId) : null,
+                        ec2Properties.imageBuildTimeoutOrDefault().toSeconds());
+                userData = compose
+                        ? targetComposeUserDataScript(build, bundledDb, port, tlsAsk)
+                        : targetUserDataScript(build, port, tlsAsk);
+                server.assignImageBuildLocation(ImageBuildLocation.TARGET);
             } else {
                 // S3 전달. DOCKER=이미지 tar, NATIVE=스택 감지로 Java(jar)/Node(소스 tar). S3 로 올리고
                 // EC2 가 인스턴스 역할로 받는다. 웹 전용이면 앱 산출물은 없다(프론트 nginx 만).
@@ -154,6 +195,7 @@ public class BackendDeployRunner {
                     }
                 }
                 if (docker) {
+                    server.assignImageBuildLocation(ImageBuildLocation.CONTROL_PLANE);
                     String appImageTag = webOnly ? null : DockerImageBuildService.imageTagFor(projectId);
                     String webImageTag = web ? WebImageBuildService.webImageTagFor(projectId) : null;
                     userData = compose
@@ -177,7 +219,7 @@ public class BackendDeployRunner {
                 profileName = ec2Properties.instanceProfileOverride();
                 log.info("[BackendDeploy] 인스턴스 프로파일 오버라이드 사용(생성 건너뜀): {}", profileName);
             } else {
-                profileName = roleProvisioner.ensureInstanceProfile(connection, projectId, bucket, useEcr);
+                profileName = roleProvisioner.ensureInstanceProfile(connection, projectId, bucket, useEcr, targetBuild);
             }
             String sgId = ec2.ensureSecurityGroup(connection, server.getPort());
             String ami = ssm.latestAmazonLinux2023Ami(connection);
@@ -546,6 +588,79 @@ public class BackendDeployRunner {
     /** 웹 이미지도 ECR 에서 pull(webRef 있으면). 로그인은 앱 pull 때 이미 됐다. */
     private static String ecrPullWebSection(String webRef) {
         return webRef == null ? "" : "docker pull " + webRef + "\n";
+    }
+
+    /**
+     * 대상 EC2 빌드(#556)에 필요한 값. 이미지 태그는 컨트롤 플레인 빌드와 같다 — 그 뒤의 실행 단계(docker run·compose)를
+     * 그대로 쓰기 위해서다. 키·태그가 null 이면 그쪽(앱 또는 웹)은 없다.
+     */
+    record TargetBuild(String region, Long projectId, String bucket,
+                       String appContextKey, String appImageTag,
+                       String webContextKey, String webImageTag,
+                       long timeoutSeconds) {
+    }
+
+    /** 대상 EC2 빌드 + 단일 컨테이너 실행. 빌드가 끝나면 컨트롤 플레인 빌드의 DOCKER-S3 와 같은 실행 단계다. */
+    static String targetUserDataScript(TargetBuild build, int port, String tlsAskBase) {
+        return composeHeader()
+                + targetBuildSection(build)
+                + """
+                aws ssm get-parameters-by-path --path /qeploy/%d/ --with-decryption --recursive \
+                  --query "Parameters[].[Name,Value]" --output text | while read -r name value; do
+                    echo "$(basename "$name")=$value"
+                  done > /opt/app/app.env
+                docker run -d --name qeploy-app --restart unless-stopped -p %d:%d --env-file /opt/app/app.env %s
+                """.formatted(build.projectId(), port, port, build.appImageTag())
+                + httpsSection(port, tlsAskBase);
+    }
+
+    /** 대상 EC2 빌드 + compose(번들 DB·웹). 빌드가 끝나면 컨트롤 플레인 빌드의 compose(S3)와 같은 실행 단계다. */
+    static String targetComposeUserDataScript(TargetBuild build, DatabaseEngine dbEngine, int port, String tlsAskBase) {
+        return composeHeader()
+                + targetBuildSection(build)
+                + ssmToEnvFileSection(build.projectId())
+                + composeUpSection(build.appImageTag(), build.webImageTag(), dbEngine, port)
+                + httpsSection(port, tlsAskBase);
+    }
+
+    /**
+     * 컨텍스트를 받아 이 인스턴스에서 이미지를 만들고, 진행을 SSM 에 스스로 보고한다({@code BuildStatusReport}).
+     *
+     * <p>보고가 실패해도 빌드는 계속한다({@code || true}) — 보고는 기다림을 줄이는 신호일 뿐이고, 없으면 상태 워커가
+     * 기동 기한으로 판단한다. 빌드가 실패하면 로그 꼬리를 실어 BUILD_FAILED 를 남기고 멈춘다 — 앱을 띄우지 않으므로
+     * 포트가 열리지 않는다. 빌드는 {@code timeout} 으로 묶는다(컨트롤 플레인 빌드와 같은 상한).</p>
+     */
+    static String targetBuildSection(TargetBuild build) {
+        StringBuilder steps = new StringBuilder();
+        if (build.appContextKey() != null) {
+            steps.append("build_image ").append(build.appContextKey()).append(" /opt/app/build/app ")
+                    .append(build.appImageTag()).append(" && ");
+        }
+        if (build.webContextKey() != null) {
+            steps.append("build_image ").append(build.webContextKey()).append(" /opt/app/build/web ")
+                    .append(build.webImageTag()).append(" && ");
+        }
+        steps.append("true");
+        return """
+                TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+                IID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+                report_build() {
+                  aws ssm put-parameter --region %s --name "%s$IID" --type String --overwrite --value "$1" >/dev/null 2>&1 || true
+                }
+                build_image() {
+                  mkdir -p "$2" && aws s3 cp "s3://%s/$1" /opt/app/context.tar && tar -xf /opt/app/context.tar -C "$2" \
+                    && rm -f /opt/app/context.tar && timeout %d docker build -t "$3" "$2"
+                }
+                report_build %s
+                if ! { %s; } >> /var/log/qeploy-build.log 2>&1; then
+                  report_build "%s
+                $(tail -c %d /var/log/qeploy-build.log)"
+                  exit 1
+                fi
+                report_build %s
+                """.formatted(build.region(), BuildStatusReport.pathPrefix(build.projectId()), build.bucket(),
+                build.timeoutSeconds(), BuildStatusReport.State.BUILDING, steps,
+                BuildStatusReport.State.BUILD_FAILED, BuildStatusReport.LOG_TAIL_BYTES, BuildStatusReport.State.BUILT);
     }
 
     /** SSM 파라미터를 compose 작업 디렉터리의 {@code .env} 로 내린다(앱 env_file + compose 변수 치환 겸용). */

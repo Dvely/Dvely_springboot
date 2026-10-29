@@ -21,8 +21,21 @@ public record Ec2ProvisioningProperties(
         String imageTransfer,
         String buildIsolation,
         Duration imageBuildTimeout,
-        Boolean allowNativeBuild
+        Boolean allowNativeBuild,
+        String imageBuildLocation
 ) {
+
+    /** 빌드 위치 값 검증 — 잘못 넣은 값이 조용히 기본값으로 떨어지면 어디서 빌드했는지 모르게 된다(#556). */
+    public Ec2ProvisioningProperties {
+        if (imageBuildLocation != null && !imageBuildLocation.isBlank()
+                && !imageBuildLocation.trim().equalsIgnoreCase("CONTROL_PLANE")
+                && !imageBuildLocation.trim().equalsIgnoreCase("TARGET")) {
+            throw new IllegalArgumentException(
+                    "qeploy.provisioning.ec2.image-build-location 은 CONTROL_PLANE 또는 TARGET 이어야 합니다: "
+                            + imageBuildLocation);
+        }
+    }
+
     /** 이미지 빌드·push·save 한 번을 기다리는 상한의 기본값(#507). 정상 빌드는 수 분이다. */
     static final Duration DEFAULT_IMAGE_BUILD_TIMEOUT = Duration.ofMinutes(30);
 
@@ -67,6 +80,15 @@ public record Ec2ProvisioningProperties(
      */
     public boolean allowNativeBuildFallback() {
         return Boolean.TRUE.equals(allowNativeBuild);
+    }
+
+    /**
+     * DOCKER 배포 이미지를 어디서 빌드하는지(#545·#556). 기본(빈 값/미설정)은 {@code CONTROL_PLANE} — 지금처럼
+     * 컨트롤 플레인이 빌드해 전달한다. {@code TARGET} 이면 빌드 컨텍스트만 S3 로 보내고 <b>배포 대상 EC2 가 직접
+     * {@code docker build}</b> 한다. TARGET 은 이미지 전달이 필요 없으므로 {@link #useEcr()} 보다 앞선다.
+     */
+    public boolean buildOnTarget() {
+        return imageBuildLocation != null && imageBuildLocation.trim().equalsIgnoreCase("TARGET");
     }
 
     /**

@@ -375,6 +375,11 @@ qeploy:
     # 이 스윕은 본래 역할인 안전망으로만 남았다 — 자기치유 성격이라 1시간이면 충분하다.
     # 순서가 중요하다: 9-4 없이 주기만 늘리면 부트 타임아웃의 유휴 EIP 노출이 그만큼 길어진다.
     eip-sweep-interval-ms: ${QEPLOY_PROVISIONING_EIP_SWEEP_INTERVAL_MS:3600000}
+    # DOCKER 배포 이미지를 어디서 빌드하는지(#545·#556). CONTROL_PLANE(기본) | TARGET.
+    # TARGET 이면 빌드 컨텍스트만 S3 로 보내고 배포 대상 EC2 가 docker build 한다(ECR 설정보다 앞선다).
+    # JVM(Gradle·Maven) 앱은 TARGET 에서 t3.small 이상이 필요하다. 그 밖의 값은 기동을 멈춘다.
+    ec2:
+      image-build-location: ${QEPLOY_PROVISIONING_EC2_IMAGE_BUILD_LOCATION:CONTROL_PLANE}
   domain-binding:
     verification:
       # DNS 전파와 호스팅 설정 반영을 기다리는 성격이라 분 단위면 충분하다. 주기를 줄이면

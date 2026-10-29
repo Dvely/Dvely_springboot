@@ -59,6 +59,12 @@ public class WebImageBuildService {
         }
     }
 
+    /** 대상 EC2 에서 빌드할 웹 컨텍스트(#556) — 이미지는 만들지 않고 컨텍스트 tar 만 꺼낸다. 호출자가 tar 를 지운다. */
+    public Path prepareTargetContext(Long ownerUserId, Long projectId, String frontendRepo,
+                                     String frontendDir, String apiPathPrefix, boolean webOnly) {
+        return prepareWebContextTar(ownerUserId, projectId, frontendRepo, frontendDir, apiPathPrefix, webOnly);
+    }
+
     /**
      * 프론트 소스를 clone 하고 nginx 에셋을 보장한 뒤, 프론트 루트를 빌드 컨텍스트 tar 로 꺼낸다. split 은
      * frontendRepo 를, 모노는 백엔드 레포의 frontendDir 를 프론트 루트로 삼는다. webOnly 면 백엔드 프록시

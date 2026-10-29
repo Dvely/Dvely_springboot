@@ -39,6 +39,8 @@ class ProvisionedServerStatusWorkerTest {
     @Mock private Ec2Provisioner ec2;
     @Mock private TcpHealthChecker healthChecker;
     @Mock private SsmRunCommandClient ssmRunCommandClient;
+    @Mock private com.example.dvely.provisioning.infrastructure.SsmParameterStore ssmParameters;
+    @Mock private com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties ec2Properties;
 
     @InjectMocks private ProvisionedServerStatusWorker worker;
 
@@ -147,6 +149,92 @@ class ProvisionedServerStatusWorkerTest {
         verify(ec2, never()).terminate(any(), any());
         verify(ssmRunCommandClient, never()).runShellCommand(any(), any(), any());
         verify(serverRepository, never()).save(any());
+    }
+
+    // ── #556: 대상 EC2 빌드 ────────────────────────────────────────────────────────────────
+
+    private static final String STATUS_PATH = "/qeploy/build-status/10/i-123";
+
+    private ProvisionedServer targetBuild(LocalDateTime updatedAt) {
+        ProvisionedServer server = provisioning(updatedAt);
+        server.assignImageBuildLocation(com.example.dvely.provisioning.domain.value.ImageBuildLocation.TARGET);
+        return server;
+    }
+
+    @Test
+    void aReportedBuildFailureClosesTheServerAtOnceAndKeepsTheBuildLog() {
+        stubBatch(targetBuild(LocalDateTime.now()));   // 방금 시작 — 기한은 한참 남았다
+        when(ec2.describe(any(), eq("i-123"))).thenReturn(new Ec2InstanceStatus("running", "ec2-host"));
+        when(ssmParameters.getParameterQuietly(any(), eq(STATUS_PATH)))
+                .thenReturn(Optional.of("BUILD_FAILED\nStep 3/5 : RUN npm ci\nnpm ERR! boom"));
+        when(serverRepository.claimBootTimeout(anyLong())).thenReturn(true);
+
+        worker.pollProvisioning();
+
+        verify(ec2).terminate(any(), eq("i-123"));
+        verify(ssmParameters).deleteParameterQuietly(any(), eq(STATUS_PATH));
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.FAILED);
+        assertThat(saved.getValue().getErrorMessage()).contains("이미지를 빌드하지 못했습니다");
+        assertThat(saved.getValue().getBootDiagnostics()).contains("npm ERR! boom");
+    }
+
+    @Test
+    void aBuildStillRunningPastTheUsualBootTimeoutIsGivenTheBuildTimeToo() {
+        stubBatch(targetBuild(LocalDateTime.now().minusMinutes(25)));   // 부트 기한(20분)은 지났다
+        when(ec2.describe(any(), eq("i-123"))).thenReturn(new Ec2InstanceStatus("running", "ec2-host"));
+        when(ssmParameters.getParameterQuietly(any(), eq(STATUS_PATH))).thenReturn(Optional.of("BUILDING"));
+        when(healthChecker.isHealthy("ec2-host", 8080)).thenReturn(false);
+        when(ec2Properties.imageBuildTimeoutOrDefault()).thenReturn(java.time.Duration.ofMinutes(30));
+
+        worker.pollProvisioning();
+
+        verify(ec2, never()).terminate(any(), any());
+        verify(serverRepository, never()).save(any());
+    }
+
+    @Test
+    void aBuildPastBuildAndBootTimeSaysTheBuildDidNotFinish() {
+        stubBatch(targetBuild(LocalDateTime.now().minusMinutes(51)));
+        when(ec2.describe(any(), eq("i-123"))).thenReturn(new Ec2InstanceStatus("running", "ec2-host"));
+        when(ssmParameters.getParameterQuietly(any(), eq(STATUS_PATH))).thenReturn(Optional.of("BUILDING"));
+        when(healthChecker.isHealthy("ec2-host", 8080)).thenReturn(false);
+        when(ec2Properties.imageBuildTimeoutOrDefault()).thenReturn(java.time.Duration.ofMinutes(30));
+        when(serverRepository.claimBootTimeout(anyLong())).thenReturn(true);
+
+        worker.pollProvisioning();
+
+        verify(ec2).terminate(any(), eq("i-123"));
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository).save(saved.capture());
+        assertThat(saved.getValue().getErrorMessage()).contains("이미지 빌드가 끝나지 않았습니다");
+    }
+
+    @Test
+    void aHealthyTargetBuildServerClearsItsBuildStatus() {
+        stubBatch(targetBuild(LocalDateTime.now()));
+        when(ec2.describe(any(), eq("i-123"))).thenReturn(new Ec2InstanceStatus("running", "ec2-host"));
+        when(ssmParameters.getParameterQuietly(any(), eq(STATUS_PATH))).thenReturn(Optional.of("BUILT"));
+        when(healthChecker.isHealthy("ec2-host", 8080)).thenReturn(true);
+
+        worker.pollProvisioning();
+
+        verify(ssmParameters).deleteParameterQuietly(any(), eq(STATUS_PATH));
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.RUNNING);
+    }
+
+    @Test
+    void aControlPlaneBuiltServerNeverReadsBuildStatus() {
+        stubBatch(provisioning(LocalDateTime.now()));
+        when(ec2.describe(any(), eq("i-123"))).thenReturn(new Ec2InstanceStatus("running", "ec2-host"));
+        when(healthChecker.isHealthy("ec2-host", 8080)).thenReturn(true);
+
+        worker.pollProvisioning();
+
+        org.mockito.Mockito.verifyNoInteractions(ssmParameters);
     }
 
     private CloudConnection connection() {

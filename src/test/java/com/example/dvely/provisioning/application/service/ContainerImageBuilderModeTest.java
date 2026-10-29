@@ -71,6 +71,6 @@ class ContainerImageBuilderModeTest {
     }
 
     private static Ec2ProvisioningProperties props(String isolation, Boolean allowNative) {
-        return new Ec2ProvisioningProperties(null, null, null, isolation, null, allowNative);
+        return new Ec2ProvisioningProperties(null, null, null, isolation, null, allowNative, null);
     }
 }

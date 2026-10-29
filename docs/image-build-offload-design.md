@@ -1,6 +1,6 @@
 # 이미지 빌드를 컨트롤 플레인 밖으로 (Issue #545)
 
-> 상태: **설계** — 구현은 결정 후 별도 이슈. 대상은 EC2 DOCKER 배포의 앱·웹 이미지 빌드다.
+> 상태: **결정됨(2026-10-29), A 구현 중** — 대상은 EC2 DOCKER 배포의 앱·웹 이미지 빌드다.
 
 ## 목표
 
@@ -87,7 +87,9 @@ DOCKER 배포의 이미지 빌드(사용자 `Dockerfile` 의 `RUN` 단계 포함
 
 ## 단계별 전환
 
-1. **A 구현(플래그)** — `qeploy.provisioning.ec2.image-build-location=CONTROL_PLANE|TARGET`, 기본 `CONTROL_PLANE`
+1. **A 구현(플래그)** — #556 에서 구현
+   - 구현 메모: 상태 경로는 `/qeploy/build-status/{projectId}/{instanceId}`(앱 env 로 내리는 `/qeploy/{projectId}/` 밖). 값은 `BUILDING`·`BUILT`·`BUILD_FAILED\n<빌드 로그 꼬리 3000바이트>`. 인스턴스 역할에 그 경로 `ssm:PutParameter` 만 더한다. 서버에 `image_build_location`(V71)을 남겨, 상태 워커가 설정과 무관하게 TARGET 서버의 기한(부트 20분 + 빌드 상한)을 계산한다. 빌드 실패 보고는 기다리지 않고 바로 닫고, 빌드 로그 꼬리를 부트 진단에 남긴다. TARGET 은 이미지 전달이 필요 없어 ECR 설정보다 앞선다
+   - e2e 에서 볼 것: AL2023 `docker build` 가 BuildKit 문법(`RUN --mount` 등)을 쓰는 Dockerfile 을 빌드하는지(buildx 미포함이면 레거시 빌더다) — `qeploy.provisioning.ec2.image-build-location=CONTROL_PLANE|TARGET`, 기본 `CONTROL_PLANE`
    - 컨텍스트 tar(앱·웹) S3 업로드, user-data 의 `docker compose up --build`, 빌드 로그 파일
    - 빌드 상태 SSM 자가 보고 → 상태 워커가 빌드 실패를 바로 FAILED 로 닫고 원인(빌드 로그 꼬리)을 남김
    - `BOOT_TIMEOUT` 을 빌드 포함 기준으로 다시 잡거나, 빌드 완료 보고 뒤부터 기동 타임아웃을 센다
@@ -102,9 +104,11 @@ DOCKER 배포의 이미지 빌드(사용자 `Dockerfile` 의 `RUN` 단계 포함
 - **NATIVE Java 의 jar 빌드**(`NativeBuildService`)도 컨트롤 플레인의 격리 샌드박스에서 Gradle·Maven 을 돌린다. 같은 원칙이면 대상 EC2 에서 JDK 로 빌드(A)하거나 빌더(B)로 옮길 수 있다. 이 문서의 1~3 단계가 끝난 뒤 같은 틀로 다룬다
 - 이미지 캐시(ECR 캐시 이미지, BuildKit 캐시 내보내기)는 B·C 에서만 의미가 있다. 빌드 시간이 문제가 되면 그때 본다
 
-## 결정이 필요한 것
+## 결정 (2026-10-29)
 
-- 권장안(A → B) 채택 여부
-- A 의 JVM 스택 처리: swap 으로 버틸지, 사양 하한(t3.small)을 둘지
-- 빌더(B)의 기본 사양과 스팟 사용 여부(비용 대 재시도)
-- 전환 기간 동안 `CONTROL_PLANE` 폴백을 얼마나 남길지
+- **A 를 먼저 한다.** 플래그 `qeploy.provisioning.ec2.image-build-location=CONTROL_PLANE|TARGET`, 기본 `CONTROL_PLANE`
+- **JVM 스택(Gradle·Maven)에서 A 를 쓰면 대상 사양 하한은 t3.small.** swap 으로 버티는 방식은 쓰지 않는다. Node 는 지금처럼 micro 허용
+- **B 는 스팟 우선, 실패하면 온디맨드로 폴백.** 사양은 B 에 착수할 때 정한다(지금은 A 만)
+- **CONTROL_PLANE 폴백은 TARGET 으로 운영 배포가 성공적으로 쌓일 때까지(약 2주) 유지한다.** 제거는 별도 PR
+- 빌드 상태 자가 보고(SSM)와 `BOOT_TIMEOUT` 조정을 A 에 포함한다. 비용이 드는 dev e2e 는 사용자 승인 뒤에 한다
+- 8차 릴리스와 범위를 섞지 않는다. A 는 9차 이후

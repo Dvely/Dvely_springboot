@@ -226,6 +226,10 @@ Qeploy 는 사용자 AWS 계정(BYOC)에 백엔드 서버(EC2)를 띄운다. 우
     // { "Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*" },
     // { "Effect": "Allow", "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
     //     "ecr:BatchCheckLayerAvailability"], "Resource": "arn:aws:ecr:*:*:repository/qeploy-app-{projectId}" }
+    // image-build-location=TARGET(#556)이면 빌드 상태를 자기 경로에 보고하는 한 문장이 추가된다(사용자 조치 불필요 —
+    // 사용자 정책의 SSM 권한 parameter/qeploy/* 가 이 경로를 이미 덮는다):
+    // { "Effect": "Allow", "Action": ["ssm:PutParameter"],
+    //   "Resource": "arn:aws:ssm:*:*:parameter/qeploy/build-status/{projectId}/*" }
   ]
 }
 ```

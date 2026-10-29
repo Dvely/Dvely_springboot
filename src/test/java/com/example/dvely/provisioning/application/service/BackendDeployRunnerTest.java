@@ -65,6 +65,8 @@ class BackendDeployRunnerTest {
     @Mock private Ec2ProvisioningProperties ec2Properties;
     @Mock private FrontendOriginPort frontendOriginPort;
     @Mock private AwsCredentialFailureReporter credentialFailureReporter;
+    @Mock private DockerImageBuildService imageBuildService;
+    @Mock private WebImageBuildService webImageBuildService;
 
     @InjectMocks private BackendDeployRunner runner;
 
@@ -85,7 +87,7 @@ class BackendDeployRunnerTest {
         when(s3.jarKeyFor(PROJECT)).thenReturn("10/app.jar");
         when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
         when(environmentValueResolver.resolve(PROJECT, EnvironmentScope.PRODUCTION)).thenReturn(Map.of());
-        when(roleProvisioner.ensureInstanceProfile(any(), eq(PROJECT), anyString(), anyBoolean())).thenReturn("qeploy-instance-10");
+        when(roleProvisioner.ensureInstanceProfile(any(), eq(PROJECT), anyString(), anyBoolean(), anyBoolean())).thenReturn("qeploy-instance-10");
         when(ec2.ensureSecurityGroup(any(), eq(8080))).thenReturn("sg-1");
         when(ssm.latestAmazonLinux2023Ami(any())).thenReturn("ami-1");
         when(ec2.allocateAndAssociateElasticIp(any(), anyString(), anyString()))
@@ -282,10 +284,96 @@ class BackendDeployRunnerTest {
 
         runner.deploy(building());
 
-        verify(roleProvisioner, never()).ensureInstanceProfile(any(), any(), any(), anyBoolean());
+        verify(roleProvisioner, never()).ensureInstanceProfile(any(), any(), any(), anyBoolean(), anyBoolean());
         ArgumentCaptor<LaunchSpec> spec = ArgumentCaptor.forClass(LaunchSpec.class);
         verify(ec2).launch(any(), spec.capture());
         assertThat(spec.getValue().iamInstanceProfileName()).isEqualTo("LabInstanceProfile");
+    }
+
+    // ── #556: 대상 EC2 빌드 ────────────────────────────────────────────────────────────────
+
+    private ProvisionedServer dockerServer(String instanceType) {
+        ProvisionedServer server = new ProvisionedServer(1L, PROJECT, instanceType, ServerStatus.BUILDING,
+                CONN_ID, null, null, 8080, 99L, null, null, LocalDateTime.now(), LocalDateTime.now());
+        server.assignDeployMode(com.example.dvely.provisioning.domain.value.ServerDeployMode.DOCKER);
+        return server;
+    }
+
+    private void stubTargetBuild(Path context, boolean jvm) {
+        when(cloudConnectionRepository.findById(CONN_ID)).thenReturn(Optional.of(connection()));
+        when(ec2Properties.buildOnTarget()).thenReturn(true);
+        when(s3.bucketNameFor(any())).thenReturn("qeploy-artifacts-x");
+        when(imageBuildService.prepareTargetContext(OWNER, PROJECT))
+                .thenReturn(new DockerImageBuildService.TargetContext(context, jvm));
+    }
+
+    private void stubLaunch() {
+        when(ec2Properties.imageBuildTimeoutOrDefault()).thenReturn(java.time.Duration.ofMinutes(30));
+        when(s3.appContextKeyFor(PROJECT)).thenReturn("10/app-context.tar");
+        when(databaseRepository.findByProjectIdOrderByCreatedAtDesc(PROJECT)).thenReturn(List.of());
+        when(environmentValueResolver.resolve(PROJECT, EnvironmentScope.PRODUCTION)).thenReturn(Map.of());
+        when(roleProvisioner.ensureInstanceProfile(any(), eq(PROJECT), anyString(), anyBoolean(), anyBoolean()))
+                .thenReturn("qeploy-instance-10");
+        when(ec2.ensureSecurityGroup(any(), eq(8080))).thenReturn("sg-1");
+        when(ssm.latestAmazonLinux2023Ami(any())).thenReturn("ami-1");
+        when(ec2.launch(any(), any())).thenReturn("i-target");
+        when(ec2.allocateAndAssociateElasticIp(any(), anyString(), anyString()))
+                .thenReturn(new Ec2Provisioner.ElasticIp("eipalloc-1", "1.2.3.4"));
+    }
+
+    @Test
+    void aTargetBuildShipsOnlyTheContextAndTheInstanceBuildsTheImage() throws IOException {
+        Path context = Files.createTempFile("app-context", ".tar");
+        stubTargetBuild(context, false);
+        stubLaunch();
+
+        runner.deploy(dockerServer("t3.micro"));
+
+        verify(s3).uploadJar(any(), eq("qeploy-artifacts-x"), eq("10/app-context.tar"), eq(context));
+        verify(imageBuildService, never()).buildImageTar(any(), any());
+        verify(roleProvisioner).ensureInstanceProfile(any(), eq(PROJECT), anyString(), eq(false), eq(true));
+        ArgumentCaptor<LaunchSpec> spec = ArgumentCaptor.forClass(LaunchSpec.class);
+        verify(ec2).launch(any(), spec.capture());
+        assertThat(spec.getValue().userData())
+                .contains("build_image 10/app-context.tar /opt/app/build/app qeploy-app-10:latest")
+                .doesNotContain("docker load");
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.PROVISIONING);
+        assertThat(saved.getValue().getImageBuildLocation())
+                .isEqualTo(com.example.dvely.provisioning.domain.value.ImageBuildLocation.TARGET);
+        assertThat(Files.exists(context)).isFalse();   // 컨텍스트 tar 는 정리된다
+    }
+
+    @Test
+    void aJvmAppOnAMicroInstanceIsRefusedBeforeAnythingIsUploadedOrLaunched() throws IOException {
+        Path context = Files.createTempFile("app-context", ".tar");
+        stubTargetBuild(context, true);
+
+        runner.deploy(dockerServer("t3.micro"));
+
+        verify(s3, never()).uploadJar(any(), any(), any(), any());
+        verify(ec2, never()).launch(any(), any());
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(ServerStatus.FAILED);
+        assertThat(saved.getValue().getErrorMessage()).contains("t3.small");
+        assertThat(Files.exists(context)).isFalse();
+    }
+
+    @Test
+    void aTargetBuildNeedsNoImageTransferSoItIgnoresTheEcrSetting() throws IOException {
+        Path context = Files.createTempFile("app-context", ".tar");
+        stubTargetBuild(context, true);
+        stubLaunch();
+        org.mockito.Mockito.lenient().when(ec2Properties.useEcr()).thenReturn(true);
+
+        runner.deploy(dockerServer("t3.small"));   // JVM 이라도 small 이면 된다
+
+        verify(ec2Properties, never()).useEcr();
+        ArgumentCaptor<LaunchSpec> spec = ArgumentCaptor.forClass(LaunchSpec.class);
+        verify(ec2).launch(any(), spec.capture());
+        assertThat(spec.getValue().userData()).contains("build_image").doesNotContain("docker pull");
     }
 
     private CloudConnection connection() {
