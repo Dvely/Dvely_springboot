@@ -79,6 +79,9 @@ class WebhookEventHandlerTest {
                 )
         );
         receivedAt = LocalDateTime.of(2026, 6, 14, 20, 0);
+        // 확정 경쟁이 없는 기본 상황 — 이 웹훅이 확정을 가져간다.
+        when(historyRepository.settle(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(true);
     }
 
     @Test
@@ -150,6 +153,26 @@ class WebhookEventHandlerTest {
         handler.handle("workflow_run", workflowPayload("workflow-sha"), receivedAt);
 
         verifyNoInteractions(auditRecorder);
+    }
+
+    @Test
+    void workflowRunLosingTheSettleRaceWritesNothing() {
+        // #511 B10: 메모리 상태로는 아직 IN_PROGRESS 지만 회수 워커가 같은 순간 먼저 확정한 경우.
+        // 호출자 쪽 상태 가드는 통과하므로, DB 조건부 UPDATE 에서 진 쪽이 아무것도 남기지 않아야 한다.
+        DeploymentHistory history = history("workflow-sha");
+        Project project = project();
+        when(historyRepository.findByWorkflowRunId(901L)).thenReturn(Optional.of(history));
+        when(historyRepository.findLatestByProjectId(11L)).thenReturn(Optional.of(history));
+        when(projectRepository.findById(11L)).thenReturn(Optional.of(project));
+        when(historyRepository.settle(51L, DeployStatus.LIVE)).thenReturn(false);
+
+        handler.handle("workflow_run", workflowPayload("workflow-sha"), receivedAt);
+
+        verify(historyRepository).settle(51L, DeployStatus.LIVE);
+        verify(historyRepository, never()).save(history);
+        verify(projectRepository, never()).save(project);
+        verify(changeService, never()).markDeployed("task-51");
+        verifyNoInteractions(auditRecorder, agentMessageService);
     }
 
     @Test
