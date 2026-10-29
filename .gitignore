@@ -55,6 +55,10 @@ Dvely_FE_test/
 gradle.properties
 # 실제 API 키·DB 비밀번호가 들어 있다. 절대 추적하지 않는다.
 src/main/resources/application-local.yml
+application-local.y*ml
+*.p12
+*.pfx
+*.key
 
 ### AI harness — 개인 작업물이라 공유하지 않는다 ###
 # .claude/, .agent-team/ 은 세션 스냅샷·리뷰 산출물 등 개인 하네스 출력이다(수 MB).
