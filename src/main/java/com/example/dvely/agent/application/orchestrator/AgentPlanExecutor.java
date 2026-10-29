@@ -38,6 +38,7 @@ import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
 import com.example.dvely.common.exception.LlmProviderException;
 import com.example.dvely.common.limit.UserLimitExceededException;
+import com.example.dvely.common.observability.WorkLogContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -74,7 +75,8 @@ public class AgentPlanExecutor {
     public void execute(AgentPlan plan, String taskId, Long userId) {
         // 이 실행 스레드에서 나는 모든 LLM 호출이 이 태스크에 귀속되고, 누적 토큰이 여기 상한에
         // 걸린다. 스코프는 스레드를 넘지 않으므로 실행 진입점인 여기가 유일하게 맞는 자리다.
-        try (LlmUsageScope ignored = llmUsageRecorder.openTaskScope(
+        try (WorkLogContext logContext = WorkLogContext.task(taskId);
+             LlmUsageScope ignored = llmUsageRecorder.openTaskScope(
                 taskId, userId, plan.projectId(), aiProperties.getCodeAgent().getMaxTaskTokens())) {
             doExecute(plan, taskId, userId);
         } finally {

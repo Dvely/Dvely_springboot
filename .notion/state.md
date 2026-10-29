@@ -1591,6 +1591,13 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 판별(`JdkExceptionMessage`): 우리 패키지가 아닌 하위 클래스(NumberFormatException 등)이거나, 예외 자체라도 던진 자리가 JDK 클래스(`Enum.valueOf`·`UUID.fromString`·`Matcher.group`)
 - 직접 쓴 한글 메시지는 그대로 보낸다(4.45 의 꼬리 떼기만 적용). 일괄 숨김은 하지 않는다
 
+## 4.51 실행 스레드 로그에 태스크·배포 식별자 (Issue #511 B12)
+
+- 에이전트 실행·계획 수립·배포 실행은 실행기 스레드에서 돌아 `requestId` 가 비어 있고, 그 아래 LLM·git·docker 로그는 어느 태스크·배포의 일인지 적지 않아 동시에 돌면 섞였다
+- `WorkLogContext` 가 진입점(`AgentPlanExecutor.execute`·`AsyncDecisionRunner.decideAndSubmit`·`DeploymentCommandService.executeQueued`)에서 MDC `taskId`·`deploymentId` 를 심고, 닫을 때 이전 값으로 되돌린다(풀 스레드 재사용). 실패 처리 로그까지 덮도록 catch 바깥에서 연다
+- 콘솔 패턴(`logging.pattern.level`): `WARN [requestId] task=… ` / `deploy=…`. 값이 없으면 아무것도 붙지 않는다
+- JSON 로그는 Spring Boot 기본 기능으로 켠다: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`(또는 `logstash`). MDC 키가 필드(`taskId`·`deploymentId`·`requestId`)로 실린다(실측). 기본은 사람이 읽는 텍스트 그대로다
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증
