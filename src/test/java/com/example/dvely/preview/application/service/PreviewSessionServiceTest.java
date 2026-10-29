@@ -636,6 +636,42 @@ class PreviewSessionServiceTest {
                 .isInstanceOf(NotFoundException.class);
     }
 
+    @Test
+    void reopeningAPreviewThatIsNotServingSaysWhichSituationInPlainWords() {
+        // FE 가 409 문장을 화면 문구로 쓴다. 준비 중이면 기다리라고, 끝났으면 다시 띄우라고 말한다.
+        // 상태 꼬리는 로그용이라 응답에서는 UserFacingMessage 가 뗀다.
+        SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
+        PreviewSessionService service = new PreviewSessionService(
+                repository,
+                mock(DockerContainerService.class),
+                mock(TaskStore.class),
+                properties(),
+                gatewayUrlResolver(),
+                accessCookies(), mock(PreviewRuntimeConfigService.class), mock(PreviewCapacity.class)
+        );
+        PreviewSessionEntity provisioning = new PreviewSessionEntity(
+                "session-1", "token", 7L, 11L, 21L, "task-1", "container-1", "172.18.0.2",
+                "https://preview.qeploy.test/session-1/", LocalDateTime.now().plusMinutes(30),
+                PreviewSessionStatus.PROVISIONING);
+        PreviewSessionEntity expired = new PreviewSessionEntity(
+                "session-2", "token", 7L, 11L, 21L, "task-2", "container-2", "172.18.0.3",
+                "https://preview.qeploy.test/session-2/", LocalDateTime.now().plusMinutes(30),
+                PreviewSessionStatus.EXPIRED);
+        when(repository.findByIdAndOwnerUserId("session-1", 7L)).thenReturn(Optional.of(provisioning));
+        when(repository.findByIdAndOwnerUserId("session-2", 7L)).thenReturn(Optional.of(expired));
+
+        assertThatThrownBy(() -> service.grantAccess("session-1", 7L, Duration.ofMinutes(30)))
+                .isInstanceOfSatisfying(IllegalStateException.class, e -> assertThat(
+                        com.example.dvely.common.exception.UserFacingMessage.of(e.getMessage()))
+                        .isEqualTo("아직 준비 중인 프리뷰입니다. 준비가 끝나면 다시 열어 주세요."));
+        assertThatThrownBy(() -> service.grantAccess("session-2", 7L, Duration.ofMinutes(30)))
+                .isInstanceOfSatisfying(IllegalStateException.class, e -> {
+                    assertThat(e.getMessage()).endsWith("status=EXPIRED");
+                    assertThat(com.example.dvely.common.exception.UserFacingMessage.of(e.getMessage()))
+                            .isEqualTo("종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요.");
+                });
+    }
+
     // ── #337: 트랜잭션을 걷어낸 뒤에도 실패 시 동작이 같다 ──────────────────────────
 
     /**

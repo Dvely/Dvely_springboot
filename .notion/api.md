@@ -69,6 +69,7 @@
 
 도메인 전용 코드: `GITHUB_APP_NOT_INSTALLED`(403) · `GITHUB_APP_REPOSITORY_ACCESS_DENIED`(403) · `GITHUB_APP_REAUTHORIZATION_REQUIRED`(403, 설치는 있으나 사용자 토큰이 없거나 GitHub 가 리프레시를 거부 — 재인증으로 보낸다, #516) · `AI_CREDENTIAL_NOT_REGISTERED`(400) · `INVALID_TOKEN`/`EXPIRED_REFRESH_TOKEN`/`REVOKED_REFRESH_TOKEN`(401).
 
+- 400·403·404·409 의 `message` 는 화면 문구로 쓸 수 있게, 끝에 붙은 내부 식별자·상태값 꼬리(`taskId=…`, `approvalId=…`, `status=…` 등)를 떼고 내려간다(`UserFacingMessage`). 로그에는 원문이 남는다. 사용자에게 의미 있는 값(환경변수 키·저장소·브랜치)과 실패 진단(`exit=…`)은 남는다
 - 클라이언트가 응답 도중 연결을 끊은 경우(SSE 탭 닫기 등, `AsyncRequestNotUsableException`)는 오류 응답을 쓰지 않고 DEBUG 로그 한 줄만 남긴다(#423). ERROR 수를 배포 건강 신호로 쓰기 때문이다.
 - PAT 스코프 거부(403, §18.3)는 보안 필터가 직접 쓰며 본문이 `{"code":"FORBIDDEN","message":"..."}`로 `status`/`data`가 없다.
 
@@ -109,7 +110,7 @@
 - 같은 사용자의 동시 요청도 상한을 넘지 못한다. 런은 사용자 행 잠금으로 한 줄로 세우고, 프리뷰는 행을 저장한 뒤 다시 세어 넘친 쪽이 물러난다(동시에 몰리면 둘 다 물러날 수 있다 — 다시 시도하면 된다)
 - 상한을 보지 않는 전이: 결과 승인·저장소 연결 승인 뒤의 재개(런마다 한 번, 이미 실행된 런의 남은 단계. 그 승인 처리는 GitHub 반영 중 토큰 갱신이 사용자 행을 잠글 수 있어 같은 잠금을 쥘 수 없다), 빌드 실패 자동 복구, 멈춘 승인 복구 스윕
   - 그래서 결과 승인 순간 런 수가 상한을 넘을 수 있다(의도). 넘는 폭은 그 사용자의 결과 승인 대기 런 수로 묶이고, 그 런들은 살아 있는 프리뷰를 붙들고 있어(프리뷰가 회수되면 #380 스윕이 5분 안에 닫는다) `max-live-previews` 를 넘지 않는다 — 최악 런 2 + 3
-- 자리 만들기로 닫힌 프리뷰는 TTL 만료와 같은 `EXPIRED` 다: `POST /preview-sessions/{id}/access` 는 `409 CONFLICT`("종료되었거나 아직 준비 중인 프리뷰입니다. status=EXPIRED"), `GET /preview-sessions/{id}/status` 는 200 `sessionStatus=EXPIRED`·`containerRunning=false`, 이미 열린 iframe 의 다음 문서 요청은 게이트웨이 404
+- 자리 만들기로 닫힌 프리뷰는 TTL 만료와 같은 `EXPIRED` 다: `POST /preview-sessions/{id}/access` 는 `409 CONFLICT`("종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요." — 준비 중이면 "아직 준비 중인 프리뷰입니다. 준비가 끝나면 다시 열어 주세요."), `GET /preview-sessions/{id}/status` 는 200 `sessionStatus=EXPIRED`·`containerRunning=false`, 이미 열린 iframe 의 다음 문서 요청은 게이트웨이 404
 
 ## 3. Auth API
 

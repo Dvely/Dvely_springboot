@@ -92,7 +92,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleIllegalArgument(IllegalArgumentException e) {
         log.warn("Bad request: {}", e.getMessage());
         return ResponseEntity.badRequest()
-                .body(ApiResponse.error(ErrorCode.BAD_REQUEST, e.getMessage()));
+                .body(ApiResponse.error(ErrorCode.BAD_REQUEST, UserFacingMessage.of(e.getMessage())));
     }
 
     // 401 - 인증 실패
@@ -108,7 +108,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleForbidden(ForbiddenException e) {
         log.warn("Forbidden: {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(ApiResponse.error(ErrorCode.FORBIDDEN, e.getMessage()));
+                .body(ApiResponse.error(ErrorCode.FORBIDDEN, UserFacingMessage.of(e.getMessage())));
     }
 
     // 403 - GitHub App 이 저장소에 접근 권한 없음 (App 설정에서 저장소 접근 허용 필요)
@@ -170,7 +170,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleNotFound(NotFoundException e) {
         log.warn("Not found: {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                .body(ApiResponse.error(ErrorCode.NOT_FOUND, e.getMessage()));
+                .body(ApiResponse.error(ErrorCode.NOT_FOUND, UserFacingMessage.of(e.getMessage())));
     }
 
     // 409 - 낙관적 잠금 경합 (버전 불일치 또는 수정/삭제 진행 중 대상 행이 동시에 삭제된 경합)
@@ -210,7 +210,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleIllegalState(IllegalStateException e) {
         log.warn("Conflict: {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(ApiResponse.error(ErrorCode.CONFLICT, e.getMessage()));
+                .body(ApiResponse.error(ErrorCode.CONFLICT, UserFacingMessage.of(e.getMessage())));
     }
 
     // 429/502/503 - AI 제공자 호출 실패
