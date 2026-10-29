@@ -10,6 +10,16 @@
 
 ## 1. 현재 상태
 
+- 2026-10-29: **#511 P2 묶음을 develop 에 넣었다 — B11 #562 · B13 #563 · B10 #564·#565 · B7 #566 · B12 #567. refresh 토큰 HttpOnly 쿠키·프리뷰 전용 오리진은 FE 협의 과제로 이관.** 같은 날 #557(#556 대상 EC2 빌드 플래그)·#559(#558 목록 템플릿 정보)·#561(#560 기본 사용자 자동 구성 끔) 머지, #513 소급 점검(대상 5건 모두 일치, 불일치 0)으로 종료.
+  - B11: 워크플로 `uses:` 18곳 커밋 SHA 고정(`WorkflowPinningTest`), Dependabot(actions·gradle·npm, develop 대상), agent-tools lock 커밋 + `npm ci --ignore-scripts`, bcpkix 1.78.1 → 1.86. 고정된 SHA 로 dev 배포 성공
+  - B13: `.DS_Store` 추적 해제, `RepositoryHygieneTest`(git 인덱스에 로컬 전용 파일 없음), `.gitignore` 보강
+  - B10: 컴파일 대상 21 → 25(툴체인·CI·서버 런타임과 같게), JaCoCo 0.8.15 리포트(라인 66.9%, 게이트 없음, CI 아티팩트). 배포 결과 확정을 조건부 UPDATE 로 한 번만(state 4.49). `OrphanCloudFrontSweeper` 는 리퍼가 멱등이라 유지, ShedLock 은 다중 인스턴스 때
+  - B7: JDK·라이브러리 출처 IAE/ISE 는 고정 문장(state 4.50). B12: 실행 스레드 로그에 `task=`·`deploy=`, JSON 은 `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`(state 4.51)
+  - 저장소 보안 설정(secret scanning·push protection·Dependabot security updates)이 꺼져 있다 — 켜는 것은 사용자 작업(저장소 설정)
+  - 운영·dev 서버를 옮긴다(현재 AWS 계정 10-30 종료). 이전 대상은 기획 세션 결정 대기. 백업·이전 문서는 저장소 밖에 둔다. 8차 릴리스 조건은 이전 뒤 다시 정한다
+
+  **다음 세션이 볼 것**: ①호스팅 결정 → 새 서버 부트스트랩·복원·컷오버 ②#511 이관 두 건을 FE 협의 이슈로 ③10-28 목록(8차·#545·#509 nginx·기본 모델 상향)은 이전 뒤 재평가
+
 - 2026-10-28: **서버 측 git(#523 P0) 운영 완결 — push·clone 플래그 모두 ON, 결과 승인 반영 범위(#532) 운영 반영. 빌드 격리(#507)·계획 재적용(#546)·thinking 형식(#510)·사용자별 동시 상한(#509)은 develop.**
   - 운영 릴리스 6차 #540(#537 결과 승인 반영 범위·거절 REVERT, V69·V70 / #539 서버 push 가 준비 뒤 바뀐 원격을 되돌리지 않게) · 7차 #543(#538 서버 측 clone·fetch 플래그 / #542 이미지 빌드 대기 상한 30분)
   - 운영 env: `QEPLOY_GIT_SERVERSIDE_PUSHENABLED`(10-28 09:57) · `…_CLONEENABLED`(16:16) 둘 다 true. 백업 `ecosystem.config.js.bak-20261028095646` · `.bak-20261028161613`. dev 도 둘 다 ON
