@@ -1563,6 +1563,11 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 목록 응답(`GET /projects`)에 `startMode`·`templateType` 이 없어, FE 목록 카드가 템플릿을 고른 프로젝트까지 전부 "빈 템플릿 · 템플릿 미설정"으로 보였다. 상세 응답과 같은 이름·값으로 추가했다
 - 두 값은 `projects` 행에 있어 목록 쿼리 한 번으로 끝난다(N+1 없음). 직렬화된 JSON 에 두 필드가 실리는지 계약 테스트(`ProjectListContractTest`)로 고정했다
 
+## 4.47 기본 사용자 자동 구성 끔 (Issue #560)
+
+- Spring Boot 의 기본 사용자 자동 구성(`UserDetailsServiceAutoConfiguration`)이 기동할 때마다 쓰지 않는 사용자를 만들고 비밀번호를 로그에 찍었다("Using generated security password"). 인증은 JWT·GitHub OAuth 뿐이고 폼·Basic 로그인이 없어 그 사용자로 들어올 길은 없었지만, 로그에 비밀번호 모양 문자열이 남았다(운영 pm2 로그 107건)
+- `@SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)`. `NoDefaultUserTest` 가 사용자 빈이 없음·토큰 없는 보호 경로 401·Basic 401·정상 JWT 200 을 확인한다
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증
