@@ -90,6 +90,11 @@ public class GlobalExceptionHandler {
     // 400 - 잘못된 요청 인자
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiResponse<Void>> handleIllegalArgument(IllegalArgumentException e) {
+        if (JdkExceptionMessage.isFromJdk(e)) {
+            log.warn("Bad request (JDK): {}", sanitizeForLog(e));
+            return ResponseEntity.badRequest()
+                    .body(ApiResponse.error(ErrorCode.BAD_REQUEST, JdkExceptionMessage.BAD_REQUEST));
+        }
         log.warn("Bad request: {}", e.getMessage());
         return ResponseEntity.badRequest()
                 .body(ApiResponse.error(ErrorCode.BAD_REQUEST, UserFacingMessage.of(e.getMessage())));
@@ -208,6 +213,11 @@ public class GlobalExceptionHandler {
     // 409 - 상태 충돌
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<ApiResponse<Void>> handleIllegalState(IllegalStateException e) {
+        if (JdkExceptionMessage.isFromJdk(e)) {
+            log.warn("Conflict (JDK): {}", sanitizeForLog(e));
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(ApiResponse.error(ErrorCode.CONFLICT, JdkExceptionMessage.CONFLICT));
+        }
         log.warn("Conflict: {}", e.getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(ApiResponse.error(ErrorCode.CONFLICT, UserFacingMessage.of(e.getMessage())));

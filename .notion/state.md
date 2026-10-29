@@ -1584,6 +1584,13 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - `DeploymentOutcomeService` 가 확정 전에 `DeploymentHistoryRepository.settle` — `UPDATE … SET status=? WHERE id=? AND status IN (PENDING, IN_PROGRESS)` 를 부른다. 0행이면 다른 경로가 이미 확정한 것이라 이력·프로젝트·대화·감사 어느 것도 쓰지 않는다. 뒤에 온 쪽은 행 잠금에 막혔다가 앞쪽 커밋 뒤 0행이 된다(`DeploymentHistorySettleIntegrationTest` 가 실제 MySQL 로 확인)
 - 같은 점검에서 `OrphanCloudFrontSweeper` 는 손대지 않았다: 겹친 스윕이 같은 배포를 두 번 큐에 넣어도 `CdnDeletionReaper` 가 "이미 없음"을 정상 처리해 결과가 같다. ShedLock 은 다중 인스턴스로 갈 때 검토한다
 
+## 4.50 JDK 가 만든 예외 문구는 응답에 싣지 않는다 (Issue #511 B7)
+
+- 400(IllegalArgumentException)·409(IllegalStateException) 응답 message 에 `For input string: "abc"`·`No enum constant com.example…` 같은 JDK 영어 문구가 그대로 실렸다. FE 는 message 를 화면에 그대로 보여 준다
+- JDK·라이브러리 출처면 고정 문장으로 바꾼다: 400 "요청 값의 형식이 올바르지 않습니다." / 409 "지금은 요청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요." 상태 코드·code 는 그대로이고 로그에는 원문(예외 클래스 포함)이 남는다
+- 판별(`JdkExceptionMessage`): 우리 패키지가 아닌 하위 클래스(NumberFormatException 등)이거나, 예외 자체라도 던진 자리가 JDK 클래스(`Enum.valueOf`·`UUID.fromString`·`Matcher.group`)
+- 직접 쓴 한글 메시지는 그대로 보낸다(4.45 의 꼬리 떼기만 적용). 일괄 숨김은 하지 않는다
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

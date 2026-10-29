@@ -54,7 +54,8 @@ class GlobalExceptionHandlerTest {
                         new ConcurrentDeleteController(), new ConflictController(),
                         new MissingPathController(), new ClientGoneController(),
                         new UnexpectedErrorController(), new GithubReauthorizationController(),
-                        new UserLimitController(), new InternalTailController())
+                        new UserLimitController(), new InternalTailController(),
+                        new JdkOriginController())
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -144,6 +145,32 @@ class GlobalExceptionHandlerTest {
         mockMvc.perform(get("/contract/internal-tail"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value("종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요."));
+    }
+
+    @Test
+    void jdkArgumentMessagesAreReplacedWithOneSentence() throws Exception {
+        // #511 B7: JDK 문구는 영어이고 클래스 경로까지 담는다. FE 가 그대로 보여 주므로 고정 문장으로 바꾼다.
+        for (String path : List.of("/contract/jdk/number", "/contract/jdk/enum", "/contract/jdk/uuid")) {
+            mockMvc.perform(get(path))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("BAD_REQUEST"))
+                    .andExpect(jsonPath("$.message").value("요청 값의 형식이 올바르지 않습니다."));
+        }
+    }
+
+    @Test
+    void jdkStateMessagesAreReplacedWithOneSentence() throws Exception {
+        mockMvc.perform(get("/contract/jdk/state"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("지금은 요청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요."));
+    }
+
+    @Test
+    void ourOwnArgumentMessageIsStillShown() throws Exception {
+        // 직접 쓴 한글 안내는 FE 가 보여 줘야 하는 문장이다 — 일괄로 숨기지 않는다.
+        mockMvc.perform(get("/contract/own/argument"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("지원하지 않는 배포 대상입니다: VERSIONX"));
     }
 
     @Test
@@ -321,6 +348,35 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/contract/boom")
         Long boom() {
             throw new RuntimeException("정말로 예상치 못한 오류");
+        }
+    }
+
+    @RestController
+    private static class JdkOriginController {
+
+        @GetMapping("/contract/jdk/number")
+        Integer number() {
+            return Integer.parseInt("abc");
+        }
+
+        @GetMapping("/contract/jdk/enum")
+        String enumConstant() {
+            return java.time.DayOfWeek.valueOf("FUNDAY").name();
+        }
+
+        @GetMapping("/contract/jdk/uuid")
+        String uuid() {
+            return java.util.UUID.fromString("not-a-uuid").toString();
+        }
+
+        @GetMapping("/contract/jdk/state")
+        String state() {
+            return java.util.regex.Pattern.compile("a").matcher("b").group();
+        }
+
+        @GetMapping("/contract/own/argument")
+        String own() {
+            throw new IllegalArgumentException("지원하지 않는 배포 대상입니다: VERSIONX");
         }
     }
 }
