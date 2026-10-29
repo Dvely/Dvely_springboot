@@ -115,7 +115,7 @@ jobs:
       - name: Build and test
         run: ./gradlew build --no-daemon
 
-      # 실패했을 때 어느 테스트가 왜 깨졌는지 보려면 HTML 리포트가 필요하다.
+      # 실패했을 때 어느 테스트가 왜 깨졌는지 보려면 HTML 리포트가 필요하다. 커버리지 리포트(JaCoCo)도 같이 올린다.
       # 로그만으로는 @SpringBootTest 컨텍스트 로딩 실패의 원인 예외를 찾기 어렵다.
       - name: Upload test report
         if: always()
@@ -125,5 +125,6 @@ jobs:
           path: |
             build/reports/tests/test
             build/test-results/test
+            build/reports/jacoco/test
           retention-days: 7
           if-no-files-found: ignore
