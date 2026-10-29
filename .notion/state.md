@@ -1568,6 +1568,16 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - Spring Boot 의 기본 사용자 자동 구성(`UserDetailsServiceAutoConfiguration`)이 기동할 때마다 쓰지 않는 사용자를 만들고 비밀번호를 로그에 찍었다("Using generated security password"). 인증은 JWT·GitHub OAuth 뿐이고 폼·Basic 로그인이 없어 그 사용자로 들어올 길은 없었지만, 로그에 비밀번호 모양 문자열이 남았다(운영 pm2 로그 107건)
 - `@SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)`. `NoDefaultUserTest` 가 사용자 빈이 없음·토큰 없는 보호 경로 401·Basic 401·정상 JWT 200 을 확인한다
 
+## 4.48 DOCKER 배포 이미지를 대상 EC2 에서 빌드(플래그) (Issue #556)
+
+- `qeploy.provisioning.ec2.image-build-location=CONTROL_PLANE|TARGET`(기본 CONTROL_PLANE, 그 밖의 값은 기동 실패). #545 결정의 A
+- TARGET: 컨트롤 플레인은 clone·Dockerfile 확인만 하고 빌드 컨텍스트 tar(앱 `{projectId}/app-context.tar`, 웹 `web-context.tar`)를 S3 로 올린다. 대상 EC2 의 부팅 스크립트가 받아 `docker build`(빌드 상한 = image-build-timeout) 후 기존과 같은 실행 단계(docker run·compose)
+- 빌드 상태 자가 보고: `/qeploy/build-status/{projectId}/{instanceId}` 에 BUILDING → BUILT 또는 BUILD_FAILED(+로그 꼬리). 인스턴스 역할에 그 경로 PutParameter 만 추가(TARGET 일 때)
+- 상태 워커: TARGET 서버는 기한이 부트 20분 + 빌드 상한. BUILD_FAILED 는 바로 FAILED(빌드 로그 → 부트 진단, terminate·EIP 해제). 빌드 중 기한 초과는 "이미지 빌드가 끝나지 않았습니다"
+- JVM(Gradle·Maven) 앱 + TARGET 은 nano·micro 를 실행 전에 거절(t3.small 이상). swap 안 씀
+- 서버에 `image_build_location`(V71, NATIVE·이전 행 NULL)
+- 운영·dev 기본값은 그대로 CONTROL_PLANE. 켜기 전에 dev e2e(비용, 사용자 승인) 필요. CONTROL_PLANE 경로 제거는 약 2주 뒤 별도 PR
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

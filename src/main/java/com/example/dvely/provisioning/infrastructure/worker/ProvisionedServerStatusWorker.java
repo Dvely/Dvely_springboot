@@ -1,5 +1,8 @@
 package com.example.dvely.provisioning.infrastructure.worker;
 
+import com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties;
+import com.example.dvely.provisioning.infrastructure.SsmParameterStore;
+import com.example.dvely.provisioning.infrastructure.BuildStatusReport;
 import com.example.dvely.cloudconnection.application.service.AwsCredentialFailureReporter;
 import com.example.dvely.cloudconnection.domain.model.CloudConnection;
 import com.example.dvely.cloudconnection.domain.repository.CloudConnectionRepository;
@@ -45,6 +48,8 @@ public class ProvisionedServerStatusWorker {
     private final Ec2Provisioner ec2;
     private final TcpHealthChecker healthChecker;
     private final SsmRunCommandClient ssmRunCommandClient;
+    private final SsmParameterStore ssmParameters;
+    private final Ec2ProvisioningProperties ec2Properties;
 
     @Scheduled(fixedDelayString = "${qeploy.provisioning.server-poll-interval-ms:20000}")
     public void pollProvisioning() {
@@ -85,8 +90,16 @@ public class ProvisionedServerStatusWorker {
             return;
         }
 
+        // 대상 EC2 빌드(#556): 인스턴스가 스스로 보고한 빌드 상태. 실패를 보고했으면 기한까지 기다리지 않는다 — 앱은
+        // 뜨지 않으므로 기다리는 동안 인스턴스 과금만 쌓인다.
+        BuildStatusReport.State build = server.buildsImageOnTarget() ? readBuildState(connection.get(), server) : null;
+        if (build == BuildStatusReport.State.BUILD_FAILED) {
+            return;
+        }
+
         if ("running".equals(status.state()) && status.publicHost() != null
                 && healthChecker.isHealthy(status.publicHost(), server.getPort())) {
+            clearBuildStatus(connection.get(), server);
             server.markRunning(status.publicHost());
             serverRepository.save(server);
             log.info("EC2 서버 RUNNING: serverId={} host={}:{} projectId={}",
@@ -94,8 +107,9 @@ public class ProvisionedServerStatusWorker {
             return;
         }
 
-        // 아직 기동 중 — 너무 오래면(앱이 안 뜸) 과금을 멈추고 실패로 닫는다.
-        if (server.getUpdatedAt().plus(BOOT_TIMEOUT).isBefore(LocalDateTime.now())) {
+        // 아직 기동 중 — 너무 오래면(앱이 안 뜸) 과금을 멈추고 실패로 닫는다. 대상 EC2 빌드는 부팅 중에 이미지를
+        // 빌드하므로 빌드 상한만큼 더 기다린다(#556).
+        if (server.getUpdatedAt().plus(bootDeadline(server)).isBefore(LocalDateTime.now())) {
             // 다중 인스턴스: 부트 타임아웃 처리 권한을 CAS 로 claim(PROVISIONING→FAILED). 진 인스턴스
             // 하나만 진행한다 — 두 곳이 같은 인스턴스를 종료하거나 SSM 으로 로그를 뜨지 않게.
             if (!serverRepository.claimBootTimeout(server.getId())) {
@@ -104,13 +118,62 @@ public class ProvisionedServerStatusWorker {
             // terminate 하기 전에 부트 로그를 떠 둔다 — 인스턴스가 사라지면 왜 안 떴는지 볼 길이 없어진다.
             captureBootDiagnostics(connection.get(), server);
             safeTerminateAndReleaseEip(connection.get(), server);
-            server.markFailed(ProvisionFailureCode.PROVIDER_ERROR,
-                    "제한 시간 안에 앱이 기동하지 않았습니다(포트 " + server.getPort() + " 응답 없음).");
+            clearBuildStatus(connection.get(), server);
+            server.markFailed(ProvisionFailureCode.PROVIDER_ERROR, build == BuildStatusReport.State.BUILDING
+                    ? "제한 시간 안에 서버에서 이미지 빌드가 끝나지 않았습니다."
+                    : "제한 시간 안에 앱이 기동하지 않았습니다(포트 " + server.getPort() + " 응답 없음).");
             serverRepository.save(server);
             log.warn("EC2 서버 기동 타임아웃 → terminate: serverId={} instanceId={}",
                     server.getId(), server.getInstanceId());
         }
         // 그 외: 다음 주기에 다시 본다(저장 안 함 — updatedAt 유지).
+    }
+
+    private Duration bootDeadline(ProvisionedServer server) {
+        return server.buildsImageOnTarget()
+                ? BOOT_TIMEOUT.plus(ec2Properties.imageBuildTimeoutOrDefault())
+                : BOOT_TIMEOUT;
+    }
+
+    /**
+     * 빌드 상태를 읽는다. BUILD_FAILED 면 여기서 서버를 닫고(빌드 로그 보존·terminate·EIP 해제) 그 상태를 돌려준다.
+     * 읽기에 실패하면 null — 보고는 기다림을 줄이는 신호일 뿐이라, 없으면 기동 기한으로 판단한다.
+     */
+    private BuildStatusReport.State readBuildState(CloudConnection connection, ProvisionedServer server) {
+        Optional<BuildStatusReport.Status> report;
+        try {
+            report = ssmParameters.getParameterQuietly(connection, buildStatusPath(server))
+                    .flatMap(BuildStatusReport::parse);
+        } catch (RuntimeException e) {
+            log.warn("빌드 상태 조회 실패(기동 기한으로 판단): serverId={} 원인={}", server.getId(), e.toString());
+            return null;
+        }
+        if (report.isEmpty()) {
+            return null;
+        }
+        if (report.get().state() == BuildStatusReport.State.BUILD_FAILED
+                && serverRepository.claimBootTimeout(server.getId())) {
+            // claim 은 부트 타임아웃과 같은 CAS(PROVISIONING→FAILED) — 다중 인스턴스에서 한 곳만 닫는다.
+            server.recordBootDiagnostics(report.get().logTail());
+            safeTerminateAndReleaseEip(connection, server);
+            clearBuildStatus(connection, server);
+            server.markFailed(ProvisionFailureCode.PROVIDER_ERROR,
+                    "서버에서 이미지를 빌드하지 못했습니다. 부트 로그에서 빌드 출력을 확인해 주세요.");
+            serverRepository.save(server);
+            log.warn("EC2 서버 이미지 빌드 실패 → terminate: serverId={} instanceId={}",
+                    server.getId(), server.getInstanceId());
+        }
+        return report.get().state();
+    }
+
+    private void clearBuildStatus(CloudConnection connection, ProvisionedServer server) {
+        if (server.buildsImageOnTarget()) {
+            ssmParameters.deleteParameterQuietly(connection, buildStatusPath(server));
+        }
+    }
+
+    private static String buildStatusPath(ProvisionedServer server) {
+        return BuildStatusReport.path(server.getProjectId(), server.getInstanceId());
     }
 
     /**
