@@ -83,7 +83,7 @@ dependencies {
     implementation 'software.amazon.awssdk:cloudfront'
     implementation 'software.amazon.awssdk:acm'
     implementation 'software.amazon.awssdk:url-connection-client'
-    implementation 'com.google.auth:google-auth-library-oauth2-http:1.43.0'
+    implementation 'com.google.auth:google-auth-library-oauth2-http:1.54.0'
 }
 
 tasks.named('test') {
