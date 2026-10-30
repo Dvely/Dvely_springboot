@@ -17,6 +17,10 @@ export class QeployApiError extends Error {
 
   /** What an agent should read: the cause and, where possible, what to do about it. */
   toAgentMessage() {
+    // Already the site's own notice; a prefix would only bury it.
+    if (this.code === 'SERVICE_SUSPENDED') {
+      return this.message;
+    }
     if (this.status === 401) {
       // Not "QEPLOY_TOKEN": most people never set it — their token came from `qeploy login`.
       return 'Qeploy 인증에 실패했습니다. 토큰이 만료·폐기되었거나 잘못되었습니다. 새 토큰을 발급해 주세요.';
@@ -77,6 +81,31 @@ function pathId(name, value) {
   return String(value);
 }
 
+/**
+ * The status lookup runs only after a request has already failed, so it gets a short leash of its
+ * own — a slow answer about the outage should not double the wait for the outage itself.
+ */
+const STATUS_TIMEOUT_MS = 5000;
+
+/**
+ * The notice the site publishes in /status.json, as an error.
+ *
+ * Only string fields are used and each is cut short: the file comes from whatever host the user
+ * pointed the client at, and its text ends up in a terminal and in the agent's context.
+ */
+function suspendedError(status, path) {
+  const field = (value) => (typeof value === 'string' ? value.trim().slice(0, 500) : '');
+  const title = field(status.title) || 'Qeploy 서비스 일시 중단';
+  const since = field(status.since);
+  const message = field(status.message);
+  return new QeployApiError(
+    503,
+    'SERVICE_SUSPENDED',
+    [since ? `${title} (${since}부터)` : title, message].filter(Boolean).join('\n'),
+    path
+  );
+}
+
 export class QeployClient {
   /**
    * @param {{baseUrl: string, token: string, fetchImpl?: typeof fetch, timeoutMs?: number}} options
@@ -114,7 +143,9 @@ export class QeployClient {
       if (e.name === 'AbortError') {
         throw new QeployApiError(0, 'TIMEOUT', `요청이 ${this.timeoutMs}ms 안에 끝나지 않았습니다.`, path);
       }
-      throw new QeployApiError(0, 'NETWORK', `Qeploy 에 연결할 수 없습니다: ${e.message}`, path);
+      throw await this.orSuspended(
+        new QeployApiError(0, 'NETWORK', `Qeploy 에 연결할 수 없습니다: ${e.message}`, path)
+      );
     } finally {
       clearTimeout(timer);
     }
@@ -129,21 +160,52 @@ export class QeployClient {
     } catch {
       // A proxy or error page can return HTML; surface the status rather than a parse error.
       if (!response.ok) {
-        throw new QeployApiError(response.status, null, text.slice(0, 200), path);
+        throw await this.orSuspended(new QeployApiError(response.status, null, text.slice(0, 200), path));
       }
-      throw new QeployApiError(response.status, 'BAD_RESPONSE', 'JSON 이 아닌 응답을 받았습니다.', path);
+      throw await this.orSuspended(
+        new QeployApiError(response.status, 'BAD_RESPONSE', 'JSON 이 아닌 응답을 받았습니다.', path)
+      );
     }
 
     if (!response.ok) {
-      throw new QeployApiError(
+      const error = new QeployApiError(
         response.status,
         payload?.code ?? null,
         payload?.message ?? `HTTP ${response.status}`,
         path
       );
+      // The API answers every failure with a JSON envelope. An empty body is a host with no API
+      // behind it — static hosting answers a write with a bare 405.
+      throw payload && typeof payload === 'object' ? error : await this.orSuspended(error);
     }
     // Unwrap the envelope when present; some endpoints may return a bare body.
     return payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
+  }
+
+  /**
+   * Swaps an answer that did not come from the API for the reason, when the site says it is
+   * suspended.
+   *
+   * While Qeploy is suspended the web front stays up on static hosting with no API behind it, so
+   * every call gets that host's HTML 404 — reported as-is, "대상을 찾을 수 없습니다:
+   * /api/v1/projects", as if the project were gone. The site publishes /status.json for this case.
+   *
+   * No Authorization header: the file is public, and the token goes nowhere it is not needed. Any
+   * failure here — no file, not JSON, not suspended — leaves the original error as it was.
+   */
+  async orSuspended(error) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, STATUS_TIMEOUT_MS));
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}/status.json`, { signal: controller.signal });
+      if (!response.ok) return error;
+      const status = JSON.parse(await response.text());
+      return status?.status === 'suspended' ? suspendedError(status, error.path) : error;
+    } catch {
+      return error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   get(path) {
