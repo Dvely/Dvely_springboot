@@ -1,5 +1,7 @@
 # Qeploy 에이전트 도구
 
+> **⚠️ 서비스 일시 중단 (2026-10-30부터)** — 운영 백엔드가 내려가 있어 아래 패키지는 지금 쓸 수 없다. `qeploy.com` 은 GitHub Pages 의 웹 프론트만 서빙하므로 `/api/v1/...` 는 HTML 404(쓰기는 본문 없는 405)로 돌아온다. client 0.1.3(mcp 0.1.3·cli 0.1.4)부터는 이런 "API 가 아닌 응답"이나 연결 실패를 받으면 `<API 주소>/status.json` 을 토큰 없이 읽고, `status` 가 `suspended` 면 그 안내문(`title`·`since`·`message`)을 오류로 낸다 — MCP 도구 결과·CLI 출력·`qeploy login` 이 같은 문장을 보인다(CLI 종료 코드는 1, 인증 실패 3 과 섞지 않는다). 파일이 없거나 `suspended` 가 아니면 원래 오류 그대로다. 현황은 `../.notion/ROADMAP.md` "1. 현재 상태".
+
 사용자의 코딩 에이전트(Claude Code · Codex)가 Qeploy 를 **도구로 호출**하기 위한 패키지들이다.
 
 방향이 중요하다. Qeploy 가 AI 를 부르는 게 아니라 **사용자의 AI 가 Qeploy 를 부른다.** 그래서
