@@ -46,9 +46,9 @@ dependencies {
     implementation 'org.springdoc:springdoc-openapi-starter-webmvc-api:3.2.0'
 
     // JWT (서비스용 HS256 + GitHub App용 RS256)
-    implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
-    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
-    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
+    implementation 'io.jsonwebtoken:jjwt-api:0.13.0'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.13.0'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.13.0'
 
     // 폐기 토큰 인메모리 캐시. 직접 만들면 만료·크기 제한·동시성 제거를 손으로 쥐어야 하는데,
     // 이건 인증 경계라 그 자리에서 나는 버그의 대가가 크다. 버전은 Spring Boot BOM 이 관리하고
