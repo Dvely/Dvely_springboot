@@ -1,6 +1,6 @@
 # Qeploy 단위(Unit) 파이프라인 로드맵
 
-> 기준일: 2026-10-28 · 기준 커밋: 5f7e1cfc(develop) · 코드 실측 기반
+> 기준일: 2026-10-31 · 기준 커밋: c90f031e(develop) · 코드 실측 기반
 
 이 문서는 `danto/<도메인>` 단위 작업 파이프라인의 SSOT다. 우선순위, 진행 상태, 세션 인계 정보를 이 문서 하나로 관리한다.
 
@@ -9,6 +9,14 @@
 ---
 
 ## 1. 현재 상태
+
+- 2026-10-31: **서비스 일시 중단 — AWS 계정 지원이 10-30 에 끝나 FE 만 GitHub Pages 로 옮겼고(Dvely_FE #194), 백엔드는 옮길 곳이 정해지지 않아 어디에서도 서비스되지 않는다.** 10-29 항목의 "서버 이전" 은 결정 없이 기한을 넘겼다.
+  - `qeploy.com`(Cloudflare DNS only) → GitHub Pages. HTTPS 강제, `www` → apex 301. 랜딩·템플릿 화면만 동작한다. FE 쪽 중단 안내(배너·로그인 차단)와 `https://qeploy.com/status.json` 은 FE 저장소에서 올린다
+  - `qeploy.com/api/v1/...` 는 Pages 가 답한다 — GET 은 HTML 404, POST·PATCH·DELETE 는 본문 없는 405. 로그인·프로젝트·배포·도메인·MCP·CLI·GitHub App 웹훅이 모두 멈췄다
+  - 옛 운영 EC2 는 10-31 확인 기준 아직 켜져 응답한다(nginx + Spring). DNS 가 더는 가리키지 않을 뿐이다 — 데이터 백업·인스턴스 정리 여부는 사용자 결정 대기. `deploy-ec2.yml`·`deploy-ec2-dev.yml` 은 그 인스턴스가 사라지면 실패한다(손대지 않았다)
+  - #604: agent-tools client 가 API 가 아닌 응답(HTML·빈 본문)이나 연결 실패를 받으면 `<API 주소>/status.json` 을 토큰 없이 읽고 `suspended` 면 그 안내문으로 오류를 바꾼다(`SERVICE_SUSPENDED`, CLI 종료 코드 1). client·mcp 0.1.3, cli 0.1.4 — **npm 배포는 develop 머지 뒤 Actions 로 별도**. README·npm 패키지 README·이 문서·`state.md` 에 중단 안내
+
+  **다음 세션이 볼 것**: ①백엔드 호스팅 결정 — 다시 띄우면 `api.qeploy.com` 같은 별도 호스트에 두고 FE 저장소 변수 `VITE_API_URL` 변경·재배포, CORS 에 `https://qeploy.com`, GitHub App 웹훅·OAuth 콜백 주소 갱신, 그리고 `status.json` 을 `operational` 로 ②옛 EC2 데이터 백업·정리(사용자) ③재개 전까지 10-29·10-28 의 "다음 세션이 볼 것" 은 보류
 
 - 2026-10-29: **#511 P2 묶음을 develop 에 넣었다 — B11 #562 · B13 #563 · B10 #564·#565 · B7 #566 · B12 #567. refresh 토큰 HttpOnly 쿠키·프리뷰 전용 오리진은 FE 협의 과제로 이관.** 같은 날 #557(#556 대상 EC2 빌드 플래그)·#559(#558 목록 템플릿 정보)·#561(#560 기본 사용자 자동 구성 끔) 머지, #513 소급 점검(대상 5건 모두 일치, 불일치 0)으로 종료.
   - B11: 워크플로 `uses:` 18곳 커밋 SHA 고정(`WorkflowPinningTest`), Dependabot(actions·gradle·npm, develop 대상), agent-tools lock 커밋 + `npm ci --ignore-scripts`, bcpkix 1.78.1 → 1.86. 고정된 SHA 로 dev 배포 성공
