@@ -162,3 +162,111 @@ describe('what may reach the URL (#482)', () => {
     assert.match(msg, /토큰/);
   });
 });
+
+describe('while the service is suspended', () => {
+  const NOTICE = {
+    status: 'suspended',
+    since: '2026-10-30',
+    title: 'Qeploy 서비스 일시 중단',
+    message: '로그인, 프로젝트 생성·관리, 배포, 도메인 연결, MCP·CLI 연동이 동작하지 않습니다.',
+  };
+
+  /**
+   * Answers the way qeploy.com does with no API behind it: the static host's HTML 404 for reads, a
+   * bare 405 for writes, and /status.json as given (undefined = no such file).
+   */
+  function staticHost(status) {
+    const calls = [];
+    const fetchImpl = async (url, init = {}) => {
+      calls.push({ url, init });
+      if (url.endsWith('/status.json')) {
+        if (status === undefined) {
+          return { status: 404, ok: false, text: async () => '<!doctype html><title>404</title>' };
+        }
+        return { status: 200, ok: true, text: async () => JSON.stringify(status) };
+      }
+      if ((init.method ?? 'GET') === 'GET') {
+        return { status: 404, ok: false, text: async () => '<!doctype html><div id="root"></div>' };
+      }
+      return { status: 405, ok: false, text: async () => '' };
+    };
+    return { fetchImpl, calls };
+  }
+
+  it('says the service is suspended instead of "not found" on a read', async () => {
+    const { fetchImpl } = staticHost(NOTICE);
+    const c = new QeployClient(opts(fetchImpl));
+    await assert.rejects(
+      () => c.listProjects(),
+      (e) => {
+        assert.ok(e instanceof QeployApiError);
+        assert.equal(e.code, 'SERVICE_SUSPENDED');
+        assert.equal(
+          e.toAgentMessage(),
+          'Qeploy 서비스 일시 중단 (2026-10-30부터)\n' +
+            '로그인, 프로젝트 생성·관리, 배포, 도메인 연결, MCP·CLI 연동이 동작하지 않습니다.'
+        );
+        return true;
+      }
+    );
+  });
+
+  it('says the same on a write that the static host answers with a bare 405', async () => {
+    const { fetchImpl } = staticHost(NOTICE);
+    const c = new QeployClient(opts(fetchImpl));
+    await assert.rejects(() => c.issueApiToken({ scope: 'READ' }), (e) => e.code === 'SERVICE_SUSPENDED');
+  });
+
+  it('reads the notice from the site root without sending the token', async () => {
+    const { fetchImpl, calls } = staticHost(NOTICE);
+    const c = new QeployClient(opts(fetchImpl));
+    await assert.rejects(() => c.listProjects());
+    const lookup = calls.find((call) => call.url.endsWith('/status.json'));
+    assert.equal(lookup.url, 'https://q.test/status.json');
+    assert.equal(lookup.init.headers?.Authorization, undefined);
+  });
+
+  it('keeps the original error when there is no status file', async () => {
+    const { fetchImpl } = staticHost(undefined);
+    const c = new QeployClient(opts(fetchImpl));
+    await assert.rejects(
+      () => c.listProjects(),
+      (e) => e.status === 404 && /대상을 찾을 수 없습니다/.test(e.toAgentMessage())
+    );
+  });
+
+  it('keeps the original error when the status file says the service is up', async () => {
+    const { fetchImpl } = staticHost({ status: 'operational' });
+    const c = new QeployClient(opts(fetchImpl));
+    await assert.rejects(() => c.issueApiToken({ scope: 'READ' }), (e) => e.status === 405 && e.code === null);
+  });
+
+  it('checks the status file when the connection itself fails', async () => {
+    const c = new QeployClient(
+      opts(async (url) => {
+        if (url.endsWith('/status.json')) return { status: 200, ok: true, text: async () => JSON.stringify(NOTICE) };
+        throw new Error('ECONNREFUSED');
+      })
+    );
+    await assert.rejects(() => c.listProjects(), (e) => e.code === 'SERVICE_SUSPENDED');
+  });
+
+  it('does not look anything up for an error the API itself returned', async () => {
+    const { fetchImpl, calls } = staticHost(NOTICE);
+    const c = new QeployClient(
+      opts(async (url, init) =>
+        url.endsWith('/status.json')
+          ? fetchImpl(url, init)
+          : { status: 404, ok: false, text: async () => JSON.stringify({ code: 'NOT_FOUND', message: '없음' }) }
+      )
+    );
+    await assert.rejects(() => c.getProjectOverview(1), (e) => e.code === 'NOT_FOUND');
+    assert.equal(calls.length, 0);
+  });
+
+  it('uses only the string fields of the notice', async () => {
+    const { fetchImpl } = staticHost({ status: 'suspended', title: { html: '<b>x</b>' }, message: 42 });
+    const c = new QeployClient(opts(fetchImpl));
+    await assert.rejects(() => c.listProjects(), (e) => e.toAgentMessage() === 'Qeploy 서비스 일시 중단');
+  });
+});

@@ -1,6 +1,6 @@
 {
   "name": "@qeploy/client",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Qeploy REST client",
   "type": "module",
   "main": "src/index.js",

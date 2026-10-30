@@ -99,6 +99,18 @@ describe('exit codes', () => {
     assert.equal((await cli(['projects'], { client })).code, EXIT.ERROR);
   });
 
+  it('prints the suspension notice as-is and uses 1, not the auth code', async () => {
+    // A suspended service is not an expired token — CI that rotates credentials on 3 must not fire.
+    const client = {
+      listProjects: async () => {
+        throw new QeployApiError(503, 'SERVICE_SUSPENDED', 'Qeploy 서비스 일시 중단 (2026-10-30부터)\n안내', '/api/v1/projects');
+      },
+    };
+    const { code, err } = await cli(['projects'], { client });
+    assert.equal(code, EXIT.ERROR);
+    assert.equal(err, 'Qeploy 서비스 일시 중단 (2026-10-30부터)\n안내');
+  });
+
   it('prints a version for bare --version', async () => {
     const { code, out } = await cli(['--version']);
     assert.equal(code, EXIT.OK);
