@@ -16,7 +16,7 @@ export function createServer(client, options = {}) {
   const byName = new Map(tools.map((t) => [t.name, t]));
 
   const server = new Server(
-    { name: 'qeploy', version: '0.1.2' },
+    { name: 'qeploy', version: '0.1.3' },
     { capabilities: { tools: {} } }
   );
 

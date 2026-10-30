@@ -1,6 +1,6 @@
 {
   "name": "@qeploy/mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "MCP server exposing Qeploy to coding agents",
   "type": "module",
   "main": "src/index.js",
@@ -25,6 +25,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@qeploy/client": "0.1.2"
+    "@qeploy/client": "0.1.3"
   }
 }

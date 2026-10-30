@@ -3,7 +3,7 @@ import { commands } from './commands.js';
 import { terminalSafe } from './render.js';
 import { UsageError } from './confirm.js';
 
-export const VERSION = '0.1.3';
+export const VERSION = '0.1.4';
 
 /**
  * Exit codes are this CLI's real interface in CI, where nobody reads stderr until something breaks.
