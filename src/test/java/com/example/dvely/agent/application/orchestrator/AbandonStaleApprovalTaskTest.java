@@ -44,7 +44,8 @@ class AbandonStaleApprovalTaskTest {
             mock(ProjectApprovalPolicyRepository.class),
             approvalRepository,
             messageService,
-            mock(InputWaitStore.class)
+            mock(InputWaitStore.class),
+            mock(ActiveRunLimit.class)
     );
 
     @Test

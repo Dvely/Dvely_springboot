@@ -640,6 +640,70 @@ class AgentPlanExecutorTest {
         verify(taskStore, never()).markDone(any(), any(), any());
     }
 
+    @Test
+    void aRemoteThatMovedDuringTheTaskIsANoticeNotAnError() {
+        // #541: 작업 도중 원격 preview 가 바뀌어 push 를 멈춘 것은 정상 거부다. 메시지가 원인과 다음 행동을 이미 담고 있어
+        // 접두 없이 그대로 보이고, ERROR(배포 건강 신호)로 남지 않아야 한다.
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentPlanExecutor executor = executor(codeService, taskStore, messageService);
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        com.example.dvely.agent.infrastructure.git.ServerGitPublisher.RemoteMovedException moved =
+                new com.example.dvely.agent.infrastructure.git.ServerGitPublisher.RemoteMovedException("preview");
+        when(codeService.execute(eq(step), eq(AiProvider.ANTHROPIC), eq(1L), eq(11L), eq("task-1"), any())).thenThrow(moved);
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AgentPlanExecutor.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.ANTHROPIC, 11L), "task-1", 1L);
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        verify(taskStore).markFailed("task-1", moved.getMessage());
+        verify(messageService).appendAssistant(21L, moved.getMessage(), ChatMessageKind.TASK_FAILED, "task-1");
+        assertThat(appender.list).noneMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.ERROR);
+        assertThat(appender.list).anyMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.WARN
+                && event.getFormattedMessage().contains("task-1") && event.getThrowableProxy() == null);
+    }
+
+    @Test
+    void aPreviewLimitHitByTheCodeStepIsANoticeNotAnError() {
+        // #509: CODE 스텝이 사용자별 프리뷰 상한에 걸린 것은 정상 거부다. 메시지에 상한과 다음 행동이 들어 있어 접두 없이
+        // 그대로 보이고, ERROR 로 남지 않아야 한다.
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        AgentPlanExecutor executor = executor(codeService, taskStore, messageService);
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        com.example.dvely.common.limit.UserLimitExceededException limit =
+                new com.example.dvely.common.limit.UserLimitExceededException(
+                        com.example.dvely.common.response.ErrorCode.PREVIEW_LIMIT_EXCEEDED,
+                        "열린 프리뷰가 3개라 새 프리뷰를 띄울 수 없습니다(사용자당 3개).");
+        when(codeService.execute(eq(step), eq(AiProvider.ANTHROPIC), eq(1L), eq(11L), eq("task-1"), any())).thenThrow(limit);
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AgentPlanExecutor.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.ANTHROPIC, 11L), "task-1", 1L);
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        verify(taskStore).markFailed("task-1", limit.getMessage());
+        verify(messageService).appendAssistant(21L, limit.getMessage(), ChatMessageKind.TASK_FAILED, "task-1");
+        assertThat(appender.list).noneMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.ERROR);
+        assertThat(appender.list).anyMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.WARN
+                && event.getFormattedMessage().contains("PREVIEW_LIMIT_EXCEEDED") && event.getThrowableProxy() == null);
+    }
+
     private AgentPlanExecutor executor(CodeAgentService codeService,
                                        TaskStore taskStore,
                                        AgentMessageService messageService) {

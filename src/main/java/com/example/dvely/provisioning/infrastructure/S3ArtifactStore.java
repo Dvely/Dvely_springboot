@@ -80,6 +80,16 @@ public class S3ArtifactStore {
         return projectId + "/web.tar";
     }
 
+    /** 프로젝트별 앱 빌드 컨텍스트 tar 키(DOCKER + TARGET 빌드, #556). 대상 EC2 가 받아 그 자리에서 빌드한다. */
+    public String appContextKeyFor(Long projectId) {
+        return projectId + "/app-context.tar";
+    }
+
+    /** 프로젝트별 웹 빌드 컨텍스트 tar 키(DOCKER + TARGET 빌드, #556). */
+    public String webContextKeyFor(Long projectId) {
+        return projectId + "/web-context.tar";
+    }
+
     /** 버킷이 없으면 만든다(멱등). 이미 있으면 아무것도 안 한다. */
     public void ensureBucket(CloudConnection connection, String bucket) {
         AwsAccess access = credentialsResolver.resolve(connection);

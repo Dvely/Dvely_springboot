@@ -438,7 +438,9 @@ public class ProjectQueryService {
                 project.getName(),
                 project.getDeployStatus().name(),
                 project.getCurrentUrl(),
-                project.getUpdatedAt()
+                project.getUpdatedAt(),
+                project.getStartMode(),
+                project.getTemplateType()
         );
     }
 

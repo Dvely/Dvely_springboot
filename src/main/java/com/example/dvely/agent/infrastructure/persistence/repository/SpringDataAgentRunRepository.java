@@ -286,4 +286,7 @@ public interface SpringDataAgentRunRepository extends JpaRepository<AgentRunEnti
             @Param("taskId") String taskId,
             @Param("ownerUserId") Long ownerUserId
     );
+
+    // #509: 사용자별 동시 런 상한의 셈. idx_agent_runs_user_created(user_id, created_at) 의 user_id 로 좁힌다.
+    long countByOwnerUserIdAndStatusIn(Long ownerUserId, Collection<String> statuses);
 }

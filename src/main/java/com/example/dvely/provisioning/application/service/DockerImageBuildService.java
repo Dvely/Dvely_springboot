@@ -62,10 +62,28 @@ public class DockerImageBuildService {
     }
 
     /**
-     * 앱 소스를 격리 컨테이너로 clone 하고 Dockerfile 을 보장한 뒤, 빌드 컨텍스트 tar 를 호스트로 꺼내
-     * 그 경로를 돌려준다(컨테이너는 여기서 정리). S3·ECR 두 전달 경로가 공유. 호출자가 tar 를 지운다.
+     * 대상 EC2 에서 빌드할 컨텍스트(#556). 이미지는 만들지 않고 컨텍스트 tar 만 꺼낸다. {@code jvm} 은 앱 루트에
+     * Gradle·Maven 마커가 있는지다 — 사용자 Dockerfile 이 있어도 본다. JVM 빌드는 메모리가 커서 대상 사양 하한을
+     * 정하는 데 쓴다. 호출자가 tar 를 지운다.
      */
+    public record TargetContext(Path contextTar, boolean jvm) {}
+
+    public TargetContext prepareTargetContext(Long ownerUserId, Long projectId) {
+        boolean[] jvm = new boolean[1];
+        Path contextTar = prepareContextTar(ownerUserId, projectId, containerId -> jvm[0] = isJvm(containerId));
+        return new TargetContext(contextTar, jvm[0]);
+    }
+
     private Path prepareContextTar(Long ownerUserId, Long projectId) {
+        return prepareContextTar(ownerUserId, projectId, containerId -> { });
+    }
+
+    /**
+     * 앱 소스를 격리 컨테이너로 clone 하고 Dockerfile 을 보장한 뒤, 빌드 컨텍스트 tar 를 호스트로 꺼내
+     * 그 경로를 돌려준다(컨테이너는 여기서 정리). S3·ECR·대상 빌드 경로가 공유. 호출자가 tar 를 지운다.
+     */
+    private Path prepareContextTar(Long ownerUserId, Long projectId,
+                                   java.util.function.Consumer<String> inspect) {
         Project project = projectRepository.findByIdAndOwnerUserId(projectId, ownerUserId)
                 .orElseThrow(() -> new BackendBuildException("프로젝트를 찾을 수 없습니다: " + projectId));
         String sourceRepo = project.getSourceRepository();
@@ -78,6 +96,7 @@ public class DockerImageBuildService {
                 ownerUserId, sessionId, projectId, null, null);
         try {
             sourceClone.cloneInto(containerId, ownerUserId, sourceRepo);
+            inspect.accept(containerId);
             ensureDockerfile(containerId);
             return sourceClone.tarContextOut(containerId, APP_DIR);
         } finally {
@@ -115,6 +134,12 @@ public class DockerImageBuildService {
                 || exists(containerId, APP_DIR + "/next.config.ts")
                 || (packageJson && grepQuiet(containerId, "\\\"next\\\"", APP_DIR + "/package.json"));
         return DefaultDockerfileFactory.decide(gradle, maven, packageJson, next);
+    }
+
+    private boolean isJvm(String containerId) {
+        return exists(containerId, APP_DIR + "/build.gradle")
+                || exists(containerId, APP_DIR + "/build.gradle.kts")
+                || exists(containerId, APP_DIR + "/pom.xml");
     }
 
     private boolean exists(String containerId, String path) {

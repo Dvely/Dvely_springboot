@@ -98,16 +98,16 @@ jobs:
       GITHUB_WEBHOOK_SECRET: ci-dummy-webhook-secret
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up JDK 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '25'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
 
       - name: Generate dummy GitHub App private key
         run: openssl genrsa -out "${{ github.workspace }}/ci-github-app.pem" 2048
@@ -115,15 +115,16 @@ jobs:
       - name: Build and test
         run: ./gradlew build --no-daemon
 
-      # 실패했을 때 어느 테스트가 왜 깨졌는지 보려면 HTML 리포트가 필요하다.
+      # 실패했을 때 어느 테스트가 왜 깨졌는지 보려면 HTML 리포트가 필요하다. 커버리지 리포트(JaCoCo)도 같이 올린다.
       # 로그만으로는 @SpringBootTest 컨텍스트 로딩 실패의 원인 예외를 찾기 어렵다.
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-report
           path: |
             build/reports/tests/test
             build/test-results/test
+            build/reports/jacoco/test
           retention-days: 7
           if-no-files-found: ignore

@@ -24,7 +24,46 @@ class AgentMessageServiceTest {
     private static final String START_NOTICE = "모든 승인이 완료되어 작업을 시작합니다.";
 
     private final ChatMessageRepository repository = mock(ChatMessageRepository.class);
-    private final AgentMessageService service = new AgentMessageService(repository);
+    private final RequestOutcomeResolver outcomes = mock(RequestOutcomeResolver.class);
+    private final AgentMessageService service = new AgentMessageService(repository, outcomes);
+
+    @org.junit.jupiter.api.BeforeEach
+    void unknownOutcomesByDefault() {
+        org.mockito.Mockito.when(outcomes.resolve(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(RequestOutcomeResolver.Outcome.UNKNOWN);
+    }
+
+    @Test
+    void pastRequestsCarryHowTheyEndedSoDeclinedOnesAreNotReapplied() {
+        // 2026-10-28 dev: "한 줄만 추가" 요청에 모델이 앞선 요청들을 모두 취합했다 — 결과를 거절하고 되돌린 요청까지
+        // 이번 작업의 변경으로 되살아났다. 지난 요청마다 어떻게 끝났는지를 붙여 넘긴다.
+        when(repository.findAllByConversationIdOrderByCreatedAtAsc(21L)).thenReturn(List.of(
+                userMessage("'범위 검증' 줄 추가해줘", "t-revert"),
+                userMessage("'카드 검증' 줄 추가해줘", "t-keep"),
+                userMessage("'경쟁' 줄 추가해줘", "t-failed"),
+                userMessage("'정상' 줄 추가해줘", "t-done"),
+                userMessage("'취소' 줄 추가해줘", "t-cancel"),
+                userMessage("'서버 clone 점검' 한 줄만 추가해줘", "t-now")));
+        when(outcomes.resolve("t-revert")).thenReturn(RequestOutcomeResolver.Outcome.REVERTED);
+        when(outcomes.resolve("t-keep")).thenReturn(RequestOutcomeResolver.Outcome.REJECTED);
+        when(outcomes.resolve("t-failed")).thenReturn(RequestOutcomeResolver.Outcome.FAILED);
+        when(outcomes.resolve("t-done")).thenReturn(RequestOutcomeResolver.Outcome.DONE);
+        when(outcomes.resolve("t-cancel")).thenReturn(RequestOutcomeResolver.Outcome.CANCELLED);
+
+        assertThat(service.getUserIntentHistory(21L)).extracting(LlmMessage::content).containsExactly(
+                "[참고: 이전 요청 — 사용자가 결과를 거절하고 되돌림. 다시 적용하지 말 것]\n'범위 검증' 줄 추가해줘",
+                "[참고: 이전 요청 — 사용자가 거절함. 다시 적용하지 말 것]\n'카드 검증' 줄 추가해줘",
+                "[참고: 이전 요청 — 실패해 반영되지 않음. 다시 적용하지 말 것]\n'경쟁' 줄 추가해줘",
+                "[참고: 이전 요청 — 처리 완료]\n'정상' 줄 추가해줘",
+                "[참고: 이전 요청 — 취소됨. 다시 적용하지 말 것]\n'취소' 줄 추가해줘",
+                "[지금 처리할 요청]\n'서버 clone 점검' 한 줄만 추가해줘");
+        // 지금 요청의 결과는 묻지 않는다 — 아직 계획 전이다
+        org.mockito.Mockito.verify(outcomes, org.mockito.Mockito.never()).resolve("t-now");
+    }
+
+    private static ChatMessage userMessage(String content, String taskId) {
+        return new ChatMessage(21L, ChatRole.USER, content, 0, null, taskId);
+    }
 
     @Test
     void planningInputCarriesUserMessagesOnly() {

@@ -31,16 +31,17 @@ jobs:
         working-directory: agent-tools
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Trusted Publishing 은 npm 11.5.1 이상을 요구한다. Node 24 에 들어 있는 npm 이 그 이상이다.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      # npm ci 가 아니다 — agent-tools/.gitignore 가 package-lock.json 을 빼고 있어 ci 는 lock 이 없다며 죽는다.
-      - run: npm install --no-audit --no-fund
+      # lock 파일 그대로 설치한다(#511 B11). 의존성의 설치 스크립트는 돌리지 않는다 — 테스트·배포에 필요 없고, 남이 올린
+      # 패키지의 스크립트가 배포 토큰이 있는 이 잡에서 실행되는 것을 막는다.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test
 
       # client 가 먼저다 — mcp·cli 가 그 버전을 의존한다. 하나라도 실패하면 거기서 멈춘다.

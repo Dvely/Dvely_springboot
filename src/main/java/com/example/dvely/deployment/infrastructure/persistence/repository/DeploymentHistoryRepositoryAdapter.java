@@ -185,4 +185,14 @@ public class DeploymentHistoryRepositoryAdapter implements DeploymentHistoryRepo
                 historyIds
         );
     }
+
+    @Override
+    @Transactional
+    public boolean settle(Long historyId, DeployStatus outcome) {
+        return springDataRepository.settle(
+                historyId,
+                outcome.name(),
+                List.of(DeployStatus.PENDING.name(), DeployStatus.IN_PROGRESS.name())
+        ) == 1;
+    }
 }

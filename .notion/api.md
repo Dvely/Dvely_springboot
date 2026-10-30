@@ -63,11 +63,13 @@
 - `405 Method Not Allowed`: `METHOD_NOT_ALLOWED`
 - `409 Conflict`: 중복 생성 등 상태 충돌 (예: 동일 (project, scope, key) 환경변수 재생성). `IllegalStateException` 전반과 낙관적 잠금 경합(`@Version`, "다른 요청과 동시에 수정되어…")도 409다
 - `429`/`502`/`503`: AI 제공자 호출 실패 — `AI_PROVIDER_RATE_LIMITED`(429) · `AI_PROVIDER_ERROR`(502) · `AI_PROVIDER_UNAVAILABLE`(503)
+- `429 Too Many Requests`: 사용자별 동시 실행 상한(#509) — `ACTIVE_RUN_LIMIT_EXCEEDED`(새 런) · `PREVIEW_LIMIT_EXCEEDED`(새 프리뷰 컨테이너). 메시지에 지금 수·상한·다음 행동이 들어 있으니 그대로 보여 주면 된다. 시간이 지나면 풀리는 것이 아니라 진행 중인 것이 끝나거나 닫혀야 풀리므로 `Retry-After` 는 없다. 아래 §2.6
 - `503 Service Unavailable`: `PREVIEW_ENVIRONMENT_UNAVAILABLE`(Docker 접근 불가), `TEMPLATE_CATALOG_UNAVAILABLE`(§17.3)
 - `500 Internal Server Error`: 처리되지 않은 외부 연동/서버 오류
 
 도메인 전용 코드: `GITHUB_APP_NOT_INSTALLED`(403) · `GITHUB_APP_REPOSITORY_ACCESS_DENIED`(403) · `GITHUB_APP_REAUTHORIZATION_REQUIRED`(403, 설치는 있으나 사용자 토큰이 없거나 GitHub 가 리프레시를 거부 — 재인증으로 보낸다, #516) · `AI_CREDENTIAL_NOT_REGISTERED`(400) · `INVALID_TOKEN`/`EXPIRED_REFRESH_TOKEN`/`REVOKED_REFRESH_TOKEN`(401).
 
+- 400·403·404·409 의 `message` 는 화면 문구로 쓸 수 있게, 끝에 붙은 내부 식별자·상태값 꼬리(`taskId=…`, `approvalId=…`, `status=…` 등)를 떼고 내려간다(`UserFacingMessage`). 로그에는 원문이 남는다. 사용자에게 의미 있는 값(환경변수 키·저장소·브랜치)과 실패 진단(`exit=…`)은 남는다
 - 클라이언트가 응답 도중 연결을 끊은 경우(SSE 탭 닫기 등, `AsyncRequestNotUsableException`)는 오류 응답을 쓰지 않고 DEBUG 로그 한 줄만 남긴다(#423). ERROR 수를 배포 건강 신호로 쓰기 때문이다.
 - PAT 스코프 거부(403, §18.3)는 보안 필터가 직접 쓰며 본문이 `{"code":"FORBIDDEN","message":"..."}`로 `status`/`data`가 없다.
 
@@ -93,6 +95,22 @@
 - Provisioning (Server, Database)
 
 ---
+
+### 2.6 사용자별 동시 실행 상한 (Issue #509)
+
+한 사용자가 실행 스레드와 프리뷰 컨테이너를 독점하지 않게 한다. 값은 `qeploy.limits.per-user.*`(env `QEPLOY_LIMITS_PER_USER_*`), 1 미만이면 기동을 멈춘다.
+
+| 상한 | 기본 | 세는 것 | 거는 곳 |
+|---|---|---|---|
+| `max-active-runs` | 2 | 기계가 일하고 있는 런 — `PENDING`·`QUEUED`·`RETRY_WAIT`·`RUNNING`. 승인·되묻기를 기다리는 런은 세지 않는다 | 세지 않는 상태에서 세는 상태로 올리는 곳 전부: 새 런(`POST /conversations/{id}/messages`, `POST /agent/tasks`, 도메인 연결·해제 제출), 재시도(`POST /agent/tasks/{taskId}/retry`), 계획 승인 완료(`POST /approvals/{id}/approve` 가 런을 실행으로 올릴 때 — 승인은 PENDING 그대로), 되묻기 답(`POST /agent/tasks/{taskId}/input` — 답은 저장되지 않음) → `429 ACTIVE_RUN_LIMIT_EXCEEDED` |
+| `max-live-previews` | 3 | `ACTIVE`·`PROVISIONING` 프리뷰 세션 | 새 컨테이너가 뜨는 곳: `POST /projects/{projectId}/preview-session` → `429 PREVIEW_LIMIT_EXCEEDED`. Agent CODE 스텝 → 태스크가 `FAILED` 로 끝나고 대화에 같은 문장이 `TASK_FAILED` 로 남는다 |
+
+- 이미 떠 있는 세션에 붙는 프리뷰 요청은 컨테이너가 늘지 않으므로 세지 않는다
+- 프리뷰 자리가 없으면 먼저 **끝난(DONE·CANCELLED) 작업의 프리뷰**를 오래 안 본 순서로 닫아(`EXPIRED`) 자리를 만든다. 사용자가 연 프로젝트 프리뷰, 진행 중·결과 승인 대기·실패(재시도가 작업물을 이어 씀) 작업의 프리뷰는 닫지 않는다. 그래도 자리가 없을 때만 거절한다
+- 같은 사용자의 동시 요청도 상한을 넘지 못한다. 런은 사용자 행 잠금으로 한 줄로 세우고, 프리뷰는 행을 저장한 뒤 다시 세어 넘친 쪽이 물러난다(동시에 몰리면 둘 다 물러날 수 있다 — 다시 시도하면 된다)
+- 상한을 보지 않는 전이: 결과 승인·저장소 연결 승인 뒤의 재개(런마다 한 번, 이미 실행된 런의 남은 단계. 그 승인 처리는 GitHub 반영 중 토큰 갱신이 사용자 행을 잠글 수 있어 같은 잠금을 쥘 수 없다), 빌드 실패 자동 복구, 멈춘 승인 복구 스윕
+  - 그래서 결과 승인 순간 런 수가 상한을 넘을 수 있다(의도). 넘는 폭은 그 사용자의 결과 승인 대기 런 수로 묶이고, 그 런들은 살아 있는 프리뷰를 붙들고 있어(프리뷰가 회수되면 #380 스윕이 5분 안에 닫는다) `max-live-previews` 를 넘지 않는다 — 최악 런 2 + 3
+- 자리 만들기로 닫힌 프리뷰는 TTL 만료와 같은 `EXPIRED` 다: `POST /preview-sessions/{id}/access` 는 `409 CONFLICT`("종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요." — 준비 중이면 "아직 준비 중인 프리뷰입니다. 준비가 끝나면 다시 열어 주세요."), `GET /preview-sessions/{id}/status` 는 200 `sessionStatus=EXPIRED`·`containerRunning=false`, 이미 열린 iframe 의 다음 문서 요청은 게이트웨이 404
 
 ## 3. Auth API
 
@@ -226,7 +244,7 @@ Base path: `/api/v1/projects`
 | POST | `/api/v1/projects/{projectId}/repository` | 새 저장소 생성 또는 기존 저장소 연결 |
 | DELETE | `/api/v1/projects/{projectId}/repository` | GitHub 저장소 연결 해제(비파괴, GitHub 호출 없음) |
 | GET | `/api/v1/projects/github/repositories` | 접근 가능한 GitHub 저장소 목록 조회. 유저별 60초 캐시, `?refresh=true`로 무효화 |
-| GET | `/api/v1/projects` | 내 프로젝트 목록을 최근 수정순 조회 |
+| GET | `/api/v1/projects` | 내 프로젝트 목록을 최근 수정순 조회. 항목: `projectId`·`name`·`deployStatus`·`currentUrl`·`updatedAt`·`updatedAtRelativeText`·`startMode`·`templateType`(상세와 같은 값, 템플릿 없으면 null) |
 | GET | `/api/v1/projects/{projectId}` | 프로젝트 기본 정보 조회 |
 | PATCH | `/api/v1/projects/{projectId}` | 프로젝트 이름 수정 |
 | DELETE | `/api/v1/projects/{projectId}` | 프로젝트 제거 또는 저장소 포함 삭제 |
@@ -532,7 +550,7 @@ Base path: `/api/v1/projects/{projectId}/environment-variables`
 | POST | `/api/v1/trash/conversations/{conversationId}/restore` | 대화 복구 |
 | DELETE | `/api/v1/trash/conversations/{conversationId}` | 휴지통 대화 즉시 영구 삭제 |
 | GET | `/api/v1/conversations/{conversationId}/messages` | 메시지 목록(생성순, `limit`·`after` 커서) |
-| POST | `/api/v1/conversations/{conversationId}/messages` | USER 메시지 저장 후 Agent task를 비동기 제출(`201`, `taskId` 즉시 반환) |
+| POST | `/api/v1/conversations/{conversationId}/messages` | USER 메시지 저장 후 Agent task를 비동기 제출(`201`, `taskId` 즉시 반환). 동시 런 상한이면 `429 ACTIVE_RUN_LIMIT_EXCEEDED` — 메시지도 저장되지 않는다(§2.6) |
 
 메시지 생성:
 
@@ -654,7 +672,7 @@ Base path: `/api/v1/agent`
 |---|---|---|
 | GET | `/api/v1/agent/tasks/{taskId}/events?afterEventId={id}` | event ID 기반 polling(`afterEventId` 기본 0, 시간순). `type`은 생명주기(CREATED/QUEUED/STARTED/COMPLETED/FAILED/CANCELLED/WAITING_APPROVAL/WAITING_INPUT/WAITING_RESULT_APPROVAL/REPLANNED/INPUT_RECEIVED/RETRY_QUEUED)와 스텝(STEP_STARTED/STEP_COMPLETED). 스텝 이벤트만 `stepIndex`·`stepTotal`·`agentType`을 싣는다. 모르는 type은 무시 |
 | GET | `/api/v1/agent/tasks/{taskId}/events/stream` | 영속 이벤트 SSE. 여는 즉시 주석 프레임 `:hb` 를 쓰고 유휴 시 15초마다 반복한다(#370 — 이것이 없으면 보낼 이벤트가 없는 재연결이 응답 헤더를 못 내보내 프록시에 끊긴다). `data:` 가 없으므로 이벤트가 아니다 |
-| POST | `/api/v1/agent/tasks/{taskId}/retry` | 실패 task 수동 재시도. 성공 `202`. FAILED가 아니거나, attempt가 소진됐거나, PENDING 승인이 남았거나(`pendingApprovalId` non-null — 먼저 그 승인을 처리해야 함), 없는·남의 task면 모두 `409`(404가 아니다). `retryable:true`일 때만 호출할 것 |
+| POST | `/api/v1/agent/tasks/{taskId}/retry` | 실패 task 수동 재시도. 성공 `202`. FAILED가 아니거나, attempt가 소진됐거나, PENDING 승인이 남았거나(`pendingApprovalId` non-null — 먼저 그 승인을 처리해야 함), 없는·남의 task면 모두 `409`(404가 아니다). 재시도할 수 있는데 동시 런 상한이면 `429 ACTIVE_RUN_LIMIT_EXCEEDED`(§2.6). `retryable:true`일 때만 호출할 것 |
 
 ### 9.3 실제 Agent 동작
 
@@ -1035,7 +1053,7 @@ DELETE /agent/session
 
 ```text
 GET  /projects/{projectId}/preview-session      # 프로젝트의 현재 프리뷰(없으면 204)
-POST /projects/{projectId}/preview-session      # 프리뷰 띄우기(200 연결 / 202 준비 시작 / 409 저장소 미연결 / 503 Docker). ?force=true 는 기존 세션을 닫고 항상 새로 빌드(202)
+POST /projects/{projectId}/preview-session      # 프리뷰 띄우기(200 연결 / 202 준비 시작 / 409 저장소 미연결 / 429 프리뷰 상한(§2.6) / 503 Docker). ?force=true 는 기존 세션을 닫고 항상 새로 빌드(202)
 POST /preview-sessions/{sessionId}/access       # 열람 권한 발급 — iframe 표시 직전 필수(404 없음·타유저 / 409 종료·준비중)
 GET  /preview-sessions/{sessionId}/status
 GET  /preview-sessions/{sessionId}/logs

@@ -1,5 +1,8 @@
 package com.example.dvely.project.application.query;
 
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import com.example.dvely.project.application.result.ProjectSummaryResult;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
@@ -77,7 +80,8 @@ class ProjectQueryServiceTest {
         );
         now = LocalDateTime.now();
         project = project();
-        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
+        // 목록 테스트는 단건 조회를 쓰지 않는다
+        org.mockito.Mockito.lenient().when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L))
                 .thenReturn(Optional.of(project));
     }
 
@@ -210,6 +214,23 @@ class ProjectQueryServiceTest {
                 .extracting(event -> event.type())
                 .containsExactly("DOMAIN_CONNECTED", "PROJECT_CREATED");
         assertThat(logs.get(0).message()).contains("sample.qeploy.com", "CONNECTED");
+    }
+
+    @Test
+    void theProjectListCarriesStartModeAndTemplateFromTheRowsAlreadyLoaded() {
+        Project templated = new Project(17L, 1L, "craft-roast-demo", ProjectStatus.ACTIVE, "template", "craft-roast",
+                "fast", DeployStatus.LIVE, null, null, null, null, RepositoryVisibility.PUBLIC,
+                RepositoryBindingStatus.NOT_BOUND, RepositoryHealthStatus.HEALTHY, false, now.minusDays(1), now);
+        when(projectRepository.findAllByOwnerUserIdAndDeletedFalseOrderByUpdatedAtDesc(1L))
+                .thenReturn(List.of(templated, project));
+
+        List<ProjectSummaryResult> projects = service.getProjects(1L);
+
+        assertThat(projects).extracting(ProjectSummaryResult::startMode).containsExactly("template", "blank");
+        assertThat(projects).extracting(ProjectSummaryResult::templateType).containsExactly("craft-roast", null);
+        // 목록 한 번 읽기로 끝난다 — 프로젝트마다 다시 조회하지 않는다(N+1 없음)
+        verify(projectRepository).findAllByOwnerUserIdAndDeletedFalseOrderByUpdatedAtDesc(1L);
+        verifyNoMoreInteractions(projectRepository);
     }
 
     private Project project() {

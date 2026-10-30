@@ -1516,6 +1516,88 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 출력은 별도 스레드가 읽고 끝부분 64KB 만 남긴다(파이프 막힘과 대기를 분리)
 - kaniko 이미지 digest 고정(이슈 PR-2)은 아직이다
 
+## 4.41 이미지 빌드 격리 기본값 kaniko + 이미지 digest 고정 (Issue #507 PR-2)
+
+- `qeploy.provisioning.ec2.build-isolation` 기본값을 BUILDX → **KANIKO** 로 바꿨다. BUILDX 는 명시할 때만 쓴다. 그 밖의 값도 KANIKO 로 본다
+- kaniko 는 amd64 컨트롤 플레인에서만 빌드한다. 다른 arch 에서는 빌드를 거부하고 BUILDX 설정을 안내한다(예전처럼 엉뚱한 arch 이미지를 내보내지 않게)
+- buildx 플러그인이 없을 때의 호스트 `docker build` 는 `qeploy.provisioning.ec2.allow-native-build=true` 일 때만 허용한다(기본 거부)
+- kaniko 이미지: `ghcr.io/osscontainertools/kaniko` v1.29.0 을 digest 로 고정(원 프로젝트는 2025-06 아카이브)
+- 운영·dev 모두 build-isolation 설정이 없어 이 변경이 나가면 KANIKO 로 빌드한다. 운영·dev 호스트는 x86_64 다
+
+## 4.42 계획 단계가 거절·되돌림된 이전 요청을 다시 적용하지 않게 한다
+
+- 2026-10-28 dev 실측에서 "한 줄만 추가" 요청에 의사결정 에이전트가 같은 대화의 이전 요청들을 모두 취합해 CODE 지시를 다시 썼다. 사용자가 결과를 거절하고 되돌린 요청, push 거부로 반영되지 않은 요청까지 이번 작업의 변경으로 되살아났다. 결과 승인 반영 범위(#532)는 커밋 단위라 이걸 드러내지 못한다
+- 계획 입력(`AgentMessageService.getUserIntentHistory`)의 지난 요청마다 결과를 붙인다(`RequestOutcomeResolver`): 결과를 거절하고 되돌림 / 거절함 / 취소됨 / 실패해 반영되지 않음 — 이 넷은 "다시 적용하지 말 것" — 그리고 처리 완료. 거절은 태스크의 승인 기록으로(저장소 연결 거절은 작업 거절이 아니라 제외), 나머지는 태스크 상태로 판정한다
+- 시스템 프롬프트가 표시의 뜻을 정의한다: [지금 처리할 요청] 만 계획한다, 이전 요청의 변경을 지시에 섞지 않는다, "다시 적용하지 말 것" 은 되살리지 않는다, 지금 요청이 명시적으로 다시 해 달라고 할 때만 예외
+- 모델 행동 자체는 단위 테스트로 고정할 수 없다. 테스트는 모델에 넘기는 입력(표시·프롬프트 문구)을 고정한다. dev 실측으로 한 번 더 확인이 필요하다
+
+## 4.43 Anthropic thinking 요청을 모델별 형식으로 (Issue #510)
+
+- `LlmRequestOptions.applyAnthropic(body, model, options, baseMaxTokens)` 가 모델을 보고 형식을 고른다. 근거는 Anthropic 공식 thinking 문서의 모델별 표(2026-10-28 대조)
+  - 4.6 이상(Opus·Sonnet 4.6, Opus 4.7·4.8·5·5.5, Sonnet 5·5.5, Haiku 5.5, Fable·Mythos): `thinking: {type: "adaptive"}` + `output_config: {effort: low|medium|high}`. 4.7 이상은 `budget_tokens` 가 400, 4.6 은 받지만 폐기 예정
+  - 4.5 이하(Opus·Sonnet·Haiku 4.5, 4.1·4·3.x): `thinking: {type: "enabled", budget_tokens}` 유지. 이쪽은 adaptive 가 400
+  - thinking OFF 는 어떤 모델에도 `thinking` 을 보내지 않는다(새 모델 일부가 `"disabled"` 를 400 으로 거부)
+  - adaptive 도 생각을 `max_tokens` 에서 쓰므로 수준별 여유(2k/4k/8k)를 그대로 더한다
+- 판별은 모델 id 의 버전(`claude-opus-4-5-20251101`, `claude-3-7-sonnet-…`, `us.anthropic.claude-…-v1:0`, `…@날짜`)으로 하고, 버전을 못 읽으면 adaptive 로 본다
+- 기본 모델(`claude-opus-4-5-20251101`)·`thinking-models` 기본값은 그대로다 — 운영 동작 변화 없음
+
+## 4.44 사용자별 동시 런·프리뷰 상한 (Issue #509 PR-1)
+
+- 예전에는 한 사용자가 런과 프리뷰 컨테이너를 얼마든지 열 수 있었다(429 는 LLM 제공자 오류 매핑에만 있었다). 이제 넘으면 `429 ACTIVE_RUN_LIMIT_EXCEEDED` / `429 PREVIEW_LIMIT_EXCEEDED` 다(api.md §2.6)
+- 런: `qeploy.limits.per-user.max-active-runs` 기본 2. PENDING·QUEUED·RETRY_WAIT·RUNNING 만 센다. 세지 않는 상태에서 세는 상태로 올리는 곳에서 건다 — 새 런(`AgentOrchestrator.savePendingTask` — 채팅 전송·`POST /agent/tasks`·도메인 제출), 사용자 재시도(`retryByOwner`), 계획 승인 완료(`executeApproved`), 되묻기 답(`supplyInput`). 사용자 행을 잠근 뒤 새 트랜잭션에서 센다 — 같은 트랜잭션에서 세면 잠금 전에 잡힌 REPEATABLE READ 스냅샷 때문에 동시 요청 둘이 다 통과한다(통합 테스트가 그 상황을 재현한다)
+- 프리뷰: `max-live-previews` 기본 3. ACTIVE·PROVISIONING 을 센다. 새 컨테이너를 띄우는 두 곳(프로젝트 프리뷰 `provision`, CODE 스텝 `acquire`)에서 건다. 자리가 없으면 끝난(DONE·CANCELLED) 작업의 프리뷰를 오래 안 본 순서로 먼저 닫는다. 저장 뒤 다시 세어 동시 요청의 초과를 되돌린다
+- CODE 스텝이 프리뷰 상한에 걸리면 태스크는 FAILED, 대화에 상한 문장이 접두 없이 남고 로그는 WARN 이다(#541 과 같은 처리)
+- 결과 승인·저장소 연결 승인 뒤의 재개, 빌드 실패 자동 복구, 멈춘 승인 복구 스윕은 상한을 보지 않는다. 앞의 둘은 승인 처리 중 토큰 갱신이 별도 트랜잭션에서 사용자 행을 잠글 수 있어 같은 잠금을 쥘 수 없다(쥐면 자기 자신을 기다린다). 그래서 결과 승인 순간 상한을 넘을 수 있는데, 넘는 폭은 결과 승인 대기 런 수 — 이 런들은 살아 있는 프리뷰를 붙들고 있어 프리뷰 상한(3)으로 묶인다(최악 런 2 + 3)
+- 인증 경로 nginx `limit_req`(같은 이슈의 서버 작업)는 저장소 밖이라 이 PR 에 없다. dev·운영 둘 다 손대야 한다
+
+## 4.45 오류 응답 message 에서 내부 식별자·상태값 꼬리를 뗀다 (Issue #554)
+
+- FE 가 오류 응답 `message` 를 화면 문구로 그대로 쓰는데, 끝에 `taskId=…`·`status=EXPIRED` 같은 꼬리가 붙어 있었다
+- `GlobalExceptionHandler` 의 400·403·404·409 가 `UserFacingMessage.of` 로 끝의 꼬리(키 목록: taskId·approvalId·sessionId·projectId·status·id 등)를 떼고 보낸다. 로그에는 원문이 남는다. 던지는 쪽 메시지는 바꾸지 않았다(로그 진단 유지, 여러 도메인 동시 수정 회피)
+- 남기는 것: 목록에 없는 키(환경변수 키·저장소·브랜치)와 실패 진단(`exit=…`), 문장 가운데의 값
+- 프리뷰 열람 409 는 상태별 문장이다: 준비 중 "아직 준비 중인 프리뷰입니다. 준비가 끝나면 다시 열어 주세요." / 그 밖 "종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요."
+- 범위 밖: 채팅 TASK_FAILED 문구, 영어로 남은 메시지
+
+## 4.46 프로젝트 목록에 템플릿 정보 (Issue #558)
+
+- 목록 응답(`GET /projects`)에 `startMode`·`templateType` 이 없어, FE 목록 카드가 템플릿을 고른 프로젝트까지 전부 "빈 템플릿 · 템플릿 미설정"으로 보였다. 상세 응답과 같은 이름·값으로 추가했다
+- 두 값은 `projects` 행에 있어 목록 쿼리 한 번으로 끝난다(N+1 없음). 직렬화된 JSON 에 두 필드가 실리는지 계약 테스트(`ProjectListContractTest`)로 고정했다
+
+## 4.47 기본 사용자 자동 구성 끔 (Issue #560)
+
+- Spring Boot 의 기본 사용자 자동 구성(`UserDetailsServiceAutoConfiguration`)이 기동할 때마다 쓰지 않는 사용자를 만들고 비밀번호를 로그에 찍었다("Using generated security password"). 인증은 JWT·GitHub OAuth 뿐이고 폼·Basic 로그인이 없어 그 사용자로 들어올 길은 없었지만, 로그에 비밀번호 모양 문자열이 남았다(운영 pm2 로그 107건)
+- `@SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)`. `NoDefaultUserTest` 가 사용자 빈이 없음·토큰 없는 보호 경로 401·Basic 401·정상 JWT 200 을 확인한다
+
+## 4.48 DOCKER 배포 이미지를 대상 EC2 에서 빌드(플래그) (Issue #556)
+
+- `qeploy.provisioning.ec2.image-build-location=CONTROL_PLANE|TARGET`(기본 CONTROL_PLANE, 그 밖의 값은 기동 실패). #545 결정의 A
+- TARGET: 컨트롤 플레인은 clone·Dockerfile 확인만 하고 빌드 컨텍스트 tar(앱 `{projectId}/app-context.tar`, 웹 `web-context.tar`)를 S3 로 올린다. 대상 EC2 의 부팅 스크립트가 받아 `docker build`(빌드 상한 = image-build-timeout) 후 기존과 같은 실행 단계(docker run·compose)
+- 빌드 상태 자가 보고: `/qeploy/build-status/{projectId}/{instanceId}` 에 BUILDING → BUILT 또는 BUILD_FAILED(+로그 꼬리). 인스턴스 역할에 그 경로 PutParameter 만 추가(TARGET 일 때)
+- 상태 워커: TARGET 서버는 기한이 부트 20분 + 빌드 상한. BUILD_FAILED 는 바로 FAILED(빌드 로그 → 부트 진단, terminate·EIP 해제). 빌드 중 기한 초과는 "이미지 빌드가 끝나지 않았습니다"
+- JVM(Gradle·Maven) 앱 + TARGET 은 nano·micro 를 실행 전에 거절(t3.small 이상). swap 안 씀
+- 서버에 `image_build_location`(V71, NATIVE·이전 행 NULL)
+- 운영·dev 기본값은 그대로 CONTROL_PLANE. 켜기 전에 dev e2e(비용, 사용자 승인) 필요. CONTROL_PLANE 경로 제거는 약 2주 뒤 별도 PR
+
+## 4.49 배포 결과 확정은 이력당 한 번 (Issue #511 B10)
+
+- 확정을 부르는 곳은 workflow_run 웹훅, `StuckDeploymentRecoveryWorker`, S3 정적 배포 세 곳이다. 지금까지는 메모리에 읽어 둔 상태로만 걸러서, 웹훅과 회수 워커가 같은 순간 들어오면 둘 다 통과해 대화 알림·감사 기록이 두 번 남을 수 있었다(단일 인스턴스에서도 드물게, 다중 인스턴스면 상시)
+- `DeploymentOutcomeService` 가 확정 전에 `DeploymentHistoryRepository.settle` — `UPDATE … SET status=? WHERE id=? AND status IN (PENDING, IN_PROGRESS)` 를 부른다. 0행이면 다른 경로가 이미 확정한 것이라 이력·프로젝트·대화·감사 어느 것도 쓰지 않는다. 뒤에 온 쪽은 행 잠금에 막혔다가 앞쪽 커밋 뒤 0행이 된다(`DeploymentHistorySettleIntegrationTest` 가 실제 MySQL 로 확인)
+- 같은 점검에서 `OrphanCloudFrontSweeper` 는 손대지 않았다: 겹친 스윕이 같은 배포를 두 번 큐에 넣어도 `CdnDeletionReaper` 가 "이미 없음"을 정상 처리해 결과가 같다. ShedLock 은 다중 인스턴스로 갈 때 검토한다
+
+## 4.50 JDK 가 만든 예외 문구는 응답에 싣지 않는다 (Issue #511 B7)
+
+- 400(IllegalArgumentException)·409(IllegalStateException) 응답 message 에 `For input string: "abc"`·`No enum constant com.example…` 같은 JDK 영어 문구가 그대로 실렸다. FE 는 message 를 화면에 그대로 보여 준다
+- JDK·라이브러리 출처면 고정 문장으로 바꾼다: 400 "요청 값의 형식이 올바르지 않습니다." / 409 "지금은 요청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요." 상태 코드·code 는 그대로이고 로그에는 원문(예외 클래스 포함)이 남는다
+- 판별(`JdkExceptionMessage`): 우리 패키지가 아닌 하위 클래스(NumberFormatException 등)이거나, 예외 자체라도 던진 자리가 JDK 클래스(`Enum.valueOf`·`UUID.fromString`·`Matcher.group`)
+- 직접 쓴 한글 메시지는 그대로 보낸다(4.45 의 꼬리 떼기만 적용). 일괄 숨김은 하지 않는다
+
+## 4.51 실행 스레드 로그에 태스크·배포 식별자 (Issue #511 B12)
+
+- 에이전트 실행·계획 수립·배포 실행은 실행기 스레드에서 돌아 `requestId` 가 비어 있고, 그 아래 LLM·git·docker 로그는 어느 태스크·배포의 일인지 적지 않아 동시에 돌면 섞였다
+- `WorkLogContext` 가 진입점(`AgentPlanExecutor.execute`·`AsyncDecisionRunner.decideAndSubmit`·`DeploymentCommandService.executeQueued`)에서 MDC `taskId`·`deploymentId` 를 심고, 닫을 때 이전 값으로 되돌린다(풀 스레드 재사용). 실패 처리 로그까지 덮도록 catch 바깥에서 연다
+- 콘솔 패턴(`logging.pattern.level`): `WARN [requestId] task=… ` / `deploy=…`. 값이 없으면 아무것도 붙지 않는다
+- JSON 로그는 Spring Boot 기본 기능으로 켠다: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`(또는 `logstash`). MDC 키가 필드(`taskId`·`deploymentId`·`requestId`)로 실린다(실측). 기본은 사람이 읽는 텍스트 그대로다
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

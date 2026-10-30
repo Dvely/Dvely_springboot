@@ -53,7 +53,9 @@ class GlobalExceptionHandlerTest {
                         new PathVariableController(), new QueryParamController(),
                         new ConcurrentDeleteController(), new ConflictController(),
                         new MissingPathController(), new ClientGoneController(),
-                        new UnexpectedErrorController(), new GithubReauthorizationController())
+                        new UnexpectedErrorController(), new GithubReauthorizationController(),
+                        new UserLimitController(), new InternalTailController(),
+                        new JdkOriginController())
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -125,6 +127,50 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.status").value(403))
                 .andExpect(jsonPath("$.code").value("GITHUB_APP_REAUTHORIZATION_REQUIRED"))
                 .andExpect(jsonPath("$.message").value(GithubAppReauthorizationRequiredException.DEFAULT_MESSAGE));
+    }
+
+    @Test
+    void aUserLimitIsA429WithItsOwnCodeAndTheSentenceToShow() throws Exception {
+        // #509: 상한 초과는 서버 오류가 아니라 "지금은 못 받는다"다. FE 는 code 로 런·프리뷰를 가르고 메시지를 그대로 보인다.
+        mockMvc.perform(get("/contract/user-limit"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.status").value(429))
+                .andExpect(jsonPath("$.code").value("PREVIEW_LIMIT_EXCEEDED"))
+                .andExpect(jsonPath("$.message").value("열린 프리뷰가 3개라 새 프리뷰를 띄울 수 없습니다."));
+    }
+
+    @Test
+    void theResponseMessageCarriesNoInternalIdOrStatusTail() throws Exception {
+        // FE 는 message 를 화면 문구로 그대로 쓴다. 꼬리는 로그에만 남는다.
+        mockMvc.perform(get("/contract/internal-tail"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요."));
+    }
+
+    @Test
+    void jdkArgumentMessagesAreReplacedWithOneSentence() throws Exception {
+        // #511 B7: JDK 문구는 영어이고 클래스 경로까지 담는다. FE 가 그대로 보여 주므로 고정 문장으로 바꾼다.
+        for (String path : List.of("/contract/jdk/number", "/contract/jdk/enum", "/contract/jdk/uuid")) {
+            mockMvc.perform(get(path))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("BAD_REQUEST"))
+                    .andExpect(jsonPath("$.message").value("요청 값의 형식이 올바르지 않습니다."));
+        }
+    }
+
+    @Test
+    void jdkStateMessagesAreReplacedWithOneSentence() throws Exception {
+        mockMvc.perform(get("/contract/jdk/state"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("지금은 요청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요."));
+    }
+
+    @Test
+    void ourOwnArgumentMessageIsStillShown() throws Exception {
+        // 직접 쓴 한글 안내는 FE 가 보여 줘야 하는 문장이다 — 일괄로 숨기지 않는다.
+        mockMvc.perform(get("/contract/own/argument"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("지원하지 않는 배포 대상입니다: VERSIONX"));
     }
 
     @Test
@@ -234,6 +280,26 @@ class GlobalExceptionHandlerTest {
     }
 
     @RestController
+    private static class UserLimitController {
+
+        @GetMapping("/contract/user-limit")
+        Long limit() {
+            throw new com.example.dvely.common.limit.UserLimitExceededException(
+                    com.example.dvely.common.response.ErrorCode.PREVIEW_LIMIT_EXCEEDED,
+                    "열린 프리뷰가 3개라 새 프리뷰를 띄울 수 없습니다.");
+        }
+    }
+
+    @RestController
+    private static class InternalTailController {
+
+        @GetMapping("/contract/internal-tail")
+        Long tail() {
+            throw new IllegalStateException("종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요. status=EXPIRED");
+        }
+    }
+
+    @RestController
     private static class ConflictController {
 
         @GetMapping("/contract/conflict")
@@ -282,6 +348,35 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/contract/boom")
         Long boom() {
             throw new RuntimeException("정말로 예상치 못한 오류");
+        }
+    }
+
+    @RestController
+    private static class JdkOriginController {
+
+        @GetMapping("/contract/jdk/number")
+        Integer number() {
+            return Integer.parseInt("abc");
+        }
+
+        @GetMapping("/contract/jdk/enum")
+        String enumConstant() {
+            return java.time.DayOfWeek.valueOf("FUNDAY").name();
+        }
+
+        @GetMapping("/contract/jdk/uuid")
+        String uuid() {
+            return java.util.UUID.fromString("not-a-uuid").toString();
+        }
+
+        @GetMapping("/contract/jdk/state")
+        String state() {
+            return java.util.regex.Pattern.compile("a").matcher("b").group();
+        }
+
+        @GetMapping("/contract/own/argument")
+        String own() {
+            throw new IllegalArgumentException("지원하지 않는 배포 대상입니다: VERSIONX");
         }
     }
 }

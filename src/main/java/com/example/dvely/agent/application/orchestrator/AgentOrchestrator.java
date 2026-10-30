@@ -49,6 +49,7 @@ public class AgentOrchestrator {
     private final ApprovalRepository approvalRepository;
     private final AgentMessageService agentMessageService;
     private final InputWaitStore     inputWaitStore;
+    private final ActiveRunLimit     activeRunLimit;
 
     /**
      * 계획이 이미 있는 동기 제출 경로(AgentFacade·DomainBindingSubmissionService). PENDING 태스크를
@@ -134,6 +135,8 @@ public class AgentOrchestrator {
     }
 
     private void savePendingTask(String taskId, Long userId, Long projectId, Long conversationId) {
+        // 새 런이 생기는 곳은 여기 하나다(submit·createPending). 상한을 넘으면 429 로 돌려보낸다(#509).
+        activeRunLimit.check(userId);
         taskStore.save(new AgentTask(
                 taskId,
                 userId,
@@ -171,6 +174,10 @@ public class AgentOrchestrator {
             throw new IllegalStateException(
                     "승인 완료 처리를 진행할 수 없는 상태입니다. taskId=" + taskId + " status=" + task.status());
         }
+        // 승인 대기·실패는 동시 런 상한(#509)이 세지 않는 상태라, 여기서 실행으로 올리면 런이 하나 는다. 넘으면 429 로
+        // 승인 전체가 롤백돼 승인은 PENDING 으로 남는다(사용자가 나중에 다시 누르면 된다). 호출부(approve)는 태스크 행을
+        // 이미 잠갔고 이 뒤에 토큰 갱신(사용자 행을 별도 트랜잭션에서 잠금)을 부르지 않는다.
+        activeRunLimit.check(task.ownerUserId());
         if (task.status() == TaskStatus.FAILED) {
             if (!taskStore.retry(taskId, task.ownerUserId())) {
                 throw new IllegalStateException("재시도할 수 없는 Agent task입니다. taskId=" + taskId);
@@ -571,6 +578,23 @@ public class AgentOrchestrator {
      * that becomes this transaction's first non-locking read: it is taken while this transaction is
      * already the row's sole lock holder, so no concurrent writer can be racing it.
      */
+    /**
+     * 사용자가 실패한 런을 다시 돌릴 때(AgentController). {@link #retry} 와 같지만 동시 런 상한(#509)을 먼저 본다 —
+     * FAILED 는 세지 않는 상태라, 재시도는 새 런을 만드는 것과 같은 효과다. 빌드 실패 자동 복구는 이미 돌던 런의
+     * 연장이라 {@link #retry} 를 그대로 쓴다.
+     *
+     * <p>잠금 순서는 태스크 행 → 사용자 행이다. 다른 결정 경로가 태스크 행을 먼저 잡는 것과 같은 순서다. 어차피
+     * 재시도할 수 없는 런(남의 것·FAILED 아님)은 상한을 보지 않고 {@link #retry} 의 거절(409)로 보낸다.</p>
+     */
+    @Transactional
+    public boolean retryByOwner(String taskId, Long ownerUserId) {
+        AgentTask task = taskStore.lockTask(taskId);
+        if (task.status() == TaskStatus.FAILED && task.ownerUserId().equals(ownerUserId)) {
+            activeRunLimit.check(ownerUserId);
+        }
+        return retry(taskId, ownerUserId);
+    }
+
     @Transactional
     public boolean retry(String taskId, Long ownerUserId) {
         // ADR-Y1 lock order: task row first, before any approvals read (mirrors
@@ -800,7 +824,15 @@ public class AgentOrchestrator {
      *
      * @return 태스크가 답을 받아들였으면 true. false 면 호출부가 404 로 응답한다
      */
+    @Transactional
     public boolean supplyInput(String taskId, Long userId, Long conversationId, String value) {
+        // 되묻기 대기는 동시 런 상한(#509)이 세지 않는 상태라, 답을 받으면 런이 하나 는다. 태스크 행 → 사용자 행 순서로
+        // 잠근다(retryByOwner 와 같다). 남의 것·이미 답한 것은 상한을 보지 않고 아래 supply 가 false 로 돌려보낸다.
+        AgentTask task = taskStore.get(taskId);
+        if (task != null && userId.equals(task.ownerUserId())
+                && taskStore.lockTask(taskId).status() == TaskStatus.WAITING_INPUT) {
+            activeRunLimit.check(userId);
+        }
         if (!inputWaitStore.supply(taskId, userId, value)) {
             return false;
         }

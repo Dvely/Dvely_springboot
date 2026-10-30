@@ -738,6 +738,27 @@ public class TaskStore {
         return true;
     }
 
+    private static final List<String> WORKING_STATUSES = List.of(
+            TaskStatus.PENDING.name(),
+            TaskStatus.QUEUED.name(),
+            TaskStatus.RETRY_WAIT.name(),
+            TaskStatus.RUNNING.name()
+    );
+
+    /**
+     * 기계가 일하고 있는 런 수 — 사용자별 동시 런 상한(#509)의 셈이다. 승인·되묻기를 기다리는 런은 스레드를 쓰지 않아
+     * 세지 않는다.
+     *
+     * <p>새 트랜잭션에서 센다. 호출자는 사용자 행을 잠근 뒤 이것을 부르는데, MySQL REPEATABLE READ 에서 평범한
+     * SELECT 는 그 트랜잭션의 첫 읽기 시점 스냅샷을 본다. 채팅 전송은 잠금 전에 대화를 이미 읽으므로, 같은 트랜잭션
+     * 안에서 세면 앞서 잠금을 쥐고 커밋한 요청의 런이 안 보여 둘 다 통과한다. 새 트랜잭션은 잠금을 얻은 뒤에
+     * 시작하므로 앞선 커밋을 본다. 잠금 읽기(FOR SHARE)로 세지 않는 이유는 {@code ActiveRunLimit} 에 있다.</p>
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    public long countWorkingRuns(Long ownerUserId) {
+        return runRepository.countByOwnerUserIdAndStatusIn(ownerUserId, WORKING_STATUSES);
+    }
+
     @Transactional(readOnly = true)
     public boolean isCancelled(String taskId) {
         AgentTask task = get(taskId);

@@ -161,4 +161,19 @@ public interface SpringDataDeploymentHistoryRepository extends JpaRepository<Dep
             @Param("runningStatus") String runningStatus,
             @Param("historyIds") Collection<Long> historyIds
     );
+
+    // DeploymentHistoryRepository#settle. 영속성 컨텍스트는 비우지 않는다 — 같은 트랜잭션에서 호출자가
+    // 읽어 둔 엔티티를 떼어내지 않으려는 것이고, 바로 뒤의 save(history) 가 같은 상태로 덮어쓴다.
+    @Modifying(flushAutomatically = true)
+    @Query("""
+            update DeploymentHistoryEntity history
+               set history.status = :outcome
+             where history.id = :historyId
+               and history.status in :openStatuses
+            """)
+    int settle(
+            @Param("historyId") Long historyId,
+            @Param("outcome") String outcome,
+            @Param("openStatuses") Collection<String> openStatuses
+    );
 }

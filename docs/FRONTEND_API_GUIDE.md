@@ -281,7 +281,7 @@ Accept: text/event-stream
 | POST | `/api/v1/projects/{id}/repository` | GitHub 저장소 연결(신규 생성 또는 기존 import) | `{ repositoryMode(create\|existing), repositoryName?, repositoryFullName?, repositoryVisibility? }` | `{ projectId, repositoryFullName, repositoryVisibility, bindingStatus, repositoryHealth }` | 409(이미 연결됨), 400(저장소 접근 불가) |
 | DELETE | `/api/v1/projects/{id}/repository` | 저장소 연결 해제(GitHub 저장소 자체는 삭제 안 함) | - | 204 | 404 |
 | GET | `/api/v1/projects/github/repositories` | GitHub App으로 접근 가능한 내 저장소 목록. 응답은 **유저별로 60초 캐시**된다 | query: `refresh`(기본 `false`) — 사용자가 GitHub에서 저장소를 방금 만들고 돌아온 경우 `true`로 캐시를 버리고 다시 읽는다 | `[{ fullName, name, owner, visibility, defaultBranch, updatedAt }]` | - |
-| GET | `/api/v1/projects` | 내 프로젝트 목록(최신 수정순) | - | `[{ projectId, name, deployStatus, currentUrl, updatedAt, updatedAtRelativeText }]` | - |
+| GET | `/api/v1/projects` | 내 프로젝트 목록(최신 수정순) | - | `[{ projectId, name, deployStatus, currentUrl, updatedAt, updatedAtRelativeText, startMode, templateType }]` — `startMode`·`templateType` 는 상세와 같은 값(템플릿 없으면 `templateType` null) | - |
 | GET | `/api/v1/projects/{id}` | 프로젝트 상세(메타데이터) | - | `{ projectId, name, status, startMode, templateType, draftMode, createdAt, updatedAt }` (`templateType`은 콘텐츠 템플릿 — 프레임워크가 아님, §5.1) | 404 |
 | PATCH | `/api/v1/projects/{id}` | 프로젝트명 수정(현재 name만 수정 가능) | `{ name }` | `ProjectDetailResponse` (위와 동일 shape) | 400, 404 |
 | DELETE | `/api/v1/projects/{id}` | 프로젝트 삭제 | query: `deleteMode`(`PROJECT_ONLY` 기본값 \| `PROJECT_AND_REPOSITORY`) | 204 | 404, 409(락 경합) |
@@ -414,6 +414,23 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 `message`는 사유별로 완결된 안내 문장(예: `"OpenAI 크레딧이 부족해 요청을 처리할 수 없습니다. 다른 AI 제공자를 선택하거나 결제 상태를 확인해주세요."`)이므로 가공 없이 그대로 표시하면 됩니다.
 
 비동기 실행(CODE/CHAT 단계) 중 같은 실패가 발생하면 태스크는 `FAILED`가 되고 **동일한 문장이 어시스턴트 채팅 메시지로** 저장됩니다. 이 경우는 build 실패가 아니므로 자동 재시도를 하지 않으며 `retryable`도 `false`입니다.
+
+#### 사용자별 동시 실행 상한 (#509)
+
+한 사용자가 동시에 돌릴 수 있는 작업과 띄워 둘 수 있는 프리뷰에 상한이 있습니다(기본: 작업 2, 프리뷰 3). 넘으면 429 로 옵니다. `AI_PROVIDER_RATE_LIMITED` 와 달리 **시간이 지나서 풀리는 것이 아니라** 진행 중인 것이 끝나거나 닫혀야 풀리므로, 자동 재시도 대신 `message` 를 그대로 보여 주세요(지금 수·상한·다음 행동이 들어 있습니다).
+
+| code | HTTP | 나오는 곳 | FE 처리 |
+|---|---|---|---|
+| `ACTIVE_RUN_LIMIT_EXCEEDED` | 429 | `POST /conversations/{id}/messages`, `POST /agent/tasks`, 도메인 연결·해제, `POST /agent/tasks/{taskId}/retry`, `POST /approvals/{id}/approve`(계획 승인이 작업을 시작시킬 때), `POST /agent/tasks/{taskId}/input` | `message` 표시. 아무것도 반영되지 않았다 — 메시지 전송이면 **메시지가 저장되지 않았으므로** 입력창을 지우지 않고, 승인이면 카드가 PENDING 그대로라 나중에 다시 누르면 되고, 되묻기 답이면 폼을 닫지 않는다 |
+| `PREVIEW_LIMIT_EXCEEDED` | 429 | `POST /projects/{id}/preview-session` | `message` 표시. 열린 프리뷰를 닫을 수 있게 안내(`DELETE /preview-sessions/{id}`) |
+
+- 승인·되묻기를 기다리는 작업은 "진행 중"으로 세지 않습니다. 작업 상한은 `PENDING`·`QUEUED`·`RETRY_WAIT`·`RUNNING` 만 셉니다. 대신 기다리던 작업을 다시 돌리는 순간(계획 승인, 되묻기 답, 재시도)에 상한을 봅니다. 결과 승인·저장소 연결 승인은 상한을 보지 않습니다.
+- 프리뷰는 자리가 없으면 서버가 먼저 **끝난 작업의 프리뷰**를 오래 안 본 순서로 닫습니다(`EXPIRED`). 그래서 대개는 거절 없이 새로 뜨고, 대신 오래된 작업 결과 프리뷰가 닫혀 있을 수 있습니다. 닫힌 프리뷰는 TTL 로 만료된 것과 똑같이 보입니다(닫힌 이유는 따로 내려가지 않습니다):
+  - 다시 열기 `POST /preview-sessions/{id}/access` → **409** `CONFLICT`, `message` "종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요."(준비 중이면 "아직 준비 중인 프리뷰입니다. 준비가 끝나면 다시 열어 주세요.") — 문장을 그대로 헤드라인으로 써도 되고, 프로젝트 프리뷰라면 `POST /projects/{id}/preview-session` 으로 다시 띄우게 안내
+  - 상태 `GET /preview-sessions/{id}/status` → 200, `sessionStatus: "EXPIRED"`, `containerRunning: false`
+  - 이미 떠 있던 iframe 은 다음 문서 요청부터 게이트웨이 **404**
+  - `GET /projects/{id}/preview-session` 은 닫힌 세션을 고르지 않는다(남은 세션이 있으면 그것, 없으면 204)
+- CODE 단계가 프리뷰 상한에 걸리면 위 AI 제공자 오류와 같은 방식입니다: 태스크가 `FAILED` 가 되고 같은 문장이 `TASK_FAILED` 어시스턴트 메시지로 남습니다.
 
 ### 4.6 Deployment — `com.example.dvely.deployment.presentation` (10)
 

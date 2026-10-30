@@ -1,0 +1,22 @@
+# 의존성 갱신 PR (#511 B11). develop 을 대상으로 주 1회, 한 번에 몇 개씩만 연다.
+# Actions 는 커밋 SHA 로 고정돼 있다(태그는 옮겨질 수 있다). Dependabot 은 SHA 와 뒤의 버전 주석을 함께 올린다.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: gradle
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /agent-tools
+    target-branch: develop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

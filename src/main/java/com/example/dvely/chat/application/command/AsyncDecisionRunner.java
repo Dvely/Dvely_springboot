@@ -8,6 +8,7 @@ import com.example.dvely.agent.application.service.DecisionAgentService;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.usage.LlmUsagePhase;
 import com.example.dvely.agent.infrastructure.usage.LlmUsageScope;
+import com.example.dvely.common.observability.WorkLogContext;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -51,23 +52,26 @@ public class AsyncDecisionRunner {
                                 Long conversationId,
                                 Long projectId,
                                 AiProvider provider) {
-        // 계획 수립의 토큰도 이 태스크의 것이다. 여기서 스코프를 열지 않으면 Decision 이 쓴
-        // 토큰만 태스크에 귀속되지 않아, 태스크 단위 합계가 실제보다 작게 나온다.
-        // 상한은 걸지 않는다 — 이 구간의 호출 수는 최대 2회(본 호출 + 교정 1회)로 이미 유계다.
-        try (LlmUsageScope ignored =
-                     LlmUsageScope.open(taskId, userId, projectId, LlmUsagePhase.DECISION)) {
-            // 계획 수립에는 사용자 발화만 넘긴다. 우리가 쓴 운영 안내가 섞이면 모델이 그 문장을
-            // 흉내 내다 JSON 을 내지 못한다 — AgentMessageService#getUserIntentHistory 참고.
-            List<LlmMessage> history = agentMessageService.getUserIntentHistory(conversationId);
-            AgentPlan plan = decisionAgentService.decide(userId, history, provider, projectId);
-            agentOrchestrator.submitDecided(taskId, plan, userId, conversationId);
-        } catch (RuntimeException exception) {
-            log.warn("[AsyncDecisionRunner] Decision 실패로 태스크를 FAILED 로 닫습니다. taskId={}", taskId, exception);
-            try {
-                agentOrchestrator.markDecisionFailed(taskId, conversationId, safeMessage(exception));
-            } catch (RuntimeException closeFailure) {
-                // 여기까지 실패하면 태스크가 PENDING 으로 남을 수 있다 — 이 로그가 유일한 단서다.
-                log.error("[AsyncDecisionRunner] 태스크 FAILED 전이마저 실패했습니다. taskId={}", taskId, closeFailure);
+        // 실패 처리 로그에도 붙도록 catch 바깥에서 연다(#511 B12)
+        try (WorkLogContext logContext = WorkLogContext.task(taskId)) {
+            // 계획 수립의 토큰도 이 태스크의 것이다. 여기서 스코프를 열지 않으면 Decision 이 쓴
+            // 토큰만 태스크에 귀속되지 않아, 태스크 단위 합계가 실제보다 작게 나온다.
+            // 상한은 걸지 않는다 — 이 구간의 호출 수는 최대 2회(본 호출 + 교정 1회)로 이미 유계다.
+            try (LlmUsageScope ignored =
+                         LlmUsageScope.open(taskId, userId, projectId, LlmUsagePhase.DECISION)) {
+                // 계획 수립에는 사용자 발화만 넘긴다. 우리가 쓴 운영 안내가 섞이면 모델이 그 문장을
+                // 흉내 내다 JSON 을 내지 못한다 — AgentMessageService#getUserIntentHistory 참고.
+                List<LlmMessage> history = agentMessageService.getUserIntentHistory(conversationId);
+                AgentPlan plan = decisionAgentService.decide(userId, history, provider, projectId);
+                agentOrchestrator.submitDecided(taskId, plan, userId, conversationId);
+            } catch (RuntimeException exception) {
+                log.warn("[AsyncDecisionRunner] Decision 실패로 태스크를 FAILED 로 닫습니다. taskId={}", taskId, exception);
+                try {
+                    agentOrchestrator.markDecisionFailed(taskId, conversationId, safeMessage(exception));
+                } catch (RuntimeException closeFailure) {
+                    // 여기까지 실패하면 태스크가 PENDING 으로 남을 수 있다 — 이 로그가 유일한 단서다.
+                    log.error("[AsyncDecisionRunner] 태스크 FAILED 전이마저 실패했습니다. taskId={}", taskId, closeFailure);
+                }
             }
         }
     }

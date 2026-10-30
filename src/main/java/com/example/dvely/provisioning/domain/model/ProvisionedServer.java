@@ -1,5 +1,7 @@
 package com.example.dvely.provisioning.domain.model;
 
+import com.example.dvely.provisioning.domain.value.ImageBuildLocation;
+
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ProvisionFailureCode;
 import com.example.dvely.provisioning.domain.value.ServerDeployMode;
@@ -49,6 +51,7 @@ public class ProvisionedServer {
     // 부트 타임아웃으로 실패·종료할 때, 종료 직전에 뜬 부트 로그(cloud-init) 스냅샷. 인스턴스가
     // 사라진 뒤에도 "왜 안 떴나"를 볼 수 있게 보존한다. 정상 기동 서버는 null(라이브 조회로 충분).
     private String bootDiagnostics;
+    private ImageBuildLocation imageBuildLocation;   // DOCKER 이미지를 어디서 빌드했는지(#556). NATIVE 는 null
     // 앱이 무응답(healthy=false)일 때 자동복구(재시작)를 시도한 시각. 한 장애 에피소드당 1회만 시도하려
     // 표시로 쓴다 — 회복되면(healthy=true) 지운다. null=아직 이번 무응답에 복구를 안 시도함.
     private LocalDateTime recoveryAttemptedAt;
@@ -249,6 +252,11 @@ public class ProvisionedServer {
         this.updatedAt = LocalDateTime.now();
     }
 
+    /** 이 배포의 이미지를 어디서 빌드하는지 남긴다(#556). 상태 워커가 기동 기한을 정할 때 본다. */
+    public void assignImageBuildLocation(ImageBuildLocation imageBuildLocation) {
+        this.imageBuildLocation = imageBuildLocation;
+    }
+
     /**
      * 부트 타임아웃 종료 직전에 뜬 부트 로그를 보존한다. 인스턴스를 terminate 하면 SSM 으로 로그에 닿을
      * 길이 사라지므로, 그 전에 한 번 떠서 여기 담아 두면 실패한 서버 카드에서도 원인을 볼 수 있다.
@@ -300,6 +308,8 @@ public class ProvisionedServer {
     public LocalDateTime getLastHealthCheckAt() { return lastHealthCheckAt; }
     public String getBootDiagnostics() { return bootDiagnostics; }
     public boolean hasBootDiagnostics() { return bootDiagnostics != null; }
+    public ImageBuildLocation getImageBuildLocation() { return imageBuildLocation; }
+    public boolean buildsImageOnTarget() { return imageBuildLocation == ImageBuildLocation.TARGET; }
     public LocalDateTime getRecoveryAttemptedAt() { return recoveryAttemptedAt; }
 
     /** DB 로드 시 헬스 상태 복원(생성자 밖 필드). */

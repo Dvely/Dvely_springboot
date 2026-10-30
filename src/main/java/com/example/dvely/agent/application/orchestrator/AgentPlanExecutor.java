@@ -1,5 +1,6 @@
 package com.example.dvely.agent.application.orchestrator;
 
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher;
 import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.agent.application.dto.AgentPlan;
 import com.example.dvely.agent.application.dto.AgentStep;
@@ -36,6 +37,8 @@ import com.example.dvely.agent.infrastructure.usage.LlmUsageScope;
 import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
 import com.example.dvely.common.exception.LlmProviderException;
+import com.example.dvely.common.limit.UserLimitExceededException;
+import com.example.dvely.common.observability.WorkLogContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -72,7 +75,8 @@ public class AgentPlanExecutor {
     public void execute(AgentPlan plan, String taskId, Long userId) {
         // 이 실행 스레드에서 나는 모든 LLM 호출이 이 태스크에 귀속되고, 누적 토큰이 여기 상한에
         // 걸린다. 스코프는 스레드를 넘지 않으므로 실행 진입점인 여기가 유일하게 맞는 자리다.
-        try (LlmUsageScope ignored = llmUsageRecorder.openTaskScope(
+        try (WorkLogContext logContext = WorkLogContext.task(taskId);
+             LlmUsageScope ignored = llmUsageRecorder.openTaskScope(
                 taskId, userId, plan.projectId(), aiProperties.getCodeAgent().getMaxTaskTokens())) {
             doExecute(plan, taskId, userId);
         } finally {
@@ -219,6 +223,37 @@ public class AgentPlanExecutor {
             );
             log.error("=== AgentPlan AI 제공자 실패: taskId={} provider={} reason={} ===",
                     taskId, exception.providerName(), exception.reason());
+        } catch (ServerGitPublisher.RemoteMovedException exception) {
+            // 작업하는 동안 원격 preview 가 바뀌어 덮어쓰지 않으려고 멈춘 것(#539) — 사용자가 다시 요청하면 되는 정상
+            // 거부다. ERROR 로 남기면 배포 건강 신호(ERROR 건수)가 흐려지고, "작업 중 오류가 발생했습니다" 접두는
+            // 원인과 다음 행동을 이미 담은 문장을 묻는다(#541). 그래서 LLM 제공자 실패처럼 전용 분기로 받는다.
+            if (taskStore.isCancelled(taskId)) {
+                return;
+            }
+            taskStore.markFailed(taskId, exception.getMessage());
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    exception.getMessage(),
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
+            );
+            log.warn("=== AgentPlan 반영 중단(원격 preview 가 작업 중 바뀜): taskId={} ===", taskId);
+        } catch (UserLimitExceededException exception) {
+            // 사용자별 프리뷰 상한(#509)에 걸려 CODE 스텝이 컨테이너를 못 띄운 것 — 바로 위와 같은 정상 거부다. 메시지에
+            // 상한과 다음 행동이 들어 있으므로 접두 없이 그대로 남기고, ERROR 가 아니라 WARN 으로 둔다.
+            if (taskStore.isCancelled(taskId)) {
+                return;
+            }
+            taskStore.markFailed(taskId, exception.getMessage());
+            AgentTask task = taskStore.get(taskId);
+            agentMessageService.appendAssistant(
+                    task == null ? null : task.conversationId(),
+                    exception.getMessage(),
+                    ChatMessageKind.TASK_FAILED,
+                    taskId
+            );
+            log.warn("=== AgentPlan 중단(사용자별 상한): taskId={} code={} ===", taskId, exception.errorCode().getCode());
         } catch (Exception e) {
             if (taskStore.isCancelled(taskId)) {
                 log.info("=== AgentPlan 취소됨: taskId={} ===", taskId);

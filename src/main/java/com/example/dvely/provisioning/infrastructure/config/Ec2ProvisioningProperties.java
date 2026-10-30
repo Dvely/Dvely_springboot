@@ -20,8 +20,22 @@ public record Ec2ProvisioningProperties(
         String tlsAskBaseUrl,
         String imageTransfer,
         String buildIsolation,
-        Duration imageBuildTimeout
+        Duration imageBuildTimeout,
+        Boolean allowNativeBuild,
+        String imageBuildLocation
 ) {
+
+    /** 빌드 위치 값 검증 — 잘못 넣은 값이 조용히 기본값으로 떨어지면 어디서 빌드했는지 모르게 된다(#556). */
+    public Ec2ProvisioningProperties {
+        if (imageBuildLocation != null && !imageBuildLocation.isBlank()
+                && !imageBuildLocation.trim().equalsIgnoreCase("CONTROL_PLANE")
+                && !imageBuildLocation.trim().equalsIgnoreCase("TARGET")) {
+            throw new IllegalArgumentException(
+                    "qeploy.provisioning.ec2.image-build-location 은 CONTROL_PLANE 또는 TARGET 이어야 합니다: "
+                            + imageBuildLocation);
+        }
+    }
+
     /** 이미지 빌드·push·save 한 번을 기다리는 상한의 기본값(#507). 정상 빌드는 수 분이다. */
     static final Duration DEFAULT_IMAGE_BUILD_TIMEOUT = Duration.ofMinutes(30);
 
@@ -50,14 +64,31 @@ public record Ec2ProvisioningProperties(
     }
 
     /**
-     * 이미지 빌드 격리 방식. 기본(빈 값/미설정)은 {@code BUILDX} — 호스트 buildkit 로 빌드하며 크로스빌드
-     * (arm64 컨트롤 플레인→amd64 이미지)를 지원한다(개발기·현행). {@code KANIKO} 로 켜면 신뢰할 수 없는
-     * Dockerfile 의 빌드 스텝이 <b>호스트 데몬이 아니라 격리된 kaniko 컨테이너 안</b>에서 돈다(멀티테넌트
-     * 하드닝). 단 kaniko 는 컨트롤 플레인 arch 로만 빌드하므로(크로스빌드 없음) <b>amd64 컨트롤 플레인에서만</b>
-     * 켠다 — arm64 개발기에서 켜면 arm64 이미지가 나와 amd64 EC2 에서 안 뜬다.
+     * 이미지 빌드 격리 방식. 기본(빈 값/미설정)은 {@code KANIKO} — 사용자 Dockerfile 의 빌드 스텝이 <b>호스트 데몬이
+     * 아니라 격리된 kaniko 컨테이너 안</b>에서 돈다(#507). kaniko 는 컨트롤 플레인 arch 로만 빌드하므로(크로스빌드
+     * 없음) amd64 가 아닌 컨트롤 플레인에서는 빌드를 거부한다. {@code BUILDX} 는 명시했을 때만 쓴다 — 호스트
+     * buildkit 로 빌드하고 크로스빌드(arm64 개발기→amd64 이미지)를 지원한다. 그 밖의 값은 KANIKO 로 본다(설정 실수로
+     * 호스트 데몬 빌드로 떨어지지 않게).
      */
     public boolean useKaniko() {
-        return buildIsolation != null && buildIsolation.trim().equalsIgnoreCase("KANIKO");
+        return buildIsolation == null || !buildIsolation.trim().equalsIgnoreCase("BUILDX");
+    }
+
+    /**
+     * BUILDX 인데 buildx 플러그인이 없을 때 호스트 데몬의 {@code docker build} 로 대신 빌드해도 되는지
+     * ({@code qeploy.provisioning.ec2.allow-native-build}). 기본 거부 — 명시적으로 true 일 때만 허용한다(#507).
+     */
+    public boolean allowNativeBuildFallback() {
+        return Boolean.TRUE.equals(allowNativeBuild);
+    }
+
+    /**
+     * DOCKER 배포 이미지를 어디서 빌드하는지(#545·#556). 기본(빈 값/미설정)은 {@code CONTROL_PLANE} — 지금처럼
+     * 컨트롤 플레인이 빌드해 전달한다. {@code TARGET} 이면 빌드 컨텍스트만 S3 로 보내고 <b>배포 대상 EC2 가 직접
+     * {@code docker build}</b> 한다. TARGET 은 이미지 전달이 필요 없으므로 {@link #useEcr()} 보다 앞선다.
+     */
+    public boolean buildOnTarget() {
+        return imageBuildLocation != null && imageBuildLocation.trim().equalsIgnoreCase("TARGET");
     }
 
     /**

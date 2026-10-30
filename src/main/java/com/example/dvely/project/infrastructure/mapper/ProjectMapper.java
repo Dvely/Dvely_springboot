@@ -58,7 +58,9 @@ public class ProjectMapper {
                 result.deployStatus(),
                 result.currentUrl(),
                 result.updatedAt(),
-                toRelativeText(result.updatedAt())
+                toRelativeText(result.updatedAt()),
+                result.startMode(),
+                result.templateType()
         );
     }
 

@@ -36,6 +36,7 @@ import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.project.domain.value.FrontendHostingType;
 import com.example.dvely.project.domain.value.RepositoryBindingStatus;
+import com.example.dvely.common.observability.WorkLogContext;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -233,14 +234,17 @@ public class DeploymentCommandService {
 
     @Async("deploymentExecutor")
     public void executeQueued(Long historyId) {
-        try {
-            execute(historyId);
-        } catch (Exception exception) {
-            handleExecutionFailure(historyId, exception);
-        } finally {
-            // #340 5-8: 이 배포는 더 이상 이 인스턴스가 돌리고 있지 않다 — 하트비트 대상에서
-            // 빼야 한다. 여기서 빼지 않으면 이미 끝난 이력의 리스를 30초마다 되살리게 된다.
-            deploymentExecutionRegistry.unregister(historyId);
+        // 실패 처리 로그에도 붙도록 catch 바깥에서 연다
+        try (WorkLogContext logContext = WorkLogContext.deployment(historyId)) {
+            try {
+                execute(historyId);
+            } catch (Exception exception) {
+                handleExecutionFailure(historyId, exception);
+            } finally {
+                // #340 5-8: 이 배포는 더 이상 이 인스턴스가 돌리고 있지 않다 — 하트비트 대상에서
+                // 빼야 한다. 여기서 빼지 않으면 이미 끝난 이력의 리스를 30초마다 되살리게 된다.
+                deploymentExecutionRegistry.unregister(historyId);
+            }
         }
     }
 

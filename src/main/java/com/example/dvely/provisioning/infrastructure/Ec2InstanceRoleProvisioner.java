@@ -45,19 +45,22 @@ public class Ec2InstanceRoleProvisioner {
 
     /**
      * 인스턴스 프로파일을 보장하고 그 이름을 돌려준다. 없으면 역할+인라인 최소권한 정책+프로파일을
-     * 만들고, 있으면 그대로 재사용한다.
+     * 만들고, 있으면 그대로 재사용한다. {@code targetBuild} 면 대상 EC2 빌드(#556)의 상태를 자기 SSM 경로에
+     * 보고하는 권한을 더한다.
      */
-    public String ensureInstanceProfile(CloudConnection connection, Long projectId, String bucket, boolean ecr) {
+    public String ensureInstanceProfile(CloudConnection connection, Long projectId, String bucket, boolean ecr,
+                                        boolean targetBuild) {
         String name = "qeploy-instance-" + projectId;
         AwsAccess access = credentialsResolver.resolve(connection);
         try (IamClient iam = client(access)) {
-            ensureRole(iam, name, projectId, bucket, ecr);
+            ensureRole(iam, name, projectId, bucket, ecr, targetBuild);
             ensureProfileWithRole(iam, name);
             return name;
         }
     }
 
-    private void ensureRole(IamClient iam, String name, Long projectId, String bucket, boolean ecr) {
+    private void ensureRole(IamClient iam, String name, Long projectId, String bucket, boolean ecr,
+                            boolean targetBuild) {
         boolean exists;
         try {
             iam.getRole(r -> r.roleName(name));
@@ -79,9 +82,10 @@ public class Ec2InstanceRoleProvisioner {
         // 드러난다(실계정 e2e 2026-09-04 에서 확인). 우리가 소유·관리하는 인라인 정책이라 덮어써도 안전하다.
         iam.putRolePolicy(PutRolePolicyRequest.builder()
                 .roleName(name).policyName("qeploy-instance-access")
-                .policyDocument(instancePolicy(projectId, bucket, ecr))
+                .policyDocument(instancePolicy(projectId, bucket, ecr, targetBuild))
                 .build());
-        log.info("IAM 인스턴스 역할 정책 반영: role={} projectId={} ecr={} (기존={})", name, projectId, ecr, exists);
+        log.info("IAM 인스턴스 역할 정책 반영: role={} projectId={} ecr={} targetBuild={} (기존={})",
+                name, projectId, ecr, targetBuild, exists);
     }
 
     /**
@@ -150,7 +154,7 @@ public class Ec2InstanceRoleProvisioner {
      * 켜면(ecr=true) 자기 프로젝트 ECR 저장소 pull 권한을 더한다({@code GetAuthorizationToken} 은 계정
      * 레벨이라 Resource *, 나머지 pull 은 저장소 ARN 으로 좁힌다).
      */
-    private String instancePolicy(Long projectId, String bucket, boolean ecr) {
+    static String instancePolicy(Long projectId, String bucket, boolean ecr, boolean targetBuild) {
         // qeploy-*-{projectId} 로 이 프로젝트의 app·web 저장소를 함께 커버(여전히 프로젝트 스코프).
         String ecrStatements = ecr ? """
                 ,{"Effect":"Allow","Action":["ecr:GetAuthorizationToken"],"Resource":"*"},\
@@ -166,13 +170,18 @@ public class Ec2InstanceRoleProvisioner {
                 "ssmmessages:OpenControlChannel","ssmmessages:OpenDataChannel",\
                 "ec2messages:AcknowledgeMessage","ec2messages:DeleteMessage","ec2messages:FailMessage",\
                 "ec2messages:GetEndpoint","ec2messages:GetMessages","ec2messages:SendReply"],"Resource":"*"}""";
+        // 대상 EC2 빌드(#556): 빌드 상태를 자기 경로 하나에만 쓴다. /qeploy/{projectId}/ 밖에 두는 이유 — 그 아래는
+        // 부팅 스크립트가 통째로 앱 env 로 내리므로, 상태 값이 앱 환경변수에 섞인다.
+        String buildStatus = targetBuild ? """
+                ,{"Effect":"Allow","Action":["ssm:PutParameter"],\
+                "Resource":"arn:aws:ssm:*:*:parameter%s*"}""".formatted(BuildStatusReport.pathPrefix(projectId)) : "";
         return """
                 {"Version":"2012-10-17","Statement":[\
                 {"Effect":"Allow","Action":["ssm:GetParameter","ssm:GetParameters","ssm:GetParametersByPath"],\
                 "Resource":"arn:aws:ssm:*:*:parameter/qeploy/%d/*"},\
                 {"Effect":"Allow","Action":["s3:GetObject"],\
-                "Resource":"arn:aws:s3:::%s/%d/*"}%s%s]}"""
-                .formatted(projectId, bucket, projectId, ssmCore, ecrStatements);
+                "Resource":"arn:aws:s3:::%s/%d/*"}%s%s%s]}"""
+                .formatted(projectId, bucket, projectId, ssmCore, ecrStatements, buildStatus);
     }
 
     private IamClient client(AwsAccess access) {

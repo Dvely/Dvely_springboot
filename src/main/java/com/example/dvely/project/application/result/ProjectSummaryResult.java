@@ -7,6 +7,8 @@ public record ProjectSummaryResult(
         String name,
         String deployStatus,
         String currentUrl,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        String startMode,
+        String templateType
 ) {
 }
