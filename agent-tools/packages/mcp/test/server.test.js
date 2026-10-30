@@ -101,6 +101,17 @@ describe('MCP tool surface', () => {
     assert.match(result.content[0].text, /만료|폐기|새 토큰/);
   });
 
+  it('hands the agent the suspension notice so it stops retrying and tells the user', async () => {
+    const h = handlers({
+      listProjects: async () => {
+        throw new QeployApiError(503, 'SERVICE_SUSPENDED', 'Qeploy 서비스 일시 중단 (2026-10-30부터)\n안내', '/api/v1/projects');
+      },
+    });
+    const result = await call(h, 'qeploy_list_projects', {});
+    assert.equal(result.isError, true);
+    assert.equal(result.content[0].text, 'Qeploy 서비스 일시 중단 (2026-10-30부터)\n안내');
+  });
+
   it('reports an unknown tool instead of crashing', async () => {
     const h = handlers({});
     const result = await call(h, 'qeploy_does_not_exist', {});
