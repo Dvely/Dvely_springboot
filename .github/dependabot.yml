@@ -1,22 +1,48 @@
-# 의존성 갱신 PR (#511 B11). develop 을 대상으로 주 1회, 한 번에 몇 개씩만 연다.
+# 의존성 갱신 PR (#511 B11). develop 을 대상으로 월 1회, 생태계마다 묶음 PR 로 연다.
+# 메이저 버전은 동작이 바뀔 수 있어 자동 PR 에서 뺀다 — 필요할 때 사람이 따로 검토해 올린다.
 # Actions 는 커밋 SHA 로 고정돼 있다(태그는 옮겨질 수 있다). Dependabot 은 SHA 와 뒤의 버전 주석을 함께 올린다.
+# Dependabot 은 기본 브랜치(main)의 이 파일을 읽는다 — develop 에서 고쳐도 다음 릴리스 전까지는 이전 설정으로 돈다.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     target-branch: develop
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 2
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      actions:
+        patterns: ["*"]
   - package-ecosystem: gradle
     directory: /
     target-branch: develop
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      # api·impl·jackson 이 같은 버전이어야 하고, 0.x 라 마이너 올림도 깨질 수 있어 따로 본다
+      jjwt:
+        patterns: ["io.jsonwebtoken:*"]
+      # 서비스 클라이언트가 많아 폭이 크다 — 다른 갱신과 섞지 않는다
+      aws-sdk:
+        patterns: ["software.amazon.awssdk:*"]
+      gradle-minor-patch:
+        update-types: ["minor", "patch"]
   - package-ecosystem: npm
     directory: /agent-tools
     target-branch: develop
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 2
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      agent-tools-minor-patch:
+        update-types: ["minor", "patch"]
