@@ -101,8 +101,24 @@ public class CodingAgentProperties {
         }
     }
 
-    /** {@code -p} is Claude Code's non-interactive print mode; the key comes from the environment. */
-    private Cli claude = Cli.of("claude", "-p");
+    /**
+     * {@code -p} is Claude Code's non-interactive print mode; the key comes from the environment.
+     *
+     * <p>The workspace is the user's repository, so nothing in it may configure the agent (#596).
+     * Without {@code --bare} a {@code -p} run loads the repository's {@code .claude/settings.json}
+     * hooks and {@code .mcp.json} servers with no trust prompt; {@code --bare} skips that discovery
+     * and authenticates only from {@code ANTHROPIC_API_KEY}. Without a permission mode a {@code -p}
+     * run denies every edit, so {@code acceptEdits} lets it write files while other shell commands
+     * stay denied, and {@code --permission-prompts none} tells it not to retry what was denied.
+     * Turns are capped here and estimated spend by {@link Cli#getMaxBudgetUsd()}, because the spend
+     * is the user's own key. Verified against the version pinned in
+     * {@code docker/coding-agent/Dockerfile}.</p>
+     */
+    private Cli claude = Cli.withBudget(List.of("claude", "--bare", "-p",
+            "--permission-mode", "acceptEdits",
+            "--permission-prompts", "none",
+            "--max-turns", "40",
+            "--no-session-persistence"), "3");
 
     /**
      * {@code codex exec} is Codex's non-interactive mode, preceded by a login step because the CLI
@@ -159,9 +175,23 @@ public class CodingAgentProperties {
          */
         private List<String> loginArgv = List.of();
 
+        /**
+         * Claude Code only: appended as {@code --max-budget-usd <value>}, which stops a print-mode
+         * run once its estimated spend reaches the value. Blank sends no cap. A setting rather than
+         * part of {@link #argvPrefix} because the spend comes from the user's own key (#572).
+         */
+        private String maxBudgetUsd = "";
+
         static Cli of(String... prefix) {
             Cli cli = new Cli();
             cli.setArgvPrefix(List.of(prefix));
+            return cli;
+        }
+
+        static Cli withBudget(List<String> prefix, String maxBudgetUsd) {
+            Cli cli = new Cli();
+            cli.setArgvPrefix(prefix);
+            cli.setMaxBudgetUsd(maxBudgetUsd);
             return cli;
         }
 

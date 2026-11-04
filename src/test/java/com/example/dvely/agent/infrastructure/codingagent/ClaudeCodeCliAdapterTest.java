@@ -55,7 +55,31 @@ class ClaudeCodeCliAdapterTest {
 
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
         verify(runner).run(eq("/host/checkout"), any(), argv.capture(), eq(Duration.ofMinutes(3)));
-        assertThat(argv.getValue()).containsExactly("claude", "-p", "빌드 로그를 분석해줘");
+        assertThat(argv.getValue()).containsExactly(
+                "claude", "--bare", "-p",
+                "--permission-mode", "acceptEdits",
+                "--permission-prompts", "none",
+                "--max-turns", "40",
+                "--no-session-persistence",
+                "--max-budget-usd", "3",
+                "빌드 로그를 분석해줘");
+    }
+
+    @Test
+    void neverLetsTheRepositoryConfigureTheAgent() {
+        // #596: the workspace is the user's repository. Without --bare a -p run loads its
+        // .claude/settings.json hooks and .mcp.json servers; without a permission mode it denies
+        // every edit. The real-CLI proof is ClaudeCodeCliAdapterIntegrationTest.
+        when(runner.run(any(), any(), anyList(), any()))
+                .thenReturn(new ContainerRunOutcome(0, "done", "", false));
+
+        adapter.run(command());
+
+        ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
+        verify(runner).run(any(), any(), argv.capture(), any());
+        assertThat(argv.getValue()).contains("--bare");
+        assertThat(argv.getValue()).containsSequence("--permission-mode", "acceptEdits");
+        assertThat(argv.getValue()).doesNotContain("--dangerously-skip-permissions", "bypassPermissions");
     }
 
     @Test
@@ -91,7 +115,8 @@ class ClaudeCodeCliAdapterTest {
         verify(runner).run(any(), any(), argv.capture(), any());
         // The metacharacters survive intact as one argv element — proof they were never parsed
         // by a shell rather than proof they were escaped correctly.
-        assertThat(argv.getValue()).containsExactly("claude", "-p", "; rm -rf / #");
+        assertThat(argv.getValue()).last().isEqualTo("; rm -rf / #");
+        assertThat(argv.getValue()).filteredOn(arg -> arg.contains("rm -rf")).hasSize(1);
     }
 
     @Test
