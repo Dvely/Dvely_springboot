@@ -101,8 +101,30 @@ public class CodingAgentProperties {
         }
     }
 
-    /** {@code -p} is Claude Code's non-interactive print mode; the key comes from the environment. */
-    private Cli claude = Cli.of("claude", "-p");
+    /**
+     * -p is Claude Code's non-interactive print mode; the key comes from ANTHROPIC_API_KEY.
+     *
+     * The workspace is the user's repository, so nothing in it may configure the agent (#596). It
+     * takes two flags, because each one alone leaves a path open. --bare stops the repository's
+     * hooks, skills, commands, subagents, plugins and .mcp.json servers, but its project settings
+     * still apply their env block (a repository could point ANTHROPIC_BASE_URL or a proxy elsewhere).
+     * --setting-sources user stops the project and local settings files themselves.
+     *
+     * A -p run with no permission mode denies every write, so acceptEdits lets it edit files and run
+     * filesystem commands inside the working directory while other shell commands stay denied, and
+     * --permission-prompts none tells it not to retry what was denied. Turns are capped here and
+     * estimated spend by maxBudgetUsd, because the spend is the user's own key.
+     *
+     * Measured against the version pinned in docker/coding-agent/Dockerfile. The dev and prod
+     * profile yml repeat this list as their default, so change both together
+     * (CodingAgentProfileDefaultsTest fails when they drift).
+     */
+    private Cli claude = Cli.withBudget(List.of("claude", "--bare", "-p",
+            "--permission-mode", "acceptEdits",
+            "--permission-prompts", "none",
+            "--setting-sources", "user",
+            "--max-turns", "40",
+            "--no-session-persistence"), "3");
 
     /**
      * {@code codex exec} is Codex's non-interactive mode, preceded by a login step because the CLI
@@ -159,9 +181,23 @@ public class CodingAgentProperties {
          */
         private List<String> loginArgv = List.of();
 
+        /**
+         * Claude Code only: appended as {@code --max-budget-usd <value>}, which stops a print-mode
+         * run once its estimated spend reaches the value. Blank sends no cap. A setting rather than
+         * part of {@link #argvPrefix} because the spend comes from the user's own key (#572).
+         */
+        private String maxBudgetUsd = "";
+
         static Cli of(String... prefix) {
             Cli cli = new Cli();
             cli.setArgvPrefix(List.of(prefix));
+            return cli;
+        }
+
+        static Cli withBudget(List<String> prefix, String maxBudgetUsd) {
+            Cli cli = new Cli();
+            cli.setArgvPrefix(prefix);
+            cli.setMaxBudgetUsd(maxBudgetUsd);
             return cli;
         }
 

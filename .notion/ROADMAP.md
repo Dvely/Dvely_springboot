@@ -10,6 +10,13 @@
 
 ## 1. 현재 상태
 
+- 2026-11-04: **#596 — Claude Code 를 저장소 설정 없이, 그리고 실제로 파일을 쓸 수 있게 실행한다.** 작업 환경은 Mac mini 로 옮겼고 서버는 여전히 없다(로컬 실행으로 확인).
+  - 인자: `claude --bare -p --permission-mode acceptEdits --permission-prompts none --setting-sources user --max-turns 40 --no-session-persistence --max-budget-usd 3`. `--bare` 만으로는 저장소 settings 의 env 블록이 남아 `--setting-sources user` 를 같이 쓴다. dev·prod yml 기본값이 `claude,-p` 로 덮어쓰고 있던 것도 맞췄다(`CodingAgentProfileDefaultsTest`)
+  - 이미지에 bash 추가 — 없으면 Claude Code Bash 도구가 "No suitable shell found"(#242 부터 운영에서도 그랬다). 자동 허용 범위 적정성은 #570
+  - 실 CLI 통합 테스트 4건(OpenRouter 키): 수정 전 인자 4건 실패 → 수정 후 4건 통과. 실측 기록 `docs/byok-coding-agent-design.md`
+
+  **다음 세션이 볼 것**: ①#570 셸 허용 범위(eval) ②#598 `--bare` 가 CLAUDE.md 를 읽지 않는 것의 제품 영향 ③CLI 버전을 올릴 때 게이트웨이 경로 테스트는 문서에 없는 `--bare`+AUTH_TOKEN 동작에 기댄다
+
 - 2026-10-31: **서비스 일시 중단 — AWS 계정 지원이 10-30 에 끝나 FE 만 GitHub Pages 로 옮겼고(Dvely_FE #194), 백엔드는 옮길 곳이 정해지지 않아 어디에서도 서비스되지 않는다.** 10-29 항목의 "서버 이전" 은 결정 없이 기한을 넘겼다.
   - `qeploy.com`(Cloudflare DNS only) → GitHub Pages. HTTPS 강제, `www` → apex 301. 랜딩·템플릿 화면만 동작한다. FE 쪽 중단 안내(배너·로그인 차단)와 `https://qeploy.com/status.json` 은 FE 저장소에서 올린다
   - `qeploy.com/api/v1/...` 는 Pages 가 답한다 — GET 은 HTML 404, POST·PATCH·DELETE 는 본문 없는 405. 로그인·프로젝트·배포·도메인·MCP·CLI·GitHub App 웹훅이 모두 멈췄다

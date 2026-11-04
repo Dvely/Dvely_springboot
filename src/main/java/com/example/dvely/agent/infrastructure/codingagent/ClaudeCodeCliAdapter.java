@@ -52,6 +52,13 @@ public class ClaudeCodeCliAdapter extends AbstractCliCodingAgentAdapter {
         return properties.getClaude().getModel();
     }
 
+    /** The spend cap is the user's money, so it is a setting (#596, #572); blank sends none. */
+    @Override
+    protected List<String> extraArgs() {
+        String budget = properties.getClaude().getMaxBudgetUsd();
+        return budget == null || budget.isBlank() ? List.of() : List.of("--max-budget-usd", budget.strip());
+    }
+
     @Override
     protected String cliName() {
         return "Claude Code";

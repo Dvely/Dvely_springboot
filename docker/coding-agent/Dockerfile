@@ -20,6 +20,9 @@ FROM node:20-alpine
 # ca-certificates: 공식 API(api.anthropic.com) TLS 검증.
 # tinyproxy: egress 프록시 사이드카가 이 이미지로 뜬다. 에이전트 컨테이너는 internal 네트워크에만
 #   붙어 기본 경로가 아예 없고, 허용 호스트로 나가는 유일한 출구가 이 프록시다(CONNECT 허용목록).
+# bash: Claude Code 의 Bash 도구는 bash 나 zsh 를 찾고, busybox sh 는 SHELL=/bin/sh 로 줘도 받지 않는다
+#   ("No suitable shell found", 2.1.316 실측). 이게 없으면 에이전트가 셸 명령을 하나도 못 돌린다 — 이 이미지가
+#   생긴 #242 부터 그랬다(#596). 무엇을 자동 허용할지는 셸이 아니라 실행 인자의 권한 모드가 정한다.
 #
 # bubblewrap 은 일부러 넣지 않는다. Codex 자체 샌드박스가 그걸 쓰지만, 이 컨테이너는 모든
 # capability 를 떨구고 no-new-privileges 를 걸어 bubblewrap 이 user namespace 를 만들지 못한다 —
@@ -27,15 +30,17 @@ FROM node:20-alpine
 # (실측). 그래서 기본 설정은 Codex 자체 샌드박스를 우회하고(컨테이너가 이미 외부 샌드박스다,
 # qeploy.coding-agent.codex.argv-prefix 주석 참고) bubblewrap 은 어느 경로에서도 쓰이지 않는다.
 # 격리를 느슨하게 풀어 Codex 자체 샌드박스를 살리는 배포를 하게 되면 그때 이 줄에 추가한다.
-RUN apk add --no-cache git ca-certificates tinyproxy
+RUN apk add --no-cache git ca-certificates tinyproxy bash
 
-# 기본값 latest 는 로컬 실험용이다. 운영 이미지는 반드시 --build-arg 로 버전을 고정할 것 —
-# 고정하지 않으면 같은 태그가 시점에 따라 다른 CLI 를 담게 되어 재현이 깨진다.
+# 기본값은 실행 인자를 실측한 버전이다(#596). 고정하지 않으면 같은 태그가 시점에 따라 다른 CLI 를
+# 담게 되어 재현이 깨진다. 올릴 때는 --build-arg 로 새 버전을 넣어 통합 테스트
+# (ClaudeCodeCliAdapterIntegrationTest·CodexCliAdapterIntegrationTest)를 다시 돌린 뒤 기본값을 옮긴다.
 #
 # 두 CLI 의 비대화 실행 인자는 애플리케이션 설정(qeploy.coding-agent.claude/codex.argv-prefix)에
-# 있다. CLI 버전을 올렸는데 인자 형식이 바뀌면, 여기 핀과 그 설정을 함께 옮긴다.
-ARG CLAUDE_CODE_VERSION=latest
-ARG CODEX_VERSION=latest
+# 있다. Claude Code 의 --bare·--permission-prompts·--max-budget-usd 등은 버전에 따라 생기고 바뀌므로,
+# CLI 버전을 올렸는데 인자 형식이 바뀌면 여기 핀과 그 설정을 함께 옮긴다.
+ARG CLAUDE_CODE_VERSION=2.1.316
+ARG CODEX_VERSION=0.153.2
 RUN npm install -g \
         @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
         @openai/codex@${CODEX_VERSION} \

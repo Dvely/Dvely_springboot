@@ -34,7 +34,7 @@ Anthropic 원문: "제3자 개발자가 자기 앱에 claude.ai 로그인을 제
 ## 아키텍처 (변형 A — 서버측 실행)
 
 - 작업(Task)마다 격리 Docker 컨테이너를 띄우고 그 안에서 공식 CLI를 헤드리스 구동:
-  - **Claude Code**: `ANTHROPIC_API_KEY` env + `claude -p "<task>"`.
+  - **Claude Code**: `ANTHROPIC_API_KEY` env + `claude --bare -p --permission-mode acceptEdits --permission-prompts none --setting-sources user --max-turns 40 --no-session-persistence --max-budget-usd 3 "<task>"` (#596, 아래 실측).
   - **Codex**: env 가 아니라 **로그인 단계**가 필요하다. `codex login --with-api-key`(키를 **stdin** 으로) 실행 후 `codex exec "<task>"`.
 
 > **인증 방식 실측 (2026-09-05, Claude Code 2.1.260 · codex-cli 0.153.2)**
@@ -48,6 +48,17 @@ Anthropic 원문: "제3자 개발자가 자기 앱에 claude.ai 로그인을 제
 > 유효한 OpenAI 키로 전 구간이 통과했다. `codex login --with-api-key`(stdin) → `codex exec --model gpt-5.6-luna "..."` → **exit 0, 에이전트 응답 "OK"**.
 > **모델은 별도 설정(`qeploy.coding-agent.codex.model`)으로 뺐고 기본값은 `gpt-5.6-luna`다.** CLI 기본값은 `gpt-5.6-sol` 인데, 같은 프롬프트로 luna 가 9,692 토큰, sol 이 11,203 토큰을 썼고 답은 같았다 — 기본으로 큰 등급을 태울 이유가 없다. `terra` 도 동작 확인(11,203). 비우면 CLI 기본값을 쓴다.
 > Claude Code 쪽은 인증·전송 경로까지 확인했으나 계정 잔액 부족으로 모델 응답까지는 보지 못했다.
+
+> **Claude Code 실행 인자 실측 (2026-11-04, Claude Code 2.1.316, #596)**
+> 워크스페이스는 사용자 저장소라 그 안의 어떤 설정도 에이전트를 움직이면 안 된다. `claude -p` 만으로는 그렇지 않았다.
+> - `claude -p` 는 저장소 `.claude/settings.json` 의 훅·env 블록·`apiKeyHelper`, `.mcp.json` 서버를 신뢰 확인 없이 실행하고 CLAUDE.md·skill·agent·command 를 프롬프트에 싣는다. 권한 모드가 없어 쓰기(Write·Edit·셸 리다이렉트)는 전부 거부된다 — 에이전트가 파일을 하나도 못 만든다.
+> - `--bare` 는 훅·skill·command·subagent·plugin·`.mcp.json` 을 막지만 **project settings 의 env 블록은 그대로 적용한다**(공식 permissions 문서에도 적혀 있다). 저장소가 프록시·API 주소를 바꿀 수 있다. `--setting-sources user` 가 그 파일 자체를 읽지 않게 해서 둘을 함께 쓴다.
+> - `--bare` 의 도구는 Bash·Edit·Read 셋이다(Write 없음, `--tools` 로도 못 더한다). 새 파일은 Edit(`old_string` 빈 값)이나 Bash 로 만든다.
+> - Bash 도구는 bash 나 zsh 를 요구한다. busybox sh 는 `SHELL=/bin/sh` 로 줘도 "No suitable shell found". 이미지(node:20-alpine)는 #242 부터 bash 가 없었으므로 **운영의 Claude Code Bash 도구는 처음부터 깨져 있었다.** 이미지에 bash 를 넣었다. 자동 허용 범위는 `acceptEdits` 가 정한다(파일시스템 명령과 작업 디렉터리 안 리다이렉트까지, 나머지 셸 명령은 거부) — 적정성은 #570.
+> - `--max-budget-usd` 상한에 걸리면 exit 1 + `Error: Exceeded USD budget (…)`. 어댑터는 exit 코드로 실패를 판정하므로 따로 바꿀 것이 없다.
+> - `--max-turns` 는 `claude --help` 에는 없지만 공식 cli-reference 에 있고 오류 없이 파싱된다.
+> - dev·prod yml 이 `argv-prefix` 기본값을 `claude,-p` 로 덮어쓰고 있어 코드 기본값 변경이 배포에 닿지 않았다. 지금은 같게 맞췄고 `CodingAgentProfileDefaultsTest` 가 어긋나면 실패한다.
+> - 실 CLI 증명은 `ClaudeCodeCliAdapterIntegrationTest`(4건: 운영 배치·작업 디렉터리 설정·예산 상한·저장소 env 블록). 수정 전 인자로는 4건 모두 실패, 수정 후 4건 모두 통과했다. Anthropic 호환 게이트웨이로 돌릴 때 테스트는 키를 `ANTHROPIC_AUTH_TOKEN` 으로 넘기는데, `--bare` 가 그걸 읽는 건 문서에 없는 동작이다(운영은 문서대로 `ANTHROPIC_API_KEY`).
 > **에이전트가 파일을 쓰려면 Codex 자체 샌드박스를 우회해야 한다 (2026-09-05 실측)**
 > bubblewrap 경고를 쫓다가 훨씬 큰 문제를 찾았다. Codex 자체 샌드박스는 bubblewrap 을 쓰고 그건 user namespace 를 요구하는데, 우리 컨테이너는 모든 capability 를 떨구고 `no-new-privileges` 를 걸어 bubblewrap 이 뜨지 못한다. 그 상태에서는 에이전트의 셸 툴 호출이 전부 `exit 1` 로 죽는다 — **`-s workspace-write` 를 줘도 "성공"(exit 0)을 보고하면서 파일을 하나도 만들지 못했다.** 코딩 에이전트가 코드를 못 고치면 무의미하므로 이건 치명적이다.
 > 해법은 `--dangerously-bypass-approvals-and-sandbox` 다. 이름과 달리 지름길이 아니라 이 배치에 맞는 선택이고, 플래그 문서가 바로 이 경우를 가리킨다("외부에서 이미 샌드박싱된 환경 전용"). 일회용 컨테이너가 그 외부 샌드박스다: 퍼블리시 포트 없음, cap-drop ALL, 메모리·pids 상한, 워크스페이스만 마운트. 이 플래그로 같은 프롬프트가 **실제로 파일을 썼다**(`agent-wrote-this.txt`, 내용 `verified`, exit 0, bubblewrap 경고 0건).
