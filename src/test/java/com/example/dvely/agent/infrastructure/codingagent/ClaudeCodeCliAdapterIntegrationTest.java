@@ -25,26 +25,32 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
  * Runs the real Claude Code CLI through the real {@link CodingAgentContainerRunner} and
  * {@link ClaudeCodeCliAdapter} with production argv defaults, a real image and a real key (#596).
  *
- * <p>These facts live on the CLI's side, so a mocked test can only prove what we send: the agent
- * actually edits the workspace (a {@code -p} run without a permission mode denies edits), the
- * repository's own {@code .claude/settings.json} hooks and {@code .mcp.json} servers do not run (a
- * {@code -p} run without {@code --bare} loads them with no trust prompt), and a run stopped by the
- * spend cap is not reported as a success. The hook and the MCP server here only touch a marker
- * file. Each case is one paid call.</p>
+ * These facts live on the CLI's side, so a mocked test can only prove what we send. What is checked
+ * here: the agent actually creates a file in the workspace (a -p run without a permission mode
+ * denies every write); the repository's own .claude/settings.json hooks and .mcp.json servers do not
+ * run (a -p run without --bare loads them with no trust prompt); the repository's settings env block
+ * does not reach the CLI either (--bare alone still applies it); and a run stopped by the spend cap
+ * is not reported as a success. The hook and the MCP server here only touch a marker file. Each case
+ * is one paid call, except that a case which never reaches the API costs nothing.
  *
- * <p>Gated like {@link CodexCliAdapterIntegrationTest}: skipped unless {@code -Ddocker.it=true}, and
- * skipped (not failed) when no key is provided. The key is read from an environment variable so it
- * never appears on a command line. The model defaults to the cheapest tier; the behaviour under test
- * does not depend on it.</p>
+ * Gated like CodexCliAdapterIntegrationTest: skipped unless -Ddocker.it=true, and skipped (not
+ * failed) when no key is provided. The key is read from an environment variable so it never appears
+ * on a command line. The model defaults to the cheapest tier; the behaviour under test does not
+ * depend on it.
  *
- * <pre>
  *   docker build --build-arg CLAUDE_CODE_VERSION=2.1.316 -t qeploy/coding-agent:local docker/coding-agent
  *   QEPLOY_IT_ANTHROPIC_API_KEY=sk-ant-... ./gradlew test --no-daemon -Ddocker.it=true \
  *       --tests "*ClaudeCodeCliAdapterIntegrationTest"
- * </pre>
  *
- * <p>An Anthropic-compatible endpoint (for example GLM's) can stand in for the API with
- * {@code QEPLOY_IT_ANTHROPIC_BASE_URL}; the key variable then holds that provider's key.</p>
+ * Anthropic 호환 게이트웨이(OpenRouter, GLM 등)로 돌릴 때는 QEPLOY_IT_ANTHROPIC_BASE_URL 에 그 주소를,
+ * 키 변수에는 그 게이트웨이의 키를 넣는다. 이 경우 키는 ANTHROPIC_AUTH_TOKEN(Bearer 헤더)으로 넘기고
+ * ANTHROPIC_API_KEY 는 빈 값으로 둔다. 게이트웨이들의 Claude Code 안내가 이 방식이다.
+ *
+ * 주의: 이 경로는 문서에 없는 동작에 기댄다. --bare 의 help 와 공식 headless 문서는 bare 모드 인증을
+ * "ANTHROPIC_API_KEY 또는 --settings 의 apiKeyHelper 뿐"이라고 적지만, 2.1.316 은 실제로 AUTH_TOKEN 도 읽어
+ * Authorization: Bearer 로 보낸다(가짜 서버로 헤더를 확인했다). CLI 버전을 올렸을 때 게이트웨이 경로만 인증에서
+ * 깨지면 이것부터 본다. 운영 어댑터는 문서대로 ANTHROPIC_API_KEY 를 쓰므로 이 동작과 무관하다.
+ * 권한·훅·MCP 판정은 CLI 쪽 동작이라 어느 경로로 돌려도 같고, 수정 전후 대조에서도 이 주입은 똑같이 들어간다.
  */
 @EnabledIfSystemProperty(named = "docker.it", matches = "true")
 class ClaudeCodeCliAdapterIntegrationTest {
@@ -55,6 +61,7 @@ class ClaudeCodeCliAdapterIntegrationTest {
     private static final String AGENT_LABEL = "qeploy.codingAgent";
     private static final String HOOK_MARKER = ".qeploy-it-hook";
     private static final String MCP_MARKER = ".qeploy-it-mcp";
+    private static final String DEAD_PROXY = "http://127.0.0.1:9";
 
     private Path workspace;
     private DockerClient dockerClient;
@@ -127,28 +134,67 @@ class ClaudeCodeCliAdapterIntegrationTest {
                 .isFalse();
     }
 
+    /**
+     * --bare alone still applies the project settings' env block, so a repository could point the
+     * CLI's proxy or API address somewhere else. Here the repository's env names a dead proxy. If the
+     * block is applied, the run never reaches the API (measured on 2.1.316: ECONNREFUSED after about
+     * three minutes of retries), which is why this case gets a longer bound than the others.
+     */
+    @Test
+    void theRepositorySettingsEnvBlockDoesNotReachTheAgent() throws Exception {
+        writeEnvOnlyRepository(workspace);
+
+        CodingAgentResult result = run(properties(),
+                "Create a file named it-marker.txt in the current directory containing exactly: verified",
+                Duration.ofMinutes(5));
+
+        assertThat(result.success())
+                .withFailMessage("저장소 settings 의 env 블록이 적용돼 API 에 닿지 못했을 수 있다 exit=%d timedOut=%s%nstdout:%n%s%nstderr:%n%s",
+                        result.exitCode(), result.timedOut(), result.output(), result.errorOutput())
+                .isTrue();
+        assertThat(workspace.resolve("it-marker.txt")).content().isEqualToIgnoringNewLines("verified");
+    }
+
     private CodingAgentProperties properties() {
         CodingAgentProperties properties = new CodingAgentProperties(); // production argv defaults
         properties.getClaude().setModel(System.getenv().getOrDefault(MODEL_ENV, "haiku"));
-        String baseUrl = System.getenv(BASE_URL_ENV);
-        if (baseUrl != null && !baseUrl.isBlank()) {
-            // Anthropic 호환 엔드포인트(예: GLM)로 돌릴 때만 — 권한·훅·MCP 판정은 CLI 쪽 동작이라 백엔드와 무관하다.
-            // 운영 경로는 api.anthropic.com 만 쓰므로, 그 호스트를 egress 허용목록에 더하고 주소는 --settings 로 준다.
+        String baseUrl = gatewayBaseUrl();
+        if (baseUrl != null) {
+            // 운영 경로는 api.anthropic.com 만 쓰므로, 게이트웨이 호스트를 egress 허용목록에 더하고 주소는 --settings 로 준다.
+            // ANTHROPIC_API_KEY 를 빈 값으로 두는 건 게이트웨이 안내대로다. 키는 run() 에서 AUTH_TOKEN 으로 넘긴다.
             List<String> hosts = new java.util.ArrayList<>(properties.getEgress().getAllowedHosts());
-            hosts.add(java.net.URI.create(baseUrl.strip()).getHost());
+            hosts.add(java.net.URI.create(baseUrl).getHost());
             properties.getEgress().setAllowedHosts(hosts);
             List<String> argv = new java.util.ArrayList<>(properties.getClaude().getArgvPrefix());
-            argv.addAll(List.of("--settings", "{\"env\":{\"ANTHROPIC_BASE_URL\":\"" + baseUrl.strip() + "\"}}"));
+            argv.addAll(List.of("--settings",
+                    "{\"env\":{\"ANTHROPIC_BASE_URL\":\"" + baseUrl + "\",\"ANTHROPIC_API_KEY\":\"\"}}"));
             properties.getClaude().setArgvPrefix(argv);
         }
         return properties;
     }
 
+    private static String gatewayBaseUrl() {
+        String baseUrl = System.getenv(BASE_URL_ENV);
+        return baseUrl == null || baseUrl.isBlank() ? null : baseUrl.strip();
+    }
+
     private CodingAgentResult run(CodingAgentProperties properties, String prompt) {
+        return run(properties, prompt, Duration.ofMinutes(3));
+    }
+
+    private CodingAgentResult run(CodingAgentProperties properties, String prompt, Duration timeout) {
         CodingAgentContainerRunner runner = new CodingAgentContainerRunner(properties);
-        ClaudeCodeCliAdapter adapter = new ClaudeCodeCliAdapter(runner, properties);
+        // 게이트웨이로 돌릴 때만 키를 Bearer 로 넘긴다. 키는 여전히 러너의 파일 스테이징으로만 들어가 argv 에 실리지 않는다.
+        ClaudeCodeCliAdapter adapter = gatewayBaseUrl() == null
+                ? new ClaudeCodeCliAdapter(runner, properties)
+                : new ClaudeCodeCliAdapter(runner, properties) {
+                    @Override
+                    protected CodingAgentContainerRunner.Credential credentialing(String apiKey) {
+                        return viaEnvironment("ANTHROPIC_AUTH_TOKEN", apiKey);
+                    }
+                };
         CodingAgentResult result = adapter.run(new CodingAgentCommand(
-                prompt, workspace.toString(), System.getenv(KEY_ENV), Duration.ofMinutes(3)));
+                prompt, workspace.toString(), System.getenv(KEY_ENV), timeout));
 
         List<Container> leftovers = dockerClient.listContainersCmd()
                 .withShowAll(true)
@@ -199,6 +245,28 @@ class ClaudeCodeCliAdapterIntegrationTest {
                   }
                 }
                 """.formatted(MCP_MARKER));
+        commitAll(dir);
+    }
+
+    /**
+     * settings 의 env 블록만 가진 저장소. 죽은 프록시를 가리키므로, 이 블록이 CLI 에 적용되면 API 에 닿지 못한다.
+     * 운영 컨테이너는 프록시를 대소문자 두 벌로 받으므로 여기서도 네 이름을 다 덮는다.
+     */
+    private void writeEnvOnlyRepository(Path dir) throws Exception {
+        Files.writeString(dir.resolve("README.md"), "base\n");
+        Files.createDirectories(dir.resolve(".claude"));
+        Files.writeString(dir.resolve(".claude/settings.json"), """
+                {
+                  "env": {
+                    "HTTPS_PROXY": "%1$s", "https_proxy": "%1$s",
+                    "HTTP_PROXY": "%1$s", "http_proxy": "%1$s"
+                  }
+                }
+                """.formatted(DEAD_PROXY));
+        commitAll(dir);
+    }
+
+    private static void commitAll(Path dir) throws Exception {
         git(dir, "init", "-q");
         git(dir, "add", "-A");
         git(dir, "-c", "user.email=it@qeploy.test", "-c", "user.name=it", "commit", "-qm", "init");

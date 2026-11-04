@@ -102,21 +102,27 @@ public class CodingAgentProperties {
     }
 
     /**
-     * {@code -p} is Claude Code's non-interactive print mode; the key comes from the environment.
+     * -p is Claude Code's non-interactive print mode; the key comes from ANTHROPIC_API_KEY.
      *
-     * <p>The workspace is the user's repository, so nothing in it may configure the agent (#596).
-     * Without {@code --bare} a {@code -p} run loads the repository's {@code .claude/settings.json}
-     * hooks and {@code .mcp.json} servers with no trust prompt; {@code --bare} skips that discovery
-     * and authenticates only from {@code ANTHROPIC_API_KEY}. Without a permission mode a {@code -p}
-     * run denies every edit, so {@code acceptEdits} lets it write files while other shell commands
-     * stay denied, and {@code --permission-prompts none} tells it not to retry what was denied.
-     * Turns are capped here and estimated spend by {@link Cli#getMaxBudgetUsd()}, because the spend
-     * is the user's own key. Verified against the version pinned in
-     * {@code docker/coding-agent/Dockerfile}.</p>
+     * The workspace is the user's repository, so nothing in it may configure the agent (#596). It
+     * takes two flags, because each one alone leaves a path open. --bare stops the repository's
+     * hooks, skills, commands, subagents, plugins and .mcp.json servers, but its project settings
+     * still apply their env block (a repository could point ANTHROPIC_BASE_URL or a proxy elsewhere).
+     * --setting-sources user stops the project and local settings files themselves.
+     *
+     * A -p run with no permission mode denies every write, so acceptEdits lets it edit files and run
+     * filesystem commands inside the working directory while other shell commands stay denied, and
+     * --permission-prompts none tells it not to retry what was denied. Turns are capped here and
+     * estimated spend by maxBudgetUsd, because the spend is the user's own key.
+     *
+     * Measured against the version pinned in docker/coding-agent/Dockerfile. The dev and prod
+     * profile yml repeat this list as their default, so change both together
+     * (CodingAgentProfileDefaultsTest fails when they drift).
      */
     private Cli claude = Cli.withBudget(List.of("claude", "--bare", "-p",
             "--permission-mode", "acceptEdits",
             "--permission-prompts", "none",
+            "--setting-sources", "user",
             "--max-turns", "40",
             "--no-session-persistence"), "3");
 

@@ -20,6 +20,9 @@ FROM node:20-alpine
 # ca-certificates: 공식 API(api.anthropic.com) TLS 검증.
 # tinyproxy: egress 프록시 사이드카가 이 이미지로 뜬다. 에이전트 컨테이너는 internal 네트워크에만
 #   붙어 기본 경로가 아예 없고, 허용 호스트로 나가는 유일한 출구가 이 프록시다(CONNECT 허용목록).
+# bash: Claude Code 의 Bash 도구는 bash 나 zsh 를 찾고, busybox sh 는 SHELL=/bin/sh 로 줘도 받지 않는다
+#   ("No suitable shell found", 2.1.316 실측). 이게 없으면 에이전트가 셸 명령을 하나도 못 돌린다 — 이 이미지가
+#   생긴 #242 부터 그랬다(#596). 무엇을 자동 허용할지는 셸이 아니라 실행 인자의 권한 모드가 정한다.
 #
 # bubblewrap 은 일부러 넣지 않는다. Codex 자체 샌드박스가 그걸 쓰지만, 이 컨테이너는 모든
 # capability 를 떨구고 no-new-privileges 를 걸어 bubblewrap 이 user namespace 를 만들지 못한다 —
@@ -27,7 +30,7 @@ FROM node:20-alpine
 # (실측). 그래서 기본 설정은 Codex 자체 샌드박스를 우회하고(컨테이너가 이미 외부 샌드박스다,
 # qeploy.coding-agent.codex.argv-prefix 주석 참고) bubblewrap 은 어느 경로에서도 쓰이지 않는다.
 # 격리를 느슨하게 풀어 Codex 자체 샌드박스를 살리는 배포를 하게 되면 그때 이 줄에 추가한다.
-RUN apk add --no-cache git ca-certificates tinyproxy
+RUN apk add --no-cache git ca-certificates tinyproxy bash
 
 # 기본값은 실행 인자를 실측한 버전이다(#596). 고정하지 않으면 같은 태그가 시점에 따라 다른 CLI 를
 # 담게 되어 재현이 깨진다. 올릴 때는 --build-arg 로 새 버전을 넣어 통합 테스트

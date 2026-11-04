@@ -59,6 +59,7 @@ class ClaudeCodeCliAdapterTest {
                 "claude", "--bare", "-p",
                 "--permission-mode", "acceptEdits",
                 "--permission-prompts", "none",
+                "--setting-sources", "user",
                 "--max-turns", "40",
                 "--no-session-persistence",
                 "--max-budget-usd", "3",
@@ -68,8 +69,9 @@ class ClaudeCodeCliAdapterTest {
     @Test
     void neverLetsTheRepositoryConfigureTheAgent() {
         // #596: the workspace is the user's repository. Without --bare a -p run loads its
-        // .claude/settings.json hooks and .mcp.json servers; without a permission mode it denies
-        // every edit. The real-CLI proof is ClaudeCodeCliAdapterIntegrationTest.
+        // .claude/settings.json hooks and .mcp.json servers; --bare alone still applies the project
+        // settings' env block, which --setting-sources user stops; without a permission mode it
+        // denies every edit. The real-CLI proof is ClaudeCodeCliAdapterIntegrationTest.
         when(runner.run(any(), any(), anyList(), any()))
                 .thenReturn(new ContainerRunOutcome(0, "done", "", false));
 
@@ -78,6 +80,7 @@ class ClaudeCodeCliAdapterTest {
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
         verify(runner).run(any(), any(), argv.capture(), any());
         assertThat(argv.getValue()).contains("--bare");
+        assertThat(argv.getValue()).containsSequence("--setting-sources", "user");
         assertThat(argv.getValue()).containsSequence("--permission-mode", "acceptEdits");
         assertThat(argv.getValue()).doesNotContain("--dangerously-skip-permissions", "bypassPermissions");
     }
