@@ -10,6 +10,13 @@
 
 ## 1. 현재 상태
 
+- 2026-11-07: **공식 연락 메일·약관·처리방침·GA 를 FE 에 올리고(Dvely_FE #199·#200 → PR #201·#202, main 배포), 성능·비용 진단 결과를 이슈로 남겼다(#614 + 하위 #615~#625). 백엔드 코드 변경 0.**
+  - 메일: Cloudflare Email Routing — `contact@`·`support@`·`privacy@`·`security@qeploy.com` → `qeploy.official@gmail.com`(인증 완료, catch-all 끔). MX 3·SPF·DKIM 이 zone 에 추가됐다. 로컬 설정의 Cloudflare 토큰에는 Email Routing 권한이 없어 대시보드로 했다
+  - `/terms`·`/privacy`: 백엔드 실제 수집 항목 기준의 약식 문서(사용자: "실제 서비스 단계가 아니니 약식으로"). 탈퇴는 "privacy@ 로 요청" 으로 적었다 → 탈퇴 API #613 / FE Dvely_FE#203. 처리방침 6항의 운영 서버 위치는 옛 운영 기준 **AWS 싱가포르** — 재호스팅 리전이 바뀌면 고친다
+  - GA4: 계정 `Qeploy`(qeploy.official), 측정 ID `G-V1KCLNVSWW`, 보존 14개월, 향상된 측정은 스크롤·동영상만, Google 신호 끔. query·hash 는 보내지 않는다(`src/lib/analytics.ts`)
+  - 진단(#614): 유휴 DB 부하는 약 72문장/분으로 병목이 아니다. P0 — kaniko 빌드 상한 없음 #615, 정리 cron 이 코딩 에이전트 이미지 삭제 #616, FE 폰트가 첫 방문 전송의 91%(Dvely_FE#146 코멘트). P1 — #617~#624, P2 묶음 #625. Rust·Wasm 은 부적합(CPU 연산 수십 ms 단위). #615·#621·#622 는 provisioning(unhak) 구역
+  - **다음**: 재개 전 P0(#615·#616) → #595. 진단 P1 은 운영 재개 후 측정(#614 §6)과 함께
+
 - 2026-11-04: **#596 — Claude Code 를 저장소 설정 없이, 그리고 실제로 파일을 쓸 수 있게 실행한다.** 작업 환경은 Mac mini 로 옮겼고 서버는 여전히 없다(로컬 실행으로 확인).
   - 인자: `claude --bare -p --permission-mode acceptEdits --permission-prompts none --setting-sources user --max-turns 40 --no-session-persistence --max-budget-usd 3`. `--bare` 만으로는 저장소 settings 의 env 블록이 남아 `--setting-sources user` 를 같이 쓴다. dev·prod yml 기본값이 `claude,-p` 로 덮어쓰고 있던 것도 맞췄다(`CodingAgentProfileDefaultsTest`)
   - 이미지에 bash 추가 — 없으면 Claude Code Bash 도구가 "No suitable shell found"(#242 부터 운영에서도 그랬다). 자동 허용 범위 적정성은 #570
