@@ -104,7 +104,8 @@ class ChangeServiceTest {
         when(f.docker.execWithExitCode(eq("container-1"), command.capture()))
                 .thenReturn(new DockerContainerService.ExecResult(0, "diff --git a/App.jsx b/App.jsx"));
 
-        f.service.record("task-1", "todo 앱 생성");
+        // 서버 측 git 이 꺼진 경로는 넘길 검사가 없다(#623) — 게이트가 예전처럼 직접 판단한다.
+        assertThat(f.service.record("task-1", "todo 앱 생성")).isNull();
 
         // 작업 트리 밖의 일회용 저장소를 쓴다. 워크스페이스에 .git 을 만들면
         // PreviewBranchPushService 가 "이미 저장소가 있다" 로 분기해 push 가 통째로 실패한다.
@@ -217,8 +218,11 @@ class ChangeServiceTest {
                 new Inspection(tree, List.of("a.txt"), List.of(), "diff --git a/a.txt b/a.txt"));
         when(repository.findByTaskId("task-1")).thenReturn(Optional.empty());
 
-        service.record("task-1", "요약");
+        Inspection recorded = service.record("task-1", "요약");
 
+        // #623: 같은 CODE 스텝의 결과 승인 게이트가 다시 검사하지 않도록 이 검사를 돌려준다.
+        assertThat(recorded).isNotNull();
+        assertThat(recorded.tree()).isEqualTo(tree);
         ArgumentCaptor<ChangeEntity> saved = ArgumentCaptor.forClass(ChangeEntity.class);
         verify(repository).save(saved.capture());
         assertThat(saved.getValue().getDiffText()).isEqualTo("diff --git a/a.txt b/a.txt");
