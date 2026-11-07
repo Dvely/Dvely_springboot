@@ -127,6 +127,24 @@ docker builder prune -f          # 빌드 캐시만 — 안전하다(다음 빌�
 
 `docker system prune -a --volumes`는 쓰지 말 것. **살아 있는 프리뷰 세션의 컨테이너·볼륨까지 지운다.** 볼륨을 지우려면 `preview_sessions`에서 만료를 확인한 뒤 개별로 지운다.
 
+**자동 정리(cron)와 코딩 에이전트 이미지(#616).** `setup-dev-server.sh`가 매일 04:00에 아래를 돌린다.
+
+```bash
+docker system prune -af --filter "until=72h" --filter "label!=qeploy.keep=true"
+```
+
+`label!=qeploy.keep=true`가 없던 시절에는 `qeploy/coding-agent:local`이 빌드 72시간 뒤 새벽에 지워져 그 뒤 BYOK 코딩 에이전트(Codex·Claude Code)가 전부 실패했다. 이 이미지는 레지스트리에서 받지 않으므로 지워지면 다시 빌드해야 한다. `docker/coding-agent/Dockerfile`이 `LABEL qeploy.keep="true"`를 달고, cron은 그 라벨이 붙은 것만 남긴다. 손으로 정리할 때도 `-a`를 쓴다면 같은 필터를 붙인다.
+
+이 수정 이전에 준비한 서버는 두 가지를 해야 한다.
+
+```bash
+# 1) 라벨이 붙도록 코딩 에이전트 이미지를 다시 빌드한다(예전 이미지에는 라벨이 없다)
+docker build -t qeploy/coding-agent:local docker/coding-agent
+docker image inspect qeploy/coding-agent:local --format '{{ index .Config.Labels "qeploy.keep" }}'   # true
+# 2) cron 을 새 줄로 바꾼다 — setup-dev-server.sh 를 다시 돌리거나 crontab -e 로 위 명령으로 고친다
+crontab -l | grep 'docker system prune'
+```
+
 ## 6. GitHub Secrets
 
 | 이름 | 필수 | 설명 |
