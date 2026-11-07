@@ -8,6 +8,7 @@ import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.exception.AgentInputRequiredException;
 import com.example.dvely.agent.application.exception.AgentTokenBudgetExceededException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
+import com.example.dvely.agent.application.logging.AgentLogText;
 import com.example.dvely.agent.application.service.BuildFailureRecoveryService;
 import com.example.dvely.agent.application.service.ChatAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService;
@@ -394,7 +395,7 @@ public class AgentPlanExecutor {
                                   Long projectId,
                                   String taskId) {
         log.info("[CODE 에이전트] 코드 작업 시작 | userId={} provider={} projectId={}", userId, aiProvider, projectId);
-        log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
+        log.info("  instruction : {}", AgentLogText.instruction(step.parameters().getOrDefault("instruction", "")));
         log.info("  targetFile  : {}", step.parameters().getOrDefault("targetFile", ""));
         return codeAgentService.execute(step, aiProvider, userId, projectId, taskId, modelOptions);
     }
@@ -402,7 +403,7 @@ public class AgentPlanExecutor {
     private CodeResult handleDeploy(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[DEPLOY 에이전트] 배포 시작 | userId={} projectId={} hostingType={}",
                 userId, projectId, step.parameters().getOrDefault("hostingType", "(프로젝트 설정 유지)"));
-        log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
+        log.info("  instruction : {}", AgentLogText.instruction(step.parameters().getOrDefault("instruction", "")));
         log.info("  repoName    : {}", step.parameters().getOrDefault("repoName", ""));
         return deployAgentService.execute(step, userId, taskId, projectId);
     }
@@ -410,14 +411,14 @@ public class AgentPlanExecutor {
     private CodeResult handleDomainBind(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[DOMAIN_BIND 에이전트] 도메인 연결 요청 수신 | userId={} projectId={}", userId, projectId);
         log.info("  domain      : {}", step.parameters().getOrDefault("domain", ""));
-        log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
+        log.info("  instruction : {}", AgentLogText.instruction(step.parameters().getOrDefault("instruction", "")));
         return domainBindAgentService.execute(step, userId, taskId, projectId);
     }
 
     private CodeResult handleInfraOperate(AgentStep step, Long userId, String taskId, Long projectId) {
         log.info("[INFRA_OPERATE 에이전트] 인프라 운영 요청 수신 | userId={} projectId={}", userId, projectId);
         log.info("  operation   : {}", step.parameters().getOrDefault("operation", ""));
-        log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
+        log.info("  instruction : {}", AgentLogText.instruction(step.parameters().getOrDefault("instruction", "")));
         return infraOpsAgentService.execute(step, userId, taskId, projectId);
     }
 
@@ -441,7 +442,7 @@ public class AgentPlanExecutor {
 
     private CodeResult handleChat(AgentStep step, com.example.dvely.agent.domain.value.AiProvider aiProvider, AiModelOptions modelOptions, String taskId) {
         log.info("[CHAT 에이전트] 대화 요청 수신 | provider={} taskId={}", aiProvider, taskId);
-        log.info("  instruction : {}", step.parameters().getOrDefault("instruction", ""));
+        log.info("  instruction : {}", AgentLogText.instruction(step.parameters().getOrDefault("instruction", "")));
         return chatAgentService.execute(step, aiProvider, taskId, modelOptions);
     }
 }
