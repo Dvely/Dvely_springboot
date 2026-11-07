@@ -165,7 +165,13 @@ log "도커 정리 cron 등록"
 # `crontab -l | grep -v ...` 를 그대로 쓰면 안 된다. crontab 이 비어 있는 첫 실행에서
 # grep 이 매칭 0건으로 exit 1 을 내고, set -e + pipefail 에 걸려 스크립트가 여기서 죽는다.
 # 실제로 그렇게 죽어서 아래 nginx 단계가 통째로 건너뛰어진 적이 있다. || true 로 막는다.
-CRON='0 4 * * * docker system prune -af --filter "until=72h" >/dev/null 2>&1'
+#
+# `label!=qeploy.keep=true` 가 빠지면 안 된다(#616). `-a` 는 컨테이너가 쓰지 않는 태그 이미지까지 지우는데,
+# 코딩 에이전트 이미지(qeploy/coding-agent:local)는 레지스트리에 없어 다시 받을 수 없고 실행마다 컨테이너가
+# 버려져 새벽 4시에는 쓰는 컨테이너가 없다. 그래서 빌드 72시간 뒤 지워지고 BYOK 코딩 에이전트가 멈췄다.
+# 그 이미지는 Dockerfile 에서 이 라벨을 단다. 나머지(정지 컨테이너·안 쓰는 네트워크·태그 이미지·빌드 캐시)는
+# 예전과 똑같이 지운다 — `-a` 를 빼면 배포 빌드가 남긴 태그 이미지가 쌓여 디스크가 다시 찬다.
+CRON='0 4 * * * docker system prune -af --filter "until=72h" --filter "label!=qeploy.keep=true" >/dev/null 2>&1'
 TMP_CRON=$(mktemp)
 crontab -l 2>/dev/null | grep -v 'docker system prune' > "$TMP_CRON" || true
 echo "$CRON" >> "$TMP_CRON"
