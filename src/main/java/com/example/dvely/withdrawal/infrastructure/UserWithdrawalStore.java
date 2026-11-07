@@ -36,8 +36,11 @@ public class UserWithdrawalStore {
      * 지우는 순서. 위가 먼저다. 각 줄의 FK 이유는 옆에 적는다.
      */
     private static final List<Step> STEPS = List.of(
-            // FK 없음 — 태스크 id 로 묶인다
-            new Step("server_pushed_commits", "delete from server_pushed_commits where task_id in (" + TASKS + ")"),
+            // FK 없음 — 태스크 id 로 묶인다. 이 테이블(V70)은 콜레이션을 적지 않고 만들어져 서버 기본값을 따른다 — MySQL 8.0
+            // 기본(utf8mb4_0900_ai_ci)인 서버에서는 agent_runs.task_id(utf8mb4_unicode_ci)와 그냥 비교하면
+            // "Illegal mix of collations" 로 탈퇴 전체가 실패한다(CI 에서 실제로 났다). 비교 콜레이션을 못박는다.
+            new Step("server_pushed_commits",
+                    "delete from server_pushed_commits where task_id collate utf8mb4_unicode_ci in (" + TASKS + ")"),
             // FK 없음. 처리방침상 탈퇴 시 파기 대상이다(회원 번호·프로젝트 번호가 실린다)
             new Step("llm_usage", "delete from llm_usage where user_id = :userId or project_id in (" + PROJECTS + ")"
                     + " or task_id in (" + TASKS + ")"),
