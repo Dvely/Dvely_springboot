@@ -2,6 +2,7 @@ package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.logging.AgentLogText;
 import com.example.dvely.agent.application.port.out.LlmMessage;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
 import com.example.dvely.agent.domain.value.AiModelOptions;
@@ -52,7 +53,7 @@ public class ChatAgentService {
     public CodeResult execute(AgentStep step, AiProvider provider, String taskId, AiModelOptions modelOptions) {
         String instruction = step.parameters().getOrDefault("instruction", "");
         log.info("[ChatAgent] 실행 시작 | provider={} taskId={}", provider, taskId);
-        log.info("  instruction : {}", instruction);
+        log.info("  instruction : {}", AgentLogText.instruction(instruction));
 
         // conversationId is task-scoped metadata (see AgentTask), not part of AgentStep/AgentPlan
         // itself, so it is resolved through TaskStore rather than threaded through the plan.

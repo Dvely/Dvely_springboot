@@ -16,6 +16,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.exception.AgentIterationLimitException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
@@ -51,6 +55,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 
 /**
  * Covers the tool loop's termination and transcript behavior — the failure mode reported from the
@@ -437,6 +442,116 @@ class CodeAgentServiceTest {
                 .isInstanceOf(PreviewServeException.class);
         verify(previewSessionService).markServeFailed(eq(TASK_ID), anyString());
         verify(previewSessionService, never()).markServing(anyString());
+    }
+
+    // ── 로그에 파일 내용·비밀이 남지 않는다(#617) ─────────────────────────────────
+
+    /** 로그 한 줄의 상한. 지시문 500자 + 고정 문구를 넉넉히 덮고, 4KB 파일 내용은 절대 못 들어간다. */
+    private static final int LOG_LINE_MAX_CHARS = 1_000;
+    private static final String SECRET = "qeploy-fake-secret-DO-NOT-LOG";
+
+    @Test
+    void writingA4KbEnvFileLogsItsPathAndLengthButNotItsContent() {
+        String envFile = envFileOf(4_096);
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(toolResponse("end_turn",
+                        toolCall("call-1", "write_file", Map.of("path", "/workspace/app/.env", "content", envFile))))
+                .thenReturn(toolResponse("end_turn",
+                        toolCall("call-2", "read_file", Map.of("path", "/workspace/app/.env"))))
+                .thenReturn(textResponse("완료했습니다."));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(invocation -> {
+            String command = invocation.getArgument(1);
+            if (command.startsWith("cat /workspace/app/.env")) {
+                return envFile;
+            }
+            return command.contains("serve_ready") ? "serve_ready=yes" : "exists";
+        });
+
+        ListAppender<ILoggingEvent> logs = captureLogs();
+        try {
+            execute(AiProvider.ANTHROPIC);
+        } finally {
+            releaseLogs(logs);
+        }
+
+        List<String> lines = logs.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        assertThat(lines).isNotEmpty();
+        assertThat(lines).allSatisfy(line -> {
+            assertThat(line).doesNotContain(SECRET);
+            assertThat(line.length()).isLessThanOrEqualTo(LOG_LINE_MAX_CHARS);
+        });
+        assertThat(lines).anySatisfy(line -> assertThat(line)
+                .contains("tool_call=write_file")
+                .contains("path=/workspace/app/.env")
+                .contains("content=" + envFile.length() + "자"));
+        assertThat(lines).anySatisfy(line -> assertThat(line)
+                .contains("tool_call=read_file")
+                .contains("result=(" + envFile.length() + "자)"));
+    }
+
+    @Test
+    void aLongInstructionIsLoggedClippedWithItsTotalLength() {
+        String instruction = "가".repeat(3_000) + SECRET;
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(textResponse("완료했습니다."));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(serveReadyOr("exists"));
+
+        ListAppender<ILoggingEvent> logs = captureLogs();
+        try {
+            service.execute(new AgentStep(AgentType.CODE, Map.of("instruction", instruction)),
+                    AiProvider.ANTHROPIC, USER_ID, null, TASK_ID);
+        } finally {
+            releaseLogs(logs);
+        }
+
+        List<String> lines = logs.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        assertThat(lines).allSatisfy(line -> {
+            assertThat(line).doesNotContain(SECRET);
+            assertThat(line.length()).isLessThanOrEqualTo(LOG_LINE_MAX_CHARS);
+        });
+        assertThat(lines).anySatisfy(line -> assertThat(line)
+                .contains("실행 시작")
+                .contains("(" + instruction.length() + "자)"));
+    }
+
+    @Test
+    void theFailureTraceShownToTheUserDoesNotCarryFileContent() {
+        // 반복 한도에 걸리면 최근 tool 호출 목록이 사용자에게 로그 발췌로 보인다. 예전에는 input 의 앞
+        // 120자를 그대로 실어 write_file 이면 파일 내용 앞부분이 들어갔다.
+        String envFile = "OPENAI_API_KEY=" + SECRET + "\n";
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(toolResponse("end_turn",
+                        toolCall("call-1", "write_file", Map.of("path", "/workspace/app/.env", "content", envFile))));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
+
+        assertThatThrownBy(() -> execute(AiProvider.ANTHROPIC))
+                .isInstanceOfSatisfying(CodeAgentExecutionException.class, exception ->
+                        assertThat(exception.logExcerpt())
+                                .contains("write_file path=/workspace/app/.env content=" + envFile.length() + "자")
+                                .doesNotContain(SECRET));
+    }
+
+    private static String envFileOf(int size) {
+        StringBuilder file = new StringBuilder("OPENAI_API_KEY=" + SECRET + "\n");
+        while (file.length() < size) {
+            file.append("# filler line to reach a realistic file size\n");
+        }
+        return file.substring(0, size);
+    }
+
+    private ListAppender<ILoggingEvent> captureLogs() {
+        Logger logger = (Logger) LoggerFactory.getLogger(CodeAgentService.class);
+        logger.setLevel(Level.DEBUG);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        return appender;
+    }
+
+    private void releaseLogs(ListAppender<ILoggingEvent> appender) {
+        Logger logger = (Logger) LoggerFactory.getLogger(CodeAgentService.class);
+        logger.detachAppender(appender);
+        logger.setLevel(null);
     }
 
     private CodeAgentService.CodeResult execute(AiProvider provider) {

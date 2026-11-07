@@ -4,6 +4,7 @@ import com.example.dvely.agent.application.dto.AgentStep;
 import com.example.dvely.agent.application.exception.AgentIterationLimitException;
 import com.example.dvely.agent.application.exception.AgentTokenBudgetExceededException;
 import com.example.dvely.agent.application.exception.CodeAgentExecutionException;
+import com.example.dvely.agent.application.logging.AgentLogText;
 import com.example.dvely.agent.application.port.out.LlmToolPort;
 import com.example.dvely.agent.infrastructure.llm.LlmToolRouter;
 import com.example.dvely.agent.application.port.out.LlmToolResponse;
@@ -61,6 +62,8 @@ public class CodeAgentService {
 
     // How many recent tool calls to keep as the failure's log excerpt when the round budget runs out.
     private static final int PROGRESS_TRACE_TAIL = 12;
+    // Cap for the command/path inside one trace line. Same length the trace always used.
+    private static final int TRACE_INPUT_MAX_CHARS = 120;
 
     private final LlmToolRouter           llmToolRouter;
     private final DockerContainerService  dockerService;
@@ -183,7 +186,8 @@ public class CodeAgentService {
                               String taskId,
                               AiModelOptions modelOptions) {
         String instruction = step.parameters().getOrDefault("instruction", "");
-        log.info("[CodeAgent] 실행 시작 | userId={} provider={} projectId={} instruction={}", userId, provider, projectId, instruction);
+        log.info("[CodeAgent] 실행 시작 | userId={} provider={} projectId={} instruction={}",
+                userId, provider, projectId, AgentLogText.instruction(instruction));
 
         PreviewSessionInfo previewSession = previewSessionService.acquire(taskId);
         String containerId = previewSession.containerId();
@@ -458,10 +462,13 @@ public class CodeAgentService {
                 + result.substring(result.length() - (MAX_TOOL_RESULT_CHARS - TOOL_RESULT_HEAD_CHARS));
     }
 
+    /**
+     * 실패했을 때 사용자에게 로그 발췌로 보이는 한 줄이다. 예전에는 input 의 앞 120자를 그대로 넣어서
+     * {@code write_file} 이면 파일 내용 앞부분이 실렸다(#617). 로그와 같은 요약을 쓴다.
+     */
     private String traceEntry(int round, ToolCall tc) {
-        String input = String.valueOf(tc.input());
         return "round " + round + ": " + tc.name() + " "
-                + (input.length() > 120 ? input.substring(0, 120) + "..." : input);
+                + AgentLogText.toolInput(tc.name(), tc.input(), TRACE_INPUT_MAX_CHARS, TRACE_INPUT_MAX_CHARS);
     }
 
     private String recentTrace(List<String> trace) {
@@ -558,8 +565,9 @@ public class CodeAgentService {
         }
     }
 
+    /** input 을 통째로 남기면 write_file 의 파일 내용(.env 의 비밀값 포함)이 로그에 남는다(#617). */
     private void logToolCallResult(ToolCall tc, String result) {
-        String truncated = result.length() > 300 ? result.substring(0, 300) + "..." : result;
-        log.info("[CodeAgent] tool_call={} input={} → result={}", tc.name(), tc.input(), truncated);
+        log.info("[CodeAgent] tool_call={} input={} → result={}",
+                tc.name(), AgentLogText.toolInput(tc.name(), tc.input()), AgentLogText.toolResult(tc.name(), result));
     }
 }
