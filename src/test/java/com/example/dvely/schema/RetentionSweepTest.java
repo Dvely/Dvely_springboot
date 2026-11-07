@@ -4,8 +4,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.dvely.agent.infrastructure.retention.AgentRunRetentionStore;
 import com.example.dvely.webhook.domain.repository.WebhookDeliveryRepository;
+import java.sql.Connection;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,6 +46,9 @@ class RetentionSweepTest {
 
     @Autowired
     private AgentRunRetentionStore agentRunRetentionStore;
+
+    @Autowired
+    private DataSource dataSource;
 
     @BeforeEach
     void clearFixtures() {
@@ -149,9 +159,9 @@ class RetentionSweepTest {
         long userId = insertUser();
         insertAgentRun("retention-test-done", userId, "DONE", LocalDateTime.now().minusDays(120));
         insertAgentRun("retention-test-running", userId, "RUNNING", LocalDateTime.now().minusDays(120));
-        insertAgentRunEvent("retention-test-done");
-        insertAgentRunEvent("retention-test-done");
-        insertAgentRunEvent("retention-test-running");
+        insertAgentRunEvent("retention-test-done", LocalDateTime.now().minusDays(120));
+        insertAgentRunEvent("retention-test-done", LocalDateTime.now().minusDays(120));
+        insertAgentRunEvent("retention-test-running", LocalDateTime.now().minusDays(120));
 
         int deleted = agentRunRetentionStore.deleteTerminalEventsBatch(
                 LocalDateTime.now().minusDays(90), 500);
@@ -159,6 +169,83 @@ class RetentionSweepTest {
         assertThat(deleted).isEqualTo(2);
         assertThat(eventCountOf("retention-test-done")).isZero();
         assertThat(eventCountOf("retention-test-running")).isEqualTo(1);
+    }
+
+    // ---------------------------------------------------------------------
+    // #618 — 스윕이 실행 중 태스크를 막지 않고, 지울 행만 읽는다
+    // ---------------------------------------------------------------------
+
+    @Test
+    void 이벤트는_자신도_보존_기간을_넘겨야_지운다() {
+        // 인덱스 범위로만 읽게 하려고 이벤트의 created_at 도 조건에 넣었다. 경계에 걸린 이벤트는 다음 스윕이 지운다.
+        long userId = insertUser();
+        insertAgentRun("retention-test-done", userId, "DONE", LocalDateTime.now().minusDays(120));
+        insertAgentRunEvent("retention-test-done", LocalDateTime.now().minusDays(120));
+        insertAgentRunEvent("retention-test-done", LocalDateTime.now().minusDays(10));
+
+        int deleted = agentRunRetentionStore.deleteTerminalEventsBatch(LocalDateTime.now().minusDays(90), 500);
+
+        assertThat(deleted).isEqualTo(1);
+        assertThat(eventCountOf("retention-test-done")).isEqualTo(1);
+    }
+
+    @Test
+    void 이벤트_삭제가_created_at_인덱스를_후보로_쓴다() {
+        assertThat(jdbcTemplate.queryForObject("""
+                select count(*) from information_schema.statistics
+                 where table_schema = database() and table_name = 'agent_run_events'
+                   and index_name = 'idx_agent_run_events_created' and column_name = 'created_at'
+                """, Integer.class)).isEqualTo(1);
+
+        // 실제로 고르는 계획(range)은 행 수에 따라 달라 테스트 데이터로는 고정할 수 없다 — PR 에 대량 데이터 실측을
+        // 남겼다. 여기서는 그 계획이 가능하도록 조건이 인덱스를 쓸 수 있는 모양인지만 지킨다.
+        List<java.util.Map<String, Object>> plan = jdbcTemplate.queryForList("""
+                explain delete from agent_run_events
+                 where created_at < ?
+                   and task_id in (select task_id from agent_runs
+                                    where status in ('DONE', 'FAILED', 'CANCELLED') and created_at < ?)
+                 limit 500
+                """, CUTOFF, CUTOFF);
+        assertThat(plan).anySatisfy(row -> assertThat(String.valueOf(row.get("possible_keys")))
+                .contains("idx_agent_run_events_created"));
+    }
+
+    @Test
+    void 비우기_배치가_잠긴_행을_기다리지_않는다() throws Exception {
+        // REPEATABLE READ 에서는 UPDATE 가 검사한 행마다 잠금을 기다리고 잡는다. 그래서 보존 기간 안의 터미널 run 처럼
+        // 조건에 맞지 않는 행이라도 다른 트랜잭션이 쥐고 있으면 스윕이 멈추고, 반대로 스윕이 쥔 잠금이 실행 중 태스크의
+        // 리스 갱신을 막았다(실측 3.04초 대기, 완료 UPDATE 는 Lock wait timeout). READ COMMITTED 의 UPDATE 는 맞지
+        // 않는 행을 마지막 커밋 버전으로 판정하고 지나간다. 스윕을 실제 빈으로 불러 격리 수준 설정까지 함께 본다.
+        long userId = insertUser();
+        insertAgentRun("retention-test-old-done", userId, "DONE", LocalDateTime.now().minusDays(120));
+        insertAgentRun("retention-test-recent-done", userId, "DONE", LocalDateTime.now().minusDays(1));
+
+        try (Connection other = dataSource.getConnection()) {
+            other.setAutoCommit(false);
+            try (var statement = other.prepareStatement(
+                    "update agent_runs set updated_at = now() where task_id = 'retention-test-recent-done'")) {
+                statement.executeUpdate();
+            }
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            try {
+                Future<Integer> sweep = executor.submit(() ->
+                        agentRunRetentionStore.blankTerminalPayloadsBatch(LocalDateTime.now().minusDays(90), 500));
+                int blanked;
+                try {
+                    blanked = sweep.get(3, TimeUnit.SECONDS);
+                } catch (TimeoutException e) {
+                    other.rollback();   // 스윕을 풀어 준 뒤 실패로 보고한다
+                    sweep.get(60, TimeUnit.SECONDS);
+                    throw new AssertionError("보존 스윕이 다른 트랜잭션이 쥔 행을 기다렸다(REPEATABLE READ 로 돌고 있다)");
+                }
+                assertThat(blanked).isGreaterThanOrEqualTo(1);
+                assertThat(planJsonOf("retention-test-old-done")).isNull();
+            } finally {
+                other.rollback();
+                executor.shutdownNow();
+            }
+        }
+        assertThat(planJsonOf("retention-test-recent-done")).isNotNull();
     }
 
     // ---------------------------------------------------------------------
@@ -205,10 +292,10 @@ class RetentionSweepTest {
                 taskId, userId, status, createdAt);
     }
 
-    private void insertAgentRunEvent(String taskId) {
+    private void insertAgentRunEvent(String taskId, LocalDateTime createdAt) {
         jdbcTemplate.update(
-                "insert into agent_run_events (task_id, event_type, status) values (?, 'STEP', 'RUNNING')",
-                taskId);
+                "insert into agent_run_events (task_id, event_type, status, created_at) values (?, 'STEP', 'RUNNING', ?)",
+                taskId, createdAt);
     }
 
     private String planJsonOf(String taskId) {
