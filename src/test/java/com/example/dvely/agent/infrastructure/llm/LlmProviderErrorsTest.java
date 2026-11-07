@@ -3,19 +3,33 @@ package com.example.dvely.agent.infrastructure.llm;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.common.exception.LlmProviderException;
 import com.example.dvely.common.exception.LlmProviderException.Reason;
+import java.io.IOException;
+import java.net.ConnectException;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
+import java.net.http.HttpConnectTimeoutException;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.mock.http.MockHttpInputMessage;
 import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClientException;
 
 class LlmProviderErrorsTest {
 
@@ -292,6 +306,152 @@ class LlmProviderErrorsTest {
 
         assertThat(answer).isEqualTo("ok");
         assertThat(System.currentTimeMillis() - startedAt).isLessThan(3_000);
+    }
+
+    // ── 읽기 타임아웃은 자동으로 다시 보내지 않는다(#620) ─────────────────────────
+
+    @Test
+    void aReadTimeoutIsNotSentAgainBecauseTheProviderWasAlreadyGenerating() {
+        AtomicInteger calls = new AtomicInteger();
+        ListAppender<ILoggingEvent> logs = captureLogs();
+        try {
+            assertThatThrownBy(() -> LlmProviderErrors.translate(PROVIDER, fastRetry(3), () -> {
+                calls.incrementAndGet();
+                throw readTimeout();
+            })).isInstanceOfSatisfying(LlmProviderException.class, e -> {
+                assertThat(e.reason()).isEqualTo(Reason.UPSTREAM_ERROR);
+                // 사용자는 여전히 다시 시도할 수 있다 — 자동 재전송만 하지 않는다.
+                assertThat(e.retryable()).isTrue();
+            });
+        } finally {
+            releaseLogs(logs);
+        }
+
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(logs.list).noneMatch(event -> event.getFormattedMessage().contains("재시도 대기"));
+        assertThat(logs.list).anyMatch(event -> event.getFormattedMessage().contains("응답 시간 초과"));
+    }
+
+    @Test
+    void aConnectTimeoutIsStillRetriedBecauseNothingWasSent() {
+        AtomicInteger calls = new AtomicInteger();
+
+        String answer = LlmProviderErrors.translate(PROVIDER, fastRetry(3), () -> {
+            if (calls.incrementAndGet() < 3) {
+                throw new ResourceAccessException("I/O error on POST request: Connect timed out",
+                        new SocketTimeoutException("Connect timed out"));
+            }
+            return "ok";
+        });
+
+        assertThat(answer).isEqualTo("ok");
+        assertThat(calls.get()).isEqualTo(3);
+    }
+
+    @Test
+    void aRefusedConnectionOrUnknownHostIsStillRetried() {
+        AtomicInteger calls = new AtomicInteger();
+
+        String answer = LlmProviderErrors.translate(PROVIDER, fastRetry(3), () -> {
+            int call = calls.incrementAndGet();
+            if (call == 1) {
+                throw new ResourceAccessException("Connection refused", new ConnectException("Connection refused"));
+            }
+            if (call == 2) {
+                throw new ResourceAccessException("api.openai.com", new UnknownHostException("api.openai.com"));
+            }
+            return "ok";
+        });
+
+        assertThat(answer).isEqualTo("ok");
+    }
+
+    @Test
+    void aPostReadTimeoutIsTranslatedInsteadOfEscapingAsARawClientException() {
+        // 실측: RestClient + SimpleClientHttpRequestFactory 에서 POST 의 읽기 타임아웃은 ResourceAccessException 이
+        // 아니라 "Error while extracting response" 로 온다(GET 만 ResourceAccessException). LLM 호출은 전부 POST 라
+        // 예전에는 번역되지 않고 빠져나가, CODE 에이전트가 빌드 실패로 읽고 태스크를 재시도했다.
+        AtomicInteger calls = new AtomicInteger();
+
+        assertThatThrownBy(() -> LlmProviderErrors.translate(PROVIDER, fastRetry(3), () -> {
+            calls.incrementAndGet();
+            throw new RestClientException(
+                    "Error while extracting response for type [java.lang.String] and content type [application/octet-stream]",
+                    new SocketTimeoutException("Read timed out"));
+        })).isInstanceOfSatisfying(LlmProviderException.class, e -> {
+            assertThat(e.reason()).isEqualTo(Reason.UPSTREAM_ERROR);
+            assertThat(e.getMessage()).contains("호출에 실패했습니다");
+        });
+
+        assertThat(calls.get()).isEqualTo(1);
+    }
+
+    @Test
+    void aConnectionCutWhileReadingTheResponseIsNotSentAgainEither() {
+        AtomicInteger calls = new AtomicInteger();
+
+        assertThatThrownBy(() -> LlmProviderErrors.translate(PROVIDER, fastRetry(3), () -> {
+            calls.incrementAndGet();
+            throw new RestClientException("Error while extracting response", new SocketException("Connection reset"));
+        })).isInstanceOf(LlmProviderException.class);
+
+        assertThat(calls.get()).isEqualTo(1);
+    }
+
+    @Test
+    void aBodyThatDoesNotParseIsLeftAsItWas() {
+        // Jackson 2 의 파싱 예외는 IOException 의 하위다. 변환 실패까지 I/O 실패로 읽으면 안 된다.
+        RestClientException parseFailure = new RestClientException("Error while extracting response",
+                new HttpMessageNotReadableException("JSON parse error",
+                        new IOException("Unexpected character"), new MockHttpInputMessage(new byte[0])));
+
+        assertThatThrownBy(() -> LlmProviderErrors.translate(PROVIDER, fastRetry(3), () -> {
+            throw parseFailure;
+        })).isSameAs(parseFailure);
+    }
+
+    @Test
+    void knowsWhenTheRequestHadAlreadyBeenDelivered() {
+        assertThat(LlmProviderErrors.requestWasDelivered(readTimeout())).isTrue();
+        assertThat(LlmProviderErrors.requestWasDelivered(
+                new RestClientException("extracting", new SocketException("Connection reset")))).isTrue();
+        assertThat(LlmProviderErrors.requestWasDelivered(
+                new ResourceAccessException("refused", new ConnectException("Connection refused")))).isFalse();
+        assertThat(LlmProviderErrors.requestWasDelivered(
+                new ResourceAccessException("Connect timed out", new SocketTimeoutException("Connect timed out")))).isFalse();
+        assertThat(LlmProviderErrors.requestWasDelivered(rateLimit())).isFalse();
+        assertThat(LlmProviderErrors.requestWasDelivered(null)).isFalse();
+    }
+
+    @Test
+    void classifiesTimeoutsByWhatAlreadyHappened() {
+        assertThat(LlmProviderErrors.isReadTimeout(readTimeout())).isTrue();
+        // JDK HttpClient 쪽 예외도 같은 기준으로 가른다.
+        assertThat(LlmProviderErrors.isReadTimeout(new HttpTimeoutException("request timed out"))).isTrue();
+        assertThat(LlmProviderErrors.isReadTimeout(new HttpConnectTimeoutException("HTTP connect timed out"))).isFalse();
+        assertThat(LlmProviderErrors.isReadTimeout(new SocketTimeoutException("Connect timed out"))).isFalse();
+        // 메시지가 없으면 읽기 쪽으로 본다 — 틀려도 재시도를 한 번 덜 할 뿐이다.
+        assertThat(LlmProviderErrors.isReadTimeout(new SocketTimeoutException())).isTrue();
+        assertThat(LlmProviderErrors.isReadTimeout(new ResourceAccessException("connect timed out"))).isFalse();
+        assertThat(LlmProviderErrors.isReadTimeout(null)).isFalse();
+    }
+
+    private ResourceAccessException readTimeout() {
+        return new ResourceAccessException(
+                "I/O error on POST request for \"https://api.openai.com/v1/chat/completions\": Read timed out",
+                new SocketTimeoutException("Read timed out"));
+    }
+
+    private ListAppender<ILoggingEvent> captureLogs() {
+        Logger logger = (Logger) LoggerFactory.getLogger(LlmProviderErrors.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        return appender;
+    }
+
+    private void releaseLogs(ListAppender<ILoggingEvent> appender) {
+        ((Logger) LoggerFactory.getLogger(LlmProviderErrors.class)).detachAppender(appender);
     }
 
     /** 지연을 0 으로 눌러 실제로 잠들지 않게 한다. */
