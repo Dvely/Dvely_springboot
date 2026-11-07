@@ -1137,6 +1137,8 @@ Docker preview 성공률, 배포 성공률, build 실패 해결률, Agent intent
 
 7. **`SIGNAL` 은 준비문 안에서 지원되지 않는다**(ERROR 1295). 마이그레이션에서 조건부로 실패시키며 메시지를 남기려면 존재하지 않는 테이블 이름에 사유를 담는 우회가 필요하다(V62 의 안전 게이트).
 
+8. **(#618 추가) 보존 스윕을 기본 격리(REPEATABLE READ)로 돌리면 검사한 행 전부에 next-key 잠금이 걸린다.** 실측(런 10만·이벤트 60만): 비우기 배치 하나가 agent_runs 잠금 71,814개를 쥐었고, 그동안 실행 중 태스크의 완료 UPDATE(RUNNING→DONE)가 Lock wait timeout 으로 실패했다. `AgentRunRetentionStore` 두 메서드는 이제 READ COMMITTED 로 돈다(잠금 1,001개, 같은 UPDATE 0.65ms). 전제는 binlog ROW(MySQL 8.0 기본). 이벤트 DELETE 는 `created_at < cutoff` 조건과 `idx_agent_run_events_created` 로 범위만 읽는다 — 이벤트 자신도 보존 기간을 넘겨야 지운다(경계의 몇 건은 다음 스윕).
+
 ### 되돌리는 법
 
 전부 설정으로 되돌아간다: `spring.task.scheduling.pool.size`(U0) · `qeploy.worker.poll.max-delay-ms`(U5, 1000 이면 이전 동작) · `qeploy.auth.revoked-token-cache.not-revoked-ttl=0`(U10) · `qeploy.ai.failure-analysis.provider/model`(U8) · `qeploy.ai.code-agent.max-task-tokens=0`(U8 예산 상한 해제).
