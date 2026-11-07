@@ -30,6 +30,8 @@ import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.codingagent.CodingAgentWorkspaceBridge;
+import com.example.dvely.agent.infrastructure.docker.ContainerFileWriteException;
+import com.example.dvely.agent.infrastructure.docker.ContainerFileWriter;
 import com.example.dvely.agent.infrastructure.docker.ContainerGitCredentials;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.LlmToolRouter;
@@ -85,6 +87,8 @@ class CodeAgentServiceTest {
     @Mock private BuildFailureAnalyzer buildFailureAnalyzer;
     // 스텁하지 않으면 Optional.empty() 가 나온다 — 템플릿 없는 프로젝트와 같은 경로다.
     @Mock private TemplateSeedingService templateSeedingService;
+    // 실제 쓰기(tar·exec)는 ContainerFileWriterTest 와 도커 통합 테스트가 본다. 여기서는 결과가 모델에게 어떻게 가는지만.
+    @Mock private ContainerFileWriter containerFileWriter;
 
     private CodeAgentService service;
 
@@ -115,7 +119,8 @@ class CodeAgentServiceTest {
                 buildFailureAnalyzer,
                 templateSeedingService,
                 aiProperties,
-                mock(CodingAgentWorkspaceBridge.class)
+                mock(CodingAgentWorkspaceBridge.class),
+                containerFileWriter
         );
         when(previewSessionService.acquire(TASK_ID)).thenReturn(previewSession());
         // Lenient because each test drives one provider and leaves the other two routes unused.
@@ -287,6 +292,7 @@ class CodeAgentServiceTest {
         service.execute(step(), AiProvider.ANTHROPIC, USER_ID, null, TASK_ID);
 
         verify(dockerService, never()).exec(eq(CONTAINER_ID), contains("App.jsx"));
+        verify(containerFileWriter, never()).write(anyString(), anyString(), anyString());
         assertThat(capturedToolResultContent()).contains("잘렸으므로 실행하지 않았습니다");
     }
 
@@ -444,6 +450,59 @@ class CodeAgentServiceTest {
         verify(previewSessionService, never()).markServing(anyString());
     }
 
+    // ── write_file 결과가 모델에게 그대로 간다(#617) ─────────────────────────────
+
+    @Test
+    void aFailedWriteIsReportedToTheModelAsAFailure() {
+        // 예전에는 exec 의 종료 코드를 보지 않아, 96KiB 를 넘는 파일이 실패해도 모델은 "파일 작성 완료" 를 받았다.
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(toolResponse("end_turn",
+                        toolCall("call-1", "write_file", Map.of("path", "/workspace/app/src/App.jsx", "content", "x"))))
+                .thenReturn(textResponse("완료했습니다."));
+        when(containerFileWriter.write(CONTAINER_ID, "/workspace/app/src/App.jsx", "x"))
+                .thenThrow(new ContainerFileWriteException("디렉터리를 만들지 못했습니다(/workspace/app/src, exit=20): denied"));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(serveReadyOr("exists"));
+
+        service.execute(step(), AiProvider.ANTHROPIC, USER_ID, null, TASK_ID);
+
+        assertThat(capturedToolResultContent())
+                .startsWith("파일 작성 실패: ")
+                .contains("디렉터리를 만들지 못했습니다")
+                .doesNotContain("완료");
+    }
+
+    @Test
+    void anUnexpectedWriterErrorIsStillAFailureAndDoesNotEndTheRun() {
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(toolResponse("end_turn",
+                        toolCall("call-1", "write_file", Map.of("path", "/workspace/app/a.js", "content", "SECRET_IN_MESSAGE"))))
+                .thenReturn(textResponse("완료했습니다."));
+        when(containerFileWriter.write(anyString(), anyString(), anyString()))
+                .thenThrow(new IllegalStateException("SECRET_IN_MESSAGE"));
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(serveReadyOr("exists"));
+
+        CodeAgentService.CodeResult result = service.execute(step(), AiProvider.ANTHROPIC, USER_ID, null, TASK_ID);
+
+        assertThat(result.summary()).isEqualTo("완료했습니다.");
+        assertThat(capturedToolResultContent())
+                .isEqualTo("파일 작성 실패: 예상하지 못한 오류(IllegalStateException)");
+    }
+
+    @Test
+    void aSuccessfulWriteReportsTheNormalizedPathItWrote() {
+        when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
+                .thenReturn(toolResponse("end_turn",
+                        toolCall("call-1", "write_file", Map.of("path", "/workspace/app/./src/App.jsx", "content", "x"))))
+                .thenReturn(textResponse("완료했습니다."));
+        when(containerFileWriter.write(CONTAINER_ID, "/workspace/app/./src/App.jsx", "x"))
+                .thenReturn("/workspace/app/src/App.jsx");
+        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenAnswer(serveReadyOr("exists"));
+
+        service.execute(step(), AiProvider.ANTHROPIC, USER_ID, null, TASK_ID);
+
+        assertThat(capturedToolResultContent()).isEqualTo("파일 작성 완료: /workspace/app/src/App.jsx");
+    }
+
     // ── 로그에 파일 내용·비밀이 남지 않는다(#617) ─────────────────────────────────
 
     /** 로그 한 줄의 상한. 지시문 500자 + 고정 문구를 넉넉히 덮고, 4KB 파일 내용은 절대 못 들어간다. */
@@ -522,7 +581,6 @@ class CodeAgentServiceTest {
         when(claudeToolPort.completeWithTools(anyString(), anyList(), anyList(), any()))
                 .thenReturn(toolResponse("end_turn",
                         toolCall("call-1", "write_file", Map.of("path", "/workspace/app/.env", "content", envFile))));
-        when(dockerService.exec(eq(CONTAINER_ID), anyString())).thenReturn("");
 
         assertThatThrownBy(() -> execute(AiProvider.ANTHROPIC))
                 .isInstanceOfSatisfying(CodeAgentExecutionException.class, exception ->

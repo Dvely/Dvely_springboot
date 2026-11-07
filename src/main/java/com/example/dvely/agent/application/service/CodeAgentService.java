@@ -22,8 +22,9 @@ import com.example.dvely.preview.application.service.PreviewServeException;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.preview.application.service.PreviewWorkspaceService;
 import com.example.dvely.template.domain.model.Template;
+import com.example.dvely.agent.infrastructure.docker.ContainerFileWriteException;
+import com.example.dvely.agent.infrastructure.docker.ContainerFileWriter;
 import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
-import java.util.Base64;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -74,6 +75,7 @@ public class CodeAgentService {
     private final TemplateSeedingService  templateSeedingService;
     private final AiProperties            aiProperties;
     private final CodingAgentWorkspaceBridge codingAgentWorkspaceBridge;
+    private final ContainerFileWriter     containerFileWriter;
 
     private static final String SYSTEM_PROMPT = """
             You are an expert full-stack developer working inside a Docker container (node:20-alpine).
@@ -552,16 +554,23 @@ public class CodeAgentService {
                 || normalized.contains("bun run build");
     }
 
+    /**
+     * 실패는 반드시 "파일 작성 실패" 로 모델에게 돌려준다(#617). 예전에는 exec 의 종료 코드를 보지 않아, 96KiB 를
+     * 넘어 쓰기가 실패해도 모델은 "파일 작성 완료" 를 받고 다음 단계로 넘어갔다.
+     */
     private String writeFile(String containerId, String path, String content) {
         try {
-            String base64 = Base64.getEncoder().encodeToString(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            String dir = path.contains("/") ? path.substring(0, path.lastIndexOf('/')) : "/";
-            dockerService.exec(containerId, "mkdir -p '" + dir + "'");
-            dockerService.exec(containerId,
-                    "node -e \"require('fs').writeFileSync('" + path + "', Buffer.from('" + base64 + "', 'base64').toString('utf8'))\"");
-            return "파일 작성 완료: " + path;
-        } catch (Exception e) {
+            return "파일 작성 완료: " + containerFileWriter.write(containerId, path, content);
+        } catch (ContainerFileWriteException e) {
+            log.warn("[CodeAgent] 파일 작성 실패 | path={} reason={}",
+                    AgentLogText.clip(path, AgentLogText.PATH_MAX_CHARS), e.getMessage());
             return "파일 작성 실패: " + e.getMessage();
+        } catch (RuntimeException e) {
+            // 쓰기 경로의 예외는 ContainerFileWriter 가 모두 감싼다. 여기 오면 버그라 서버 로그에는 스택을 남기고,
+            // 모델에게는 메시지가 무엇인지 모르므로 종류만 돌려준다. 실행 전체를 실패시키지는 않는다.
+            log.warn("[CodeAgent] 파일 작성 중 예상하지 못한 오류 | path={}",
+                    AgentLogText.clip(path, AgentLogText.PATH_MAX_CHARS), e);
+            return "파일 작성 실패: 예상하지 못한 오류(" + e.getClass().getSimpleName() + ")";
         }
     }
 
