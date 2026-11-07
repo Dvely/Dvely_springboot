@@ -13,6 +13,7 @@ import com.example.dvely.agent.application.service.BuildFailureRecoveryService;
 import com.example.dvely.agent.application.service.ChatAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService;
 import com.example.dvely.agent.application.service.CodeAgentService.CodeResult;
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Inspection;
 import com.example.dvely.agent.application.service.DeployAgentService;
 import com.example.dvely.agent.application.service.DomainBindAgentService;
 import com.example.dvely.agent.application.service.InfraOpsAgentService;
@@ -123,14 +124,15 @@ public class AgentPlanExecutor {
                     if (result.summary() != null)    summary    = result.summary();
                     taskStore.updateProgress(taskId, previewUrl, summary);
                     if (step.agentType() == AgentType.CODE) {
-                        changeService.record(taskId, summary);
+                        // #623: record 가 만든 서버 측 검사(원격 fetch·작업 트리 tar)를 게이트가 다시 쓴다.
+                        Inspection recorded = changeService.record(taskId, summary);
                         // Track Z (#56): the gate owns markStepCompleted for the CODE step it
                         // fires on (see ResultApprovalGate javadoc for why — push must succeed
                         // before the step is considered "done" so a push failure leaves the CODE
                         // step retryable). When it does not fire (policy OFF, unbound project, or
                         // not the plan's last CODE step) it makes no writes at all, and the normal
                         // markStepCompleted below runs exactly as it did before this feature.
-                        if (resultApprovalGate.requestIfRequired(plan, i, taskId, userId, plan.projectId())) {
+                        if (resultApprovalGate.requestIfRequired(plan, i, taskId, userId, plan.projectId(), recorded)) {
                             log.info("=== AgentPlan 결과 승인 대기: taskId={} ===", taskId);
                             return;
                         }

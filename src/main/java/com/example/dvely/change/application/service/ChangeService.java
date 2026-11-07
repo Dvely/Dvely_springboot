@@ -45,14 +45,17 @@ public class ChangeService {
      * <p>실패 시 동작은 그대로다: diff 를 뜨다 예외가 나면 아래 저장에 도달하지 못하므로
      * Change 행이 남지 않는다 — 예전에 롤백이 해주던 것과 같은 결과를, 외부 호출을 저장보다
      * 먼저 두는 순서로 얻는다.</p>
+     *
+     * @return 서버 측 git(#523)이 켜져 있으면 이번에 만든 검사 결과, 꺼져 있으면 {@code null}. 같은 CODE 스텝의
+     *         결과 승인 게이트가 이것을 다시 쓴다(#623) — 둘 사이에 작업 트리를 바꾸는 단계가 없는데 예전에는 게이트가
+     *         원격 fetch 와 작업 트리 tar 를 처음부터 한 번 더 했다
      */
-    public void record(String taskId, String summary) {
+    public Inspection record(String taskId, String summary) {
         AgentTask task = taskStore.get(taskId);
         PreviewSessionInfo preview = previewSessionService.findByTaskId(taskId)
                 .orElseThrow(() -> new IllegalStateException("Change에 연결할 PreviewSession이 없습니다."));
         if (serverPreviewBranch.enabled()) {
-            recordFromServer(task, preview, summary);
-            return;
+            return recordFromServer(task, preview, summary);
         }
         String diff = captureDiff(preview.containerId());
         ChangeEntity change = changeRepository.findByTaskId(taskId)
@@ -67,13 +70,14 @@ public class ChangeService {
                 ));
         change.update(summary, diff);
         changeRepository.save(change);
+        return null;
     }
 
     /**
      * 서버 측 git(#523)이 켜져 있으면 diff 를 서버가 만든다. 기준은 연결된 저장소의 preview(없으면 기본 브랜치),
      * 저장소가 없으면 빈 트리다. 그 스냅샷 트리 id 도 남겨 결과 승인 뒤 반영 때 대조한다.
      */
-    private void recordFromServer(AgentTask task, PreviewSessionInfo preview, String summary) {
+    private Inspection recordFromServer(AgentTask task, PreviewSessionInfo preview, String summary) {
         Inspection inspection = serverPreviewBranch.inspect(
                 preview.containerId(), task.ownerUserId(), boundRepository(task.projectId(), task.ownerUserId()));
         String diff = truncate(inspection.diff(), MAX_DIFF_CHARS);
@@ -82,6 +86,7 @@ public class ChangeService {
                         task.taskId(), preview.sessionId(), summary, diff));
         change.updateFromServerSnapshot(summary, diff, inspection.tree().name());
         changeRepository.save(change);
+        return inspection;
     }
 
     private String boundRepository(Long projectId, Long ownerUserId) {

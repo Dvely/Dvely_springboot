@@ -83,6 +83,23 @@ public class ResultApprovalGate {
      *         exactly as design §5.2 accounts for.
      */
     public boolean requestIfRequired(AgentPlan plan, int stepIndex, String taskId, Long userId, Long projectId) {
+        return requestIfRequired(plan, stepIndex, taskId, userId, projectId, null);
+    }
+
+    /**
+     * {@link #requestIfRequired(AgentPlan, int, String, Long, Long)} 와 같고, 같은 CODE 스텝에서 {@code ChangeService#record}
+     * 가 이미 만든 서버 측 검사 결과를 받는다(#623).
+     *
+     * <p>예전에는 record 가 검사한 직후 이 게이트가 같은 검사를 처음부터 다시 했다 — 새 임시 저장소, 원격 fetch,
+     * 작업 트리 tar 두 번. 둘 사이에 작업 트리를 바꾸는 단계는 없고, 두 검사 모두 연결된 같은 저장소를 기준으로 한다
+     * (record 는 BOUND 일 때만 저장소를 넣고, 이 게이트는 BOUND 가 아니면 위에서 빠진다). 그래서 받은 결과를 쓴다.
+     * 원격 preview 가 그 사이 바뀌었는지와 보호 경로 재검사는 push 시점({@code ServerGitPublisher#publishOnce})이
+     * 그대로 다시 본다.</p>
+     *
+     * @param recorded record 가 만든 검사 결과. {@code null} 이면(서버 측 git 꺼짐, 또는 넘겨받지 못함) 예전처럼 직접 검사한다
+     */
+    public boolean requestIfRequired(AgentPlan plan, int stepIndex, String taskId, Long userId, Long projectId,
+                                     Inspection recorded) {
         if (!isLastCodeStep(plan, stepIndex) || projectId == null) {
             return false;
         }
@@ -95,7 +112,9 @@ public class ResultApprovalGate {
                 .orElseGet(() -> new ProjectApprovalPolicy(projectId));
         // 서버 측 git(#523)이 켜져 있으면 서버가 만든 트리로 .github 아래 변경을 본다. 그런 변경은 정책과
         // 무관하게 사람이 확인하고, 승인 전에는 저장소에 올리지 않는다(push 를 승인 뒤로 미룬다).
-        Inspection inspection = inspectOnServer(taskId, userId, project);
+        Inspection inspection = recorded != null && serverPreviewBranch.enabled()
+                ? recorded
+                : inspectOnServer(taskId, userId, project);
         boolean deferPush = inspection != null && !inspection.requiringApproval().isEmpty();
         if (!policy.isResultApprovalRequired() && !deferPush) {
             return false;
