@@ -1039,6 +1039,20 @@ public class DockerContainerService {
                 .exec();
     }
 
+    /**
+     * {@link #copyArchiveToContainer} 와 같고, 기존 디렉터리를 파일로(또는 그 반대로) 바꾸는 풀기는 거절한다(#617,
+     * 코드 에이전트 write_file). 이 옵션이 없으면 도커는 같은 이름의 디렉터리를 통째로 지우고 그 자리에 파일을
+     * 쓴다 — 모델이 경로를 {@code /workspace/app/src} 처럼 잘못 주면 {@code src/} 가 사라진다.
+     */
+    public void copyArchiveToContainerNoDirReplace(String containerId, InputStream tar, String remotePath) {
+        dockerClient.copyArchiveToContainerCmd(containerId)
+                .withTarInputStream(tar)
+                .withRemotePath(remotePath)
+                .withCopyUIDGID(true)
+                .withNoOverwriteDirNonDir(true)
+                .exec();
+    }
+
     private boolean hasSkippedSegment(String entryName, Set<String> skipSegments) {
         for (String segment : entryName.split("/")) {
             if (skipSegments.contains(segment)) {
