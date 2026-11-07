@@ -16,6 +16,11 @@
 # 키는 이미지에 절대 굽지 않는다. 실행 시 exec 환경변수로만 주입된다.
 FROM node:20-alpine
 
+# 서버 정리 cron(deploy/setup-dev-server.sh)이 이 라벨이 붙은 이미지는 지우지 않는다(#616).
+# 이 이미지는 레지스트리에 없어서 지워지면 다시 받을 수 없고, 코딩 에이전트 컨테이너는 실행마다 버려져
+# 정리 시각에 이 이미지를 쓰는 컨테이너가 없다. 라벨이 없던 시절에는 빌드 72시간 뒤 새벽에 지워졌다.
+LABEL qeploy.keep="true"
+
 # git: 코딩 에이전트가 워크스페이스에서 diff/commit 을 다룬다.
 # ca-certificates: 공식 API(api.anthropic.com) TLS 검증.
 # tinyproxy: egress 프록시 사이드카가 이 이미지로 뜬다. 에이전트 컨테이너는 internal 네트워크에만
