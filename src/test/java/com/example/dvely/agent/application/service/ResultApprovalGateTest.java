@@ -2,7 +2,9 @@ package com.example.dvely.agent.application.service;
 
 import org.eclipse.jgit.lib.ObjectId;
 import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Inspection;
+import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.change.application.service.ChangeService;
+import com.example.dvely.change.infrastructure.persistence.repository.SpringDataChangeRepository;
 import com.example.dvely.chat.domain.value.ChatMessageKind;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -419,6 +421,76 @@ class ResultApprovalGateTest {
 
         assertThat(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).isFalse();
         verify(changeService, never()).deferPush(anyString(), any());
+    }
+
+    // ---------------------------------------------------------------- #623 검사 재사용
+
+    @Test
+    void aRecordedInspectionIsUsedInsteadOfInspectingAgain() {
+        // ChangeService#record 가 같은 CODE 스텝에서 방금 만든 검사다. 게이트가 다시 검사하면 원격 fetch 와 작업 트리
+        // tar 두 번이 그대로 반복된다.
+        AgentPlan plan = codePlan();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(boundProject()));
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, false, false, false, false, false)));
+        stubPreviewSessionAndUser();
+        when(serverPreviewBranch.enabled()).thenReturn(true);
+        ObjectId tree = ObjectId.fromString("89abcdef0123456789abcdef0123456789abcdef");
+        Inspection recorded = new Inspection(
+                tree, List.of(".github/workflows/ci.yml"), List.of(".github/workflows/ci.yml"), "recorded diff");
+        when(approvalRepository.save(any(Approval.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        assertThat(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L, recorded)).isTrue();
+
+        verify(serverPreviewBranch, never()).inspect(any(), any(), any());
+        ArgumentCaptor<Inspection> deferred = ArgumentCaptor.forClass(Inspection.class);
+        verify(changeService).deferPush(eq("task-1"), deferred.capture());
+        assertThat(deferred.getValue()).isSameAs(recorded);
+        verifyNoInteractions(previewBranchPushService);
+    }
+
+    @Test
+    void oneCodeStepInspectsOnTheServerOnlyOnce() {
+        // 실제 ChangeService#record 와 게이트를 이어 붙여, CODE 한 스텝의 서버 검사 횟수를 센다. 검사 1회 = 새 임시 저장소 +
+        // 원격 fetch 1회 + 작업 트리 tar 2회다. 예전에는 2회(fetch 2·tar 4)였고, 이어지는 push 의 검사 1회는 그대로 둔다.
+        SpringDataChangeRepository changeRepository = mock(SpringDataChangeRepository.class);
+        when(changeRepository.findByTaskId("task-1")).thenReturn(Optional.empty());
+        ChangeService realChangeService = new ChangeService(changeRepository, taskStore, previewSessionService,
+                mock(DockerContainerService.class), projectRepository, serverPreviewBranch);
+        ResultApprovalGate wiredGate = new ResultApprovalGate(
+                projectRepository, policyRepository, previewSessionService, previewBranchPushService,
+                userRepository, authCommandService, taskStore, approvalRepository, agentMessageService,
+                auditRecorder, serverPreviewBranch, realChangeService);
+        when(taskStore.get("task-1")).thenReturn(task(TaskStatus.RUNNING, null, "요약"));
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(boundProject()));
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, false, false, false, false, false)));
+        stubPreviewSessionAndUser();
+        when(serverPreviewBranch.enabled()).thenReturn(true);
+        when(serverPreviewBranch.inspect("container-1", 1L, "octo/repo")).thenReturn(new Inspection(
+                ObjectId.zeroId(), List.of("README.md"), List.of(), "diff"));
+
+        Inspection recorded = realChangeService.record("task-1", "요약");
+        wiredGate.requestIfRequired(codePlan(), 0, "task-1", 1L, 11L, recorded);
+
+        verify(serverPreviewBranch, Mockito.times(1)).inspect("container-1", 1L, "octo/repo");
+    }
+
+    @Test
+    void withoutARecordedInspectionTheGateStillInspectsItself() {
+        // 넘겨받지 못한 호출부(예전 5인자 진입점)는 예전처럼 직접 검사한다.
+        AgentPlan plan = codePlan();
+        when(projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(11L, 1L)).thenReturn(Optional.of(boundProject()));
+        when(policyRepository.findByProjectId(11L))
+                .thenReturn(Optional.of(new ProjectApprovalPolicy(11L, false, false, false, false, false)));
+        stubPreviewSessionAndUser();
+        when(serverPreviewBranch.enabled()).thenReturn(true);
+        when(serverPreviewBranch.inspect("container-1", 1L, "octo/repo")).thenReturn(new Inspection(
+                ObjectId.zeroId(), List.of("README.md"), List.of(), "diff"));
+
+        assertThat(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L, null)).isFalse();
+
+        verify(serverPreviewBranch).inspect("container-1", 1L, "octo/repo");
     }
 
     @Test

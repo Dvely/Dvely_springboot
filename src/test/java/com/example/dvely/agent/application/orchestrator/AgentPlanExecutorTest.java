@@ -33,6 +33,8 @@ import com.example.dvely.agent.infrastructure.usage.LlmUsageStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.dvely.agent.application.service.RepositoryBindingGate;
 import com.example.dvely.agent.application.service.ResultApprovalGate;
+import com.example.dvely.agent.infrastructure.git.ServerGitPublisher.Inspection;
+import org.eclipse.jgit.lib.ObjectId;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
@@ -224,15 +226,57 @@ class AgentPlanExecutorTest {
         // The gate itself is responsible for markStepCompleted when it fires (see
         // ResultApprovalGate javadoc) — this test only asserts the executor's side: record the
         // diff, delegate to the gate, then stop without ever calling markDone/removePlan.
-        when(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(true);
+        when(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L, null)).thenReturn(true);
 
         executor.execute(plan, "task-1", 1L);
 
         verify(changeService).record("task-1", "수정 완료");
-        verify(gate).requestIfRequired(plan, 0, "task-1", 1L, 11L);
+        verify(gate).requestIfRequired(plan, 0, "task-1", 1L, 11L, null);
         verify(taskStore, org.mockito.Mockito.never()).markStepCompleted(org.mockito.ArgumentMatchers.eq("task-1"), org.mockito.ArgumentMatchers.anyInt());
         verify(taskStore, org.mockito.Mockito.never()).markDone(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         verify(taskStore, org.mockito.Mockito.never()).removePlan(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void handsTheInspectionRecordedForTheCodeStepToTheResultApprovalGate() {
+        CodeAgentService codeService = mock(CodeAgentService.class);
+        TaskStore taskStore = taskStore();
+        AgentMessageService messageService = mock(AgentMessageService.class);
+        ResultApprovalGate gate = mock(ResultApprovalGate.class);
+        ChangeService changeService = mock(ChangeService.class);
+        AgentPlanExecutor executor = new AgentPlanExecutor(
+                codeService,
+                mock(DeployAgentService.class),
+                mock(DomainBindAgentService.class),
+                mock(ChatAgentService.class),
+                mock(InfraOpsAgentService.class),
+                mock(RuntimeSetupAgentService.class),
+                mock(BackendDeployAgentService.class),
+                taskStore,
+                messageService,
+                mock(BuildFailureRecoveryService.class),
+                changeService,
+                gate,
+                mock(RepositoryBindingGate.class),
+                mock(AgentExecutionRegistry.class),
+                mock(DecisionAgentService.class),
+                mock(InputWaitStore.class),
+                new ObjectMapper(),
+                usageRecorder(),
+                new AiProperties()
+        );
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of("instruction", "수정"));
+        AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
+        when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
+                .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
+        // #623: ChangeService#record 가 만든 서버 측 검사를 게이트가 다시 쓴다(원격 fetch·작업 트리 tar 를 한 번 덜 한다).
+        Inspection recorded = new Inspection(ObjectId.zeroId(), List.of("README.md"), List.of(), "diff");
+        when(changeService.record("task-1", "수정 완료")).thenReturn(recorded);
+        when(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L, recorded)).thenReturn(true);
+
+        executor.execute(plan, "task-1", 1L);
+
+        verify(gate).requestIfRequired(plan, 0, "task-1", 1L, 11L, recorded);
     }
 
     @Test
@@ -270,7 +314,7 @@ class AgentPlanExecutorTest {
         // NOT_BOUND project: the result gate declines, the binding gate takes over. Same contract
         // as the result gate — it owns markStepCompleted, so the executor must stop without
         // markDone/removePlan.
-        when(resultGate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(false);
+        when(resultGate.requestIfRequired(plan, 0, "task-1", 1L, 11L, null)).thenReturn(false);
         when(bindingGate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(true);
 
         executor.execute(plan, "task-1", 1L);
@@ -316,7 +360,7 @@ class AgentPlanExecutorTest {
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
         when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
                 .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
-        when(resultGate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(true);
+        when(resultGate.requestIfRequired(plan, 0, "task-1", 1L, 11L, null)).thenReturn(true);
 
         executor.execute(plan, "task-1", 1L);
 
@@ -354,7 +398,7 @@ class AgentPlanExecutorTest {
         AgentPlan plan = new AgentPlan(List.of(step), "reason", AiProvider.OPENAI, 11L);
         when(codeService.execute(eq(step), eq(AiProvider.OPENAI), eq(1L), eq(11L), eq("task-1"), any()))
                 .thenReturn(new CodeAgentService.CodeResult("preview", "수정 완료"));
-        when(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L)).thenReturn(false);
+        when(gate.requestIfRequired(plan, 0, "task-1", 1L, 11L, null)).thenReturn(false);
 
         executor.execute(plan, "task-1", 1L);
 
