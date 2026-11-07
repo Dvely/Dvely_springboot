@@ -17,6 +17,7 @@ import com.example.dvely.agent.application.facade.AgentFacade;
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.service.AgentEventStreamService;
 import com.example.dvely.agent.application.service.AiProviderQueryService;
+import com.example.dvely.agent.application.service.TaskStatusQueryService;
 import com.example.dvely.agent.application.stream.AgentEventAppendedEvent;
 import com.example.dvely.agent.application.stream.AgentEventBus;
 import com.example.dvely.agent.infrastructure.config.AsyncConfig;
@@ -98,7 +99,8 @@ class AgentEventStreamConcurrencyContractTest {
                         taskStore,
                         mock(PreviewSessionService.class),
                         streamService,
-                        mock(AiProviderQueryService.class)))
+                        mock(AiProviderQueryService.class),
+                        mock(TaskStatusQueryService.class)))
                 .setControllerAdvice(new ApiResponseAdvice())
                 .setCustomArgumentResolvers(new HandlerMethodArgumentResolver() {
                     @Override

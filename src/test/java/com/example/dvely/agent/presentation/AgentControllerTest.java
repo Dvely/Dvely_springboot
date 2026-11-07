@@ -18,6 +18,7 @@ import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.result.AgentSubmitResult;
 import com.example.dvely.agent.application.service.AgentEventStreamService;
 import com.example.dvely.agent.application.service.AiProviderQueryService;
+import com.example.dvely.agent.application.service.TaskStatusQueryService;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.store.InputWaitStore;
@@ -55,7 +56,9 @@ class AgentControllerTest {
                 taskStore,
                 mock(PreviewSessionService.class),
                 mock(AgentEventStreamService.class),
-                mock(AiProviderQueryService.class)
+                mock(AiProviderQueryService.class),
+                // 실물을 쓴다 — #57 의 retryable 조립 규칙이 이 서비스로 옮겨졌다(#619).
+                new TaskStatusQueryService(taskStore, agentOrchestrator)
         );
         task = new AgentTask(
                 "task-1",
@@ -116,12 +119,8 @@ class AgentControllerTest {
         // retryable must fold in the exact same pending-approval check AgentOrchestrator.retry()
         // enforces, and pendingApprovalId must surface that approval so the task screen can link
         // straight to it (M3) instead of requiring a separate GET /approvals scan.
-        AgentTask failedTask = new AgentTask(
-                "task-1", 1L, 11L, 21L, TaskStatus.FAILED, null, null, "빌드 실패", null, Instant.now()
-        );
-        when(taskStore.getOwned("task-1", 1L)).thenReturn(failedTask);
-        when(taskStore.getFailure("task-1", 1L))
-                .thenReturn(new AgentTaskFailure("로그 일부", "수정안", 0, 3));
+        when(taskStore.getStatusSnapshot("task-1", 1L)).thenReturn(snapshot(
+                TaskStatus.FAILED, "빌드 실패", new AgentTaskFailure("로그 일부", "수정안", 0, 3)));
         when(agentOrchestrator.findPendingApprovalId("task-1")).thenReturn(77L);
 
         TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
@@ -132,12 +131,8 @@ class AgentControllerTest {
 
     @Test
     void getTaskStatusIsRetryableWhenNoApprovalIsPendingAndAttemptsRemain() {
-        AgentTask failedTask = new AgentTask(
-                "task-1", 1L, 11L, 21L, TaskStatus.FAILED, null, null, "빌드 실패", null, Instant.now()
-        );
-        when(taskStore.getOwned("task-1", 1L)).thenReturn(failedTask);
-        when(taskStore.getFailure("task-1", 1L))
-                .thenReturn(new AgentTaskFailure("로그 일부", "수정안", 0, 3));
+        when(taskStore.getStatusSnapshot("task-1", 1L)).thenReturn(snapshot(
+                TaskStatus.FAILED, "빌드 실패", new AgentTaskFailure("로그 일부", "수정안", 0, 3)));
         when(agentOrchestrator.findPendingApprovalId("task-1")).thenReturn(null);
 
         TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
@@ -151,12 +146,8 @@ class AgentControllerTest {
         // No PENDING approval this time — must still stay false once attempt reaches maxAttempts,
         // i.e. the new pendingApprovalId check is additive (AND), never a replacement for the
         // existing attempt<maxAttempts guard.
-        AgentTask failedTask = new AgentTask(
-                "task-1", 1L, 11L, 21L, TaskStatus.FAILED, null, null, "빌드 실패", null, Instant.now()
-        );
-        when(taskStore.getOwned("task-1", 1L)).thenReturn(failedTask);
-        when(taskStore.getFailure("task-1", 1L))
-                .thenReturn(new AgentTaskFailure("로그 일부", "수정안", 3, 3));
+        when(taskStore.getStatusSnapshot("task-1", 1L)).thenReturn(snapshot(
+                TaskStatus.FAILED, "빌드 실패", new AgentTaskFailure("로그 일부", "수정안", 3, 3)));
         when(agentOrchestrator.findPendingApprovalId("task-1")).thenReturn(null);
 
         TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
@@ -170,11 +161,8 @@ class AgentControllerTest {
         // limited to the FAILED/build-recovery case — a WAITING_APPROVAL task blocked on its
         // initial plan approval must link to it too, even though retryable correctly stays false
         // (only a FAILED task is ever retryable, regardless of pendingApprovalId).
-        AgentTask waitingTask = new AgentTask(
-                "task-1", 1L, 11L, 21L, TaskStatus.WAITING_APPROVAL, null, null, null, null, Instant.now()
-        );
-        when(taskStore.getOwned("task-1", 1L)).thenReturn(waitingTask);
-        when(taskStore.getFailure("task-1", 1L)).thenReturn(null);
+        when(taskStore.getStatusSnapshot("task-1", 1L)).thenReturn(snapshot(
+                TaskStatus.WAITING_APPROVAL, null, null));
         when(agentOrchestrator.findPendingApprovalId("task-1")).thenReturn(9L);
 
         TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
@@ -245,10 +233,8 @@ class AgentControllerTest {
     void getTaskStatusReportsPreviewCreatedWhenTheTaskHasAPreviewUrl() {
         // FE 는 지금 previewUrl 이 비었는지로 폴링을 멈춘다. 그 판단에 주소가 필요하지 않다 —
         // 주소를 들고 가면 회전 뒤 404 를 잡는다(#391 에서 승인 메시지가 실제로 그랬다).
-        when(taskStore.getOwned("task-1", 1L)).thenReturn(new AgentTask(
-                "task-1", 1L, 11L, 21L, TaskStatus.DONE,
-                "https://qeploy.com/api/v1/previews/sess/token/", "요약", null, null, Instant.now()
-        ));
+        when(taskStore.getStatusSnapshot("task-1", 1L)).thenReturn(new TaskStore.StatusSnapshot(
+                "task-1", TaskStatus.DONE, "https://qeploy.com/api/v1/previews/sess/token/", "요약", null, null, null, null, null));
 
         TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
 
@@ -257,9 +243,8 @@ class AgentControllerTest {
 
     @Test
     void getTaskStatusReportsPreviewNotCreatedWhenThereIsNoPreviewUrl() {
-        when(taskStore.getOwned("task-1", 1L)).thenReturn(new AgentTask(
-                "task-1", 1L, 11L, 21L, TaskStatus.RUNNING, null, null, null, null, Instant.now()
-        ));
+        when(taskStore.getStatusSnapshot("task-1", 1L)).thenReturn(new TaskStore.StatusSnapshot(
+                "task-1", TaskStatus.RUNNING, null, null, null, null, null, null, null));
 
         TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
 
@@ -270,12 +255,16 @@ class AgentControllerTest {
     void getTaskStatusTreatsABlankPreviewUrlAsNoPreview() {
         // 빈 문자열이 true 로 새면 FE 는 프리뷰가 생겼다고 믿고 폴링을 멈춘 뒤 아무것도 못 연다.
         // 옛 FE 코드가 previewUrl?.trim() 으로 공백을 걸러냈던 것과 같은 판단을 서버가 한다.
-        when(taskStore.getOwned("task-1", 1L)).thenReturn(new AgentTask(
-                "task-1", 1L, 11L, 21L, TaskStatus.RUNNING, "   ", null, null, null, Instant.now()
-        ));
+        when(taskStore.getStatusSnapshot("task-1", 1L)).thenReturn(new TaskStore.StatusSnapshot(
+                "task-1", TaskStatus.RUNNING, "   ", null, null, null, null, null, null));
 
         TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
 
         assertThat(response.previewCreated()).isFalse();
+    }
+
+    /** {@link TaskStore#getStatusSnapshot} 의 결과. 실패 정보는 행이 있으면 언제나 있다. */
+    private TaskStore.StatusSnapshot snapshot(TaskStatus status, String error, AgentTaskFailure failure) {
+        return new TaskStore.StatusSnapshot("task-1", status, null, null, error, null, failure, null, null);
     }
 }
