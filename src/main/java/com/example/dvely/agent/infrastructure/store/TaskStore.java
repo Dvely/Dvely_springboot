@@ -150,11 +150,61 @@ public class TaskStore {
     /** WAITING_INPUT 인 CLARIFY 태스크의 구조화 질문. 없거나 단순 텍스트 입력이면 null(FE 는 텍스트로 폴백). */
     @Transactional(readOnly = true)
     public ClarificationRequest getClarification(String taskId) {
-        String json = runRepository.findById(taskId)
+        return parseClarification(runRepository.findById(taskId)
                 .map(AgentRunEntity::getClarificationJson)
-                .filter(s -> s != null && !s.isBlank())
+                .orElse(null));
+    }
+
+    /**
+     * 이미 답한 되묻기. 답이 없었거나(되묻기를 거치지 않은 태스크) 스냅샷을 못 읽으면 null 이다 —
+     * 읽기 실패로 태스크 조회 전체를 깨뜨리지 않는다. 이 값은 화면을 꾸미는 부가 정보라,
+     * 없으면 예전처럼 보이는 것으로 충분하다.
+     */
+    public AnsweredClarification getAnsweredClarification(String taskId) {
+        return parseAnsweredClarification(taskId, runRepository.findById(taskId)
+                .map(AgentRunEntity::getAnsweredClarificationJson)
+                .orElse(null));
+    }
+
+    /**
+     * {@code GET /agent/tasks/{taskId}} 가 run 행에서 필요한 전부를 한 문장으로 읽는다(#619). 소유자가 아니거나
+     * 태스크가 없으면 {@code null}.
+     *
+     * <p>FE 가 2초마다 폴링하는 경로다. 예전에는 {@link #getOwned}·{@link #getFailure}·{@link #getClarification}·
+     * {@link #getAnsweredClarification} 이 같은 행을 엔티티로 네 번 읽고(매번 {@code plan_json LONGTEXT} 포함)
+     * 트랜잭션도 각자 열었다. 값은 그 네 메서드와 같게 만든다 — 되묻기 파싱은 같은 함수를 쓴다.</p>
+     */
+    @Transactional(readOnly = true)
+    public StatusSnapshot getStatusSnapshot(String taskId, Long ownerUserId) {
+        return runRepository.findStatusView(taskId, ownerUserId)
+                .map(view -> new StatusSnapshot(
+                        view.taskId(),
+                        TaskStatus.valueOf(view.status()),
+                        view.previewUrl(),
+                        view.summary(),
+                        view.error(),
+                        view.question(),
+                        new AgentTaskFailure(view.failureLog(), view.suggestedFix(), view.attempt(), view.maxAttempts()),
+                        parseClarification(view.clarificationJson()),
+                        parseAnsweredClarification(taskId, view.answeredClarificationJson())))
                 .orElse(null);
-        if (json == null) {
+    }
+
+    /** {@link #getStatusSnapshot} 의 결과. 실패 정보는 행이 있으면 언제나 있다({@link #getFailure} 와 같다). */
+    public record StatusSnapshot(
+            String taskId,
+            TaskStatus status,
+            String previewUrl,
+            String summary,
+            String error,
+            String question,
+            AgentTaskFailure failure,
+            ClarificationRequest clarification,
+            AnsweredClarification answeredClarification
+    ) {}
+
+    private ClarificationRequest parseClarification(String json) {
+        if (json == null || json.isBlank()) {
             return null;
         }
         try {
@@ -164,17 +214,8 @@ public class TaskStore {
         }
     }
 
-    /**
-     * 이미 답한 되묻기. 답이 없었거나(되묻기를 거치지 않은 태스크) 스냅샷을 못 읽으면 null 이다 —
-     * 읽기 실패로 태스크 조회 전체를 깨뜨리지 않는다. 이 값은 화면을 꾸미는 부가 정보라,
-     * 없으면 예전처럼 보이는 것으로 충분하다.
-     */
-    public AnsweredClarification getAnsweredClarification(String taskId) {
-        String json = runRepository.findById(taskId)
-                .map(AgentRunEntity::getAnsweredClarificationJson)
-                .filter(s -> s != null && !s.isBlank())
-                .orElse(null);
-        if (json == null) {
+    private AnsweredClarification parseAnsweredClarification(String taskId, String json) {
+        if (json == null || json.isBlank()) {
             return null;
         }
         try {

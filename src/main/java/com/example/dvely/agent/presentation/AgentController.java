@@ -8,6 +8,8 @@ import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.application.result.AgentSubmitResult;
 import com.example.dvely.agent.application.service.AgentEventStreamService;
 import com.example.dvely.agent.application.service.AiProviderQueryService;
+import com.example.dvely.agent.application.service.TaskStatusQueryService;
+import com.example.dvely.agent.application.service.TaskStatusQueryService.TaskStatusResult;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.agent.presentation.dto.AiProvidersResponse;
 import com.example.dvely.agent.presentation.dto.DecisionRequest;
@@ -52,6 +54,7 @@ public class AgentController {
     private final PreviewSessionService previewSessionService;
     private final AgentEventStreamService agentEventStreamService;
     private final AiProviderQueryService  aiProviderQueryService;
+    private final TaskStatusQueryService  taskStatusQueryService;
 
     @Operation(
             summary = "에이전트 요청 제출",
@@ -122,21 +125,15 @@ public class AgentController {
             @AuthenticationPrincipal Long userId,
             @Parameter(description = "에이전트 태스크 ID", example = "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
             @PathVariable String taskId) {
-        AgentTask task = taskStore.getOwned(taskId, userId);
-        if (task == null) {
-            throw taskNotFound(taskId);
-        }
-        AgentTaskFailure failure = taskStore.getFailure(taskId, userId);
+        // #619: 읽기 전용 트랜잭션 하나에서 run 행 프로젝션 1회 + approvals 1회. FE 가 2초마다 부르는 경로다.
         // #57 (QA report §5.6/H1/M3): pendingApprovalId reuses AgentOrchestrator's retry() gate
-        // verbatim (see its javadoc) so this read-side field can never drift from what /retry
-        // actually enforces — a still-PENDING approval (e.g. BuildFailureRecoveryService's
+        // verbatim (see TaskStatusQueryService) so this read-side field can never drift from what
+        // /retry actually enforces — a still-PENDING approval (e.g. BuildFailureRecoveryService's
         // "자동 수정 및 재build" CHANGE approval) both blocks /retry and is surfaced here for the
         // task screen to link directly to, without a separate GET /approvals scan (M3).
-        Long pendingApprovalId = agentOrchestrator.findPendingApprovalId(taskId);
-        boolean retryable = failure != null
-                && task.status() == com.example.dvely.agent.application.dto.TaskStatus.FAILED
-                && failure.retryable()
-                && pendingApprovalId == null;
+        TaskStatusResult task = taskStatusQueryService.find(taskId, userId)
+                .orElseThrow(() -> taskNotFound(taskId));
+        AgentTaskFailure failure = task.failure();
         return ResponseEntity.ok(new TaskStatusResponse(
                 task.taskId(),
                 task.status(),
@@ -151,10 +148,10 @@ public class AgentController {
                 failure == null ? null : failure.suggestedFix(),
                 failure == null ? 0 : failure.attempt(),
                 failure == null ? 0 : failure.maxAttempts(),
-                retryable,
-                pendingApprovalId,
-                taskStore.getClarification(taskId),
-                taskStore.getAnsweredClarification(taskId)
+                task.retryable(),
+                task.pendingApprovalId(),
+                task.clarification(),
+                task.answeredClarification()
         ));
     }
 

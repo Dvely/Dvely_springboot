@@ -289,4 +289,20 @@ public interface SpringDataAgentRunRepository extends JpaRepository<AgentRunEnti
 
     // #509: 사용자별 동시 런 상한의 셈. idx_agent_runs_user_created(user_id, created_at) 의 user_id 로 좁힌다.
     long countByOwnerUserIdAndStatusIn(Long ownerUserId, Collection<String> statuses);
+
+    // #619: GET /agent/tasks/{taskId} 폴링용. 응답에 필요한 컬럼만 PK 조회 한 번으로 읽는다(plan_json 제외).
+    // 소유자 조건은 findByTaskIdAndOwnerUserId 와 같다 — 남의 태스크면 빈 결과다.
+    @Query("""
+            select new com.example.dvely.agent.infrastructure.persistence.repository.AgentRunStatusView(
+                       run.taskId, run.status, run.previewUrl, run.summary, run.error, run.question,
+                       run.failureLog, run.suggestedFix, run.attempt, run.maxAttempts,
+                       run.clarificationJson, run.answeredClarificationJson)
+            from AgentRunEntity run
+            where run.taskId = :taskId
+              and run.ownerUserId = :ownerUserId
+            """)
+    Optional<AgentRunStatusView> findStatusView(
+            @Param("taskId") String taskId,
+            @Param("ownerUserId") Long ownerUserId
+    );
 }
