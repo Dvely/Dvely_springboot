@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.example.dvely.auth.infrastructure.config.JwtProperties;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
+import com.example.dvely.preview.application.service.PreviewEventStreamLimiter;
 import com.example.dvely.preview.application.service.PreviewGatewayService;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.preview.infrastructure.config.PreviewProperties;
@@ -71,7 +72,7 @@ class PreviewGatewayStreamingEnvelopeTest {
 
         mockMvc = MockMvcBuilders.standaloneSetup(new PreviewGatewayController(
                         sessionService,
-                        new PreviewGatewayService("'self'", false, id -> false),
+                        new PreviewGatewayService("'self'", false, id -> false, new PreviewEventStreamLimiter(100, 200)),
                         new PreviewAccessCookies(
                                 new JwtProperties("test-secret-key-that-is-long-enough-32", 3600000L, 7200000L)),
                         properties))

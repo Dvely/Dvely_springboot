@@ -187,6 +187,25 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void 비동기_타임아웃은_ERROR_가_아니고_흘려보낸_응답에는_아무것도_쓰지_않는다() throws Exception {
+        // #624: 프리뷰 SSE 프록시는 spring.mvc.async.request-timeout 에 닿으면 이 예외로 끝난다(EventSource 가 재연결하는
+        // 정상 종료). 전용 처리기가 없을 때는 catch-all 이 받아 스택과 함께 ERROR 를 남겼다 — 실측으로 30초마다 하나.
+        GlobalExceptionHandler handler = new GlobalExceptionHandler();
+        org.springframework.mock.web.MockHttpServletResponse streaming = new org.springframework.mock.web.MockHttpServletResponse();
+        streaming.setCommitted(true);
+        org.springframework.mock.web.MockHttpServletResponse untouched = new org.springframework.mock.web.MockHttpServletResponse();
+
+        List<ILoggingEvent> logs = capturingAdviceLogs(() -> {
+            handler.handleAsyncTimeout(new org.springframework.web.context.request.async.AsyncRequestTimeoutException(), streaming);
+            handler.handleAsyncTimeout(new org.springframework.web.context.request.async.AsyncRequestTimeoutException(), untouched);
+        });
+
+        assertThat(logs).noneMatch(event -> event.getLevel().isGreaterOrEqual(Level.WARN));
+        assertThat(streaming.getStatus()).as("이미 흘려보낸 응답은 그대로 둔다").isEqualTo(200);
+        assertThat(untouched.getStatus()).as("아무것도 쓰지 않았으면 503(부트 기본 처리와 같은 상태)").isEqualTo(503);
+    }
+
+    @Test
     void 클라이언트가_응답_도중_끊으면_ERROR_로_남지_않는다() throws Exception {
         // #423: SSE(/agent/tasks/{id}/events) 를 보던 브라우저가 떠나면 Spring 이
         // AsyncRequestNotUsableException 을 던진다. 전용 핸들러가 없으면 맨 아래 catch-all 이
