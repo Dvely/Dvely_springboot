@@ -1655,6 +1655,26 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 측정(고친 뒤, 기본 5분): 1초 간격 이벤트가 0.14·1.1·2.1·3.1초…에 하나씩 도착했고 45초에도 열려 있었다. 클라이언트가 떠나자 업스트림 연결도 닫혔다
 - 테스트: `PreviewEventStreamIntegrationTest`(실제 톰캣 — 실시간 도착, 설정한 타임아웃에 조용히 끝나고 업스트림·자리가 돌아옴, 상한 초과는 503 이고 컨테이너에 연결하지 않음, MVC 실행기가 가상 스레드), `PreviewGatewayServiceTest`(덩어리마다 응답 flush, 상한 503·자리 반납), `GlobalExceptionHandlerTest`
 
+## 4.55 대화 메시지 인덱스 교체와 LLM 대화 창 DB 절단 (Issue #625 PR-1, V73)
+
+- **인덱스 교체(V73)**: `chat_messages` 의 `idx_chat_messages_task (chat_session_id, task_id)` 를 `idx_chat_messages_session_message (chat_session_id, message_id)` 로 바꿨다. 새 것을 먼저 만들고 옛 것을 지운다(FK `fk_chat_messages_session` 을 받칠 인덱스가 비지 않게)
+  - V61 이 단일 `(chat_session_id)` 를 지운 뒤로 대화를 읽을 때마다 filesort 였다. 옛 인덱스는 task_id 순서라 쓴 순서를 주지 못한다
+  - 더하기만 하면 옵티마이저가 여전히 옛 인덱스를 골라 정렬했다(실측). 옛 인덱스로 거르는 쿼리는 없었다 — 하는 일은 FK 받침뿐이었다
+- **정렬을 `chat_session_id, message_id` 로 쓴다**(`SpringDataChatMessageRepository`). 대화 id 는 조건으로 고정돼 의미는 같다. `ORDER BY message_id LIMIT n` 이면 옵티마이저가 PK 를 골라 커서부터 훑으며 이 대화의 행을 찾는데, 대화가 쉬었다 이어지면 그 사이 다른 대화가 쓴 행을 전부 읽었다. 앞에 대화 id 를 두면 PK 가 그 순서를 줄 수 없어 대화 인덱스를 범위로 읽는다
+- **LLM 대화 창을 DB 에서 자른다**(`AgentMessageService`). 요청마다 대화 전체를 읽어 자바에서 잘랐다 — 비용이 대화 길이에 비례했다. 이제 마지막 `ConversationWindow.MAX_TURNS`(20)건만 읽는다(`ORDER BY ... DESC LIMIT 20`). 창은 뒤에서부터 20턴이라 결과는 같다. 계획 경로(사용자 발화만)는 역할 조건도 쿼리로 옮겼고, 지난 요청마다 결과를 묻는 조회도 창 밖 발화에는 더 나가지 않는다
+- 대화 전체를 한 번에 읽는 저장소 메서드(`findAllByConversationIdOrderByCreatedAtAsc`)는 호출처가 이 둘뿐이라 없앴다
+
+실측(EXPLAIN ANALYZE, 임시 테이블 — 22,500행 중 한 대화 2,500행):
+
+| 질의 | 전 | 후 |
+|---|---|---|
+| 대화 전체 목록 | 옛 인덱스 + 정렬 2,500행 | 새 인덱스, 정렬 없음 |
+| 대화가 쉬었다 이어진 뒤 커서 페이지 50건 | PK 범위 20,050행·4.9ms | 새 인덱스 범위 50행·0.05ms |
+| LLM 창(뒤에서 20건) | 대화 전량을 읽어 자바에서 자름 | 새 인덱스 역순 20행 |
+
+- 테스트: `ChatMessageWindowQueryIntegrationTest`(실 MySQL — 창이 마지막 N건을 쓴 순서로, 사용자 창은 사용자 발화만, 쉬었다 이어진 페이지, Hibernate 가 보낸 SQL 의 계획이 새 인덱스·정렬 없음, 보낸 SQL 의 정렬이 대화 id 부터), `AgentMessageServiceTest`(DB 에 창 크기만 묻는다), `SchemaOptimizationTest`(새 인덱스·옛 인덱스 제거·FK 받침)
+- 정렬은 계획이 아니라 보낸 SQL 로 고정했다. 공유 테스트 DB 의 통계로는 `ORDER BY message_id` 에도 옵티마이저가 대화 인덱스를 고르기도 해 계획만으로는 회귀를 놓친다(변이로 확인)
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증
