@@ -243,7 +243,7 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(errorCode, e.getMessage()));
     }
 
-    // 429 - 사용자별 동시 실행 상한(#509). 정상 거부라 스택 없이 WARN 한 줄만 남긴다.
+    // 429 - 동시 실행 상한: 사용자별(#509)·서버 전체(#624). 정상 거부라 스택 없이 WARN 한 줄만 남긴다.
     @ExceptionHandler(UserLimitExceededException.class)
     public ResponseEntity<ApiResponse<Void>> handleUserLimitExceeded(UserLimitExceededException e) {
         log.warn("User limit exceeded: code={}", e.errorCode().getCode());
