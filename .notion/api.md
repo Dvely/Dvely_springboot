@@ -1177,6 +1177,13 @@ DELETE /preview-sessions/{sessionId}
 
 게이트웨이 응답 코드: 세션 없음·토큰 불일치 `404` / 문서 탐색에 쿠키 없음 `401` / 요청 본문 10 MiB 초과 `413` / 본문을 끝까지 못 읽음 `400` / 안쪽 앱에 닿지 못함 `502`(일시 실패가 아니면 세션을 회수해, 다음 `GET /projects/{id}/preview-session`이 `204`가 된다). `Accept: text/event-stream` 요청은 스트리밍 프록시로 갈리고 `Last-Event-ID`를 전달한다(그 외 계약은 같다). 응답은 공통 envelope로 감싸지 않는다.
 
+스트리밍 프록시(#624):
+
+- **스트림은 최대 5분**(`spring.mvc.async.request-timeout`, env `QEPLOY_PREVIEW_EVENT_STREAM_TIMEOUT`) 뒤에 서버가 정상 종료한다. EventSource 는 알아서 다시 연결하고 `Last-Event-ID` 를 실어 보낸다. 그 전에는 설정이 없어 톰캣 기본 30초에 끊겼고, 끊길 때마다 ERROR 로그가 남았다(실측)
+- **이벤트는 생기는 대로 흘러간다.** 그 전에는 Spring Framework 7.0.6 의 동작(스트리밍 본문이 받는 `OutputStream` 의 `flush()` 가 네트워크로 나가지 않음) 때문에 이벤트가 스트림이 끝날 때 한꺼번에 도착했다. 프록시가 이제 응답을 직접 비운다
+- **동시 스트림 상한** `qeploy.preview.event-stream.max-concurrent`(기본 100). 넘으면 **안쪽 앱에 연결하지 않고 `503`** 이다(EventSource 는 200 이 아닌 응답에는 다시 연결하지 않으므로, 페이지를 새로 열어야 한다). 이 값은 MVC 비동기 실행기 상한 `qeploy.web.async.max-concurrent`(기본 200)보다 작아야 하고, 기동 때 확인한다
+- 스트림은 가상 스레드(`mvc-async-*`)에서 돈다. 그 전에는 MVC 기본 실행기가 스트림마다 플랫폼 스레드를 새로 만들었다(상한 없음)
+
 ### 13.5 GitHub Pages 배포
 
 ```text

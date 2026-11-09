@@ -1637,6 +1637,24 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 테스트: `GlobalPreviewLimitEndpointTest`(보안 필터 + 실 MySQL, 상한 2 에서 세 번째 사용자 429·컨테이너를 띄우지 않음, 셋이 동시에 열어도 살아 있는 세션 2 이하), `PreviewCapacityTest`(서버 전체 거절·남의 끝난 작업 회수·사용자 상한 우선·confirm 되돌림), `CodingAgentCapacityTest`, `CodingAgentWorkspaceBridgeTest`(거절 시 아무것도 안 건드림·재설치 전에 반납·실패해도 반납), `CodeAgentServiceTest`
 - 남은 것: 프리뷰 테스트 DB(LOCAL) 컨테이너와 kaniko 빌드 컨테이너는 서버 전체 상한에 들지 않는다. 프리뷰 SSE 프록시의 스레드 상한·타임아웃은 #624 PR-2
 
+## 4.54 프리뷰 SSE 프록시 — 실시간 전달·5분 타임아웃·스레드 상한 (Issue #624 PR-2)
+
+실제 톰캣과 실제 소켓으로 잰 고치기 전 상태(`PreviewEventStreamIntegrationTest` 와 같은 하네스):
+
+- **이벤트가 실시간으로 가지 않았다.** 업스트림은 0.2초마다 보내는데 브라우저에는 스트림이 끝날 때 응답 헤더와 함께 한 덩어리로 도착했다. Spring Framework 7.0.6 부터 `ServletServerHttpResponse.getBody()` 가 `StreamUtils.nonFlushing` 으로 감싼 스트림을 주므로(`spring.http.response.flush.enabled` 를 켜지 않는 한) `StreamingResponseBody` 안의 `out.flush()` 가 아무것도 하지 않는다. 부트 4.0.5(=Framework 7.0.6)를 처음부터 썼으므로 이 프록시는 이 스택에서 실시간으로 흐른 적이 없었을 것이다. 기존 단위 테스트는 메모리 버퍼에 쓰기만 해서 드러나지 않았다
+- **30.6초에 끊겼다.** `spring.mvc.async.request-timeout` 이 없어 톰캣 기본값. 끊길 때마다 `GlobalExceptionHandler` catch-all 이 `AsyncRequestTimeoutException` 을 스택과 함께 ERROR 로, `DefaultHandlerExceptionResolver` 가 WARN 두 줄을 남겼다 — 열린 프리뷰 SSE 하나가 30초마다 ERROR 하나
+- **스트림마다 플랫폼 스레드가 상한 없이 생겼다.** `AsyncConfig` 에 실행기가 여럿이라 부트의 `applicationTaskExecutor` 가 만들어지지 않아 MVC 기본 `MvcAsync`(`SimpleAsyncTaskExecutor`)를 썼다
+
+고친 것:
+
+- 컨트롤러가 `HttpServletResponse::flushBuffer` 를 넘기고 프록시가 덩어리마다 그것을 부른다. 전역 속성으로 flush 를 되살리지 않은 이유는 영향 범위다(모든 메시지 변환기의 flush 가 다시 네트워크로 나간다)
+- `spring.mvc.async.request-timeout` 기본 5분(env `QEPLOY_PREVIEW_EVENT_STREAM_TIMEOUT`). 이 값을 쓰는 비동기 요청은 프리뷰 SSE 뿐이다(에이전트 SSE 는 `SseEmitter` 에 5분을 직접 준다). 클라이언트가 떠났는데 업스트림이 조용해 알아채지 못한 스트림이 자리를 쥐는 최대 시간이기도 하다
+- `GlobalExceptionHandler` 가 `AsyncRequestTimeoutException` 을 DEBUG 한 줄로 받는다. 아직 쓰지 않은 응답이면 503 만 남긴다
+- `MvcAsyncConfig` — MVC 비동기 실행기를 가상 스레드 + 상한 200(`qeploy.web.async.max-concurrent`) + 넘치면 거절로 둔다(`agentEventExecutor` 와 같은 모양, 종료 때 인터럽트)
+- `PreviewEventStreamLimiter` — 프리뷰 SSE 동시 스트림 상한 100(`qeploy.preview.event-stream.max-concurrent`). **업스트림에 연결하기 전에** 자리를 잡고 없으면 503. 실행기 상한만으로는 안 되는 이유: 프록시는 업스트림에 먼저 연결한 뒤 본문을 실행기에 넘기므로, 실행기가 거절하면 이미 연 업스트림 연결을 닫을 곳이 없다. 그래서 이 상한은 실행기 상한보다 작아야 하고 기동 때 확인한다
+- 측정(고친 뒤, 기본 5분): 1초 간격 이벤트가 0.14·1.1·2.1·3.1초…에 하나씩 도착했고 45초에도 열려 있었다. 클라이언트가 떠나자 업스트림 연결도 닫혔다
+- 테스트: `PreviewEventStreamIntegrationTest`(실제 톰캣 — 실시간 도착, 설정한 타임아웃에 조용히 끝나고 업스트림·자리가 돌아옴, 상한 초과는 503 이고 컨테이너에 연결하지 않음, MVC 실행기가 가상 스레드), `PreviewGatewayServiceTest`(덩어리마다 응답 flush, 상한 503·자리 반납), `GlobalExceptionHandlerTest`
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증
