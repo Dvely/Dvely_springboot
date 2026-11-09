@@ -1,5 +1,6 @@
 package com.example.dvely.deployment.application.facade;
 
+import com.example.dvely.common.paging.CursorPage;
 import com.example.dvely.deployment.application.command.DeploymentCommandService;
 import com.example.dvely.deployment.application.command.dto.DeployCommand;
 import com.example.dvely.deployment.application.query.DeploymentQueryService;
@@ -40,8 +41,11 @@ public class DeploymentFacade {
         return deploymentFailureAnalysisService.getAnalysis(ownerUserId, historyId);
     }
 
-    public List<DeploymentHistoryResult> getDeploymentHistories(Long ownerUserId, Long projectId) {
-        return deploymentQueryService.getDeploymentHistories(ownerUserId, projectId);
+    public CursorPage<DeploymentHistoryResult> getDeploymentHistories(Long ownerUserId,
+                                                                     Long projectId,
+                                                                     Integer limit,
+                                                                     String after) {
+        return deploymentQueryService.getDeploymentHistories(ownerUserId, projectId, limit, after);
     }
 
     public DeploymentStatusResult getDeploymentStatus(Long ownerUserId, Long historyId) {

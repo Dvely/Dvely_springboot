@@ -19,6 +19,11 @@ public interface SpringDataDeploymentHistoryRepository extends JpaRepository<Dep
     // triggeredAt 이 DATETIME(초) 이라 같은 초의 행끼리 순서가 비결정적이었다 — id 를 tiebreaker 로
     // 붙여 고정한다. 프로젝트 개요가 이 목록의 첫 건을 "최신 배포" 로 쓰는데, 그 값이 조회마다
     // 달라질 수 있었다(findFirstByProjectIdOrderByTriggeredAtDescIdDesc 와도 어긋났다).
+    //
+    // #625: 상한 + 커서. 예전에는 전량이었다(100건 응답 179KB). 커서는 이력 id 하나로 받고, 그 행의 triggeredAt 과
+    // 함께 (triggeredAt, id) 순서에서 "그보다 뒤" 를 고른다 — 정렬 키가 둘이라 id 만으로 자르면 같은 초의 행을 건너뛰거나
+    // 두 번 준다. 커서 행은 같은 프로젝트에서만 찾는다(남의 이력 id 로 위치를 짐작할 수 없게). 없는 커서면 빈 페이지다.
+    // idx_deployment_histories_project_triggered (project_id, triggered_at, history_id) 를 거꾸로 읽는다(V61).
     @Query("""
             select new com.example.dvely.deployment.domain.repository.DeploymentHistoryListView(
                        history.id, history.projectId, history.deployTargetType, history.versionLabel,
@@ -26,9 +31,16 @@ public interface SpringDataDeploymentHistoryRepository extends JpaRepository<Dep
                        history.triggeredAt, history.updatedAt, history.retriedFromHistoryId)
             from DeploymentHistoryEntity history
             where history.projectId = :projectId
+              and (:after is null
+                   or history.triggeredAt < (select cursor.triggeredAt from DeploymentHistoryEntity cursor
+                                              where cursor.id = :after and cursor.projectId = :projectId)
+                   or (history.triggeredAt = (select cursor.triggeredAt from DeploymentHistoryEntity cursor
+                                               where cursor.id = :after and cursor.projectId = :projectId)
+                       and history.id < :after))
             order by history.triggeredAt desc, history.id desc
             """)
-    List<DeploymentHistoryListView> findHistoryListViews(@Param("projectId") Long projectId);
+    List<DeploymentHistoryListView> findHistoryListPage(
+            @Param("projectId") Long projectId, @Param("after") Long after, Pageable pageable);
 
     // U6 6-2 ②: 버전 목록. version_label 이 비지 않은 행만 — 예전에는 전체를 읽어 메모리에서 걸렀다.
     @Query("""

@@ -21,6 +21,8 @@ import com.example.dvely.project.domain.value.DeployStatus;
 import com.example.dvely.auth.domain.model.User;
 import com.example.dvely.auth.domain.repository.UserRepository;
 import com.example.dvely.common.exception.NotFoundException;
+import com.example.dvely.common.paging.CursorPage;
+import com.example.dvely.common.paging.CursorPaging;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -111,13 +113,39 @@ public class DeploymentQueryService {
         );
     }
 
+    /**
+     * limit 를 안 받는 호출(프로젝트 개요·활동로그·운영 에이전트)과 화면의 기본 상한(#625). 예전에는 전량이었다 — 100건
+     * 응답이 179KB 였다. 이 호출들이 쓰는 것은 앞쪽(최신 배포, 최신 LIVE)이라 200 이면 충분하다. 개요의 "최신 LIVE" 는 최근
+     * 200건 안에 LIVE 가 없으면 프로젝트 행의 현재 URL·버전으로 대신한다(원래 있던 폴백).
+     */
+    private static final int DEFAULT_HISTORY_LIMIT = 200;
+    private static final int MAX_HISTORY_LIMIT = 200;
+
     @Transactional(readOnly = true)
     public List<DeploymentHistoryResult> getDeploymentHistories(Long ownerUserId, Long projectId) {
-        findOwnedProject(ownerUserId, projectId);
-        return deploymentHistoryRepository.findHistoryListViews(projectId)
-                .stream()
-                .map(DeploymentQueryService::toResult)
-                .toList();
+        return getDeploymentHistories(ownerUserId, projectId, null, null).items();
+    }
+
+    /** #625: 상한 + 커서. 최신순이라 {@code after}(이력 id) 는 "그 배포보다 먼저 요청된 것" 을 뜻한다. */
+    @Transactional(readOnly = true)
+    public CursorPage<DeploymentHistoryResult> getDeploymentHistories(Long ownerUserId,
+                                                                     Long projectId,
+                                                                     Integer limit,
+                                                                     String after) {
+        return getDeploymentHistories(findOwnedProject(ownerUserId, projectId), limit, after);
+    }
+
+    /**
+     * 소유권을 이미 확인한 프로젝트의 이력. 호출자가 {@code findByIdAndOwnerUserIdAndDeletedFalse} 로 얻은 {@link Project} 를
+     * 넘긴다 — 한 화면이 여러 도메인의 목록을 모을 때 같은 확인을 도메인마다 되풀이하지 않기 위해서다(#625, 활동 로그).
+     */
+    @Transactional(readOnly = true)
+    public CursorPage<DeploymentHistoryResult> getDeploymentHistories(Project ownedProject, Integer limit, String after) {
+        int size = CursorPaging.clamp(limit, DEFAULT_HISTORY_LIMIT, MAX_HISTORY_LIMIT);
+        List<DeploymentHistoryListView> probed = deploymentHistoryRepository.findHistoryListPage(
+                ownedProject.getId(), CursorPaging.parseCursor(after), size + 1);
+        return CursorPaging.slice(probed, size, view -> String.valueOf(view.id()))
+                .map(DeploymentQueryService::toResult);
     }
 
     /**

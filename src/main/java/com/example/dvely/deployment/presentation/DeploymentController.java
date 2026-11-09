@@ -1,5 +1,6 @@
 package com.example.dvely.deployment.presentation;
 
+import com.example.dvely.common.paging.CursorResponse;
 import com.example.dvely.deployment.application.command.dto.DeployCommand;
 import com.example.dvely.deployment.application.facade.DeploymentFacade;
 import com.example.dvely.deployment.application.result.DeploymentCandidateResult;
@@ -26,11 +27,13 @@ import jakarta.validation.Valid;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -91,17 +94,20 @@ public class DeploymentController {
 
     @Operation(
             summary = "배포 이력 목록 조회",
-            description = "프로젝트에서 실행된 모든 배포 이력을 최신순으로 반환합니다. " +
-                          "성공/실패 여부와 관계없이 배포를 요청한 모든 이력을 포함합니다."
+            description = "프로젝트에서 실행된 배포 이력을 최신순으로 반환합니다. " +
+                          "성공/실패 여부와 관계없이 배포를 요청한 이력을 포함합니다.\n\n" +
+                          "한 번에 최대 `limit`건(기본·최대 200)이고, 더 있으면 응답 헤더 `X-Qeploy-Next-Cursor` 에 다음 커서가 " +
+                          "실립니다. 그 값을 `after` 로 넘기면 그보다 먼저 요청된 이력이 이어집니다. 본문은 예전과 같은 배열입니다(#625)."
     )
     @GetMapping("/api/v1/projects/{projectId}/deployments")
-    public List<DeploymentHistoryResponse> getDeploymentHistories(
+    public ResponseEntity<List<DeploymentHistoryResponse>> getDeploymentHistories(
             @Parameter(hidden = true) @AuthenticationPrincipal Long userId,
-            @Parameter(description = "조회할 프로젝트 ID") @PathVariable Long projectId
+            @Parameter(description = "조회할 프로젝트 ID") @PathVariable Long projectId,
+            @Parameter(description = "한 번에 받을 최대 건수(기본·최대 200)") @RequestParam(required = false) Integer limit,
+            @Parameter(description = "이전 응답의 X-Qeploy-Next-Cursor") @RequestParam(required = false) String after
     ) {
-        return deploymentFacade.getDeploymentHistories(userId, projectId).stream()
-                .map(this::toHistoryResponse)
-                .toList();
+        return CursorResponse.of(deploymentFacade.getDeploymentHistories(userId, projectId, limit, after)
+                .map(this::toHistoryResponse));
     }
 
     @Operation(
