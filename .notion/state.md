@@ -1675,6 +1675,14 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 테스트: `ChatMessageWindowQueryIntegrationTest`(실 MySQL — 창이 마지막 N건을 쓴 순서로, 사용자 창은 사용자 발화만, 쉬었다 이어진 페이지, Hibernate 가 보낸 SQL 의 계획이 새 인덱스·정렬 없음, 보낸 SQL 의 정렬이 대화 id 부터), `AgentMessageServiceTest`(DB 에 창 크기만 묻는다), `SchemaOptimizationTest`(새 인덱스·옛 인덱스 제거·FK 받침)
 - 정렬은 계획이 아니라 보낸 SQL 로 고정했다. 공유 테스트 DB 의 통계로는 `ORDER BY message_id` 에도 옵티마이저가 대화 인덱스를 고르기도 해 계획만으로는 회귀를 놓친다(변이로 확인)
 
+## 4.56 토큰 정리가 다른 사용자의 회전·로그인을 막지 않게 (Issue #625 PR-2)
+
+- 매일 03:00 `TokenCleanupScheduler` 의 `deleteRevoked`(`DELETE ... WHERE revoked = true`)는 `revoked` 에 인덱스가 없어 `refresh_tokens` 전체를 훑는다. 기본 격리(REPEATABLE READ)에서는 훑은 행과 틈을 **커밋까지 전부** 잠근다 — 정리 전체가 트랜잭션 하나라 PAT 정리까지 끝나야 풀린다
+- 실측(2만 행 중 1.5만 폐기, 정리를 커밋 전 4초 쥠): 다른 사용자의 회전 UPDATE 가 잠금 대기 2초로 **실패**했고, 로그인 INSERT 는 정리가 끝날 때까지 섰다
+- 정리 트랜잭션을 READ COMMITTED 로 돌린다. 조건에 맞지 않는 행의 잠금을 바로 놓고 틈은 잠그지 않아 같은 측정에서 회전 12ms·로그인 8ms. 전제는 binlog ROW(MySQL 8.0 기본) — #618 의 에이전트 런 보존 스윕과 같다
+- 재 본 다른 길: `revoked` 인덱스(회전마다 옛 행이 폐기돼 대개 다수라 거르는 몫이 작다), 폐기할 때 `expires_at` 을 당겨 만료 경로(인덱스 범위)로 합치기(같은 측정에서 효과는 같았다. 다만 `expires_at` 의 뜻이 바뀌고 기존 행을 고치는 데이터 마이그레이션이 필요하다)
+- 테스트: `TokenCleanupLockingIntegrationTest` — 실제 정리 메서드의 트랜잭션을 리프레시 토큰을 지운 뒤(마지막 단계인 만료 PAT 삭제)에서 붙잡아 두고, 다른 커넥션에서 잠금 대기 2초로 회전·로그인. 기본 격리로 되돌리면 "Lock wait timeout exceeded" 로 실패한다
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증
