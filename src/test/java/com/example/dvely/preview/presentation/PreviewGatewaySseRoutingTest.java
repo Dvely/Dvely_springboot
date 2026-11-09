@@ -55,7 +55,7 @@ class PreviewGatewaySseRoutingTest {
         when(sessionService.resolveGateway(SID, TOKEN)).thenReturn(Optional.of(session()));
         when(gatewayService.proxy(any(), anyString(), anyString(), any(), any()))
                 .thenReturn(ResponseEntity.ok(new ByteArrayResource("doc".getBytes())));
-        when(gatewayService.proxyEventStream(any(), any(), any(), any()))
+        when(gatewayService.proxyEventStream(any(), any(), any(), any(), any()))
                 .thenReturn(ResponseEntity.ok(out -> { }));   // no-op 스트림
 
         mockMvc = MockMvcBuilders.standaloneSetup(
@@ -68,7 +68,7 @@ class PreviewGatewaySseRoutingTest {
     void routesEventStreamAcceptToTheStreamingHandler() throws Exception {
         mockMvc.perform(get(BASE).accept(MediaType.TEXT_EVENT_STREAM));
 
-        verify(gatewayService).proxyEventStream(any(), anyString(), any(), any());
+        verify(gatewayService).proxyEventStream(any(), anyString(), any(), any(), any());
         verify(gatewayService, never()).proxy(any(), anyString(), anyString(), any(), any());
     }
 
@@ -82,7 +82,7 @@ class PreviewGatewaySseRoutingTest {
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"));
 
         verify(gatewayService).proxy(any(), anyString(), anyString(), any(), any());
-        verify(gatewayService, never()).proxyEventStream(any(), any(), any(), any());
+        verify(gatewayService, never()).proxyEventStream(any(), any(), any(), any(), any());
     }
 
     private PreviewSessionInfo session() {

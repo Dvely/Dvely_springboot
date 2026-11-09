@@ -53,7 +53,7 @@ class PreviewGatewayServiceTest {
         service = new PreviewGatewayService("'self'", true, id -> {
             reclaimed.add(id);
             return true;
-        });
+        }, new PreviewEventStreamLimiter(100, 200));
     }
 
     @AfterEach
@@ -68,7 +68,7 @@ class PreviewGatewayServiceTest {
      */
     @Test
     void configuredFrameAncestorsWidenFramingButNeverTheSandbox() {
-        var widened = new PreviewGatewayService("'self' http://localhost:5173", true, id -> false);
+        var widened = new PreviewGatewayService("'self' http://localhost:5173", true, id -> false, new PreviewEventStreamLimiter(100, 200));
 
         String policy = widened.sandboxPolicy();
 
@@ -243,7 +243,7 @@ class PreviewGatewayServiceTest {
         try (ServerSocket probe = new ServerSocket(0)) {
             closedPort = probe.getLocalPort();
         }
-        PreviewGatewayService disabled = new PreviewGatewayService("'self'", false, reclaimed::add);
+        PreviewGatewayService disabled = new PreviewGatewayService("'self'", false, reclaimed::add, new PreviewEventStreamLimiter(100, 200));
         PreviewSessionInfo dead = new PreviewSessionInfo(
                 "session-dead", 1L, 11L, null, null, "container-dead", "127.0.0.1:" + closedPort,
                 "https://qeploy.com/api/v1/previews/session-dead/token/", LocalDateTime.now().plusMinutes(30));
@@ -343,7 +343,7 @@ class PreviewGatewayServiceTest {
         });
 
         ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> response =
-                service.proxyEventStream(session(), "events", null, null);
+                service.proxyEventStream(session(), "events", null, null, () -> { });
 
         assertThat(response.getHeaders().getFirst(HttpHeaders.CONTENT_TYPE)).contains("text/event-stream");
         assertThat(response.getHeaders().getCacheControl()).contains("no-cache").contains("no-transform");
@@ -623,13 +623,133 @@ class PreviewGatewayServiceTest {
         });
 
         ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> response =
-                service.proxyEventStream(session(), "events", null, null);
+                service.proxyEventStream(session(), "events", null, null, () -> { });
         ByteArrayOutputStream sink = new ByteArrayOutputStream();
         response.getBody().writeTo(sink);
 
         assertThat(sink.toString(StandardCharsets.UTF_8))
                 .contains("data: first")
                 .contains("data: after-a-long-pause");
+    }
+
+    // ── 프리뷰 SSE 동시 스트림 상한 (#624) ─────────────────────────────
+
+    /**
+     * 자리가 없으면 컨테이너에 연결하기 <b>전에</b> 503 이다. 연결한 뒤에 거절하면 그 업스트림 연결을 닫을 곳이 없다 —
+     * SSE 업스트림은 스스로 닫지 않는다.
+     */
+    @Test
+    void anEventStreamOverTheLimitIsRefusedBeforeConnectingToTheContainer() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger connected = new java.util.concurrent.atomic.AtomicInteger();
+        container.createContext("/events", exchange -> {
+            connected.incrementAndGet();
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE);
+            exchange.sendResponseHeaders(200, 0);
+            exchange.getResponseBody().write("data: one\n\n".getBytes(StandardCharsets.UTF_8));
+            exchange.close();
+        });
+        PreviewEventStreamLimiter limiter = new PreviewEventStreamLimiter(1, 2);
+        PreviewGatewayService limited = new PreviewGatewayService("'self'", false, id -> false, limiter);
+
+        var first = limited.proxyEventStream(session(), "events", null, null, () -> { });
+        var second = limited.proxyEventStream(session(), "events", null, null, () -> { });
+
+        assertThat(first.getStatusCode().value()).isEqualTo(200);
+        assertThat(second.getStatusCode().value()).isEqualTo(503);
+        assertThat(second.getBody()).isNull();
+        assertThat(connected).as("두 번째는 컨테이너에 닿지 않았다").hasValue(1);
+
+        // 첫 스트림이 끝나면 자리가 돌아와 다음 것이 들어간다
+        first.getBody().writeTo(new ByteArrayOutputStream());
+        assertThat(limiter.inUse()).isZero();
+        assertThat(limited.proxyEventStream(session(), "events", null, null, () -> { }).getStatusCode().value()).isEqualTo(200);
+    }
+
+    @Test
+    void theSlotComesBackWhenTheContainerCannotBeReachedOrTheClientIsGone() throws Exception {
+        PreviewEventStreamLimiter limiter = new PreviewEventStreamLimiter(1, 2);
+        PreviewGatewayService limited = new PreviewGatewayService("'self'", false, id -> false, limiter);
+        int closedPort;
+        try (java.net.ServerSocket probe = new java.net.ServerSocket(0)) {
+            closedPort = probe.getLocalPort();
+        }
+        PreviewSessionInfo unreachable = new PreviewSessionInfo(
+                "session-2", 1L, 11L, null, null, "container-2", "127.0.0.1:" + closedPort,
+                "https://qeploy.com/api/v1/previews/session-2/token/", LocalDateTime.now().plusMinutes(30));
+
+        assertThat(limited.proxyEventStream(unreachable, "events", null, null, () -> { }).getStatusCode().value()).isEqualTo(502);
+        assertThat(limiter.inUse()).as("연결 실패 — 본문이 없으니 바로 돌려준다").isZero();
+
+        // 클라이언트가 떠나 쓰기가 실패해도 돌려준다
+        container.createContext("/events", exchange -> {
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE);
+            exchange.sendResponseHeaders(200, 0);
+            try (OutputStream out = exchange.getResponseBody()) {
+                for (int i = 0; i < 100; i++) {
+                    out.write(("data: " + i + "\n\n").getBytes(StandardCharsets.UTF_8));
+                    out.flush();
+                    Thread.sleep(20);
+                }
+            } catch (Exception ignored) {
+            }
+        });
+        var stream = limited.proxyEventStream(session(), "events", null, null, () -> { });
+        assertThat(limiter.inUse()).isEqualTo(1);
+        stream.getBody().writeTo(new OutputStream() {
+            @Override
+            public void write(int b) throws IOException {
+                throw new IOException("client gone");
+            }
+
+            @Override
+            public void write(byte[] b, int off, int len) throws IOException {
+                throw new IOException("client gone");
+            }
+        });
+        assertThat(limiter.inUse()).isZero();
+    }
+
+    /**
+     * 덩어리를 쓸 때마다 응답을 네트워크로 내보낸다. 스트리밍 본문이 받는 스트림의 {@code flush()} 는 Spring Framework 7.0.6
+     * 부터 아무것도 하지 않으므로, 그것에 기대면 이벤트가 스트림이 끝날 때까지 쌓인다(#624).
+     */
+    @Test
+    void flushesTheResponseAfterEveryChunkRatherThanRelyingOnTheStreamFlush() throws Exception {
+        container.createContext("/events", exchange -> {
+            exchange.getResponseHeaders().add(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE);
+            exchange.sendResponseHeaders(200, 0);
+            try (OutputStream out = exchange.getResponseBody()) {
+                for (int i = 0; i < 3; i++) {
+                    out.write(("data: " + i + "\n\n").getBytes(StandardCharsets.UTF_8));
+                    out.flush();
+                    Thread.sleep(100);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        java.util.concurrent.atomic.AtomicInteger flushes = new java.util.concurrent.atomic.AtomicInteger();
+        ByteArrayOutputStream sink = new ByteArrayOutputStream() {
+            @Override
+            public void flush() {
+                throw new AssertionError("스트림의 flush 는 Spring 7 에서 효과가 없다 — 응답을 직접 비워야 한다");
+            }
+        };
+
+        service.proxyEventStream(session(), "events", null, null, flushes::incrementAndGet).getBody().writeTo(sink);
+
+        assertThat(sink.toString(StandardCharsets.UTF_8)).contains("data: 0").contains("data: 2");
+        assertThat(flushes.get()).as("덩어리마다 한 번").isGreaterThanOrEqualTo(3);
+    }
+
+    @Test
+    void theStreamLimitMustStayBelowTheExecutorLimit() {
+        // 같거나 크면 MVC 실행기가 거절할 수 있고, 그때는 이미 연 업스트림을 닫을 곳이 없다
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new PreviewEventStreamLimiter(200, 200))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("qeploy.web.async.max-concurrent");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new PreviewEventStreamLimiter(0, 200))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     private PreviewSessionInfo session() {

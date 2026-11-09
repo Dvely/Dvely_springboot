@@ -10,6 +10,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.util.Locale;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -150,7 +151,8 @@ public class PreviewGatewayController {
             @Parameter(description = "세션 발급 시 함께 생성된 접근 토큰") @PathVariable String accessToken,
             @CookieValue(name = PreviewAccessCookies.COOKIE_NAME, required = false) String accessCookie,
             @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId,
-            HttpServletRequest request
+            HttpServletRequest request,
+            HttpServletResponse response
     ) {
         Authorized authorized = authorize(sessionId, accessToken, accessCookie,
                 request.getHeader(SEC_FETCH_DEST));
@@ -162,7 +164,9 @@ public class PreviewGatewayController {
                 authorized.session(),
                 extractPath(request, prefix),
                 request.getQueryString(),
-                lastEventId
+                lastEventId,
+                // 스트리밍 본문의 flush 는 Spring 7.0.6 부터 네트워크로 나가지 않는다 — 응답을 직접 비운다(#624)
+                response::flushBuffer
         );
     }
 

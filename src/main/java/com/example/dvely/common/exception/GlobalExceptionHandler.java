@@ -5,6 +5,7 @@ import com.example.dvely.change.application.service.ResultRevertUnavailableExcep
 import com.example.dvely.common.limit.UserLimitExceededException;
 import com.example.dvely.common.response.ApiResponse;
 import com.example.dvely.common.response.ErrorCode;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -18,6 +19,7 @@ import com.example.dvely.template.application.exception.TemplateCatalogUnavailab
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
@@ -302,6 +304,25 @@ public class GlobalExceptionHandler {
     public void handleClientDisconnected(AsyncRequestNotUsableException e) {
         // 스택을 남기지 않는다 — 원인은 메시지 한 줄로 충분하고, 쌓으면 진짜 오류가 묻힌다.
         log.debug("클라이언트가 응답 도중 연결을 끊었습니다: {}", e.getMessage());
+    }
+
+    /**
+     * 비동기 요청의 타임아웃(#624). 프리뷰 SSE 프록시는 {@code spring.mvc.async.request-timeout} 에 닿으면 이렇게 끝나고,
+     * EventSource 는 알아서 다시 연결한다 — 정상 종료다.
+     *
+     * <p>이 처리기가 없을 때는 아래 catch-all 이 받아 스택과 함께 ERROR 를 남기고, 이미 흘려보낸 응답에 JSON 을 쓰려다
+     * WARN 두 줄을 더 남겼다. 그때 타임아웃이 톰캣 기본 30초라, 열린 프리뷰 SSE 하나가 30초마다 ERROR 하나를 만들었다
+     * (실측). ERROR 수를 배포 건강 신호로 쓰므로(#423) 조용히 둔다.</p>
+     *
+     * <p>아직 아무것도 쓰지 않은 응답이면 503 만 남긴다(부트 기본 처리와 같은 상태). 본문을 쓰지 않는 이유: 요청이
+     * {@code text/event-stream} 을 받는 쪽이라 JSON 봉투를 쓸 변환기가 없을 수 있다.</p>
+     */
+    @ExceptionHandler(AsyncRequestTimeoutException.class)
+    public void handleAsyncTimeout(AsyncRequestTimeoutException e, HttpServletResponse response) {
+        log.debug("비동기 요청이 타임아웃으로 끝났습니다(committed={})", response.isCommitted());
+        if (!response.isCommitted()) {
+            response.setStatus(HttpStatus.SERVICE_UNAVAILABLE.value());
+        }
     }
 
     // 500 - 예상치 못한 오류

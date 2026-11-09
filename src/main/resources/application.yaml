@@ -90,12 +90,20 @@ spring:
   # executor 정리(AsyncConfig)는 시작도 못 해보고 SIGKILL 을 맞는다.
   #
   # 그리고 이 앱은 SSE 를 상시로 열어 둔다(에이전트 진행 스트림 5분, 프리뷰 게이트웨이 프록시는
-  # 끝이 없다). 그 스트림은 어차피 유예 안에 끝나지 않으므로, 값이 크면 "스트림이 열려 있는 한
+  # 아래 spring.mvc.async.request-timeout). 그 스트림은 어차피 유예 안에 끝나지 않으므로, 값이 크면 "스트림이 열려 있는 한
   # 매번 그 시간을 통째로 소진"하는 결과가 된다 — 배포마다 그만큼 느려질 뿐 얻는 게 없다.
   # 평범한 REST 요청은 문서상 p95 가 1.5s 안쪽이라 10s 면 드레인에 충분하고, EventSource 는
   # 끊겨도 알아서 재연결한다.
   lifecycle:
     timeout-per-shutdown-phase: 10s
+
+  # #624 — MVC 비동기 요청의 기본 타임아웃. 지금 이 값을 쓰는 것은 프리뷰 SSE 프록시(StreamingResponseBody)뿐이다
+  # (에이전트 진행 스트림은 SseEmitter 에 5분을 직접 준다). 비워 두면 톰캣 기본 30초가 걸려 프리뷰의 EventSource 가
+  # 30초마다 끊기고 다시 붙었다(실측 30.6초). 타임아웃은 정상 종료라 EventSource 가 알아서 재연결한다. 값은 "클라이언트가
+  # 떠났는데 업스트림이 조용해 알아채지 못한 스트림"이 자리를 쥐는 최대 시간이기도 하다.
+  mvc:
+    async:
+      request-timeout: ${QEPLOY_PREVIEW_EVENT_STREAM_TIMEOUT:5m}
 
   task:
     scheduling:
@@ -183,6 +191,10 @@ qeploy:
     allowed-origin-patterns: ${QEPLOY_CORS_ALLOWED_ORIGIN_PATTERNS:}
   preview:
     gateway-base-url: ${QEPLOY_PREVIEW_GATEWAY_BASE_URL:http://localhost:8080}
+    # #624 — 동시에 열려 있는 프리뷰 SSE 프록시 스트림 상한. 넘으면 업스트림에 연결하지 않고 503.
+    # 아래 qeploy.web.async.max-concurrent(MVC 비동기 실행기 상한)보다 작아야 한다(기동 때 확인한다).
+    event-stream:
+      max-concurrent: ${QEPLOY_PREVIEW_EVENT_STREAM_MAX_CONCURRENT:100}
     # 프리뷰 문서를 iframe 으로 띄울 수 있는 오리진. 기본값은 FE 와 게이트웨이가 같은 오리진이라는
     # 전제이고, 그렇지 않은 환경(dev 처럼 FE 가 로컬에서 뜨는 경우)만 여기에 오리진을 더한다.
     # sandbox 지시어는 이 값과 무관하게 항상 붙으므로 부모 토큰 탈취 차단은 그대로 유지된다.
@@ -441,6 +453,12 @@ qeploy:
   # 오래 안 본 순서로 닫아 자리를 만들고, 그래도 없을 때만 거절한다.
   #
   # 0 이하는 기동을 멈춘다(상한 없음으로 읽지 않는다). 끄려면 큰 값을 넣는다.
+  # #624 — MVC 비동기 처리(지금은 프리뷰 SSE 프록시뿐)를 도는 가상 스레드 실행기의 동시 상한(MvcAsyncConfig).
+  # 넘치면 거절한다. 프리뷰 SSE 는 자기 상한(qeploy.preview.event-stream.max-concurrent)으로 먼저 거른다.
+  web:
+    async:
+      max-concurrent: ${QEPLOY_WEB_ASYNC_MAX_CONCURRENT:200}
+
   limits:
     per-user:
       max-active-runs: ${QEPLOY_LIMITS_PER_USER_MAX_ACTIVE_RUNS:2}

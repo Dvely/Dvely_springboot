@@ -3,6 +3,7 @@ package com.example.dvely.preview.application.service;
 import com.example.dvely.preview.application.port.out.DeadPreviewSessionReclaimer;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import java.io.ByteArrayInputStream;
+import java.io.Flushable;
 import java.io.InputStream;
 import java.io.SequenceInputStream;
 import java.net.URI;
@@ -125,6 +126,7 @@ public class PreviewGatewayService {
     private final String contentSecurityPolicy;
     private final boolean reclaimEnabled;
     private final DeadPreviewSessionReclaimer reclaimer;
+    private final PreviewEventStreamLimiter eventStreamLimiter;
 
     // 임시 진단(기본 off). cross-origin iframe 안의 콘솔/DOM 을 밖에서 못 보므로, 프리뷰 문서에 에러·상태를
     // 화면(body)에 그리는 오버레이를 주입해 iframe 스크린샷만으로 렌더 실패 원인을 잡는다. 필드 주입이라
@@ -135,10 +137,12 @@ public class PreviewGatewayService {
     public PreviewGatewayService(
             @Value("${qeploy.preview.frame-ancestors:'self'}") String frameAncestors,
             @Value("${qeploy.preview.gateway-reclaim-enabled:true}") boolean reclaimEnabled,
-            DeadPreviewSessionReclaimer reclaimer) {
+            DeadPreviewSessionReclaimer reclaimer,
+            PreviewEventStreamLimiter eventStreamLimiter) {
         this.contentSecurityPolicy = SANDBOX_DIRECTIVES + "; frame-ancestors " + frameAncestors.trim();
         this.reclaimEnabled = reclaimEnabled;
         this.reclaimer = reclaimer;
+        this.eventStreamLimiter = eventStreamLimiter;
     }
 
     // 테스트가 조립 결과를 직접 확인하기 위한 접근자.
@@ -319,10 +323,43 @@ public class PreviewGatewayService {
      * <p>업스트림이 SSE 가 아닌 응답을 줘도(엔드포인트 없음 등) 그 {@code Content-Type} 을 그대로 흘려
      * 일반 스트리밍 패스스루로 동작한다. 도달 실패는 버퍼링 경로와 같은 규칙으로 502 + (재확인 후) 회수.</p>
      */
+    /**
+     * @param network 응답을 네트워크로 내보내는 것({@code HttpServletResponse::flushBuffer}). 스트리밍 본문이 받는
+     *                {@code OutputStream} 의 {@code flush()} 는 Spring Framework 7.0.6 부터 아무것도 하지 않는다
+     *                ({@code ServletServerHttpResponse} 가 {@code StreamUtils.nonFlushing} 으로 감싼다 —
+     *                {@code spring.http.response.flush.enabled} 를 켜지 않는 한). 그 flush 에 기대면 이벤트가 톰캣 버퍼(8KB)가
+     *                차거나 스트림이 끝날 때에야 한꺼번에 나간다(#624 실측: 0.2초 간격 이벤트가 2.5초 뒤 한 덩어리로 도착).
+     */
     public ResponseEntity<StreamingResponseBody> proxyEventStream(PreviewSessionInfo session,
                                                                   String path,
                                                                   String query,
-                                                                  String lastEventId) {
+                                                                  String lastEventId,
+                                                                  Flushable network) {
+        // 업스트림에 연결하기 전에 자리를 잡는다(#624). 연결한 뒤에 거절되면 그 연결을 닫을 곳이 없다.
+        PreviewEventStreamLimiter.Permit permit = eventStreamLimiter.tryAcquire().orElse(null);
+        if (permit == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+        }
+        boolean handedOver = false;
+        try {
+            ResponseEntity<StreamingResponseBody> response =
+                    openEventStream(session, path, query, lastEventId, network, permit);
+            handedOver = response.getBody() != null;
+            return response;
+        } finally {
+            if (!handedOver) {
+                permit.close();
+            }
+        }
+    }
+
+    /** 업스트림에 연결해 스트리밍 본문을 만든다. 본문이 있으면 {@code permit} 은 본문이 끝날 때 돌아간다. */
+    private ResponseEntity<StreamingResponseBody> openEventStream(PreviewSessionInfo session,
+                                                                  String path,
+                                                                  String query,
+                                                                  String lastEventId,
+                                                                  Flushable network,
+                                                                  PreviewEventStreamLimiter.Permit permit) {
         String target = PreviewTarget.baseUrl(session.containerIp()) + sanitizePath(path);
         if (query != null && !query.isBlank()) {
             target += "?" + query;
@@ -347,13 +384,16 @@ public class PreviewGatewayService {
         }
 
         InputStream upstreamBody = upstream.body();
+        // 스트림이 끝나는 길은 셋이다 — 업스트림이 닫힘, 클라이언트가 끊겨 쓰기 실패, 비동기 타임아웃
+        // (spring.mvc.async.request-timeout)에 Spring 이 이 스레드를 인터럽트해 읽기가 깨짐. 어느 쪽이든 아래에서
+        // 업스트림을 닫고 자리를 돌려준다.
         StreamingResponseBody stream = out -> {
-            try (upstreamBody) {
+            try (permit; upstreamBody) {
                 byte[] buffer = new byte[512];
                 int read;
                 while ((read = upstreamBody.read(buffer)) != -1) {
                     out.write(buffer, 0, read);
-                    out.flush();   // 이벤트를 쌓지 않고 즉시 흘려보낸다
+                    network.flush();   // 이벤트를 쌓지 않고 즉시 흘려보낸다 — out.flush() 는 효과가 없다(위 @param network)
                 }
             } catch (Exception ignored) {
                 // 클라이언트 끊김/업스트림 종료 — EventSource 가 알아서 재연결한다. 남은 스트림은 try-with 로 닫힌다.
