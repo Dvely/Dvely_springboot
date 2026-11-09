@@ -2,7 +2,7 @@
 
 이 문서는 프론트엔드 개발자가 Swagger UI와 함께 참고하는 통합 작업 문서입니다. 컨트롤러·DTO·설계서(`.agent-team/04-architecture/`)의 실제 계약만을 근거로 작성했으며, 추측/날조된 필드나 동작은 없습니다. 필드 하나하나의 상세 스키마(타입, `nullable`, `example`)는 Swagger UI(`/swagger-ui/index.html`)가 항상 최신 소스이므로, 이 문서는 **"무엇을 언제 왜 호출하는가"**에 집중하고 세부 스키마는 Swagger로 위임합니다.
 
-- **컨트롤러 수**: 22개 · **엔드포인트 매핑 수**: 112개 (2026-09-08 실측)
+- **컨트롤러 수**: 24개 · **엔드포인트 매핑 수**: 121개 (2026-11-09 실측. 셈법은 `.notion/api.md` §1)
 - 아래 §4 카탈로그는 아직 전수가 아니다. `AuditLog` · `DatabaseProvisioning` · `DomainTls` · `PreviewRuntimeConfig` · `ServerProvisioning` 컨트롤러는 절이 없으므로, 그 영역은 Swagger UI 를 정본으로 본다.
 - **작성 기준 커밋**: main `eb0ec2d` (U0~U7 · I45 · Cost(#58) · CloudOps(#59) · 결과 승인 2단계(#56) · pendingApprovalId/retryable 재정의(#57) · retry TOCTOU 제거(#64) · 결과 게이트 이력 판정 보강(#62) 머지 완료)
 
@@ -104,6 +104,59 @@ FE: window.location = url
 
 새 저장소 생성 등 GitHub App User Token이 필요한 호출에서 `bad_refresh_token` 오류 메시지를 받으면 이 플로우로 유도하세요.
 
+### 2.7 회원 탈퇴 (#613, FE #203)
+
+```
+GET    /api/v1/users/me/withdrawal   (탈퇴 화면을 열 때)
+→ { withdrawable, liveResources: [ { type, id, projectId, label, status } ] }
+
+DELETE /api/v1/users/me              (확인 뒤)
+→ 200: 탈퇴 완료. 로컬 저장소를 비우고(clearAppStorage) 랜딩으로
+→ 409 WITHDRAWAL_BLOCKED: AWS 에 자원이 남아 있음. 아무것도 지워지지 않았고 로그인도 그대로
+```
+
+**사용자 AWS 계정에 자원이 남아 있으면 탈퇴하지 못합니다.** 탈퇴하면 그 자원을 Qeploy 에서 볼 수도 끌 수도 없는데 과금은 계속되기 때문입니다. 그래서 화면을 열 때 `GET /users/me/withdrawal` 로 목록을 받아, `withdrawable` 이 `false` 면 먼저 정리하게 안내하세요. 이미 삭제한 프로젝트의 자원도 목록에 나옵니다. `projectId` 가 `GET /projects` 목록에 없으면 삭제한 프로젝트입니다.
+
+| `type` | 화면에 쓸 이름 | `label` | 정리 방법 |
+|---|---|---|---|
+| `SERVER` | EC2 서버 | 인스턴스 id | `POST /api/v1/servers/{id}/terminate`. 삭제한 프로젝트의 서버도 이 id 로 끌 수 있으니 탈퇴 화면에 버튼을 둘 수 있습니다 |
+| `DATABASE` | 데이터베이스 | `RDS MYSQL` 처럼 방식과 엔진 | `DELETE /api/v1/databases/{id}`. 삭제한 프로젝트의 DB 도 됩니다 |
+| `CDN` | HTTPS 도메인(CloudFront) | 도메인 이름 | `DELETE /api/v1/domains/{id}`(202, 에이전트 작업 — 도메인 승인 정책이 켜져 있으면 승인 뒤 해제, §4.7). 해제하면 다음 조회에서 `CDN_DELETION` 으로 바뀝니다. **삭제한 프로젝트의 도메인은 404 라 풀 수 없습니다** — 운영팀 문의로 안내하세요 |
+| `CDN_DELETION` | 정리 중인 CloudFront | 호스트 이름 | 기다립니다. 서버가 1분마다 이어서 지우며 CloudFront 비활성화에 수 분~수십 분 걸립니다. `projectId` 는 항상 `null` 입니다 |
+| `DEPLOYMENT` | 진행 중인 배포 | 배포 제목 | 기다립니다. 끝나면 목록에서 빠집니다 |
+
+정리 버튼을 누른 뒤에는 `GET /users/me/withdrawal` 을 다시 불러 목록을 갱신하세요. 이 조회는 DB 만 읽으므로 몇 번을 불러도 됩니다.
+
+**조회가 비었어도 `DELETE` 가 409 일 수 있습니다** — 확인 창을 띄운 사이 배포가 시작된 경우 등. 서버가 삭제 직전에 한 번 더 확인하기 때문입니다. 이때 본문의 `data` 에 같은 모양의 목록이 실려 있습니다(오류 응답 중 `data` 가 있는 유일한 경우, §3.3). axios 의 `error.response.data.data.liveResources` 로 읽을 수 있고, `ApiError` 로 바꾸는 경로에서는 `data` 가 버려지니 그때는 `GET /users/me/withdrawal` 을 다시 부르면 됩니다.
+
+```json
+{
+  "status": 409,
+  "code": "WITHDRAWAL_BLOCKED",
+  "message": "AWS 계정에 아직 정리하지 않은 자원이 1개 있어 탈퇴할 수 없습니다.",
+  "data": {
+    "withdrawable": false,
+    "liveResources": [
+      { "type": "SERVER", "id": 3, "projectId": 11, "label": "i-0abc", "status": "RUNNING" }
+    ]
+  }
+}
+```
+
+**성공(200)한 뒤 `DELETE /auth/logout` 을 부르지 마세요.** 탈퇴에 쓴 access 토큰은 이미 폐기됐고 refresh 토큰은 모두 지워져 401 이 납니다. 로컬 저장소만 비우면 됩니다.
+
+확인 창에 알릴 내용:
+
+- **지워지는 것**: 계정, 프로젝트(삭제한 것 포함)와 그 기록, 대화, 에이전트 작업 기록, 클라우드 연결, AI 키, 액세스 토큰(PAT). 진행 중인 에이전트 작업은 취소되고 프리뷰는 닫힙니다
+- **지워지지 않는 것**: 사용자의 GitHub 저장소, AWS 계정의 자원
+- **GitHub App 은 직접 해제해야 합니다**: GitHub → Settings → Applications → Installed GitHub Apps(`https://github.com/settings/installations`)에서 Qeploy 의 App(운영 등록 이름 `dvely-github-app`, dev 는 `dvely-test-app`)을 Configure → Uninstall. 조직에 설치했다면 그 조직의 Settings → GitHub Apps 에서 합니다. Qeploy 가 대신 해제하지 않습니다
+- 같은 GitHub 계정으로 다시 로그인하면 이전 데이터 없이 새 계정으로 시작합니다
+
+그 밖에:
+
+- 개인 액세스 토큰(PAT)으로는 탈퇴할 수 없습니다(403). 브라우저 로그인으로만 됩니다
+- 다른 기기의 로그인은 access 토큰 만료(최대 1시간)까지 남지만 할 수 있는 일이 없고, 토큰 갱신은 401 입니다
+
 ---
 
 ## 3. 공통 규약
@@ -140,7 +193,7 @@ function unwrapResponse(body: unknown): unknown {
 
 ### 3.3 에러 코드 카탈로그
 
-에러도 같은 envelope(단, `data` 없음)로 내려옵니다. `code`가 안정적인 판별자이고, `message`는 상황별 상세 문구(같은 `code`라도 메시지는 케이스마다 다를 수 있음)입니다.
+에러도 같은 envelope(단, `data` 없음 — `WITHDRAWAL_BLOCKED` 하나만 예외로 `data` 가 있다)로 내려옵니다. `code`가 안정적인 판별자이고, `message`는 상황별 상세 문구(같은 `code`라도 메시지는 케이스마다 다를 수 있음)입니다.
 
 | HTTP | code | 의미 | 대표 발생 상황 |
 |---|---|---|---|
@@ -155,6 +208,7 @@ function unwrapResponse(body: unknown): unknown {
 | 404 | `NOT_FOUND` | 리소스 없음/소유권 불일치(존재 자체를 숨김) | 잘못된 ID, 다른 유저 소유 리소스 |
 | 405 | `METHOD_NOT_ALLOWED` | 지원하지 않는 HTTP 메서드 | 라우트는 있으나 메서드 불일치 |
 | 409 | `CONFLICT` | 상태 충돌(낙관적 락 경합, 이미 처리된 승인, 잘못된 상태 전이 등) | 동시 수정 경합(I45), 이미 결정된 Approval 재결정, FAILED가 아닌 배포 재시도, PENDING 승인이 남아있거나 attempt가 maxAttempts에 도달한 `/retry` 호출, `WAITING_RESULT_APPROVAL`이 아닌 태스크의 결과 승인 재개 시도, **RESULT 승인 approve 중 preview↔main GitHub merge 충돌/실패**(승인은 PENDING으로 롤백 유지 — 재시도 또는 거절 필요), **REPOSITORY_BINDING 승인 approve 중 저장소 생성/push 실패**(마찬가지로 PENDING 유지. 프리뷰 컨테이너가 이미 만료됐다면 재시도해도 실패하므로 거절로 정리), **`preview`와 병합 대상 브랜치에 공통 조상이 없거나 병합 대상 브랜치가 없음**(저장소 연결이 잘못된 상태 — 메시지에 저장소·브랜치 이름이 담기며, 재시도해도 같은 오류라 저장소 설정을 고쳐야 함) 등 |
+| 409 | `WITHDRAWAL_BLOCKED` | 사용자 AWS 에 자원이 남아 탈퇴하지 않음. **`data` 에 남은 자원 목록이 있다**(`{ withdrawable: false, liveResources: [...] }`) | `DELETE /users/me` — 아무것도 지워지지 않았다. 목록으로 정리 방법을 안내한다(§2.7, #613) |
 | 500 | `INTERNAL_SERVER_ERROR` | 예기치 못한 서버 오류 | 미처리 예외 |
 
 **409(`CONFLICT`) 복구 패턴(공용)**: `Project`·`ProjectCloudConnectionSetting` 등 낙관적 락(`@Version`)이 걸린 리소스를 동시에 수정하면 409가 반환됩니다. FE는 최신 상태를 재조회(`GET`)한 뒤 사용자에게 재시도를 안내하세요(자동 재적용 없음 — 사용자가 마지막으로 본 화면 기준의 의도가 이미 낡았을 수 있으므로).
@@ -265,11 +319,13 @@ Accept: text/event-stream
 | POST | `/api/v1/auth/refresh` | Access Token 재발급(rotation) | `{ refreshToken }` | `{ accessToken, refreshToken, githubAppInstalled }` | 401(`INVALID_TOKEN`/`EXPIRED_REFRESH_TOKEN`/`REVOKED_REFRESH_TOKEN`) |
 | DELETE | `/api/v1/auth/logout` | 로그아웃(현재 accessToken 블랙리스트 + 전체 refreshToken 폐기) | Bearer 필요 | 없음(`ApiResponse<Void>`) | 401 |
 
-### 4.2 User — `com.example.dvely.user.presentation` (1)
+### 4.2 User — `com.example.dvely.user.presentation` (1) + `com.example.dvely.withdrawal.presentation` (2)
 
 | 메서드 | 경로 | 용도 | 응답(핵심 필드) |
 |---|---|---|---|
 | GET | `/api/v1/users/me` | 현재 로그인 유저 프로필 + GitHub App 연동 상태 | `{ id, username, avatarUrl, githubAppInstalled, githubAppTokenLinked, githubAppTokenExpired, githubAppReauthorizationRequired, githubAppAccessTokenExpiresAt, githubAppRefreshTokenExpiresAt }` (재인증 UI는 `githubAppReauthorizationRequired`로만 판단 — §2.6) |
+| GET | `/api/v1/users/me/withdrawal` | 탈퇴를 막는 자원이 있는지(탈퇴 화면을 열 때) | `{ withdrawable, liveResources: [{ type, id, projectId, label, status }] }` (§2.7) |
+| DELETE | `/api/v1/users/me` | 회원 탈퇴. 브라우저 로그인 전용(PAT 403) | 없음. 409 `WITHDRAWAL_BLOCKED` 면 `data` 에 남은 자원 목록 (§2.7) |
 
 ### 4.3 Project — `com.example.dvely.project.presentation` (+ Approval, Change) (24 + 4 + 3 = 31)
 
@@ -621,7 +677,7 @@ POST /api/v1/api-tokens
 
 `WRITE` 가 짧은 이유는 유출됐을 때 할 수 있는 일이 다르기 때문이다 — 배포하고 환경변수를 바꾸고 도메인을 붙인다. 범위를 벗어나면 **400** 이고 메시지에 스코프가 들어 있으니 그대로 보여주면 된다. 발급 UI 의 만료일 입력은 선택한 스코프에 따라 상한을 바꿔야 한다.
 
-**`WRITE` 도 모든 쓰기가 아니다(#453).** PAT 로 통과하는 쓰기는 배포 생성·재시도, 환경변수 추가·수정, 도메인 추가 다섯 개뿐이고, 승인·토큰 발급/폐기·AI 키·클라우드 연결·삭제 등 나머지는 403 이다. 브라우저 로그인(JWT)은 영향이 없다. 발급 UI 에서 `WRITE` 를 설명할 때 "모든 작업" 처럼 쓰지 말 것.
+**`WRITE` 도 모든 쓰기가 아니다(#453).** PAT 로 통과하는 쓰기는 배포 생성·재시도, 환경변수 추가·수정, 도메인 추가 다섯 개뿐이고, 승인·토큰 발급/폐기·AI 키·클라우드 연결·회원 탈퇴·삭제 등 나머지는 403 이다. 브라우저 로그인(JWT)은 영향이 없다. 발급 UI 에서 `WRITE` 를 설명할 때 "모든 작업" 처럼 쓰지 말 것.
 
 ### 4.12 AiCredential — `com.example.dvely.aiaccount.presentation` (3)
 
