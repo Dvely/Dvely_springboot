@@ -9,7 +9,7 @@
 - 제품 기준: `.notion/prd.md` (§15.2는 2026-07-18 사용자 확정으로 예외 개정, §2.23 참고)
 - 구현 기준: 현재 Spring Boot 코드, Flyway migration, 테스트
 - 테스트 결과: **이번 갱신(2026-10-20)에서는 전체 테스트를 다시 집계하지 않았다.** 마지막 집계는 PR #114 머지 시점(2026-08-15)의 통합 main 737/737이다(직전 기준 710 대비 +27 — §2.30 게이트웨이 인가(+16)·§2.31 서브리소스 인가·CORS 수정(+5)·§2.32 빌드 base 흡수(+5)·§2.33 CDN beacon 차단(+1) 신설분). Flyway는 V1~V66 연속(`ls src/main/resources/db/migration | sort -V`, 2026-10-20 확인 — V66은 §4.36)
-- 현재 공개 API: 117개(2026-10-20 재집계, 방식은 `api.md` §1과 동일). 직전 기록 94개(PR #104 시점) 이후의 증가분과 모듈별 내역은 `api.md` §1에 있다. 2026-09-28 이후로는 엔드포인트 수가 바뀌지 않았다
+- 현재 공개 API: 121개(2026-11-09 재집계, 방식은 `api.md` §1과 동일 — 회원 탈퇴 +2 #613, 결과 승인 반영 범위 +1 #532). 직전 기록 94개(PR #104 시점) 이후의 증가분과 모듈별 내역은 `api.md` §1에 있다
 - **운영 상태(2026-10-31): 서비스 일시 중단.** 2026-10-30 AWS 지원 종료로 FE 는 GitHub Pages 로 옮겼고(Dvely_FE #194) 백엔드는 어디에서도 서비스되지 않는다. `qeploy.com/api/v1/...` 는 Pages 의 HTML 404(쓰기는 405)라 이 문서의 "한 것" 은 **코드 기준**이며 지금 운영에서 동작하지 않는다. agent-tools 는 `status.json` 의 중단 안내를 오류로 보인다(#604). 경과와 다음 할 일은 `ROADMAP.md` 1절 2026-10-31 항목
 - 단위 작업 백로그와 우선순위 SSOT는 `.notion/ROADMAP.md`이다. 이 문서는 기능별 완료 여부를, ROADMAP.md는 다음에 무엇을 어떤 순서로 할지를 다룬다.
 
@@ -32,6 +32,7 @@
 - GitHub App 설치 callback
 - GitHub App User Token 저장과 재인증 URL
 - 내 프로필 및 GitHub App 연결/만료 상태 조회
+- 회원 탈퇴와 탈퇴 가능 여부 조회 — 사용자 AWS 에 자원이 남으면 409 와 목록, 없으면 런 취소·컨테이너 정리·데이터 삭제·토큰 폐기·감사 한 줄(#613, §4.52)
 - GitHub token과 주요 secret의 AES-GCM 암호화 저장
 
 ## 2.2 프로젝트와 GitHub 저장소
@@ -1601,6 +1602,30 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - `WorkLogContext` 가 진입점(`AgentPlanExecutor.execute`·`AsyncDecisionRunner.decideAndSubmit`·`DeploymentCommandService.executeQueued`)에서 MDC `taskId`·`deploymentId` 를 심고, 닫을 때 이전 값으로 되돌린다(풀 스레드 재사용). 실패 처리 로그까지 덮도록 catch 바깥에서 연다
 - 콘솔 패턴(`logging.pattern.level`): `WARN [requestId] task=… ` / `deploy=…`. 값이 없으면 아무것도 붙지 않는다
 - JSON 로그는 Spring Boot 기본 기능으로 켠다: `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`(또는 `logstash`). MDC 키가 필드(`taskId`·`deploymentId`·`requestId`)로 실린다(실측). 기본은 사람이 읽는 텍스트 그대로다
+
+## 4.52 회원 탈퇴 (Issue #613, PR #637·#638, 2026-11-09)
+
+처리방침(Dvely_FE #201)이 약속한 "탈퇴하면 지체 없이 파기" 를 코드로 지킨다. 그 전에는 탈퇴 API 가 없었고, `users` 를 가리키는 FK 대부분에 CASCADE 가 없어 운영자가 손으로 지우는 것도 FK 위반으로 막혔다. API 계약은 `api.md` §4.2.
+
+- **엔드포인트**: `GET /api/v1/users/me/withdrawal`(막는 자원 조회) · `DELETE /api/v1/users/me`(탈퇴). 새 패키지 `withdrawal` 에 격리했다
+- **막는 자원**(`LiveResource`, 소프트 삭제한 프로젝트 것 포함): 서버(EC2·EIP) · RDS/Docker DB · CloudFront 도메인 · 끝나지 않은 CloudFront 정리 작업 · 대기·진행 중 배포. 있으면 `409 WITHDRAWAL_BLOCKED` 와 목록(`data.liveResources`)을 돌려주고 아무것도 건드리지 않는다
+- **순서**(`UserWithdrawalFacade`): 자원 확인 → 끝나지 않은 런 취소 → 사용자 라벨 컨테이너·프리뷰 테스트 DB 컨테이너 제거 → 한 트랜잭션(사용자 행 잠금 → 자원 재확인 → 삭제 → 이 요청의 access jti 블랙리스트) → 컨테이너 재정리 → 감사 `USER_WITHDRAWN`
+  - 런 취소가 삭제보다 먼저인 이유: 실행기는 단계마다 `TaskStore.isCancelled` 를 읽는데 런 행이 없으면 false 라, 지운 뒤에는 멈출 수 없다
+  - 도커 정리는 최선 노력이다. 실패해도 탈퇴는 진행하고 회원 번호·컨테이너 id 를 WARN 으로 남긴다
+  - 감사 기록은 커밋 뒤에 쓴다 — 삭제가 그 사용자의 감사 기록을 지우기 때문이다
+- **삭제**(`UserWithdrawalStore`): 23개 테이블을 FK 순서로 지우고 9개는 부모의 CASCADE 로 함께 지워진다. `audit_logs`·`llm_usage` 는 익명화가 아니라 **삭제**다(`resource_id`·`detail` 에 저장소 이름 같은 식별자가 실린다). `webhook_deliveries` 는 payload 의 `repository.full_name` 으로 찾는다
+- **남기는 것**: 감사 한 줄 — `ACCOUNT`/`USER_WITHDRAWN`, 회원 번호만(프로젝트·자원·`detail` 없음). 회원 번호를 사람과 잇던 사용자 행은 이미 지워졌고, 이 한 줄도 다른 감사 기록처럼 180일 뒤 지워진다. GitHub 저장소·AWS 자원·GitHub App 설치는 사용자 소유라 지우지 않는다
+- **PAT 차단**: `JwtAuthenticationFilter.PAT_WRITABLE` 에 넣지 않아 필터가 403 으로 막고, 컨트롤러가 `qp_` 토큰을 한 번 더 막는다
+- **⚠️ 새 테이블을 만들 때**: 사용자·프로젝트·태스크·대화·클라우드 연결을 가리키는 테이블(FK 든 같은 이름의 컬럼이든)이면 `UserWithdrawalStore.STEPS` 나 `CASCADED_TABLES` 에 넣어야 한다. 빠뜨리면 `UserWithdrawalCoverageTest` 가 실제 스키마를 읽어 실패한다. FK 가 있는데 빠뜨리면 탈퇴 자체가 FK 위반으로 실패한다
+- **테스트(실 MySQL)**: `UserWithdrawalServiceTest`(두 사용자에게 32개 테이블의 행을 심고 한 사람만 탈퇴 → 그 사람 행 0건·다른 사람 그대로·같은 GitHub id 의 사용자 없음), `UserWithdrawalCoverageTest`, `UserWithdrawalFacadeTest`(순서·롤백·도커 실패·중복 요청), `UserWithdrawalEndpointTest`(보안 필터부터 — 탈퇴 뒤 같은 토큰 401, 409 본문, PAT 403)
+
+남은 것:
+
+- **삭제한 프로젝트의 CloudFront 도메인은 사용자가 풀 수 없다.** 프로젝트 삭제가 도메인을 정리하지 않고, `DELETE /domains/{id}` 는 `findByIdAndOwnerUserIdAndDeletedFalse` 라 404 다. AWS 콘솔에서 지워도 도메인 행이 남아 탈퇴를 계속 막는다. 서버(`POST /servers/{id}/terminate`)와 DB(`DELETE /databases/{id}`)는 소유권 확인이 삭제 여부를 보지 않아 목록의 id 로 끌 수 있다. 근본 해결은 #595
+- 다른 기기의 access 토큰은 jti 를 몰라 폐기하지 못한다. 만료(기본 1시간)까지 인증은 통과하지만 사용자 행이 없어 할 수 있는 일이 없다
+- GitHub App 설치는 사용자가 GitHub 에서 직접 해제해야 한다. 그 전까지 들어오는 웹훅은 처리할 프로젝트가 없고 7일 보존 정리로 지워진다
+- S3 정적 사이트 버킷은 DB 에 기록이 없어 막는 자원으로 세지 않는다
+- FE 탈퇴 화면은 Dvely_FE #203. 처리방침 4·7항과 약관 제11조의 "메일로 요청" 문구는 그 화면과 함께 바꾼다
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
