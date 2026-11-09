@@ -238,15 +238,17 @@ class RetentionSweepTest {
         // 조건에 맞지 않는 행이라도 다른 트랜잭션이 쥐고 있으면 스윕이 멈추고, 반대로 스윕이 쥔 잠금이 실행 중 태스크의
         // 리스 갱신을 막았다(실측 3.04초 대기, 완료 UPDATE 는 Lock wait timeout). 스윕을 실제 빈으로 불러 본다.
         //
-        // #618 은 READ COMMITTED 로 이것을 막았지만 모자랐다. RC 가 잠긴 행을 건너뛰는 것은 클러스터 인덱스를 훑을 때
-        // 뿐이고, 보조 인덱스 (status, …)로 읽으면 범위 안의 잠긴 행을 기다렸다 — 로컬 DB 에 행이 쌓여 계획이 바뀌자 이
-        // 테스트가 늘 실패했다. 이제 스윕은 비울 행만 담긴 범위(터미널 · 안 비움 · 기간 넘김)를 읽는다. 그래서 다른
-        // 트랜잭션이 쥐는 행을 둘 둔다. 보존 기간 안의 DONE run 과 이미 비운 오래된 run 이다. 둘 다 그 범위에 없어야 한다.
-        // 이 테스트가 지키는 것은 읽는 범위다. 범위가 이렇게 좁으면 격리 수준을 기본으로 되돌려도 이 시나리오는 기다리지
-        // 않는다(변이로 확인). RC 는 범위로 새로 들어오는 행을 갭 잠금으로 막지 않으려고 그대로 둔다.
+        // #618 은 READ COMMITTED 로 이것을 막았지만 모자랐다. 보조 인덱스 범위를 잠그며 읽는 UPDATE 는 RC 에서도 잠긴 행을
+        // 건너뛰지 못한다(건너뛰는 semi-consistent read 는 클러스터 인덱스를 훑을 때만이다). 그래서 다른 트랜잭션이 쥐는
+        // 행을 둘 둔다. 둘 다 비울 대상이 아니다.
+        //   - 보존 기간을 막 넘기지 않은 DONE run(89일 전). 비울 행의 범위 바로 다음 행이다. 범위를 잠그며 읽으면 범위가
+        //     끝났는지 알려고 이 행까지 잠그려 한다 — 빈 DB 인 CI 에서 이 테스트가 이렇게 실패했다.
+        //   - 이미 비운 오래된 run. (status, …) 인덱스로 읽던 예전에는 범위 안이었다.
+        // 이 테스트가 지키는 것은 "고칠 행만 잠근다" 다. 격리 수준을 기본으로 되돌려도 이 시나리오는 통과한다(변이로 확인) —
+        // 고르기는 잠그지 않는 읽기이고 고치기는 PK 로 그 행만 잠그기 때문이다.
         long userId = insertUser();
         insertAgentRun("retention-test-old-done", userId, "DONE", LocalDateTime.now().minusDays(120));
-        insertAgentRun("retention-test-recent-done", userId, "DONE", LocalDateTime.now().minusDays(1));
+        insertAgentRun("retention-test-recent-done", userId, "DONE", LocalDateTime.now().minusDays(89));
         jdbcTemplate.update("""
                 insert into agent_runs (task_id, user_id, status, created_at, payload_purged_at)
                 values ('retention-test-old-purged', ?, 'DONE', ?, ?)
@@ -283,18 +285,29 @@ class RetentionSweepTest {
     }
 
     @Test
-    void 비우기는_실행_계획과_상관없이_비울_행의_범위만_읽는다() {
+    void 비우기는_비울_행의_범위만_고르고_PK_로_고친다() {
         // 손으로 옮긴 SQL 이 아니라 스윕이 실제로 보낸 SQL 을 EXPLAIN 한다. 인덱스를 힌트로 고정했으므로 데이터가 어떻든
         // 같은 계획이어야 한다 — 이 문제의 원인이 "옵티마이저가 고른 계획에 따라 잠금·비용이 달라진다" 였다.
+        long userId = insertUser();
+        insertAgentRun("retention-test-old-done", userId, "DONE", LocalDateTime.now().minusDays(120));
         LocalDateTime cutoff = LocalDateTime.now().minusDays(90);
+
         List<String> sent = SentSql.capture(() -> agentRunRetentionStore.blankTerminalPayloadsBatch(cutoff, 500));
+        String select = sent.stream().filter(sql -> sql.startsWith("select task_id from agent_runs")).findFirst().orElseThrow();
         String update = sent.stream().filter(sql -> sql.startsWith("update agent_runs")).findFirst().orElseThrow();
 
-        Map<String, Object> plan = jdbcTemplate.queryForList("explain " + update, "DONE", "FAILED", "CANCELLED", cutoff, 500)
+        Map<String, Object> pick = jdbcTemplate.queryForList("explain " + select, "DONE", "FAILED", "CANCELLED", cutoff, 500)
                 .getFirst();
+        Map<String, Object> fix = jdbcTemplate.queryForList("explain " + update,
+                "retention-test-old-done", "DONE", "FAILED", "CANCELLED", cutoff).getFirst();
 
-        assertThat(plan.get("key")).as(update).isEqualTo("idx_agent_runs_retention");
-        assertThat(plan.get("type")).as(update).isEqualTo("range");
+        // 고르기: 비울 행의 범위를 인덱스만으로 읽는다(테이블 행을 읽지 않는다)
+        assertThat(pick.get("key")).as(select).isEqualTo("idx_agent_runs_retention");
+        assertThat(pick.get("type")).as(select).isEqualTo("range");
+        assertThat(String.valueOf(pick.get("Extra"))).as(select).contains("Using index");
+        // 고치기: 고른 행을 PK 로만 찾는다
+        assertThat(fix.get("key")).as(update).isEqualTo("PRIMARY");
+        assertThat(planJsonOf("retention-test-old-done")).isNull();
     }
 
     // ---------------------------------------------------------------------
