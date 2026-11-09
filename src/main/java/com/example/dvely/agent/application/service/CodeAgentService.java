@@ -16,6 +16,7 @@ import com.example.dvely.agent.infrastructure.config.AiProperties;
 import com.example.dvely.agent.infrastructure.codingagent.CodingAgentWorkspaceBridge;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.common.exception.LlmProviderException;
+import com.example.dvely.common.limit.UserLimitExceededException;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewRuntimeLauncher;
 import com.example.dvely.preview.application.service.PreviewServeException;
@@ -283,6 +284,10 @@ public class CodeAgentService {
             // 서버 시작/응답 실패는 빌드 실패가 아니다(코드 재생성으로 안 고쳐진다) — 빌드실패
             // 분석/재시도로 흘려보내지 않고 그대로 올려, AgentPlanExecutor 가 태스크를 한 번에
             // 실패로 닫게 한다(재시도로 예산을 태우지 않는다).
+            throw e;
+        } catch (UserLimitExceededException e) {
+            // 서버 전체 코딩 에이전트 상한(#624) — 아무것도 바꾸기 전에 거절된 것이다. 아래로 흘리면 빌드 로그를 분석해
+            // "빌드가 완료되지 않았습니다" 로 닫히고 상한 안내가 사라진다. AgentPlanExecutor 가 문장 그대로 남긴다.
             throw e;
         } catch (Exception e) {
             log.error("[CodeAgent] 실패 | userId={} containerId={}", userId, containerId, e);

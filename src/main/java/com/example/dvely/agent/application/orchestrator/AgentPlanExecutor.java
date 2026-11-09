@@ -243,8 +243,9 @@ public class AgentPlanExecutor {
             );
             log.warn("=== AgentPlan 반영 중단(원격 preview 가 작업 중 바뀜): taskId={} ===", taskId);
         } catch (UserLimitExceededException exception) {
-            // 사용자별 프리뷰 상한(#509)에 걸려 CODE 스텝이 컨테이너를 못 띄운 것 — 바로 위와 같은 정상 거부다. 메시지에
-            // 상한과 다음 행동이 들어 있으므로 접두 없이 그대로 남기고, ERROR 가 아니라 WARN 으로 둔다.
+            // 동시 실행 상한에 걸려 CODE 스텝이 컨테이너를 못 띄운 것 — 사용자별 프리뷰(#509), 서버 전체 프리뷰·코딩
+            // 에이전트(#624). 바로 위와 같은 정상 거부다. 메시지에 다음 행동이 들어 있으므로 접두 없이 그대로 남기고, ERROR 가
+            // 아니라 WARN 으로 둔다.
             if (taskStore.isCancelled(taskId)) {
                 return;
             }
@@ -256,7 +257,7 @@ public class AgentPlanExecutor {
                     ChatMessageKind.TASK_FAILED,
                     taskId
             );
-            log.warn("=== AgentPlan 중단(사용자별 상한): taskId={} code={} ===", taskId, exception.errorCode().getCode());
+            log.warn("=== AgentPlan 중단(동시 실행 상한): taskId={} code={} ===", taskId, exception.errorCode().getCode());
         } catch (Exception e) {
             if (taskStore.isCancelled(taskId)) {
                 log.info("=== AgentPlan 취소됨: taskId={} ===", taskId);
