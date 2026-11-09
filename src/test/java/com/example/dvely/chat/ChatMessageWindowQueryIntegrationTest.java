@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.example.dvely.chat.domain.model.ChatMessage;
 import com.example.dvely.chat.domain.repository.ChatMessageRepository;
 import com.example.dvely.chat.domain.value.ChatRole;
+import com.example.dvely.support.SentSql;
 import com.example.dvely.withdrawal.application.UserWithdrawalService;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
@@ -143,26 +144,9 @@ class ChatMessageWindowQueryIntegrationTest {
                 Long.class, conversation);
     }
 
-    /** {@code call} 이 보낸 select 한 문장. Hibernate 의 SQL 로거를 잠시 DEBUG 로 내려 받는다. */
+    /** {@code call} 이 보낸 select 한 문장. */
     private String sentSql(Runnable call) {
-        ch.qos.logback.classic.Logger sqlLogger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger("org.hibernate.SQL");
-        ch.qos.logback.classic.Level original = sqlLogger.getLevel();
-        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
-                new ch.qos.logback.core.read.ListAppender<>();
-        appender.start();
-        sqlLogger.addAppender(appender);
-        sqlLogger.setLevel(ch.qos.logback.classic.Level.DEBUG);
-        try {
-            call.run();
-        } finally {
-            sqlLogger.setLevel(original);
-            sqlLogger.detachAppender(appender);
-        }
-        // 같은 컨텍스트의 스케줄러가 그 사이 보낸 SQL 이 섞이지 않게 이 스레드의 것만 본다
-        String thread = Thread.currentThread().getName();
-        List<String> selects = appender.list.stream().filter(e -> thread.equals(e.getThreadName()))
-                .map(e -> e.getFormattedMessage().strip())
-                .filter(sql -> sql.startsWith("select")).toList();
+        List<String> selects = SentSql.capture(call).stream().filter(sql -> sql.startsWith("select")).toList();
         assertThat(selects).as("보낸 select").hasSize(1);
         return selects.getFirst();
     }

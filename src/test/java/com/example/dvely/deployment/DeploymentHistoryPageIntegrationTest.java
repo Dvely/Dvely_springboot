@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.example.dvely.auth.infrastructure.config.security.JwtProvider;
 import com.example.dvely.common.paging.CursorResponse;
 import com.example.dvely.project.application.query.ProjectQueryService;
+import com.example.dvely.support.SentSql;
 import com.example.dvely.withdrawal.application.UserWithdrawalService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -155,28 +156,9 @@ class DeploymentHistoryPageIntegrationTest {
         return ids;
     }
 
-    /**
-     * {@code call} 이 보낸 SQL 을 한 줄에 하나씩. Hibernate 의 SQL 로거를 잠시 DEBUG 로 내려 받는다. 같은 컨텍스트의
-     * 스케줄러가 그 사이 보낸 SQL 이 섞이지 않게 이 스레드의 것만 남긴다.
-     */
+    /** {@code call} 이 보낸 SQL 을 한 줄에 하나씩, 공백을 하나로 줄여서. */
     private static String sqlCaptured(Runnable call) {
-        String thread = Thread.currentThread().getName();
-        ch.qos.logback.classic.Logger sqlLogger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger("org.hibernate.SQL");
-        ch.qos.logback.classic.Level original = sqlLogger.getLevel();
-        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
-                new ch.qos.logback.core.read.ListAppender<>();
-        appender.start();
-        sqlLogger.addAppender(appender);
-        sqlLogger.setLevel(ch.qos.logback.classic.Level.DEBUG);
-        try {
-            call.run();
-        } finally {
-            sqlLogger.setLevel(original);
-            sqlLogger.detachAppender(appender);
-        }
-        return String.join("\n", appender.list.stream()
-                .filter(event -> thread.equals(event.getThreadName()))
-                .map(event -> event.getFormattedMessage().replaceAll("\\s+", " ").strip() + " ").toList());
+        return String.join("\n", SentSql.capture(call).stream().map(sql -> sql.replaceAll("\\s+", " ") + " ").toList());
     }
 
     private long insert(String sql, Object... args) {
