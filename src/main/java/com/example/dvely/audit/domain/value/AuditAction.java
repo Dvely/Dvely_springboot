@@ -42,7 +42,12 @@ public enum AuditAction {
     SERVER_RECOVERY_ATTEMPTED(AuditCategory.INFRA),
     // 카탈로그 개정(2026-09-06): 자동 재시작(SERVER_RECOVERY_ATTEMPTED)을 했는데도 settle 유예가 지나도록
     // 앱이 계속 무응답 — 자가치유 실패라 사용자 개입(로그·재배포)이 필요하다는 시스템 신호. 에피소드당 1회.
-    SERVER_RECOVERY_FAILED(AuditCategory.INFRA);
+    SERVER_RECOVERY_FAILED(AuditCategory.INFRA),
+
+    // ── ACCOUNT ──────────────────────────────────────────────────────────────
+    // 카탈로그 개정(2026-11-09, #613): 회원 탈퇴. 탈퇴는 그 사용자의 감사 기록까지 모두 지우므로, "탈퇴했다" 는 사실은
+    // 삭제가 끝난 뒤에 이 한 줄로만 남는다. 회원 번호 외에는 싣지 않는다 — 번호를 사람에게 잇는 행(users)이 이미 없다.
+    USER_WITHDRAWN(AuditCategory.ACCOUNT);
 
     private final AuditCategory category;
 
