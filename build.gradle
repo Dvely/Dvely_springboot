@@ -106,6 +106,21 @@ tasks.named('test') {
 	// 공유 DB 를 계속 폴링해 소용없었다 — 시스템 프로퍼티는 테스트 JVM 의 모든 Spring 컨텍스트에 적용돼
 	// 근본을 막는다. 이 워커 자동 폴링에 의존하는 테스트는 없다(그 클래스는 claimPending 을 직접 부른다).
 	systemProperty 'qeploy.webhook.worker.poll-interval-ms', '3600000'
+
+	// 테스트 JVM 의 커넥션 풀은 쓰는 만큼만 열어 둔다. dev 프로필의 풀은 20개 고정(minimum-idle = maximum-pool-size)인데,
+	// Spring 테스트 컨텍스트는 캐시돼 JVM 이 끝날 때까지 닫히지 않는다. Spring 7 은 쓰지 않는 컨텍스트를 일시정지
+	// (Lifecycle 빈 정지)하지만 커넥션 풀은 Lifecycle 이 아니라 그대로 열려 있다. 그래서 컨텍스트 수 × 20 이 MySQL 기본
+	// 한도(max_connections 151)를 넘는다.
+	// 넘으면 새 컨텍스트의 첫 커넥션이 "Too many connections" 로 실패해, 컨텍스트를 하나 더 만든 PR 과 상관없는 다른 테스트
+	// 클래스가 뜨지 못한다(#643 작업 중 실제로 겪었다).
+	// 실측(2026-11-10, 로컬 MySQL 8.0, 컨텍스트 8개):
+	//   - 이 설정 없이: 최대 동시 연결이 한도에 붙었다(Max_used_connections 152 = 앱 151 + 측정에 쓴 관리자 연결 1). 컨텍스트를
+	//     3개 더 만들자 그중 2개와 UserWithdrawalEndpointTest 의 컨텍스트가 "Too many connections" 로 뜨지 못했다.
+	//   - 이 설정으로: 같은 측정에서 최대 19, 컨텍스트 3개를 더해도 23. 전체 테스트 시간은 같았다(2분 15초 → 2분 18초).
+	// 상한(maximum-pool-size)은 그대로 둔다 — 여러 커넥션을 한꺼번에 쓰는 테스트는 예전처럼 쓰고, 쉬는 풀만 1개로 준다.
+	// idle-timeout 10s 는 Hikari 가 허용하는 최솟값이다.
+	systemProperty 'spring.datasource.hikari.minimum-idle', '1'
+	systemProperty 'spring.datasource.hikari.idle-timeout', '10000'
 }
 
 // 커버리지는 리포트만 낸다(게이트 없음). CI 가 HTML 을 아티팩트로 올린다.
