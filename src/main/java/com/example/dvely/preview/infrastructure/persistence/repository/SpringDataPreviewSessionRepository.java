@@ -81,4 +81,10 @@ public interface SpringDataPreviewSessionRepository extends JpaRepository<Previe
                     @Param("now") LocalDateTime now,
                     @Param("expiresAt") LocalDateTime expiresAt,
                     @Param("staleBefore") LocalDateTime staleBefore);
+
+    // #624 서버 전체 프리뷰 상한(PreviewCapacity). idx_preview_sessions_expiry(status, expires_at) 로 살아 있는 행만 좁힌다 —
+    // 그 수는 상한 근처라 last_accessed_at 정렬은 작은 정렬이다.
+    List<PreviewSessionEntity> findByStatusInOrderByLastAccessedAtAsc(Collection<String> statuses);
+
+    long countByStatusIn(Collection<String> statuses);
 }
