@@ -55,7 +55,11 @@ public enum ErrorCode {
     // 사용자별 동시 실행 상한(#509). 요청은 정상이지만 지금은 받을 수 없다 — 진행 중인 작업이 끝나거나
     // 열린 프리뷰를 닫으면 다시 받는다. 메시지에 상한과 다음 행동이 들어 있으므로 그대로 보여 주면 된다.
     ACTIVE_RUN_LIMIT_EXCEEDED(429, "ACTIVE_RUN_LIMIT_EXCEEDED", "진행 중인 작업이 너무 많습니다"),
-    PREVIEW_LIMIT_EXCEEDED(429, "PREVIEW_LIMIT_EXCEEDED", "열린 프리뷰가 너무 많습니다");
+    PREVIEW_LIMIT_EXCEEDED(429, "PREVIEW_LIMIT_EXCEEDED", "열린 프리뷰가 너무 많습니다"),
+
+    // 회원 탈퇴(#613). 사용자 AWS 계정에 아직 살아 있는 자원이 있어 탈퇴하지 않았다(아무것도 지우지 않았다). 응답 data 에
+    // 남은 자원 목록이 실린다 — 그것을 정리한 뒤 다시 요청하면 된다.
+    WITHDRAWAL_BLOCKED(409, "WITHDRAWAL_BLOCKED", "정리하지 않은 AWS 자원이 남아 있어 탈퇴할 수 없습니다");
 
     private final int status;
     private final String code;
