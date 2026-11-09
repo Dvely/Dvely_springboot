@@ -40,6 +40,7 @@ import com.example.dvely.provisioning.domain.repository.ProvisionedDatabaseRepos
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ProvisionMethod;
 import com.example.dvely.provisioning.domain.value.ProvisionOrigin;
+import com.example.dvely.support.JdbcRows;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -355,9 +356,8 @@ class ListProjectionResponseIdentityTest {
     }
 
     private Long seedConversation(Long userId, Long projectId) {
-        jdbc.update("insert into chat_sessions (user_id, project_id, title) values (?, ?, ?)",
+        return JdbcRows.insert(jdbc, "insert into chat_sessions (user_id, project_id, title) values (?, ?, ?)",
                 userId, projectId, "u6");
-        return jdbc.queryForObject("select last_insert_id()", Long.class);
     }
 
     /** created_at 을 행마다 다르게 준다 — 비교 대상 순서가 유일하게 정해지도록(클래스 javadoc 참고). */

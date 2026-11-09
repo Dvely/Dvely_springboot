@@ -9,6 +9,7 @@ import com.example.dvely.chat.application.command.ChatCommandService;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
+import com.example.dvely.support.JdbcRows;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -123,9 +124,8 @@ class ConversationBulkCleanupTest {
     }
 
     private Long seedConversation(Long userId, Long projectId) {
-        jdbc.update("insert into chat_sessions (user_id, project_id, title) values (?, ?, ?)",
+        return JdbcRows.insert(jdbc, "insert into chat_sessions (user_id, project_id, title) values (?, ?, ?)",
                 userId, projectId, "u6-bulk");
-        return jdbc.queryForObject("select last_insert_id()", Long.class);
     }
 
     private void seedMessage(Long conversationId) {
@@ -134,12 +134,11 @@ class ConversationBulkCleanupTest {
     }
 
     private Long seedApproval(Long userId, Long projectId, Long conversationId) {
-        jdbc.update("""
+        return JdbcRows.insert(jdbc, """
                 insert into approvals
                     (user_id, project_id, chat_session_id, approval_type, status, summary)
                 values (?, ?, ?, 'CHANGE', 'PENDING', '요약')
                 """, userId, projectId, conversationId);
-        return jdbc.queryForObject("select last_insert_id()", Long.class);
     }
 
     private int count(String sql, Object... args) {

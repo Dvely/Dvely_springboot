@@ -2,6 +2,7 @@ package com.example.dvely.audit.infrastructure.scheduler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.dvely.support.JdbcRows;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -55,7 +56,7 @@ class AuditLogRetentionSchedulerTest {
     }
 
     private long insertRow(LocalDateTime createdAt) {
-        jdbcTemplate.update(
+        return JdbcRows.insert(jdbcTemplate,
                 """
                         insert into audit_logs
                             (category, action, outcome, actor_type, project_id, created_at)
@@ -64,7 +65,6 @@ class AuditLogRetentionSchedulerTest {
                 "DEPLOYMENT", "DEPLOYMENT_REQUESTED", "SUCCEEDED", "USER", 999_000_000L,
                 createdAt.truncatedTo(ChronoUnit.SECONDS)
         );
-        return jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
     }
 
     private boolean rowExists(long auditLogId) {
