@@ -82,10 +82,17 @@ public class DomainBindingQueryService {
                                                             Long projectId,
                                                             Integer limit,
                                                             String after) {
-        resolveProject(ownerUserId, projectId);
+        return getProjectDomains(resolveProject(ownerUserId, projectId), limit, after);
+    }
+
+    /**
+     * 소유권을 이미 확인한 프로젝트의 목록. 호출자가 {@code findByIdAndOwnerUserIdAndDeletedFalse} 로 얻은 {@link Project} 를
+     * 넘긴다 — 한 화면이 여러 도메인의 목록을 모을 때 같은 확인을 도메인마다 되풀이하지 않기 위해서다(#625, 활동 로그·개요).
+     */
+    public CursorPage<DomainBindingResult> getProjectDomains(Project ownedProject, Integer limit, String after) {
         int size = CursorPaging.clamp(limit, DEFAULT_DOMAIN_LIMIT, MAX_DOMAIN_LIMIT);
         List<DomainBinding> probed = domainBindingRepository.findProjectDomainsPage(
-                projectId, CursorPaging.parseCursor(after), size + 1);
+                ownedProject.getId(), CursorPaging.parseCursor(after), size + 1);
         return CursorPaging.slice(probed, size, domain -> String.valueOf(domain.getId()))
                 .map(this::toResult);
     }

@@ -91,12 +91,13 @@ public class ProjectQueryService {
         List<CommitResult> commits = getCommits(ownerUserId, projectId);
         CommitResult latestCommit = commits.isEmpty() ? null : commits.get(0);
         RepositoryHealthResult repositoryHealth = getRepositoryHealth(ownerUserId, projectId);
+        // 소유권은 위 findProject 에서 확인했다 — 목록마다 다시 확인하지 않는다(#625)
         List<DeploymentHistoryResult> deployments =
-                deploymentQueryService.getDeploymentHistories(ownerUserId, projectId);
-        List<ChangeResult> changes = changeService.getProjectChanges(ownerUserId, projectId);
-        List<ApprovalResult> approvals = approvalQueryService.getProjectApprovals(ownerUserId, projectId);
+                deploymentQueryService.getDeploymentHistories(project, null, null).items();
+        List<ChangeResult> changes = changeService.getProjectChanges(project, null, null).items();
+        List<ApprovalResult> approvals = approvalQueryService.getProjectApprovals(project, null, null).items();
         List<DomainBindingResult> domains =
-                domainBindingQueryService.getProjectDomains(ownerUserId, projectId);
+                domainBindingQueryService.getProjectDomains(project, null, null).items();
         ProjectInfrastructureSettingsResult infrastructure =
                 infrastructureSettingsService.get(ownerUserId, projectId);
 
@@ -135,14 +136,18 @@ public class ProjectQueryService {
         );
     }
 
+    /**
+     * 네 도메인의 목록을 최신순으로 합친다. 소유권은 여기서 한 번만 확인한다(#625) — 예전에는 목록마다 각 서비스가
+     * {@code projects} 를 다시 읽어 한 요청에 다섯 번이었다. 각 목록은 서비스의 기본 상한(배포·승인 200 등)까지다.
+     */
     public List<ActivityLogResult> getActivityLogs(Long ownerUserId, Long projectId) {
         Project project = findProject(ownerUserId, projectId);
         return buildActivityLogs(
                 project,
-                deploymentQueryService.getDeploymentHistories(ownerUserId, projectId),
-                changeService.getProjectChanges(ownerUserId, projectId),
-                approvalQueryService.getProjectApprovals(ownerUserId, projectId),
-                domainBindingQueryService.getProjectDomains(ownerUserId, projectId)
+                deploymentQueryService.getDeploymentHistories(project, null, null).items(),
+                changeService.getProjectChanges(project, null, null).items(),
+                approvalQueryService.getProjectApprovals(project, null, null).items(),
+                domainBindingQueryService.getProjectDomains(project, null, null).items()
         );
     }
 
