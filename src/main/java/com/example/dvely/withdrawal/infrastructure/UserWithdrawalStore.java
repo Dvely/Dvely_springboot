@@ -136,6 +136,8 @@ public class UserWithdrawalStore {
      *       승인 대기(PENDING)나 만들기 전에 실패한 것(인스턴스 없음)은 남은 자원이 아니다</li>
      *   <li>DB: 사용자 AWS 의 RDS·Docker DB 중 생성 대기·생성 중·사용 중. 프리뷰 안 DB(LOCAL)는 우리 호스트의 것이다</li>
      *   <li>CDN: CloudFront 배포가 기록된 도메인, 그리고 아직 끝나지 않은 CloudFront·인증서 정리 작업</li>
+     *   <li>배포: 대기(PENDING)·진행 중(IN_PROGRESS). 워커가 이미 집어 간 배포는 행을 지워도 멈추지 않고 사용자 AWS 에
+     *       S3 버킷 같은 자원을 만든 뒤에야 끝난다. 멈춘 진행 중 배포는 회수 워커가 정해진 시간 안에 닫는다</li>
      * </ul>
      */
     public List<LiveResource> findLiveResources(long userId) {
@@ -171,7 +173,45 @@ public class UserWithdrawalStore {
                 """.formatted(CLOUD_CONNECTIONS), userId)) {
             live.add(new LiveResource(LiveResource.Type.CDN_DELETION, number(row[0]), null, (String) row[1], "PENDING"));
         }
+        for (Object[] row : rows("""
+                select history_id, project_id, title, status from deployment_histories
+                 where (user_id = :userId or project_id in (%s)) and status in ('PENDING', 'IN_PROGRESS')
+                 order by history_id
+                """.formatted(PROJECTS), userId)) {
+            live.add(new LiveResource(LiveResource.Type.DEPLOYMENT, number(row[0]), number(row[1]), (String) row[2], (String) row[3]));
+        }
         return live;
+    }
+
+    /**
+     * 아직 끝나지 않은 에이전트 런. 탈퇴 전에 취소한다 — 행을 지운 뒤에는 실행기가 취소를 알아챌 길이 없다(런이 없으면
+     * "취소되지 않음" 으로 읽는다).
+     */
+    @SuppressWarnings("unchecked")
+    public List<String> findUnfinishedTaskIds(long userId) {
+        return (List<String>) entityManager.createNativeQuery("""
+                        select task_id from agent_runs
+                         where user_id = :userId and status not in ('DONE', 'FAILED', 'CANCELLED')
+                         order by created_at
+                        """)
+                .setParameter("userId", userId)
+                .getResultList();
+    }
+
+    /**
+     * 우리 호스트에 띄운 프리뷰 테스트 DB 컨테이너(LOCAL). 사용자 라벨이 없어 행에서 찾는다 — 행이 지워지면 만료 회수 워커도
+     * 더는 찾지 못하므로 탈퇴가 직접 지운다.
+     */
+    @SuppressWarnings("unchecked")
+    public List<String> findLocalDatabaseContainerIds(long userId) {
+        return (List<String>) entityManager.createNativeQuery("""
+                        select resource_id from provisioned_databases
+                         where project_id in (%s) and method = 'LOCAL' and resource_id is not null
+                           and status not in ('FAILED', 'EXPIRED')
+                         order by database_id
+                        """.formatted(PROJECTS))
+                .setParameter("userId", userId)
+                .getResultList();
     }
 
     /** {@link #STEPS} 를 순서대로 실행한다. 호출자의 트랜잭션 안에서 돈다. */
