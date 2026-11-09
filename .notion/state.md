@@ -1683,6 +1683,14 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - 재 본 다른 길: `revoked` 인덱스(회전마다 옛 행이 폐기돼 대개 다수라 거르는 몫이 작다), 폐기할 때 `expires_at` 을 당겨 만료 경로(인덱스 범위)로 합치기(같은 측정에서 효과는 같았다. 다만 `expires_at` 의 뜻이 바뀌고 기존 행을 고치는 데이터 마이그레이션이 필요하다)
 - 테스트: `TokenCleanupLockingIntegrationTest` — 실제 정리 메서드의 트랜잭션을 리프레시 토큰을 지운 뒤(마지막 단계인 만료 PAT 삭제)에서 붙잡아 두고, 다른 커넥션에서 잠금 대기 2초로 회전·로그인. 기본 격리로 되돌리면 "Lock wait timeout exceeded" 로 실패한다
 
+## 4.57 배포 이력 목록 상한·커서와 활동 로그의 소유권 확인 1회 (Issue #625 PR-3)
+
+- **배포 이력 목록**(`GET /projects/{projectId}/deployments`)이 전량이었다(100건 응답 179KB). 이제 `limit` 기본·최대 200 + `X-Qeploy-Next-Cursor`/`after` 다(승인·도메인·변경 목록과 같은 규칙, `CursorPaging`). 본문은 예전과 같은 배열이다
+  - 정렬 키가 `(triggered_at, history_id)` 둘이라 커서는 이력 id 로 받되 그 행의 `triggered_at` 과 함께 비교한다. id 만으로 자르면 같은 초의 행을 건너뛰거나 시각과 id 순서가 다른 행을 잃는다(테스트로 확인). 커서 행은 같은 프로젝트에서만 찾는다
+  - limit 를 안 받는 호출(개요·활동 로그·운영 에이전트)도 최신 200건이다. 이들은 앞쪽(최신 배포·최신 LIVE)만 쓴다. 개요의 최신 LIVE 는 최근 200건에 없으면 프로젝트 행의 현재 URL·버전으로 대신한다(원래 폴백)
+- **활동 로그가 `projects` 를 다섯 번 읽었다**(자기 확인 + 배포·변경·승인·도메인 서비스가 각자 확인). 네 서비스에 "소유권을 이미 확인한 `Project` 를 받는" 목록 메서드를 두고, `(ownerUserId, projectId)` 메서드는 확인한 뒤 그리로 넘긴다. 활동 로그와 개요는 한 번 확인한 `Project` 로 네 목록을 읽는다 — 활동 로그 한 번에 `projects` 조회 1회(Hibernate 가 보낸 SQL 로 확인)
+- 테스트: `DeploymentHistoryPageIntegrationTest`(실 MySQL·보안 필터 — 같은 초의 행이 섞인 이력을 1건씩 끝까지 걸어 순서·누락 없음, 기본 상한 200 과 커서, 다른 프로젝트 커서는 빈 배열, 활동 로그의 `projects` 조회 1회). 목·스파이 빈 없이 공유 컨텍스트를 쓴다
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

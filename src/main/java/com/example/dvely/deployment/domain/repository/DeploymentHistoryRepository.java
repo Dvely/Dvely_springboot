@@ -13,8 +13,13 @@ public interface DeploymentHistoryRepository {
 
     Optional<DeploymentHistory> findById(Long id);
 
-    /** U6 6-2: 이력 목록 응답에 실제로 나가는 컬럼만 읽는다. {@link DeploymentHistoryListView} 참고. */
-    List<DeploymentHistoryListView> findHistoryListViews(Long projectId);
+    /**
+     * U6 6-2: 이력 목록 응답에 실제로 나가는 컬럼만 읽는다. {@link DeploymentHistoryListView} 참고.
+     *
+     * <p>#625: 최신순으로 {@code after}(이력 id, 배타적) 다음부터 최대 {@code limit} 건. {@code after} 가 null 이면
+     * 처음부터다.</p>
+     */
+    List<DeploymentHistoryListView> findHistoryListPage(Long projectId, Long after, int limit);
 
     /** U6 6-2: version_label 이 있는 이력만. 버전 목록 응답 전용. */
     List<DeploymentVersionView> findLabeledVersionViews(Long projectId);

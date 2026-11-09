@@ -158,7 +158,10 @@ class ChatMessageWindowQueryIntegrationTest {
             sqlLogger.setLevel(original);
             sqlLogger.detachAppender(appender);
         }
-        List<String> selects = appender.list.stream().map(e -> e.getFormattedMessage().strip())
+        // 같은 컨텍스트의 스케줄러가 그 사이 보낸 SQL 이 섞이지 않게 이 스레드의 것만 본다
+        String thread = Thread.currentThread().getName();
+        List<String> selects = appender.list.stream().filter(e -> thread.equals(e.getThreadName()))
+                .map(e -> e.getFormattedMessage().strip())
                 .filter(sql -> sql.startsWith("select")).toList();
         assertThat(selects).as("보낸 select").hasSize(1);
         return selects.getFirst();

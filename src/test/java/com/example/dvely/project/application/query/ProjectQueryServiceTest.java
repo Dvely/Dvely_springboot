@@ -31,6 +31,7 @@ import com.example.dvely.project.domain.value.RepositoryHealthStatus;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import com.example.dvely.common.paging.CursorPage;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -97,13 +98,13 @@ class ProjectQueryServiceTest {
                 )));
         when(githubRepositoryPort.checkRepositoryHealth(1L, "octo/repo"))
                 .thenReturn(RepositoryHealthStatus.HEALTHY);
-        when(deploymentQueryService.getDeploymentHistories(1L, 11L))
-                .thenReturn(List.of(
+        when(deploymentQueryService.getDeploymentHistories(project, null, null))
+                .thenReturn(page(
                         deployment(101L, "v7", null, "FAILED", now.minusMinutes(5)),
                         deployment(100L, "v6", "https://octo.github.io/repo", "LIVE", now.minusDays(1))
                 ));
-        when(changeService.getProjectChanges(1L, 11L))
-                .thenReturn(List.of(new ChangeResult(
+        when(changeService.getProjectChanges(project, null, null))
+                .thenReturn(page(new ChangeResult(
                         201L,
                         11L,
                         21L,
@@ -118,8 +119,8 @@ class ProjectQueryServiceTest {
                         now.minusMinutes(4),
                         now.minusMinutes(2)
                 )));
-        when(approvalQueryService.getProjectApprovals(1L, 11L))
-                .thenReturn(List.of(new ApprovalResult(
+        when(approvalQueryService.getProjectApprovals(project, null, null))
+                .thenReturn(page(new ApprovalResult(
                         301L,
                         11L,
                         21L,
@@ -132,8 +133,8 @@ class ProjectQueryServiceTest {
                         now.minusMinutes(3),
                         null
                 )));
-        when(domainBindingQueryService.getProjectDomains(1L, 11L))
-                .thenReturn(List.of(
+        when(domainBindingQueryService.getProjectDomains(project, null, null))
+                .thenReturn(page(
                         domain(402L, DomainType.MANAGED_SUBDOMAIN, "sample.qeploy.com", now.minusMinutes(1)),
                         domain(401L, DomainType.CUSTOM_DOMAIN, "www.example.com", now.minusMinutes(6))
                 ));
@@ -197,11 +198,11 @@ class ProjectQueryServiceTest {
 
     @Test
     void activityLogsContainPersistedDomainEventsInsteadOfCurrentValuePlaceholders() {
-        when(deploymentQueryService.getDeploymentHistories(1L, 11L)).thenReturn(List.of());
-        when(changeService.getProjectChanges(1L, 11L)).thenReturn(List.of());
-        when(approvalQueryService.getProjectApprovals(1L, 11L)).thenReturn(List.of());
-        when(domainBindingQueryService.getProjectDomains(1L, 11L))
-                .thenReturn(List.of(domain(
+        when(deploymentQueryService.getDeploymentHistories(project, null, null)).thenReturn(page());
+        when(changeService.getProjectChanges(project, null, null)).thenReturn(page());
+        when(approvalQueryService.getProjectApprovals(project, null, null)).thenReturn(page());
+        when(domainBindingQueryService.getProjectDomains(project, null, null))
+                .thenReturn(page(domain(
                         401L,
                         DomainType.MANAGED_SUBDOMAIN,
                         "sample.qeploy.com",
@@ -231,6 +232,12 @@ class ProjectQueryServiceTest {
         // 목록 한 번 읽기로 끝난다 — 프로젝트마다 다시 조회하지 않는다(N+1 없음)
         verify(projectRepository).findAllByOwnerUserIdAndDeletedFalseOrderByUpdatedAtDesc(1L);
         verifyNoMoreInteractions(projectRepository);
+    }
+
+    /** 소유권을 확인한 프로젝트를 받는 목록 메서드(#625)가 돌려주는 한 페이지. */
+    @SafeVarargs
+    private static <T> CursorPage<T> page(T... items) {
+        return CursorPage.of(List.of(items));
     }
 
     private Project project() {

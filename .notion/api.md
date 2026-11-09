@@ -886,7 +886,7 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 |---|---|---|
 | POST | `/api/v1/projects/{projectId}/deployments` | 프론트 배포 시작. 프로젝트 `frontendHostingType`(`GITHUB_PAGES` / `S3` / `EC2`)을 따른다 |
 | GET | `/api/v1/deployments/{deploymentId}` | 배포 상태와 GitHub Actions 상태 조회 |
-| GET | `/api/v1/projects/{projectId}/deployments` | 배포 이력 목록 |
+| GET | `/api/v1/projects/{projectId}/deployments` | 배포 이력 목록(최신순 — 요청 시각, 같으면 이력 id 큰 것 먼저. `limit` 기본·최대 200. 더 있으면 `X-Qeploy-Next-Cursor` 헤더, `after`로 넘기면 그보다 먼저 요청된 이력. 숫자가 아닌 커서는 `400`, 다른 프로젝트의 이력 id 는 빈 배열. #625 전에는 전량이었다) |
 | GET | `/api/v1/projects/{projectId}/versions` | 배포 이력을 버전별로 묶어 조회 |
 | GET | `/api/v1/projects/{projectId}/deployment-candidates` | LIVE 버전 재배포 후보 조회 |
 | GET | `/api/v1/deployments/{deploymentId}/logs` | GitHub Actions job/step/log 조회 |

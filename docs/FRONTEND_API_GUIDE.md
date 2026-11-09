@@ -496,7 +496,7 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 |---|---|---|---|---|---|
 | POST | `/api/v1/projects/{id}/deployments` | GitHub Pages 배포 요청(영속 Job, 즉시 PENDING) | `{ deployTargetType(LATEST\|VERSION), versionName? }` | 202 `{ deploymentId, projectId, deployTargetType, versionName, status, pagesUrl, createdAt }` | 400 |
 | GET | `/api/v1/deployments/{id}` | 배포 상태 조회(진행 중이면 GitHub Actions 실시간 buildStatus 포함) | - | `{ historyId, projectId, deployTargetType, versionLabel, deployedUrl, status(PENDING\|IN_PROGRESS\|LIVE\|FAILED), buildStatus, buildConclusion, triggeredAt, updatedAt }` | 404 |
-| GET | `/api/v1/projects/{id}/deployments` | 배포 이력 목록(전체, 최신순) | - | `[{ historyId, projectId, deployTargetType, versionLabel, deployedUrl, status, triggeredAt, updatedAt, retriedFromHistoryId }]` | - |
+| GET | `/api/v1/projects/{id}/deployments` | 배포 이력 목록(최신순, 한 번에 최대 200건 — #625) | query: `limit`(기본·최대 200), `after`(이전 응답의 `X-Qeploy-Next-Cursor`) | `[{ historyId, projectId, deployTargetType, versionLabel, deployedUrl, status, triggeredAt, updatedAt, retriedFromHistoryId }]` | - |
 | GET | `/api/v1/projects/{id}/versions` | merge 커밋 기준 버전 목록 | - | `[{ versionId, versionName, commitSha, title, deployStatus, mergedAt }]` | - |
 | GET | `/api/v1/projects/{id}/deployment-candidates` | 재배포/롤백 가능한 성공(LIVE·PREVIEW_READY) 버전만 | - | `[{ versionId, versionName, commitSha, title, deployStatus, deployedUrl, deployedAt }]` | - |
 | GET | `/api/v1/deployments/{id}/logs` | GitHub Actions 빌드 로그(Job/Step 상태 + 전체 로그 텍스트) | - | `{ historyId, workflowRunId, jobs[{ jobId, name, status, conclusion, steps[] }], logText }` | 404 |

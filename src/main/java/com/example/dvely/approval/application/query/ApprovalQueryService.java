@@ -11,6 +11,7 @@ import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.common.paging.CursorPage;
 import com.example.dvely.common.paging.CursorPaging;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
+import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -42,11 +43,19 @@ public class ApprovalQueryService {
                                                          Long projectId,
                                                          Integer limit,
                                                          String after) {
-        projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, ownerUserId)
+        Project project = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, ownerUserId)
                 .orElseThrow(() -> new ProjectNotFoundException(projectId, ownerUserId));
+        return getProjectApprovals(project, limit, after);
+    }
+
+    /**
+     * 소유권을 이미 확인한 프로젝트의 목록. 호출자가 {@code findByIdAndOwnerUserIdAndDeletedFalse} 로 얻은 {@link Project} 를
+     * 넘긴다 — 한 화면이 여러 도메인의 목록을 모을 때 같은 확인을 도메인마다 되풀이하지 않기 위해서다(#625, 활동 로그·개요).
+     */
+    public CursorPage<ApprovalResult> getProjectApprovals(Project ownedProject, Integer limit, String after) {
         int size = CursorPaging.clamp(limit, DEFAULT_APPROVAL_LIMIT, MAX_APPROVAL_LIMIT);
         List<Approval> probed = approvalRepository.findProjectApprovalsPage(
-                projectId, ownerUserId, CursorPaging.parseCursor(after), size + 1);
+                ownedProject.getId(), ownedProject.getOwnerUserId(), CursorPaging.parseCursor(after), size + 1);
         return CursorPaging.slice(probed, size, approval -> String.valueOf(approval.getId()))
                 .map(this::toResult);
     }

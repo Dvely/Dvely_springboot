@@ -209,11 +209,20 @@ public class ChangeService {
                                                       Long projectId,
                                                       Integer limit,
                                                       String after) {
-        projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, ownerUserId)
+        Project project = projectRepository.findByIdAndOwnerUserIdAndDeletedFalse(projectId, ownerUserId)
                 .orElseThrow(() -> new ProjectNotFoundException(projectId, ownerUserId));
+        return getProjectChanges(project, limit, after);
+    }
+
+    /**
+     * 소유권을 이미 확인한 프로젝트의 목록. 호출자가 {@code findByIdAndOwnerUserIdAndDeletedFalse} 로 얻은 {@link Project} 를
+     * 넘긴다 — 한 화면이 여러 도메인의 목록을 모을 때 같은 확인을 도메인마다 되풀이하지 않기 위해서다(#625, 활동 로그·개요).
+     */
+    @Transactional(readOnly = true)
+    public CursorPage<ChangeResult> getProjectChanges(Project ownedProject, Integer limit, String after) {
         int size = CursorPaging.clamp(limit, DEFAULT_CHANGE_LIMIT, MAX_CHANGE_LIMIT);
         List<ChangeSummaryView> probed = changeRepository.findProjectChangeSummaries(
-                projectId, ownerUserId, CursorPaging.parseCursor(after), CursorPaging.probe(size));
+                ownedProject.getId(), ownedProject.getOwnerUserId(), CursorPaging.parseCursor(after), CursorPaging.probe(size));
         return CursorPaging.slice(probed, size, view -> String.valueOf(view.getId()))
                 .map(ChangeService::toResult);
     }

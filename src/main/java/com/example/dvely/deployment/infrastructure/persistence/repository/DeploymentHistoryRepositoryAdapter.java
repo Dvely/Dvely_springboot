@@ -55,8 +55,8 @@ public class DeploymentHistoryRepositoryAdapter implements DeploymentHistoryRepo
     }
 
     @Override
-    public List<DeploymentHistoryListView> findHistoryListViews(Long projectId) {
-        return springDataRepository.findHistoryListViews(projectId);
+    public List<DeploymentHistoryListView> findHistoryListPage(Long projectId, Long after, int limit) {
+        return springDataRepository.findHistoryListPage(projectId, after, org.springframework.data.domain.PageRequest.of(0, limit));
     }
 
     @Override
