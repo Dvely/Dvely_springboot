@@ -7,9 +7,9 @@
 - 기준일: 2026-10-20
 - 기준 커밋: `02a2240` (PR #475 플래너 instruction 언어 반영, develop). 직전 기준은 `113abf0`(2026-08-15, PR #104 프리뷰 게이트웨이 인가 반영)
 - 기준 코드: `src/main/java/com/example/dvely/**/presentation/*Controller.java`
-- 현재 공개 엔드포인트: 118개(2026-10-23 CloudConnection +1 `PUT /cloud-connections/{id}/credentials` #491). 그 전 117개는 직전 기준(`113abf0` 시점) 94개에서 +23 — Agent +2(`GET /agent/ai-providers` §9.6, `GET /agent/conversations/{conversationId}/active-task` §9), AiCredential +3(§16), ApiToken +3(§18), Template +2(§17), CloudConnection +1(`GET /cloud-connections/requirements`), DomainBinding +1(`GET /domains/hosting-targets`), DomainTls +1(`GET /tls/allow`), PreviewGateway +1(SSE 프록시), PreviewRuntimeConfig +2(`GET/PUT /projects/{projectId}/preview/runtime`), Provisioning +7(§19). 2026-09-28 이후로는 수가 바뀌지 않았다
-  - 모듈별: Agent 10 · AiCredential 3 · ApiToken 3 · Approval 4 · AuditLog 1 · Auth 7 · Change 3 · Chat 9 · CloudConnection 8 · Deployment 10 · DomainBinding 8 · DomainTls 1 · Environment 5 · PreviewGateway 2 · PreviewRuntimeConfig 2 · PreviewSession 4 · ProjectPreview 2 · Project 24 · Provisioning(DB) 3 · Provisioning(Server) 4 · Template 2 · User 1 · Webhook 1
-  - 재집계 명령: `grep -rE "@GetMapping|@PostMapping|@PutMapping|@PatchMapping|@DeleteMapping|@RequestMapping\(" src/main/java --include="*Controller.java"` 후 클래스 레벨 `@RequestMapping` 6개(Agent/Auth/PreviewSession/Project/User/Webhook) 제외
+- 현재 공개 엔드포인트: 121개(2026-11-09 재집계 — User +2 `GET /users/me/withdrawal`·`DELETE /users/me` #613, Approval +1 `GET /approvals/{approvalId}/result-scope` #532는 추가 때 이 줄에 반영되지 않았던 것). 그 전 118개는 2026-10-23 CloudConnection +1(`PUT /cloud-connections/{id}/credentials` #491). 그 전 117개는 직전 기준(`113abf0` 시점) 94개에서 +23 — Agent +2(`GET /agent/ai-providers` §9.6, `GET /agent/conversations/{conversationId}/active-task` §9), AiCredential +3(§16), ApiToken +3(§18), Template +2(§17), CloudConnection +1(`GET /cloud-connections/requirements`), DomainBinding +1(`GET /domains/hosting-targets`), DomainTls +1(`GET /tls/allow`), PreviewGateway +1(SSE 프록시), PreviewRuntimeConfig +2(`GET/PUT /projects/{projectId}/preview/runtime`), Provisioning +7(§19). 2026-09-28 이후로는 수가 바뀌지 않았다
+  - 모듈별: Agent 10 · AiCredential 3 · ApiToken 3 · Approval 5 · AuditLog 1 · Auth 7 · Change 3 · Chat 9 · CloudConnection 9 · Deployment 10 · DomainBinding 8 · DomainTls 1 · Environment 5 · PreviewGateway 2 · PreviewRuntimeConfig 2 · PreviewSession 4 · ProjectPreview 2 · Project 24 · Provisioning(DB) 3 · Provisioning(Server) 4 · Template 2 · User 3(`UserController` 1 + `UserWithdrawalController` 2) · Webhook 1
+  - 재집계 명령: `grep -rE "@GetMapping|@PostMapping|@PutMapping|@PatchMapping|@DeleteMapping|@RequestMapping\(" src/main/java --include="*Controller.java"` 후 클래스 레벨 `@RequestMapping` 7개(Agent/Auth/PreviewSession/Project/User/UserWithdrawal/Webhook) 제외
 - 이 문서는 현재 코드에 존재하는 API와 PRD 달성을 위해 앞으로 필요한 API를 구분한다.
 - 아래의 `예정 API`는 설계 후보이며 아직 호출 가능한 계약이 아니다.
 
@@ -67,7 +67,7 @@
 - `503 Service Unavailable`: `PREVIEW_ENVIRONMENT_UNAVAILABLE`(Docker 접근 불가), `TEMPLATE_CATALOG_UNAVAILABLE`(§17.3)
 - `500 Internal Server Error`: 처리되지 않은 외부 연동/서버 오류
 
-도메인 전용 코드: `GITHUB_APP_NOT_INSTALLED`(403) · `GITHUB_APP_REPOSITORY_ACCESS_DENIED`(403) · `GITHUB_APP_REAUTHORIZATION_REQUIRED`(403, 설치는 있으나 사용자 토큰이 없거나 GitHub 가 리프레시를 거부 — 재인증으로 보낸다, #516) · `AI_CREDENTIAL_NOT_REGISTERED`(400) · `INVALID_TOKEN`/`EXPIRED_REFRESH_TOKEN`/`REVOKED_REFRESH_TOKEN`(401).
+도메인 전용 코드: `GITHUB_APP_NOT_INSTALLED`(403) · `GITHUB_APP_REPOSITORY_ACCESS_DENIED`(403) · `GITHUB_APP_REAUTHORIZATION_REQUIRED`(403, 설치는 있으나 사용자 토큰이 없거나 GitHub 가 리프레시를 거부 — 재인증으로 보낸다, #516) · `AI_CREDENTIAL_NOT_REGISTERED`(400) · `INVALID_TOKEN`/`EXPIRED_REFRESH_TOKEN`/`REVOKED_REFRESH_TOKEN`(401) · `WITHDRAWAL_BLOCKED`(409, 사용자 AWS 에 자원이 남아 탈퇴하지 않음 — 오류 응답 가운데 **`data` 가 실리는 유일한 코드**다. 남은 자원 목록이 들어 있다, §4.2).
 
 - 400·403·404·409 의 `message` 는 화면 문구로 쓸 수 있게, 끝에 붙은 내부 식별자·상태값 꼬리(`taskId=…`, `approvalId=…`, `status=…` 등)를 떼고 내려간다(`UserFacingMessage`). 로그에는 원문이 남는다. 사용자에게 의미 있는 값(환경변수 키·저장소·브랜치)과 실패 진단(`exit=…`)은 남는다
 - 클라이언트가 응답 도중 연결을 끊은 경우(SSE 탭 닫기 등, `AsyncRequestNotUsableException`)는 오류 응답을 쓰지 않고 DEBUG 로그 한 줄만 남긴다(#423). ERROR 수를 배포 건강 신호로 쓰기 때문이다.
@@ -178,6 +178,10 @@ redirect 대상은 `{프론트 redirect URL}/auth/app-callback`이며 `error` �
 | Method | Path | 기능 |
 |---|---|---|
 | GET | `/api/v1/users/me` | 로그인 사용자 프로필과 GitHub App/Token 상태 조회 |
+| GET | `/api/v1/users/me/withdrawal` | 탈퇴를 막는 자원이 있는지 조회(#613, §4.2) |
+| DELETE | `/api/v1/users/me` | 회원 탈퇴(#613, §4.2). 브라우저 로그인 전용 — PAT 는 403 |
+
+### 4.1 내 프로필
 
 주요 응답 필드:
 
@@ -190,6 +194,97 @@ redirect 대상은 `{프론트 redirect URL}/auth/app-callback`이며 `error` �
 - `githubAppRefreshTokenExpiresAt`
 
 현재 `/api/v1/me` 또는 `/api/v1/me/github-connection` 경로는 없다. 프론트는 `/api/v1/users/me`를 사용해야 한다.
+
+### 4.2 회원 탈퇴 (Issue #613)
+
+`UserWithdrawalController` → `UserWithdrawalFacade` → `UserWithdrawalService`(`withdrawal` 패키지). 응답은 `ApiResponse<T>` 다.
+
+#### 탈퇴 가능 여부 — `GET /api/v1/users/me/withdrawal`
+
+탈퇴 화면을 열 때 부른다. 순수 DB 조회라 몇 번을 불러도 된다. PAT 로도 읽힌다(GET).
+
+```json
+{
+  "status": 200,
+  "code": "SUCCESS",
+  "message": "요청이 성공적으로 처리되었습니다",
+  "data": {
+    "withdrawable": false,
+    "liveResources": [
+      { "type": "SERVER", "id": 3, "projectId": 11, "label": "i-0abc", "status": "RUNNING" }
+    ]
+  }
+}
+```
+
+- `withdrawable` 은 `liveResources` 가 비었는지와 같다
+- `liveResources[]` — `type`, `id`(종류별 Qeploy 식별자), `projectId`(없으면 `null`), `label`(사람이 알아볼 이름, 없으면 `null`), `status`(Qeploy 가 기록한 상태). 순서는 종류별(아래 표 순서) 다음 id 순이다
+- **삭제한 프로젝트의 자원도 센다.** 화면에서 사라졌어도 사용자 AWS 의 과금은 계속되고, 탈퇴하면 Qeploy 에서 그것을 볼 길이 사라진다(#595 와 같은 이유)
+
+| `type` | 무엇 | 남은 것으로 보는 조건 | `id` | `label` | 정리하는 법 |
+|---|---|---|---|---|---|
+| `SERVER` | EC2 인스턴스(EIP 포함) | `QUEUED`·`BUILDING`·`PROVISIONING`·`RUNNING`, 또는 `TERMINATED` 가 아닌데 인스턴스·EIP 가 기록돼 있음. 승인 대기(`PENDING`)와 인스턴스 없이 실패한 것은 세지 않는다 | `serverId` | 인스턴스 id(없으면 공개 호스트) | `POST /servers/{id}/terminate`(§19). 삭제한 프로젝트 것도 된다 |
+| `DATABASE` | RDS·EC2 위 Docker DB | 방식 `RDS`·`DOCKER` 이고 `PENDING`·`PROVISIONING`·`READY`. 프리뷰 테스트 DB(`LOCAL`)는 Qeploy 호스트의 것이라 세지 않는다(탈퇴가 직접 지운다) | `databaseId` | `RDS MYSQL` 처럼 방식과 엔진 | `DELETE /databases/{id}`(§19). 삭제한 프로젝트 것도 된다 |
+| `CDN` | S3 HTTPS 도메인의 CloudFront 배포 | CloudFront 배포 id 가 기록된 도메인 | `domainId` | 도메인 이름 | `DELETE /domains/{id}`(§11). 해제하면 `CDN_DELETION` 으로 바뀐다. ⚠️ **삭제한 프로젝트의 도메인은 해제 API 가 404 라 정리할 길이 없다** — 아래 "남은 것" |
+| `CDN_DELETION` | 끝나지 않은 CloudFront·인증서 정리 | `cdn_deletions` 에 남은 행. 클라우드 연결이 지워지면 마무리할 수 없어서 막는다 | 정리 작업 번호 | 호스트 이름 | 기다린다. `CdnDeletionReaper` 가 60초마다 disable → Deployed 대기 → delete 를 이어 간다(CloudFront 비활성화에 수 분~수십 분). 실패해도 다음 주기에 다시 하므로, AWS 자격이 상했으면 자격을 고치면(§12) 이어진다. `projectId` 는 항상 `null`, `status` 는 항상 `PENDING` |
+| `DEPLOYMENT` | 대기·진행 중인 배포 | `PENDING`·`IN_PROGRESS` | 배포 이력 id(`deploymentId`) | 배포 제목 | 기다린다. 워커가 이미 집어 간 배포는 행을 지워도 멈추지 않고 사용자 AWS 에 S3 버킷 같은 자원을 만든 뒤에야 끝나기 때문에 막는다. 결과 웹훅을 놓쳐 멈춘 배포는 `StuckDeploymentRecoveryWorker` 가 GitHub 에 물어 닫고, 판정을 못 얻으면 120분 뒤 닫는다 |
+
+#### 탈퇴 — `DELETE /api/v1/users/me`
+
+본문 없음. 처리 순서(`UserWithdrawalFacade`):
+
+1. **살아 있는 자원을 본다.** 있으면 `409 WITHDRAWAL_BLOCKED` 로 돌려보내고 **아무것도 건드리지 않는다**(작업 취소·프리뷰 정리도 하지 않는다)
+2. **끝나지 않은 에이전트 런을 취소한다**(`DONE`·`FAILED`·`CANCELLED` 가 아닌 것). 행을 지운 뒤에는 할 수 없다 — 실행기는 단계마다 취소 여부를 읽는데 런 행이 없으면 "취소되지 않음" 으로 읽고 다음 단계로 간다
+3. **컨테이너를 지운다.** 라벨 `qeploy.userId=<회원 번호>` 가 붙은 프리뷰·빌드 컨테이너와, 라벨이 없는 프리뷰 테스트 DB 컨테이너(`provisioned_databases` 의 `LOCAL` 행에서 찾는다)
+4. **한 트랜잭션에서**: 사용자 행을 잠그고 → 살아 있는 자원을 다시 보고(그 사이 생겼으면 409, 전부 되돌린다) → 데이터를 지우고 → **이 요청의 access 토큰 jti 를 블랙리스트에 넣는다.** refresh 토큰은 데이터 삭제에 포함된다
+5. **컨테이너를 한 번 더 지운다** — 2~4 사이에 실행기가 띄운 것
+6. **감사 기록 `USER_WITHDRAWN`(범주 `ACCOUNT`) 한 줄을 남긴다** — 회원 번호만, 나머지 식별자는 비운다. 행 삭제가 그 사용자의 감사 기록까지 지우므로 커밋 뒤에 쓴다(§15.2)
+
+3·5 의 도커 정리는 최선 노력이다. 도커에 닿지 못해도 탈퇴는 진행하고, 운영자가 지울 수 있게 회원 번호와 컨테이너 id 를 WARN 로그로 남긴다(`[Withdrawal] ...`). 남은 컨테이너는 게이트웨이가 찾을 세션 행이 없어 밖에서 닿지 않는다.
+
+**지우는 것**(`UserWithdrawalStore.STEPS` — FK 순서. 스키마의 새 테이블이 사용자·프로젝트를 가리키는데 목록에 없으면 `UserWithdrawalCoverageTest` 가 실패한다):
+
+- 사용자 행, 프로젝트(소프트 삭제분 포함)와 그 하위: 배포 이력·실패 분석, 변경, 승인, 환경변수와 이력, 도메인 기록, 인프라 설정과 이력, 예산·승인 정책·프리뷰 런타임 설정, 서버·DB 프로비저닝 기록
+- 대화·메시지, 에이전트 런과 이벤트, 서버 push 기록, 프리뷰 세션
+- 클라우드 연결과 검증 작업, CloudFront 정리 큐, AI 키, PAT, refresh 토큰
+- FK 가 없는 `audit_logs`·`llm_usage` 는 **익명화하지 않고 지운다**(`resource_id`·`detail` 에 저장소 이름 같은 식별자가 실린다). `webhook_deliveries` 는 그 사용자 프로젝트의 저장소 이름(`repository.full_name`)으로 찾아 지운다
+
+**지우지 않는 것**: 사용자 GitHub 저장소와 AWS 계정의 자원(사용자 소유 — 처리방침 4항), GitHub App 설치(사용자가 GitHub 의 Settings → Applications → Installed GitHub Apps 에서 직접 해제한다. 해제 전까지 그 저장소의 웹훅은 계속 들어오며 7일 보존 정리로 지워진다).
+
+응답:
+
+| HTTP | `code` | 언제 |
+|---|---|---|
+| 200 | `SUCCESS` | 탈퇴했다(본문 `data` 없음). 이미 탈퇴한 사용자가 다시 불러도 200 이다(아무것도 하지 않는다) |
+| 409 | `WITHDRAWAL_BLOCKED` | 살아 있는 자원이 있다. `data` 가 `GET /users/me/withdrawal` 과 같은 모양이다. 데이터는 지우지 않았고 로그인도 그대로다. 1단계에서 막혔으면 작업 취소·컨테이너 정리도 하지 않았다. 1단계와 4단계 사이에 자원이 생겨 4단계에서 막힌 드문 경우에는 2·3단계(런 취소·컨테이너 정리)가 이미 일어났다 |
+| 403 | `FORBIDDEN` | PAT 로 불렀다(아래) |
+| 401 | `UNAUTHORIZED` | 로그인하지 않았거나 토큰이 유효하지 않다(만료·폐기 포함 — 보안 필터의 진입점이 쓰므로 `INVALID_TOKEN` 이 아니다). 탈퇴에 쓴 토큰으로 다시 부르면 블랙리스트라 401 이다 |
+
+409 본문:
+
+```json
+{
+  "status": 409,
+  "code": "WITHDRAWAL_BLOCKED",
+  "message": "AWS 계정에 아직 정리하지 않은 자원이 1개 있어 탈퇴할 수 없습니다.",
+  "data": {
+    "withdrawable": false,
+    "liveResources": [
+      { "type": "SERVER", "id": 3, "projectId": 11, "label": "i-0abc", "status": "RUNNING" }
+    ]
+  }
+}
+```
+
+- **PAT 로는 탈퇴할 수 없다.** 경로가 PAT 쓰기 허용 목록(§18.3)에 없어 필터가 먼저 403 으로 막는다(본문 `{"code":"FORBIDDEN","message":"이 작업은 개인 액세스 토큰으로 할 수 없습니다. 웹에서 진행해주세요."}`). 목록이 잘못 넓어져도 컨트롤러가 `qp_` 토큰을 한 번 더 막는다("탈퇴는 개인 액세스 토큰으로 할 수 없습니다. 웹에서 진행해주세요.")
+- **성공 뒤 클라이언트는 로그아웃을 부르지 않는다** — access 토큰은 이미 폐기됐고 refresh 토큰은 지워졌다. 로컬 저장소만 비운다
+- 다른 기기에서 쓰던 access 토큰은 jti 를 모르니 폐기하지 못하고 만료(기본 1시간, `JWT_EXPIRATION_MS`)까지 형식상 유효하다. 사용자 행이 없어 할 수 있는 일은 없다. refresh 는 행이 없어 401 이다
+- 같은 GitHub 계정으로 다시 로그인하면 **새 회원 번호의 새 사용자**로 시작한다(이전 데이터와 이어지지 않는다)
+
+남은 것:
+
+- **삭제한 프로젝트에 CloudFront 도메인(`CDN`)이 남으면 사용자가 풀 길이 없다.** 프로젝트 삭제는 도메인을 정리하지 않고(#595), 도메인 해제(`DELETE /domains/{id}`)는 삭제한 프로젝트면 404 다. AWS 콘솔에서 CloudFront 를 지워도 도메인 행이 남아 계속 막는다. 지금은 운영자가 처리한다. 근본 해결은 #595(프로젝트 삭제가 과금 자원을 먼저 정리)
+- S3 정적 사이트 버킷은 세지 않는다. DB 에 버킷 기록이 없고, 사용자 소유이며 과금이 작다
 
 ---
 
@@ -1178,6 +1273,21 @@ POST /approvals/{approvalId}/reject   → 저장소를 만들지 않음. task는
 
 §9.5 참고.
 
+### 13.12 회원 탈퇴 (Issue #613)
+
+```text
+GET    /users/me/withdrawal   → withdrawable=false 면 liveResources 를 먼저 정리
+  POST   /servers/{id}/terminate   (SERVER)
+  DELETE /databases/{id}           (DATABASE)
+  DELETE /domains/{id}             (CDN → CDN_DELETION 으로 바뀐 뒤 몇 분~수십 분 기다림)
+  배포가 끝나기를 기다림           (DEPLOYMENT)
+GET    /users/me/withdrawal   → withdrawable=true
+DELETE /users/me              → 200. 로컬 토큰을 지운다(logout 은 부르지 않는다)
+                                409 WITHDRAWAL_BLOCKED 면 data.liveResources 로 다시 안내
+```
+
+§4.2 참고.
+
 ---
 
 ## 14. 확장 API
@@ -1346,7 +1456,7 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 동작(`AuditLogController` → `AuditLogQueryService` 실측):
 
 - 소유권: 프로젝트가 없거나 요청자 소유가 아니면 **404**(다른 프로젝트 하위 API와 동일한 소유자 전용 패턴 — 관리자/전체 조회 표면 없음).
-- `category`: 생략 시 전체 조회. `GITHUB`/`DEPLOYMENT`/`DOMAIN`/`INFRA` 외의 값은 **400**(enum `valueOf` 원본 예외 메시지를 그대로 노출하지 않고 "지원하지 않는 category입니다: {입력값}"으로 래핑).
+- `category`: 생략 시 전체 조회. `GITHUB`/`DEPLOYMENT`/`DOMAIN`/`INFRA`/`ACCOUNT` 외의 값은 **400**(enum `valueOf` 원본 예외 메시지를 그대로 노출하지 않고 "지원하지 않는 category입니다: {입력값}"으로 래핑). `ACCOUNT`(#613)는 받지만 그 범주의 기록은 프로젝트에 속하지 않아 이 API 로는 항상 빈 배열이다(§15.2).
 - `limit`: 생략·0·음수 → 기본 50, 200 초과 → 200으로 보정(다른 이력 조회 API와 동일한 관례). offset 페이징 없음.
 - 정렬: `audit_log_id desc`(최신순 고정, auto_increment 기준).
 - 신규 `ErrorCode`는 없다 — 404/400/401 기존 체인을 그대로 재사용한다.
@@ -1377,7 +1487,9 @@ Base path: `/api/v1/projects/{projectId}/audit-logs`
 
 ### 15.2 기록되는 데이터 (참고 — 이 API는 조회 전용)
 
-이 엔드포인트는 감사 로그를 **읽기만** 한다. 감사 행을 만들거나 수정·삭제하는 공개 API는 없다 — 기록은 GitHub 저장소 생성/연결/해제/삭제, preview 브랜치 push, RESULT merge, 배포 요청/재시도/성공/실패, 도메인 연결/해제, preview 재시작, 인프라 설정 변경 요청/적용/거절, 배포 EC2 서버 자동 복구 시도/실패(`SERVER_RECOVERY_ATTEMPTED`/`SERVER_RECOVERY_FAILED`, 헬스 모니터가 무응답 앱을 재시작한 시스템 이벤트) 등 18종 액션(`AuditAction`, `category`는 `GITHUB`/`DEPLOYMENT`/`DOMAIN`/`INFRA` 4종)이 발생할 때 서버 내부 훅에서만 남는다.
+이 엔드포인트는 감사 로그를 **읽기만** 한다. 감사 행을 만들거나 수정·삭제하는 공개 API는 없다 — 기록은 GitHub 저장소 생성/연결/해제/삭제, preview 브랜치 push, RESULT merge, 배포 요청/재시도/성공/실패, 도메인 연결/해제, preview 재시작, 인프라 설정 변경 요청/적용/거절, 배포 EC2 서버 자동 복구 시도/실패(`SERVER_RECOVERY_ATTEMPTED`/`SERVER_RECOVERY_FAILED`, 헬스 모니터가 무응답 앱을 재시작한 시스템 이벤트), 회원 탈퇴(`USER_WITHDRAWN`, #613) 등 19종 액션(`AuditAction`, `category`는 `GITHUB`/`DEPLOYMENT`/`DOMAIN`/`INFRA`/`ACCOUNT` 5종)이 발생할 때 서버 내부 훅에서만 남는다.
+
+- **회원 탈퇴는 그 사용자의 감사 기록을 전부 지우고(§4.2), 탈퇴 사실 한 줄만 새로 남긴다** — `category=ACCOUNT`·`action=USER_WITHDRAWN`·`actorType=USER`·`actorUserId=<회원 번호>`, 프로젝트·자원·태스크·승인·`detail` 은 모두 `null`. 회원 번호를 사람과 잇던 사용자 행은 이미 지워졌다. 다른 기록과 같이 180일 뒤 지워진다. `project_id` 가 없어 위 조회 API 로는 보이지 않고 운영자 DB 조회로만 본다.
 
 - `detail`/`errorSummary`에는 토큰·시크릿·환경변수 값·로그 본문을 저장하지 않는다. `errorSummary`는 저장 전 시크릿 패턴 레닥션(`SecretRedactor`)을 거친다.
 - 보관 기간은 기본 180일(`qeploy.audit.retention-days`)이며, 만료 행은 시간당 배치 스케줄러(`qeploy.audit.retention-sweep-interval-ms`, 기본 3600000ms)가 삭제한다. 삭제 결과를 조회하는 API는 없다(애플리케이션 로그로만 확인 가능).
@@ -1534,7 +1646,7 @@ FE 는 `demoUrl` 을 iframe `src` 에, `thumbnailUrl` 을 `img src` 에 넣는�
   | PATCH | `/api/v1/projects/{projectId}/environment-variables/{variableId}` |
   | POST | `/api/v1/projects/{projectId}/domains` |
 
-  나머지 변경 메서드(승인 결정, PAT 발급·폐기, AI 키, 클라우드 연결, 각종 삭제 등)는 `WRITE` 토큰이어도 **403**이다. 그 전에는 WRITE PAT가 브라우저 로그인과 같은 권한이라, 에이전트가 저장된 토큰으로 자기 승인을 누르거나 PAT로 PAT를 재발급할 수 있었다. 거부 목록이 아니라 허용 목록이라 새 엔드포인트는 누군가 열기 전까지 닫혀 있다. 에이전트에 쓰기를 새로 열 때는 이 목록에 한 줄을 더하고, `agent-tools/packages/client`의 쓰기 호출이 목록 밖으로 나가면 `JwtAuthenticationFilterTest`가 깨진다. 브라우저 JWT는 영향이 없다.
+  나머지 변경 메서드(승인 결정, PAT 발급·폐기, AI 키, 클라우드 연결, 회원 탈퇴(§4.2), 각종 삭제 등)는 `WRITE` 토큰이어도 **403**이다. 그 전에는 WRITE PAT가 브라우저 로그인과 같은 권한이라, 에이전트가 저장된 토큰으로 자기 승인을 누르거나 PAT로 PAT를 재발급할 수 있었다. 거부 목록이 아니라 허용 목록이라 새 엔드포인트는 누군가 열기 전까지 닫혀 있다. 에이전트에 쓰기를 새로 열 때는 이 목록에 한 줄을 더하고, `agent-tools/packages/client`의 쓰기 호출이 목록 밖으로 나가면 `JwtAuthenticationFilterTest`가 깨진다. 브라우저 JWT는 영향이 없다.
 - 403 메시지는 두 가지다: READ 토큰의 쓰기 → "이 토큰은 읽기 전용입니다. write 스코프 토큰이 필요합니다." / 허용 목록 밖의 쓰기 → "이 작업은 개인 액세스 토큰으로 할 수 없습니다. 웹에서 진행해주세요." 본문은 `{"code":"FORBIDDEN","message":"..."}`이다.
 - 403 이지 401 이 아니다. 인증 자체는 성공했으므로 재인증하러 보낼 일이 아니다.
 - 미상·만료·폐기는 전부 **401** 로 동일하다. 어느 쪽인지 알려주지 않는다.
