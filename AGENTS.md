@@ -40,6 +40,8 @@ Qeploy 백엔드. 사용자가 자연어로 웹 프로젝트를 만들고, Docke
 - Docker를 요구하는 통합 테스트는 기본 skip이고 `-Ddocker.it=true`로만 켠다
 - BYOK 코딩 에이전트 실측 테스트는 추가로 `QEPLOY_IT_OPENAI_API_KEY`(Codex)·`QEPLOY_IT_ANTHROPIC_API_KEY`(Claude Code) 환경변수를 요구한다(없으면 skip). Claude Code 는 Anthropic 호환 게이트웨이로도 돌릴 수 있다(`QEPLOY_IT_ANTHROPIC_BASE_URL`, 테스트 클래스 주석 참고)
 - GitHub App 권한 실측(`GithubAppPermissionProbeIntegrationTest`)은 `-Dgithubapp.it=true` 로만 켠다. 실제 App 비공개 키로 `GET /app`·`GET /app/installations` 를 읽는다(읽기 전용)
+- 테스트 JVM 의 커넥션 풀은 `build.gradle` 이 쉬는 만큼 줄인다(`minimum-idle=1`). 지우면 컨텍스트가 몇 개만 늘어도 MySQL 한도(151)에 닿아, 상관없는 테스트가 "Too many connections" 로 깨진다. 그래도 새 컨텍스트(`@MockitoBean`·`@TestPropertySource` 등)는 기동 비용이 크므로 공유 컨텍스트를 먼저 쓴다
+- 테스트가 SQL 로 행을 심고 키가 필요하면 `support/JdbcRows.insert` 를 쓴다. `select last_insert_id()` 를 따로 부르면 다른 커넥션의 값을 받을 수 있다(`LastInsertIdGuardTest` 가 막는다)
 
 ## 컨벤션 (자세한 건 `.notion/agent.md`)
 

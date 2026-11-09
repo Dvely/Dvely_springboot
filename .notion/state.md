@@ -1691,6 +1691,20 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - **활동 로그가 `projects` 를 다섯 번 읽었다**(자기 확인 + 배포·변경·승인·도메인 서비스가 각자 확인). 네 서비스에 "소유권을 이미 확인한 `Project` 를 받는" 목록 메서드를 두고, `(ownerUserId, projectId)` 메서드는 확인한 뒤 그리로 넘긴다. 활동 로그와 개요는 한 번 확인한 `Project` 로 네 목록을 읽는다 — 활동 로그 한 번에 `projects` 조회 1회(Hibernate 가 보낸 SQL 로 확인)
 - 테스트: `DeploymentHistoryPageIntegrationTest`(실 MySQL·보안 필터 — 같은 초의 행이 섞인 이력을 1건씩 끝까지 걸어 순서·누락 없음, 기본 상한 200 과 커서, 다른 프로젝트 커서는 빈 배열, 활동 로그의 `projects` 조회 1회). 목·스파이 빈 없이 공유 컨텍스트를 쓴다
 
+## 4.58 테스트의 MySQL 연결 한도와 키 조회 간헐 실패 (Issue #645)
+
+- **연결 한도**: 테스트는 dev 프로필이라 Spring 테스트 컨텍스트마다 Hikari 풀이 20개 고정이었다. 컨텍스트는 캐시되어 JVM 이 끝날 때까지 닫히지 않고, Spring 7 의 일시정지도 풀은 닫지 않는다. 그래서 컨텍스트 8개로 MySQL 한도(151)에 붙어 있었고, 컨텍스트를 더하면 상관없는 테스트 클래스의 컨텍스트가 "Too many connections" 로 뜨지 못했다
+  - `build.gradle` 의 test 태스크가 테스트 JVM 에만 `minimum-idle=1`·`idle-timeout=10s` 를 준다. 상한(20)은 그대로다. 운영·dev 서버 설정은 바꾸지 않았다
+  - 실측(로컬, 같은 전체 테스트): 최대 동시 연결 152 → 19(둘 다 측정에 쓴 관리자 연결 1 포함). 임시 컨텍스트 3개를 더하면 설정 없이는 3개 클래스가 뜨지 못했고, 설정으로는 모두 뜨고 최대 23. 전체 시간은 같다
+- **키 조회**: `jdbc.update(INSERT)` 뒤 `select last_insert_id()` 를 따로 부르면 풀이 다른 커넥션을 줄 수 있어 틀린 키(0 이나 다른 행의 id)를 받는다. `AuditLogRetentionSchedulerTest` 가 CI 에서 이렇게 간헐 실패했다
+  - 테스트 공용 `support/JdbcRows.insert` 가 INSERT 문장에서 키를 받는다. 다섯 곳을 바꿨다
+  - `LastInsertIdGuardTest` 가 테스트 소스에서 SQL 로 쓴 `last_insert_id()` 를 찾으면 실패한다(문자열·텍스트 블록 둘 다 변이로 확인)
+- **발견만 하고 고치지 않은 것**: `RetentionSweepTest.비우기_배치가_잠긴_행을_기다리지_않는다` 는 실행 계획에 따라 결과가 다르다
+  - 보존 스윕의 UPDATE 가 클러스터 인덱스를 훑으면 READ COMMITTED 의 semi-consistent read 로, 잠긴 행 중 조건에 맞지 않는 것을 건너뛴다
+  - 보조 인덱스 `idx_agent_runs_queue(status, …)` 로 범위를 읽으면 InnoDB 가 semi-consistent read 를 쓰지 않는다. 그래서 잠긴 최근 DONE 행을 기다린다
+  - 로컬 DB 에 행이 쌓이자 계획이 보조 인덱스 쪽으로 바뀌어, 이 테스트가 로컬에서 늘 실패한다. 두 세션으로 재현했다: 보조 인덱스 계획은 잠금 대기 2초로 실패, 클러스터 인덱스 훑기는 1.8ms
+  - #618 의 "스윕이 잠긴 행을 기다리지 않는다" 는 클러스터 인덱스 훑기에서만 성립한다. 후속에서 다룬다
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

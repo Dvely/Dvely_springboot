@@ -10,6 +10,7 @@ import com.example.dvely.domainbinding.application.query.DomainBindingQueryServi
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
+import com.example.dvely.support.JdbcRows;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -103,9 +104,8 @@ class CursorPaginationAgainstRealDbTest {
     }
 
     private Long seedConversation(Long userId, Long projectId) {
-        jdbc.update("insert into chat_sessions (user_id, project_id, title) values (?, ?, ?)",
+        return JdbcRows.insert(jdbc, "insert into chat_sessions (user_id, project_id, title) values (?, ?, ?)",
                 userId, projectId, "u6-cursor");
-        return jdbc.queryForObject("select last_insert_id()", Long.class);
     }
 
     private void seedDomain(Long projectId, String hostname) {

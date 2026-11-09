@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.example.dvely.domainbinding.infrastructure.persistence.repository.SpringDataDomainBindingRepository;
 import com.example.dvely.project.infrastructure.persistence.entity.ProjectEntity;
 import com.example.dvely.project.infrastructure.persistence.repository.SpringDataProjectRepository;
+import com.example.dvely.support.JdbcRows;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -193,9 +194,8 @@ class SchemaOptimizationTest {
     }
 
     private long insertProject(long userId, String sourceRepository) {
-        jdbcTemplate.update(
+        return JdbcRows.insert(jdbcTemplate,
                 "insert into projects (user_id, project_name, source_repository) values (?, ?, ?)",
                 userId, "schema-optimization-test", sourceRepository);
-        return jdbcTemplate.queryForObject("select last_insert_id()", Long.class);
     }
 }
