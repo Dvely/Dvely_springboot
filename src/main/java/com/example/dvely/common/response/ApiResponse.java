@@ -45,6 +45,11 @@ public class ApiResponse<T> {
         return new ApiResponse<>(errorCode.getStatus(), errorCode.getCode(), message, null);
     }
 
+    /** 클라이언트가 다음 행동을 고르는 데 필요한 내용을 오류와 함께 싣는다(예: 탈퇴를 막은 자원 목록, #613). */
+    public static <T> ApiResponse<T> error(ErrorCode errorCode, String message, T data) {
+        return new ApiResponse<>(errorCode.getStatus(), errorCode.getCode(), message, data);
+    }
+
     private static String successMessage(int status) {
         return switch (status) {
             case 201 -> "리소스가 생성되었습니다";

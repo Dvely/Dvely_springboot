@@ -10,5 +10,8 @@ public enum AuditCategory {
     GITHUB,
     DEPLOYMENT,
     DOMAIN,
-    INFRA
+    INFRA,
+    // 카탈로그 개정(2026-11-09, #613): 프로젝트가 아니라 계정에 일어난 일. project_id 가 비어 있어 프로젝트 감사 화면에는
+    // 나오지 않는다.
+    ACCOUNT
 }

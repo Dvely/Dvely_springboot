@@ -7,9 +7,9 @@ package com.example.dvely.withdrawal.application;
  * 하고, 무엇이 남았는지 이 목록으로 알려 준다. 자원 자체는 사용자 소유라 탈퇴가 지우지 않는다.</p>
  *
  * @param type      자원 종류
- * @param id        Qeploy 안의 식별자(서버·DB·도메인·정리 작업 번호)
+ * @param id        Qeploy 안의 식별자(서버·DB·도메인·정리 작업·배포 이력 번호)
  * @param projectId 속한 프로젝트. CDN 정리 작업처럼 프로젝트가 없으면 {@code null}
- * @param label     사람이 알아볼 이름(인스턴스 id, DB 엔진, 도메인 이름 등). 없으면 {@code null}
+ * @param label     사람이 알아볼 이름(인스턴스 id, DB 엔진, 도메인 이름, 배포 제목 등). 없으면 {@code null}
  * @param status    Qeploy 가 기록한 상태
  */
 public record LiveResource(Type type, long id, Long projectId, String label, String status) {
@@ -22,6 +22,8 @@ public record LiveResource(Type type, long id, Long projectId, String label, Str
         /** S3 HTTPS 도메인의 CloudFront 배포. */
         CDN,
         /** 아직 끝나지 않은 CloudFront·인증서 정리 작업. 클라우드 연결이 지워지면 마무리할 수 없다. */
-        CDN_DELETION
+        CDN_DELETION,
+        /** 대기·진행 중인 배포. 끝나기 전에 지우면 워커가 사용자 AWS 에 자원을 만든 채 주인을 잃는다. */
+        DEPLOYMENT
     }
 }

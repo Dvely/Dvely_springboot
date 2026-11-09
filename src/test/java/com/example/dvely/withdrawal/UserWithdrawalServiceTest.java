@@ -55,6 +55,7 @@ class UserWithdrawalServiceTest {
                     + " where project_id in (select project_id from projects where user_id = ?)", id);
             jdbc.update("delete from cdn_deletions where cloud_connection_id in"
                     + " (select cloud_connection_id from cloud_connections where user_id = ?)", id);
+            jdbc.update("update deployment_histories set status = 'FAILED' where user_id = ?", id);
             service.withdraw(id);
         }
         jdbc.update("delete from webhook_deliveries where delivery_id like ?", MARK + "%");
@@ -79,9 +80,9 @@ class UserWithdrawalServiceTest {
     @Test
     void aSecondWithdrawalOfTheSameUserDoesNothing() {
         Fixture withdrawn = seed("a");
-        service.withdraw(withdrawn.userId);
+        assertThat(service.withdraw(withdrawn.userId)).as("이번 호출이 지웠다").isTrue();
 
-        service.withdraw(withdrawn.userId);
+        assertThat(service.withdraw(withdrawn.userId)).as("이미 없다").isFalse();
 
         assertThat(counts(withdrawn).values()).allMatch(count -> count == 0);
     }
@@ -110,6 +111,15 @@ class UserWithdrawalServiceTest {
                 user.projectId, MARK + "cdn.example.com");
         long cdnDeletion = insert("insert into cdn_deletions (cloud_connection_id, distribution_id, hostname) values (?, 'E999', ?)",
                 user.cloudConnectionId, MARK + "old.example.com");
+        // 워커가 집어 가면 행을 지워도 멈추지 않고 사용자 AWS 에 자원을 만든다
+        long queuedDeploy = insert("""
+                insert into deployment_histories (user_id, project_id, deploy_target_type, status, correlation_id, title)
+                values (?, ?, 'S3', 'PENDING', ?, '첫 배포')
+                """, user.userId, user.projectId, MARK + "c3-" + System.nanoTime());
+        long runningDeploy = insert("""
+                insert into deployment_histories (user_id, project_id, deploy_target_type, status, correlation_id)
+                values (?, ?, 'S3', 'IN_PROGRESS', ?)
+                """, user.userId, user.deletedProjectId, MARK + "c4-" + System.nanoTime());
         Map<String, Long> before = counts(user);
 
         assertThatThrownBy(() -> service.withdraw(user.userId))
@@ -120,10 +130,44 @@ class UserWithdrawalServiceTest {
                                 org.assertj.core.groups.Tuple.tuple(LiveResource.Type.SERVER, failedWithInstance),
                                 org.assertj.core.groups.Tuple.tuple(LiveResource.Type.DATABASE, rds),
                                 org.assertj.core.groups.Tuple.tuple(LiveResource.Type.CDN, cdnDomain),
-                                org.assertj.core.groups.Tuple.tuple(LiveResource.Type.CDN_DELETION, cdnDeletion)));
+                                org.assertj.core.groups.Tuple.tuple(LiveResource.Type.CDN_DELETION, cdnDeletion),
+                                org.assertj.core.groups.Tuple.tuple(LiveResource.Type.DEPLOYMENT, queuedDeploy),
+                                org.assertj.core.groups.Tuple.tuple(LiveResource.Type.DEPLOYMENT, runningDeploy)));
 
         assertThat(counts(user)).as("막혔으면 아무것도 지우지 않는다").isEqualTo(before);
-        assertThat(service.findLiveResources(user.userId)).hasSize(5);
+        assertThat(service.findLiveResources(user.userId)).hasSize(7)
+                .filteredOn(r -> r.id() == queuedDeploy && r.type() == LiveResource.Type.DEPLOYMENT)
+                .singleElement()
+                .satisfies(r -> {
+                    assertThat(r.label()).isEqualTo("첫 배포");
+                    assertThat(r.status()).isEqualTo("PENDING");
+                    assertThat(r.projectId()).isEqualTo(user.projectId);
+                });
+    }
+
+    @Test
+    void findsTheRunsToCancelAndThePreviewDatabasesToRemoveBeforeDeleting() {
+        Fixture user = seed("a");
+        Fixture other = seed("b");
+        String running = MARK + "running-" + System.nanoTime();
+        jdbc.update("insert into agent_runs (task_id, user_id, project_id, chat_session_id, status, plan_json) values (?, ?, ?, ?, 'RUNNING', '{}')",
+                running, user.userId, user.projectId, user.chatSessionId);
+        String waiting = MARK + "waiting-" + System.nanoTime();
+        jdbc.update("insert into agent_runs (task_id, user_id, project_id, chat_session_id, status, plan_json) values (?, ?, ?, ?, 'WAITING_APPROVAL', '{}')",
+                waiting, user.userId, user.projectId, user.chatSessionId);
+        jdbc.update("insert into agent_runs (task_id, user_id, project_id, chat_session_id, status, plan_json) values (?, ?, ?, ?, 'RUNNING', '{}')",
+                MARK + "others-" + System.nanoTime(), other.userId, other.projectId, other.chatSessionId);
+        insert("insert into provisioned_databases (project_id, method, engine, status, resource_id) values (?, 'LOCAL', 'MYSQL', 'READY', 'db-live')",
+                user.deletedProjectId);
+        insert("insert into provisioned_databases (project_id, method, engine, status, resource_id) values (?, 'LOCAL', 'MYSQL', 'EXPIRED', 'db-gone')",
+                user.projectId);
+        insert("insert into provisioned_databases (project_id, method, engine, status, resource_id) values (?, 'LOCAL', 'MYSQL', 'READY', 'db-other')",
+                other.projectId);
+
+        assertThat(service.findUnfinishedTaskIds(user.userId))
+                .as("끝난 런(픽스처의 DONE)과 남의 런은 빼고, 승인 대기도 취소 대상이다").containsExactlyInAnyOrder(running, waiting);
+        assertThat(service.findLocalDatabaseContainerIds(user.userId))
+                .as("이미 회수된(EXPIRED) 것과 남의 것은 빼고, 삭제한 프로젝트의 것은 넣는다").containsExactly("db-live");
     }
 
     @Test
