@@ -33,6 +33,10 @@ import org.springframework.transaction.annotation.Transactional;
  * 59만 → 1, 리스 갱신 대기 3.04초 → 1.8ms 였다. 보존 스윕은 "지금 터미널이고 기간을 넘긴 행" 만 다루고 한 문장씩
  * 끝나므로 팬텀을 막을 이유가 없다. 전제: binlog 가 ROW(또는 MIXED) 여야 한다 — STATEMENT 에서 RC 의 DML 은
  * MySQL 이 거부한다. MySQL 8.0 기본값이 ROW 다.</p>
+ *
+ * <p>다만 RC 가 잠긴 행을 건너뛰는 것(semi-consistent read)은 <b>클러스터 인덱스를 훑을 때만</b>이다. 보조 인덱스로 읽으면
+ * 범위 안의 잠긴 행을 비울 대상이 아니어도 기다린다. 그래서 비우기 UPDATE 는 비울 행만 담긴 범위를 읽는다 —
+ * {@link #blankTerminalPayloadsBatch} 참고.</p>
  */
 @Repository
 @RequiredArgsConstructor
@@ -44,12 +48,25 @@ public class AgentRunRetentionStore {
     private final EntityManager entityManager;
 
     /**
-     * 터미널 run 중 {@code cutoff} 이전에 만들어진 것의 큰 텍스트 컬럼을 비운다.
+     * 터미널 run 중 {@code cutoff} 이전에 만들어진 것의 큰 텍스트 컬럼을 비우고, 비운 시각을 {@code payload_purged_at} 에
+     * 남긴다.
      *
-     * <p>{@code (plan_json IS NOT NULL OR failure_log IS NOT NULL)} 조건은 장식이 아니라
-     * <b>반복 종료 조건</b>이다. MySQL Connector/J 는 기본값({@code useAffectedRows=false})에서
-     * 바뀐 행이 아니라 <b>조건에 맞은</b> 행 수를 돌려준다. 이 조건이 없으면 이미 비운 행이
-     * 계속 매칭돼 호출자의 "0 이 될 때까지" 루프가 영원히 끝나지 않는다.</p>
+     * <p><b>읽는 행 = 비울 행</b>(#618 후속). {@code idx_agent_runs_retention (status, payload_purged_at, created_at)} 의
+     * "터미널 · 아직 안 비움 · 보존 기간을 넘김" 범위만 읽는다. 비우면 시각이 남아 범위에서 빠진다.</p>
+     * <ul>
+     *   <li>예전에는 탈 수 있는 인덱스가 {@code (status, …)} 뿐이라, 계획에 따라 터미널 run 전부를 읽었다. 합성 10만
+     *       행(비울 행 12개)에서 배치마다 99,909행을 읽었다. 같은 데이터에서 지금은 11행, 2.7ms 다.</li>
+     *   <li>보조 인덱스로 읽으면 RC 에서도 잠긴 행을 건너뛰지 못한다(클래스 javadoc). 그래서 범위 안에 든 최근 DONE
+     *       행이나 이미 비운 행을 다른 트랜잭션이 쥐고 있으면 기다렸다. 이제 그런 행은 범위에 없다.</li>
+     *   <li>인덱스를 힌트로 고정한다. 이 문제는 "옵티마이저가 어느 계획을 고르느냐에 따라 스윕의 잠금·비용이 달라진다"
+     *       였다. 그 변수를 없앤다. 인덱스 이름이 바뀌면 이 문장이 실패하고, {@code RetentionSweepTest} 가 실제 빈으로
+     *       부르므로 거기서 드러난다.</li>
+     * </ul>
+     *
+     * <p>{@code payload_purged_at IS NULL} 은 <b>반복 종료 조건</b>이기도 하다. MySQL Connector/J 는 기본값
+     * ({@code useAffectedRows=false})에서 바뀐 행이 아니라 <b>조건에 맞은</b> 행 수를 돌려준다. 비운 행이 다시 맞으면
+     * 호출자의 "0 이 될 때까지" 루프가 끝나지 않는다. 예전에는 {@code plan_json IS NOT NULL OR failure_log IS NOT NULL}
+     * 이 이 일을 했다. 그 조건으로 비운 옛 run 은 시각이 없으므로, 배포 뒤 첫 스윕이 한 번 더 맞춰 시각을 남긴다.</p>
      *
      * <p>격리 수준이 READ COMMITTED 인 이유는 클래스 javadoc 의 "잠금" 절을 본다.</p>
      *
@@ -58,11 +75,11 @@ public class AgentRunRetentionStore {
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public int blankTerminalPayloadsBatch(LocalDateTime cutoff, int batchSize) {
         Query query = entityManager.createNativeQuery("""
-                update agent_runs
-                   set plan_json = null, failure_log = null
+                update agent_runs force index (idx_agent_runs_retention)
+                   set plan_json = null, failure_log = null, payload_purged_at = now()
                  where status in (:statuses)
+                   and payload_purged_at is null
                    and created_at < :cutoff
-                   and (plan_json is not null or failure_log is not null)
                  limit :batchSize
                 """);
         query.setParameter("statuses", TERMINAL_STATUSES);
