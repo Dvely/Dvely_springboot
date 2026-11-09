@@ -40,8 +40,11 @@ public interface SpringDataRefreshTokenRepository extends JpaRepository<RefreshT
      * 같은 {@code UnauthorizedException} 을 던진다.</p>
      *
      * <p>{@link #deleteExpired} 와 한 문장으로 합치지 않은 이유: {@code expiresAt < ?} 에 OR 을
-     * 붙이면 인덱스를 못 타 방금 추가한 idx_refresh_tokens_expires_at 이 무의미해진다. revoked 는
-     * 값이 둘뿐이라 인덱스를 새로 걸 만한 컬럼이 아니고, 이 문장은 하루 한 번만 돈다.</p>
+     * 붙이면 인덱스를 못 타 idx_refresh_tokens_expires_at 이 무의미해진다. revoked 는 값이 둘뿐이고
+     * 회전마다 옛 행이 폐기돼 대개 다수라 인덱스를 걸 만한 컬럼이 아니다.</p>
+     *
+     * <p><b>그래서 표 전체를 훑는다 — READ COMMITTED 트랜잭션에서만 부를 것.</b> 기본 격리에서는 훑은 행과 틈을 커밋까지
+     * 전부 잠가 다른 사용자의 회전·로그인을 멈춘다(#625 실측). 호출자({@code TokenCleanupScheduler})가 격리를 정한다.</p>
      */
     @Modifying
     @Query("DELETE FROM RefreshTokenEntity r WHERE r.revoked = true")
