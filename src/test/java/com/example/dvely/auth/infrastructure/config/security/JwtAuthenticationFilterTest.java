@@ -202,7 +202,8 @@ class JwtAuthenticationFilterTest {
                 "DELETE /api/v1/cloud-connections/2",
                 "DELETE /api/v1/projects/3",
                 "POST /api/v1/servers/8/terminate",
-                "PUT /api/v1/projects/3/settings/cost-budget"}) {
+                "PUT /api/v1/projects/3/settings/cost-budget",
+                "DELETE /api/v1/users/me"}) {   // 회원 탈퇴(#613) — 브라우저 로그인으로만
             SecurityContextHolder.clearContext();
             String[] parts = call.split(" ");
 
