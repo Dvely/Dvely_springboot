@@ -1,6 +1,6 @@
 # Qeploy 단위(Unit) 파이프라인 로드맵
 
-> 기준일: 2026-10-31 · 기준 커밋: c90f031e(develop) · 코드 실측 기반
+> 기준일: 2026-11-10 · 기준 커밋: 67c1ff1a(develop) · 코드 실측 기반
 
 이 문서는 `danto/<도메인>` 단위 작업 파이프라인의 SSOT다. 우선순위, 진행 상태, 세션 인계 정보를 이 문서 하나로 관리한다.
 
@@ -9,6 +9,27 @@
 ---
 
 ## 1. 현재 상태
+
+- 2026-11-09~10: **회원 탈퇴(#613)·서버 전체 컨테이너 상한과 프리뷰 SSE(#624)·성능 진단 P2 의 DB·쿼리 묶음(#625)·테스트 인프라(#645)·보존 스윕 후속(#618)을 develop 에 넣었다 — PR #637~#647.** 서비스는 여전히 중단 상태이고 main 에는 나가지 않았다. #613·#624 는 사용자 요청으로 닫았다. develop 최신 마이그레이션은 **V74**
+  - #613 탈퇴(#637·#638·#639): `GET /users/me/withdrawal`(막는 자원 조회)·`DELETE /users/me`(브라우저 로그인 전용, PAT 403). 사용자 AWS 에 살아 있는 자원(5종)이 있으면 `409 WITHDRAWAL_BLOCKED` 에 목록을 싣는다(오류 응답 중 `data` 가 있는 유일한 코드). 토큰 폐기·작업 정리·감사(ACCOUNT) 뒤 FK 순서로 지운다. 공개 엔드포인트 121개. FE 쪽은 Dvely_FE#203 에 API 요약과 약관·처리방침 고칠 자리를 코멘트로 남겼다. 남은 것: 지운 프로젝트에 CloudFront 도메인이 남으면 탈퇴가 막히고 풀 길이 없다(#595 와 같은 뿌리)
+  - #624 상한(#640·#641): 서버 전체 프리뷰 4·코딩 에이전트 2(`QEPLOY_LIMITS_GLOBAL_*`, 넘으면 `429 PREVIEW_CAPACITY_EXCEEDED` / CODE 스텝 실패). 프리뷰 SSE 프록시는 청크마다 flush(Spring 7.0.6 은 `getBody()` 가 flush 를 무시한다), 5분 타임아웃 뒤 503, MVC 비동기는 가상 스레드 상한 200·SSE 100. LOCAL DB·kaniko 컨테이너는 이 상한 밖이다
+  - #625 P2 의 DB·쿼리(#642·#643·#644): V73 `chat_messages` 인덱스를 `(chat_session_id, message_id)` 로 교체하고 LLM 대화 창을 DB 에서 자른다 / 매일 토큰 정리를 READ COMMITTED 로(다른 사용자의 회전이 잠금 대기로 실패하던 것) / 배포 이력 목록 limit 200·커서(`X-Qeploy-Next-Cursor`), 활동 로그의 `projects` 조회 5→1
+  - #645 테스트 인프라(#646): 테스트 JVM 의 Hikari `minimum-idle=1`(`build.gradle`) — 컨텍스트 8개가 MySQL 한도 151 에 붙어 있었다(최대 동시 연결 152→19). `select last_insert_id()` 를 따로 읽던 테스트 5곳을 `support/JdbcRows.insert` 로, `LastInsertIdGuardTest` 가 재발을 막는다
+  - #618 후속(#647): V74 `agent_runs.payload_purged_at` + `idx_agent_runs_retention`. 비우기는 잠그지 않는 고르기 + PK 고치기 두 문장이다. 합성 10만 행에서 매시 읽는 행 99,909→11. #646 에서 발견했다 — RC 의 잠긴 행 건너뛰기는 클러스터 인덱스 훑기에서만 일어나고, 범위 UPDATE 는 범위 바로 다음 행까지 잠그려 한다(이 PR 의 첫 버전이 CI 에서 그렇게 실패했다)
+  - 로컬 전체 빌드는 2,245건 중 `ContainerGitCredentialsHardeningTest` 4건만 실패한다(로컬 git 경로 차이, CI 통과). 테스트 DB 는 Docker `qeploy-test-mysql`(13306)
+  - **다음**: #625 나머지는 셋으로 갈린다.
+    - 운영 설정 승인 필요: `@DynamicUpdate`+binlog, `readOnlyPropagatesToServer`
+    - 측정이 먼저: 대형 컬럼 보존, 프리뷰 RSS·npm 캐시·미리 구운 이미지
+    - 코드만: docker exec 링버퍼, JGit 스트리밍, 무한히 자라는 맵 2개, 개요의 GitHub 호출 병렬화, 완료 배포 로그 캐시, 관측 지표
+    - 그 밖에 #623 PR-2(`node_modules` 제외 수신)는 unhak 조율, P0 #615 는 unhak 구역, #595. 서비스 재개 때 `binlog_format=ROW` 확인(#618·#625 의 RC 전제)
+
+- 2026-11-08: **성능 진단 P0·P1 일부를 develop 에 넣었다 — PR #630~#636.**
+  - #617: 툴 로그·실패 요약·지시문 로그에서 파일 내용과 긴 원문을 빼고(#630), `write_file` 을 archive 업로드로 써서 96KiB 넘는 파일도 쓰며 실패를 모델에게 알린다(#631)
+  - #620: 요청이 전달된 뒤의 LLM 실패는 자동 재시도하지 않고, POST 읽기 타임아웃을 번역한다(#632)
+  - #618 PR-1: 보존 스윕을 READ COMMITTED 로, 이벤트 DELETE 를 `created_at` 인덱스 범위로(V72, #633)
+  - #619: 태스크 상태 조회를 읽기 전용 트랜잭션 하나·프로젝션 1회로(#634)
+  - #623 PR-1: 결과 승인 게이트가 같은 CODE 스텝의 서버 측 검사를 다시 하지 않는다(#635)
+  - #616: 서버 정리 cron 이 코딩 에이전트 이미지를 지우지 않게 한다(#636)
 
 - 2026-11-07: **공식 연락 메일·약관·처리방침·GA 를 FE 에 올리고(Dvely_FE #199·#200 → PR #201·#202, main 배포), 성능·비용 진단 결과를 이슈로 남겼다(#614 + 하위 #615~#625). 백엔드 코드 변경 0.**
   - 메일: Cloudflare Email Routing — `contact@`·`support@`·`privacy@`·`security@qeploy.com` → `qeploy.official@gmail.com`(인증 완료, catch-all 끔). MX 3·SPF·DKIM 이 zone 에 추가됐다. 로컬 설정의 Cloudflare 토큰에는 Email Routing 권한이 없어 대시보드로 했다
