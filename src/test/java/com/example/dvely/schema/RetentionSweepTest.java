@@ -3,10 +3,12 @@ package com.example.dvely.schema;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.dvely.agent.infrastructure.retention.AgentRunRetentionStore;
+import com.example.dvely.support.SentSql;
 import com.example.dvely.webhook.domain.repository.WebhookDeliveryRepository;
 import java.sql.Connection;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -152,6 +154,26 @@ class RetentionSweepTest {
         assertThat(first).isEqualTo(1);
         // 0 이 아니면 스케줄러의 do/while 이 영원히 끝나지 않는다.
         assertThat(second).isZero();
+        // 비운 시각이 남아 다음 스윕의 범위에서 빠진다
+        assertThat(purgedAtOf("retention-test-done")).isNotNull();
+    }
+
+    @Test
+    void 예전_조건으로_비운_실행도_첫_스윕이_시각을_남기고_다시는_읽지_않는다() {
+        // V74 이전 스윕은 시각을 남기지 않았다(plan_json·failure_log 만 비움). 배포 뒤 첫 스윕이 한 번 더 맞춰 시각을 남긴다.
+        long userId = insertUser();
+        jdbcTemplate.update("""
+                insert into agent_runs (task_id, user_id, status, plan_json, failure_log, created_at)
+                values ('retention-test-blanked-before', ?, 'DONE', null, null, ?)
+                """, userId, LocalDateTime.now().minusDays(120));
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(90);
+
+        int first = agentRunRetentionStore.blankTerminalPayloadsBatch(cutoff, 500);
+        int second = agentRunRetentionStore.blankTerminalPayloadsBatch(cutoff, 500);
+
+        assertThat(first).isEqualTo(1);
+        assertThat(second).isZero();
+        assertThat(purgedAtOf("retention-test-blanked-before")).isNotNull();
     }
 
     @Test
@@ -214,17 +236,29 @@ class RetentionSweepTest {
     void 비우기_배치가_잠긴_행을_기다리지_않는다() throws Exception {
         // REPEATABLE READ 에서는 UPDATE 가 검사한 행마다 잠금을 기다리고 잡는다. 그래서 보존 기간 안의 터미널 run 처럼
         // 조건에 맞지 않는 행이라도 다른 트랜잭션이 쥐고 있으면 스윕이 멈추고, 반대로 스윕이 쥔 잠금이 실행 중 태스크의
-        // 리스 갱신을 막았다(실측 3.04초 대기, 완료 UPDATE 는 Lock wait timeout). READ COMMITTED 의 UPDATE 는 맞지
-        // 않는 행을 마지막 커밋 버전으로 판정하고 지나간다. 스윕을 실제 빈으로 불러 격리 수준 설정까지 함께 본다.
+        // 리스 갱신을 막았다(실측 3.04초 대기, 완료 UPDATE 는 Lock wait timeout). 스윕을 실제 빈으로 불러 본다.
+        //
+        // #618 은 READ COMMITTED 로 이것을 막았지만 모자랐다. RC 가 잠긴 행을 건너뛰는 것은 클러스터 인덱스를 훑을 때
+        // 뿐이고, 보조 인덱스 (status, …)로 읽으면 범위 안의 잠긴 행을 기다렸다 — 로컬 DB 에 행이 쌓여 계획이 바뀌자 이
+        // 테스트가 늘 실패했다. 이제 스윕은 비울 행만 담긴 범위(터미널 · 안 비움 · 기간 넘김)를 읽는다. 그래서 다른
+        // 트랜잭션이 쥐는 행을 둘 둔다. 보존 기간 안의 DONE run 과 이미 비운 오래된 run 이다. 둘 다 그 범위에 없어야 한다.
+        // 이 테스트가 지키는 것은 읽는 범위다. 범위가 이렇게 좁으면 격리 수준을 기본으로 되돌려도 이 시나리오는 기다리지
+        // 않는다(변이로 확인). RC 는 범위로 새로 들어오는 행을 갭 잠금으로 막지 않으려고 그대로 둔다.
         long userId = insertUser();
         insertAgentRun("retention-test-old-done", userId, "DONE", LocalDateTime.now().minusDays(120));
         insertAgentRun("retention-test-recent-done", userId, "DONE", LocalDateTime.now().minusDays(1));
+        jdbcTemplate.update("""
+                insert into agent_runs (task_id, user_id, status, created_at, payload_purged_at)
+                values ('retention-test-old-purged', ?, 'DONE', ?, ?)
+                """, userId, LocalDateTime.now().minusDays(200), LocalDateTime.now().minusDays(100));
 
         try (Connection other = dataSource.getConnection()) {
             other.setAutoCommit(false);
-            try (var statement = other.prepareStatement(
-                    "update agent_runs set updated_at = now() where task_id = 'retention-test-recent-done'")) {
-                statement.executeUpdate();
+            try (var statement = other.prepareStatement("""
+                    update agent_runs set updated_at = now()
+                     where task_id in ('retention-test-recent-done', 'retention-test-old-purged')
+                    """)) {
+                assertThat(statement.executeUpdate()).isEqualTo(2);
             }
             ExecutorService executor = Executors.newSingleThreadExecutor();
             try {
@@ -236,7 +270,7 @@ class RetentionSweepTest {
                 } catch (TimeoutException e) {
                     other.rollback();   // 스윕을 풀어 준 뒤 실패로 보고한다
                     sweep.get(60, TimeUnit.SECONDS);
-                    throw new AssertionError("보존 스윕이 다른 트랜잭션이 쥔 행을 기다렸다(REPEATABLE READ 로 돌고 있다)");
+                    throw new AssertionError("보존 스윕이 다른 트랜잭션이 쥔 행을 기다렸다 — 비울 대상이 아닌 행까지 읽는다");
                 }
                 assertThat(blanked).isGreaterThanOrEqualTo(1);
                 assertThat(planJsonOf("retention-test-old-done")).isNull();
@@ -246,6 +280,21 @@ class RetentionSweepTest {
             }
         }
         assertThat(planJsonOf("retention-test-recent-done")).isNotNull();
+    }
+
+    @Test
+    void 비우기는_실행_계획과_상관없이_비울_행의_범위만_읽는다() {
+        // 손으로 옮긴 SQL 이 아니라 스윕이 실제로 보낸 SQL 을 EXPLAIN 한다. 인덱스를 힌트로 고정했으므로 데이터가 어떻든
+        // 같은 계획이어야 한다 — 이 문제의 원인이 "옵티마이저가 고른 계획에 따라 잠금·비용이 달라진다" 였다.
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(90);
+        List<String> sent = SentSql.capture(() -> agentRunRetentionStore.blankTerminalPayloadsBatch(cutoff, 500));
+        String update = sent.stream().filter(sql -> sql.startsWith("update agent_runs")).findFirst().orElseThrow();
+
+        Map<String, Object> plan = jdbcTemplate.queryForList("explain " + update, "DONE", "FAILED", "CANCELLED", cutoff, 500)
+                .getFirst();
+
+        assertThat(plan.get("key")).as(update).isEqualTo("idx_agent_runs_retention");
+        assertThat(plan.get("type")).as(update).isEqualTo("range");
     }
 
     // ---------------------------------------------------------------------
@@ -301,6 +350,11 @@ class RetentionSweepTest {
     private String planJsonOf(String taskId) {
         return jdbcTemplate.queryForObject(
                 "select plan_json from agent_runs where task_id = ?", String.class, taskId);
+    }
+
+    private Object purgedAtOf(String taskId) {
+        return jdbcTemplate.queryForObject(
+                "select payload_purged_at from agent_runs where task_id = ?", Object.class, taskId);
     }
 
     private String failureLogOf(String taskId) {
