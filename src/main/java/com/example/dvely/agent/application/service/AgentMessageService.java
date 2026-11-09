@@ -73,9 +73,10 @@ public class AgentMessageService {
     @Transactional(readOnly = true)
     public List<LlmMessage> getConversationContext(Long conversationId) {
         // 전량을 싣던 자리다. 오래 쓴 대화일수록 모든 요청이 비싸졌고 언젠가는 컨텍스트 상한에
-        // 닿았다 — 무엇을 잃는지는 ConversationWindow 참고.
+        // 닿았다 — 무엇을 잃는지는 ConversationWindow 참고. 창이 뒤에서부터 MAX_TURNS 턴이므로 DB 에서 그만큼만
+        // 읽는다(#625). 그 위에 글자 상한을 거는 것은 같다 — 결과는 전량을 읽어 자르던 때와 같다.
         return ConversationWindow.apply(
-                chatMessageRepository.findAllByConversationIdOrderByCreatedAtAsc(conversationId)
+                chatMessageRepository.findLatestByConversationId(conversationId, ConversationWindow.MAX_TURNS)
                         .stream()
                         .map(message -> new LlmMessage(
                                 message.getRole().toStorage(),
@@ -107,11 +108,10 @@ public class AgentMessageService {
      */
     @Transactional(readOnly = true)
     public List<LlmMessage> getUserIntentHistory(Long conversationId) {
+        // 창이 사용자 발화 MAX_TURNS 개라 DB 에서 그만큼만 읽는다(#625). 지난 요청마다 결과를 묻는 조회(pastLabel)도
+        // 창 밖의 발화에는 더 나가지 않는다 — 예전에는 대화의 모든 사용자 발화에 대해 물은 뒤 잘랐다.
         List<ChatMessage> userMessages = chatMessageRepository
-                .findAllByConversationIdOrderByCreatedAtAsc(conversationId)
-                .stream()
-                .filter(message -> message.getRole() == ChatRole.USER)
-                .toList();
+                .findLatestByConversationIdAndRole(conversationId, ChatRole.USER, ConversationWindow.MAX_TURNS);
         if (userMessages.isEmpty()) {
             return List.of();
         }
