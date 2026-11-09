@@ -1627,6 +1627,16 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 - S3 정적 사이트 버킷은 DB 에 기록이 없어 막는 자원으로 세지 않는다
 - FE 탈퇴 화면은 Dvely_FE #203. 처리방침 4·7항과 약관 제11조의 "메일로 요청" 문구는 그 화면과 함께 바꾼다
 
+## 4.53 서버 전체 프리뷰·코딩 에이전트 상한 (Issue #624 PR-1)
+
+- 상한이 사용자당 런 2·프리뷰 3뿐이라 사용자가 늘면 컨테이너 합이 얼마든지 커졌다. 그래서 동시성으로 서버 사양을 역산할 수 없었다(#614 진단 14번)
+- `qeploy.limits.global.max-live-previews`(기본 4) — 모든 사용자의 ACTIVE·PROVISIONING 프리뷰를 센다. `PreviewCapacity` 가 사용자 상한 다음에 본다. 서버가 찼으면 끝난 작업의 프리뷰를 사용자와 상관없이 오래 안 본 순서로 닫고, 그래도 없으면 `429 PREVIEW_CAPACITY_EXCEEDED`. 저장 뒤 다시 세어 동시 요청의 초과를 되돌리는 것도 사용자 상한과 같다
+- `qeploy.limits.global.max-coding-agent-containers`(기본 2) — `CodingAgentCapacity`(프로세스 안 세마포어). `CodingAgentWorkspaceBridge` 가 작업 공간을 꺼내기 전에 자리를 잡고 에이전트 컨테이너가 끝나면 바로 돌려준다. 자리가 없으면 기다리지 않고 거절한다 → CODE 스텝 FAILED + 같은 문장 `TASK_FAILED`. `CodeAgentService` 가 이 예외를 빌드 실패 분석으로 흘리지 않고 그대로 올린다
+- 사용자별 코드와 나눈 이유: FE 는 `PREVIEW_LIMIT_EXCEEDED` 에 "쓰지 않는 프리뷰를 닫으면 자리가 생깁니다" 를 붙인다(`Dvely_FE src/lib/apiErrorGuide.ts`). 서버 전체 상한은 아무것도 띄우지 않은 사용자에게도 걸린다. 새 코드는 FE 가 모르는 코드라 서버 문장만 보인다
+- 기본값은 #614 의 잠정 사양(RAM 8 GiB) 기준이다. 메모리 상한 합은 프리뷰 4 × 1 GiB + 코딩 에이전트 2 × 2 GiB. 서버를 바꾸면 env `QEPLOY_LIMITS_GLOBAL_*` 로 같이 고친다
+- 테스트: `GlobalPreviewLimitEndpointTest`(보안 필터 + 실 MySQL, 상한 2 에서 세 번째 사용자 429·컨테이너를 띄우지 않음, 셋이 동시에 열어도 살아 있는 세션 2 이하), `PreviewCapacityTest`(서버 전체 거절·남의 끝난 작업 회수·사용자 상한 우선·confirm 되돌림), `CodingAgentCapacityTest`, `CodingAgentWorkspaceBridgeTest`(거절 시 아무것도 안 건드림·재설치 전에 반납·실패해도 반납), `CodeAgentServiceTest`
+- 남은 것: 프리뷰 테스트 DB(LOCAL) 컨테이너와 kaniko 빌드 컨테이너는 서버 전체 상한에 들지 않는다. 프리뷰 SSE 프록시의 스레드 상한·타임아웃은 #624 PR-2
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

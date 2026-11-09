@@ -59,7 +59,12 @@ public enum ErrorCode {
 
     // 회원 탈퇴(#613). 사용자 AWS 계정에 아직 살아 있는 자원이 있어 탈퇴하지 않았다(아무것도 지우지 않았다). 응답 data 에
     // 남은 자원 목록이 실린다 — 그것을 정리한 뒤 다시 요청하면 된다.
-    WITHDRAWAL_BLOCKED(409, "WITHDRAWAL_BLOCKED", "정리하지 않은 AWS 자원이 남아 있어 탈퇴할 수 없습니다");
+    WITHDRAWAL_BLOCKED(409, "WITHDRAWAL_BLOCKED", "정리하지 않은 AWS 자원이 남아 있어 탈퇴할 수 없습니다"),
+
+    // 서버 전체 동시 실행 상한(#624). 사용자별 상한(위 *_LIMIT_EXCEEDED)과 코드를 나눈다 — 이쪽은 그 사용자가 아무것도
+    // 띄우지 않았어도 걸리므로 "쓰지 않는 프리뷰를 닫으라" 는 안내가 맞지 않는다.
+    PREVIEW_CAPACITY_EXCEEDED(429, "PREVIEW_CAPACITY_EXCEEDED", "서버의 프리뷰 자리가 모두 찼습니다"),
+    CODING_AGENT_CAPACITY_EXCEEDED(429, "CODING_AGENT_CAPACITY_EXCEEDED", "서버의 코딩 에이전트 자리가 모두 찼습니다");
 
     private final int status;
     private final String code;

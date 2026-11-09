@@ -63,7 +63,7 @@
 - `405 Method Not Allowed`: `METHOD_NOT_ALLOWED`
 - `409 Conflict`: 중복 생성 등 상태 충돌 (예: 동일 (project, scope, key) 환경변수 재생성). `IllegalStateException` 전반과 낙관적 잠금 경합(`@Version`, "다른 요청과 동시에 수정되어…")도 409다
 - `429`/`502`/`503`: AI 제공자 호출 실패 — `AI_PROVIDER_RATE_LIMITED`(429) · `AI_PROVIDER_ERROR`(502) · `AI_PROVIDER_UNAVAILABLE`(503)
-- `429 Too Many Requests`: 사용자별 동시 실행 상한(#509) — `ACTIVE_RUN_LIMIT_EXCEEDED`(새 런) · `PREVIEW_LIMIT_EXCEEDED`(새 프리뷰 컨테이너). 메시지에 지금 수·상한·다음 행동이 들어 있으니 그대로 보여 주면 된다. 시간이 지나면 풀리는 것이 아니라 진행 중인 것이 끝나거나 닫혀야 풀리므로 `Retry-After` 는 없다. 아래 §2.6
+- `429 Too Many Requests`: 동시 실행 상한 — 사용자별(#509) `ACTIVE_RUN_LIMIT_EXCEEDED`(새 런) · `PREVIEW_LIMIT_EXCEEDED`(새 프리뷰 컨테이너), 서버 전체(#624) `PREVIEW_CAPACITY_EXCEEDED`(새 프리뷰 컨테이너). 메시지에 다음 행동이 들어 있으니 그대로 보여 주면 된다. 시간이 지나면 풀리는 것이 아니라 진행 중인 것이 끝나거나 닫혀야 풀리므로 `Retry-After` 는 없다. 아래 §2.6
 - `503 Service Unavailable`: `PREVIEW_ENVIRONMENT_UNAVAILABLE`(Docker 접근 불가), `TEMPLATE_CATALOG_UNAVAILABLE`(§17.3)
 - `500 Internal Server Error`: 처리되지 않은 외부 연동/서버 오류
 
@@ -96,7 +96,7 @@
 
 ---
 
-### 2.6 사용자별 동시 실행 상한 (Issue #509)
+### 2.6 동시 실행 상한 — 사용자별(Issue #509)·서버 전체(Issue #624)
 
 한 사용자가 실행 스레드와 프리뷰 컨테이너를 독점하지 않게 한다. 값은 `qeploy.limits.per-user.*`(env `QEPLOY_LIMITS_PER_USER_*`), 1 미만이면 기동을 멈춘다.
 
@@ -110,6 +110,17 @@
 - 같은 사용자의 동시 요청도 상한을 넘지 못한다. 런은 사용자 행 잠금으로 한 줄로 세우고, 프리뷰는 행을 저장한 뒤 다시 세어 넘친 쪽이 물러난다(동시에 몰리면 둘 다 물러날 수 있다 — 다시 시도하면 된다)
 - 상한을 보지 않는 전이: 결과 승인·저장소 연결 승인 뒤의 재개(런마다 한 번, 이미 실행된 런의 남은 단계. 그 승인 처리는 GitHub 반영 중 토큰 갱신이 사용자 행을 잠글 수 있어 같은 잠금을 쥘 수 없다), 빌드 실패 자동 복구, 멈춘 승인 복구 스윕
   - 그래서 결과 승인 순간 런 수가 상한을 넘을 수 있다(의도). 넘는 폭은 그 사용자의 결과 승인 대기 런 수로 묶이고, 그 런들은 살아 있는 프리뷰를 붙들고 있어(프리뷰가 회수되면 #380 스윕이 5분 안에 닫는다) `max-live-previews` 를 넘지 않는다 — 최악 런 2 + 3
+- **서버 전체 상한(#624)**: 사용자별 상한과 별도로 `qeploy.limits.global.*`(env `QEPLOY_LIMITS_GLOBAL_*`, 1 미만이면 기동을 멈춘다)가 모든 사용자의 합을 묶는다. 사용자별 상한을 먼저 보고, 그다음 서버 전체를 본다
+
+  | 상한 | 기본 | 세는 것 | 넘으면 |
+  |---|---|---|---|
+  | `max-live-previews` | 4 | 모든 사용자의 `ACTIVE`·`PROVISIONING` 프리뷰 세션 | 위 프리뷰 상한과 같은 두 곳에서 건다. `POST /projects/{projectId}/preview-session` → `429 PREVIEW_CAPACITY_EXCEEDED`, CODE 스텝 → 태스크 `FAILED` + 같은 문장 `TASK_FAILED` |
+  | `max-coding-agent-containers` | 2 | 동시에 도는 코딩 에이전트(`CLAUDE_CODE`·`CODEX`) 실행. 이 서버 프로세스 기준 | CODE 스텝에서만 돈다 → 태스크 `FAILED` + `TASK_FAILED`(코드 `CODING_AGENT_CAPACITY_EXCEEDED` 는 로그에만 남는다). 기다리지 않고 바로 거절하며, 작업 공간을 꺼내기 전이라 아무것도 바뀌지 않았다. 자리는 에이전트 컨테이너가 끝나면 바로 돌려준다(되돌려 넣기·의존성 재설치는 세지 않는다) |
+
+  - 서버가 찼으면 끝난(DONE·CANCELLED) 작업의 프리뷰를 **사용자와 상관없이** 오래 안 본 순서로 닫아 자리를 만든다. 닫지 않는 것은 위와 같다(프로젝트 프리뷰, 진행 중·결과 승인 대기·실패 작업). 그래도 없을 때만 거절한다
+  - 코드를 나눈 이유: `PREVIEW_LIMIT_EXCEEDED` 를 받은 FE 는 "쓰지 않는 프리뷰를 닫으면 자리가 생깁니다" 를 붙이는데, 서버 전체 상한은 그 사용자가 아무것도 띄우지 않았어도 걸린다
+  - 메시지에 서버 전체 수는 싣지 않는다(다른 사용자의 활동이다)
+  - 기본값은 #614 의 잠정 사양(RAM 8 GiB)에 맞췄다. 메모리 상한 기준 프리뷰 4 × 1 GiB(JAVA_FULLSTACK 2 GiB) + 코딩 에이전트 2 × 2 GiB
 - 자리 만들기로 닫힌 프리뷰는 TTL 만료와 같은 `EXPIRED` 다: `POST /preview-sessions/{id}/access` 는 `409 CONFLICT`("종료된 프리뷰입니다. 프리뷰를 다시 띄워 주세요." — 준비 중이면 "아직 준비 중인 프리뷰입니다. 준비가 끝나면 다시 열어 주세요."), `GET /preview-sessions/{id}/status` 는 200 `sessionStatus=EXPIRED`·`containerRunning=false`, 이미 열린 iframe 의 다음 문서 요청은 게이트웨이 404
 
 ## 3. Auth API

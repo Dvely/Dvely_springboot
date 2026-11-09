@@ -15,6 +15,9 @@ import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.aiaccount.application.service.CodingAgentExecutionService;
+import com.example.dvely.common.limit.GlobalLimitProperties;
+import com.example.dvely.common.limit.UserLimitExceededException;
+import com.example.dvely.common.response.ErrorCode;
 import java.nio.file.Path;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,13 +35,15 @@ class CodingAgentWorkspaceBridgeTest {
 
     private DockerContainerService dockerService;
     private CodingAgentExecutionService executionService;
+    private CodingAgentCapacity capacity;
     private CodingAgentWorkspaceBridge bridge;
 
     @BeforeEach
     void setUp() {
         dockerService = mock(DockerContainerService.class);
         executionService = mock(CodingAgentExecutionService.class);
-        bridge = new CodingAgentWorkspaceBridge(dockerService, executionService);
+        capacity = new CodingAgentCapacity(new GlobalLimitProperties(4, 1));
+        bridge = new CodingAgentWorkspaceBridge(dockerService, executionService, capacity);
 
         when(dockerService.copyDirectoryFromContainer(anyString(), anyString(), any(), any()))
                 .thenReturn(3L);
@@ -48,6 +53,61 @@ class CodingAgentWorkspaceBridgeTest {
     private CodingAgentResult runWith(CodingAgentResult result) {
         when(executionService.run(any(), any(), anyString(), anyString())).thenReturn(result);
         return result;
+    }
+
+    // ── 서버 전체 코딩 에이전트 상한(#624) ─────────────────────────────
+
+    @Test
+    void aFullServerRefusesBeforeTouchingTheProject() {
+        try (var _ = capacity.acquire(99L)) {
+            assertThatThrownBy(() -> bridge.run("container-1", 7L, AiProvider.CODEX, "x"))
+                    .isInstanceOfSatisfying(UserLimitExceededException.class,
+                            e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CODING_AGENT_CAPACITY_EXCEEDED));
+        }
+
+        // 아무것도 꺼내거나 돌리지 않았다 — 다시 시도해도 같은 출발점이다.
+        verify(dockerService, never()).copyDirectoryFromContainer(anyString(), anyString(), any(), any());
+        verify(executionService, never()).run(any(), any(), anyString(), anyString());
+        assertThat(capacity.inUse()).isZero();
+    }
+
+    @Test
+    void holdsTheSlotWhileTheAgentRunsAndGivesItBackBeforeTheReinstall() {
+        int[] inUseDuringRun = new int[1];
+        when(executionService.run(any(), any(), anyString(), anyString())).thenAnswer(invocation -> {
+            inUseDuringRun[0] = capacity.inUse();
+            return CodingAgentResult.succeeded("done", "");
+        });
+        int[] inUseDuringCopyBack = {-1};
+        org.mockito.Mockito.doAnswer(invocation -> {
+            inUseDuringCopyBack[0] = capacity.inUse();
+            return null;
+        }).when(dockerService).copyDirectoryToContainer(anyString(), any(), anyString());
+
+        bridge.run("container-1", 7L, AiProvider.CODEX, "x");
+
+        assertThat(inUseDuringRun[0]).as("에이전트 컨테이너가 도는 동안").isEqualTo(1);
+        // 되돌려 넣기와 의존성 재설치는 프리뷰 컨테이너에서 돈다. 그동안 자리를 붙들면 남만 막는다.
+        assertThat(inUseDuringCopyBack[0]).as("되돌려 넣는 동안").isZero();
+        assertThat(capacity.inUse()).isZero();
+    }
+
+    @Test
+    void givesTheSlotBackWhenTheAgentFailsOrThrows() {
+        when(executionService.run(any(), any(), anyString(), anyString()))
+                .thenReturn(CodingAgentResult.failed("", "boom", 1))
+                .thenThrow(new IllegalStateException("docker"))
+                .thenReturn(CodingAgentResult.succeeded("done", ""));
+
+        assertThatThrownBy(() -> bridge.run("container-1", 7L, AiProvider.CODEX, "x"))
+                .hasMessageContaining("exit 1");
+        assertThat(capacity.inUse()).isZero();
+        assertThatThrownBy(() -> bridge.run("container-1", 7L, AiProvider.CODEX, "x"))
+                .hasMessage("docker");
+        assertThat(capacity.inUse()).isZero();
+
+        // 상한이 1 이라도 자리가 돌아왔으니 다음 실행이 들어간다
+        assertThat(bridge.run("container-1", 7L, AiProvider.CODEX, "x")).isEqualTo("done");
     }
 
     @Test

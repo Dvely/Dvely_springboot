@@ -56,21 +56,42 @@ public class CodingAgentWorkspaceBridge {
 
     private final DockerContainerService dockerService;
     private final CodingAgentExecutionService executionService;
+    private final CodingAgentCapacity capacity;
 
     /**
      * Runs a coding agent against the preview container's project and leaves the result in place.
      *
+     * <p>A server-wide slot (#624) is taken before anything is copied, so a refused run has changed
+     * nothing, and given back as soon as the agent's container is gone. The copy back and the
+     * reinstall that follow run in the preview container, which the preview limit already counts —
+     * holding the slot through a multi-minute {@code npm install} would only turn other users away.</p>
+     *
      * @return the agent's closing text, which the CODE step shows the user
+     * @throws com.example.dvely.common.limit.UserLimitExceededException when every slot is taken
      */
     public String run(String containerId, Long userId, AiProvider provider, String instruction) {
+        CodingAgentCapacity.Slot slot = capacity.acquire(userId);
+        try {
+            return runHoldingSlot(slot, containerId, userId, provider, instruction);
+        } finally {
+            slot.close();
+        }
+    }
+
+    private String runHoldingSlot(CodingAgentCapacity.Slot slot, String containerId, Long userId,
+                                  AiProvider provider, String instruction) {
         Path hostWorkspace = createHostWorkspace();
         try {
             copyOut(containerId, hostWorkspace);
 
             // The agent's container mounts this directory at /workspace, so the project sits at
             // /workspace/app for it too — the same path every other step in the pipeline uses.
-            CodingAgentResult result = executionService.run(
-                    userId, provider, prompt(instruction), hostWorkspace.toString());
+            CodingAgentResult result;
+            try {
+                result = executionService.run(userId, provider, prompt(instruction), hostWorkspace.toString());
+            } finally {
+                slot.close();
+            }
 
             if (!result.success()) {
                 // Nothing is copied back on failure, timeout included. A timeout in particular can

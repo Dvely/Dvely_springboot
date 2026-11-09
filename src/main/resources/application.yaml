@@ -445,6 +445,20 @@ qeploy:
     per-user:
       max-active-runs: ${QEPLOY_LIMITS_PER_USER_MAX_ACTIVE_RUNS:2}
       max-live-previews: ${QEPLOY_LIMITS_PER_USER_MAX_LIVE_PREVIEWS:3}
+    # #624 — 서버 전체 동시 실행 상한. 사용자별 상한만으로는 사용자 수에 비례해 컨테이너가 늘어 서버 사양을 정할 수 없다.
+    # 넘으면 429(PREVIEW_CAPACITY_EXCEEDED). 에이전트 작업 중이면 작업이 FAILED 로 닫히고 같은 문장이 대화에 남는다.
+    #
+    # max-live-previews 는 모든 사용자의 ACTIVE·PROVISIONING 프리뷰 세션 수다. 자리가 없으면 끝난(DONE·CANCELLED)
+    # 작업의 프리뷰를 사용자와 상관없이 오래 안 본 순서로 닫아 자리를 만들고, 그래도 없을 때만 거절한다.
+    # max-coding-agent-containers 는 동시에 도는 코딩 에이전트(CLAUDE_CODE·CODEX) 실행 수다(이 서버 프로세스 기준).
+    # 코딩 에이전트는 에이전트 작업 안에서만 돌아 HTTP 429 가 아니라 작업 실패(CODING_AGENT_CAPACITY_EXCEEDED)로 드러난다.
+    #
+    # 기본값은 #614 의 잠정 사양(RAM 8 GiB)에 맞췄다. 메모리 상한 기준 프리뷰 4 × 1 GiB(JAVA_FULLSTACK 2 GiB) +
+    # 코딩 에이전트 2 × 2 GiB 다. 코딩 에이전트는 그 작업의 프리뷰 컨테이너와 함께 돈다. 상한은 실제 사용량이 아니라
+    # 천장이라 합이 RAM 을 넘어도 바로 터지지는 않지만, 서버를 바꾸면 이 두 값을 같이 본다.
+    global:
+      max-live-previews: ${QEPLOY_LIMITS_GLOBAL_MAX_LIVE_PREVIEWS:4}
+      max-coding-agent-containers: ${QEPLOY_LIMITS_GLOBAL_MAX_CODING_AGENT_CONTAINERS:2}
 
 # Cloudflare DNS - managed subdomain automation
 cloudflare:
