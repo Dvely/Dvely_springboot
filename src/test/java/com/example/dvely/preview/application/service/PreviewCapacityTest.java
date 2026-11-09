@@ -15,6 +15,7 @@ import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.common.limit.GlobalLimitProperties;
 import com.example.dvely.common.limit.UserLimitExceededException;
 import com.example.dvely.common.limit.UserLimitProperties;
 import com.example.dvely.common.response.ErrorCode;
@@ -33,8 +34,11 @@ class PreviewCapacityTest {
     private final SpringDataPreviewSessionRepository repository = mock(SpringDataPreviewSessionRepository.class);
     private final DockerContainerService dockerService = mock(DockerContainerService.class);
     private final TaskStore taskStore = mock(TaskStore.class);
-    private final PreviewCapacity capacity =
-            new PreviewCapacity(repository, dockerService, taskStore, new UserLimitProperties(2, 3));
+    // 사용자별 상한 테스트는 서버 전체 상한이 끼어들지 않게 크게 둔다. 서버 전체는 아래 serverWide 가 본다.
+    private final PreviewCapacity capacity = new PreviewCapacity(
+            repository, dockerService, taskStore, new UserLimitProperties(2, 3), new GlobalLimitProperties(100, 2));
+    private final PreviewCapacity serverWide = new PreviewCapacity(
+            repository, dockerService, taskStore, new UserLimitProperties(2, 3), new GlobalLimitProperties(3, 2));
 
     @Test
     void doesNothingWhileThereIsRoom() {
@@ -127,6 +131,92 @@ class PreviewCapacityTest {
         verify(repository).save(created);
     }
 
+    // ── 서버 전체 상한(#624) ─────────────────────────────
+
+    @Test
+    void aServerFullOfPreviewsPeopleAreUsingRefusesWithItsOwnCode() {
+        // 이 사용자는 아무것도 띄우지 않았다. 그래도 서버가 찼으면 거절한다 — 사용자별 코드("쓰지 않는 프리뷰를 닫으라")는
+        // 맞지 않으므로 코드를 나눈다.
+        live();
+        serverLive(
+                sessionOf(2L, "p2", null, PreviewSessionStatus.ACTIVE),
+                sessionOf(3L, "w3", "task-waiting", PreviewSessionStatus.ACTIVE),
+                sessionOf(4L, "r4", "task-running", PreviewSessionStatus.PROVISIONING)
+        );
+        task("task-waiting", TaskStatus.WAITING_RESULT_APPROVAL);
+
+        assertThatThrownBy(() -> serverWide.makeRoom(USER_ID))
+                .isInstanceOfSatisfying(UserLimitExceededException.class, e -> {
+                    assertThat(e.errorCode()).isEqualTo(ErrorCode.PREVIEW_CAPACITY_EXCEEDED);
+                    assertThat(e.errorCode().getStatus()).isEqualTo(429);
+                    // 서버 전체 수는 다른 사용자의 활동이라 싣지 않는다
+                    assertThat(e.getMessage()).doesNotContainPattern("\\d");
+                });
+        verify(dockerService, never()).removeContainer(anyString());
+    }
+
+    @Test
+    void aFullServerClosesTheLeastRecentlyViewedFinishedTaskPreviewWhoeverOwnsIt() {
+        // 끝난 작업의 프리뷰는 원래 자리가 필요하면 닫히는 것이다. 남의 것이라고 서버 자리를 붙들게 두면 TTL 까지 다들 막힌다.
+        PreviewSessionEntity oldDone = sessionOf(2L, "old", "task-old", PreviewSessionStatus.ACTIVE);
+        PreviewSessionEntity project = sessionOf(3L, "project", null, PreviewSessionStatus.ACTIVE);
+        PreviewSessionEntity newDone = sessionOf(4L, "new", "task-new", PreviewSessionStatus.ACTIVE);
+        live();
+        serverLive(oldDone, project, newDone);
+        task("task-old", TaskStatus.CANCELLED);
+        task("task-new", TaskStatus.DONE);
+
+        serverWide.makeRoom(USER_ID);
+
+        verify(dockerService).removeContainer("container-old");
+        assertThat(oldDone.getStatus()).isEqualTo(PreviewSessionStatus.EXPIRED.name());
+        verify(dockerService, never()).removeContainer("container-new");
+        verify(dockerService, never()).removeContainer("container-project");
+    }
+
+    @Test
+    void theUsersOwnLimitIsCheckedFirstSoTheAdviceFits() {
+        // 자기 프리뷰 3개로 막힌 사람에게는 "닫으면 된다" 가 맞는 안내다. 서버 전체가 함께 찼어도 사용자별 코드가 먼저다.
+        live(
+                session("a", null, PreviewSessionStatus.ACTIVE),
+                session("b", null, PreviewSessionStatus.ACTIVE),
+                session("c", null, PreviewSessionStatus.ACTIVE)
+        );
+
+        assertThatThrownBy(() -> serverWide.makeRoom(USER_ID))
+                .isInstanceOfSatisfying(UserLimitExceededException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PREVIEW_LIMIT_EXCEEDED));
+        verify(repository, never()).findByStatusInOrderByLastAccessedAtAsc(any());
+    }
+
+    @Test
+    void confirmBacksOutTheNewSessionWhenOtherUsersFilledTheServerAtTheSameTime() {
+        PreviewSessionEntity created = session("created", null, PreviewSessionStatus.PROVISIONING);
+        when(repository.countByOwnerUserIdAndStatusIn(eq(USER_ID), any())).thenReturn(1L);
+        when(repository.countByStatusIn(any())).thenReturn(4L);
+
+        assertThatThrownBy(() -> serverWide.confirm(USER_ID, created))
+                .isInstanceOfSatisfying(UserLimitExceededException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PREVIEW_CAPACITY_EXCEEDED));
+
+        verify(dockerService).removeContainer("container-created");
+        assertThat(created.getStatus()).isEqualTo(PreviewSessionStatus.CLOSED.name());
+    }
+
+    @Test
+    void confirmKeepsTheNewSessionWhenTheServerIsExactlyFull() {
+        PreviewSessionEntity created = session("created", null, PreviewSessionStatus.PROVISIONING);
+        when(repository.countByOwnerUserIdAndStatusIn(eq(USER_ID), any())).thenReturn(1L);
+        when(repository.countByStatusIn(any())).thenReturn(3L);
+
+        assertThatCode(() -> serverWide.confirm(USER_ID, created)).doesNotThrowAnyException();
+        verify(dockerService, never()).removeContainer(anyString());
+    }
+
+    private void serverLive(PreviewSessionEntity... sessions) {
+        when(repository.findByStatusInOrderByLastAccessedAtAsc(any())).thenReturn(List.of(sessions));
+    }
+
     private void live(PreviewSessionEntity... sessions) {
         when(repository.findByOwnerUserIdAndStatusInOrderByLastAccessedAtAsc(eq(USER_ID), any()))
                 .thenReturn(List.of(sessions));
@@ -138,7 +228,11 @@ class PreviewCapacityTest {
     }
 
     private static PreviewSessionEntity session(String id, String taskId, PreviewSessionStatus status) {
-        return new PreviewSessionEntity(id, "token-" + id, USER_ID, 11L, null, taskId, "container-" + id,
+        return sessionOf(USER_ID, id, taskId, status);
+    }
+
+    private static PreviewSessionEntity sessionOf(Long ownerUserId, String id, String taskId, PreviewSessionStatus status) {
+        return new PreviewSessionEntity(id, "token-" + id, ownerUserId, 11L, null, taskId, "container-" + id,
                 "172.18.0.2", "http://preview/" + id, LocalDateTime.now().plusMinutes(30), status);
     }
 }

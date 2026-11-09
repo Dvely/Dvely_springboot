@@ -37,6 +37,8 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.llm.LlmToolRouter;
 import com.example.dvely.auth.application.command.AuthCommandService;
 import com.example.dvely.auth.domain.repository.UserRepository;
+import com.example.dvely.common.limit.UserLimitExceededException;
+import com.example.dvely.common.response.ErrorCode;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.application.service.PreviewSessionService;
 import com.example.dvely.preview.application.service.PreviewWorkspaceService;
@@ -89,6 +91,7 @@ class CodeAgentServiceTest {
     @Mock private TemplateSeedingService templateSeedingService;
     // 실제 쓰기(tar·exec)는 ContainerFileWriterTest 와 도커 통합 테스트가 본다. 여기서는 결과가 모델에게 어떻게 가는지만.
     @Mock private ContainerFileWriter containerFileWriter;
+    @Mock private CodingAgentWorkspaceBridge codingAgentWorkspaceBridge;
 
     private CodeAgentService service;
 
@@ -119,7 +122,7 @@ class CodeAgentServiceTest {
                 buildFailureAnalyzer,
                 templateSeedingService,
                 aiProperties,
-                mock(CodingAgentWorkspaceBridge.class),
+                codingAgentWorkspaceBridge,
                 containerFileWriter
         );
         when(previewSessionService.acquire(TASK_ID)).thenReturn(previewSession());
@@ -447,6 +450,21 @@ class CodeAgentServiceTest {
         assertThatThrownBy(() -> execute(AiProvider.ANTHROPIC))
                 .isInstanceOf(PreviewServeException.class);
         verify(previewSessionService).markServeFailed(eq(TASK_ID), anyString());
+        verify(previewSessionService, never()).markServing(anyString());
+    }
+
+    @Test
+    void aFullCodingAgentCapacityFailsTheStepWithItsOwnSentenceNotAsABuildFailure() {
+        // 서버 전체 코딩 에이전트 상한(#624). 빌드실패 경로로 흘리면 빌드 로그를 분석한 "빌드가 완료되지 않았습니다" 로
+        // 닫혀 사용자는 기다리면 된다는 것을 모르고, 재시도 예산만 탄다.
+        UserLimitExceededException full = new UserLimitExceededException(
+                ErrorCode.CODING_AGENT_CAPACITY_EXCEEDED, "지금은 서버의 코딩 에이전트가 모두 사용 중이라 실행하지 못했습니다.");
+        when(codingAgentWorkspaceBridge.run(CONTAINER_ID, USER_ID, AiProvider.CLAUDE_CODE, "투두 앱을 만들어줘"))
+                .thenThrow(full);
+
+        assertThatThrownBy(() -> execute(AiProvider.CLAUDE_CODE)).isSameAs(full);
+
+        verify(buildFailureAnalyzer, never()).analyze(anyString());
         verify(previewSessionService, never()).markServing(anyString());
     }
 
