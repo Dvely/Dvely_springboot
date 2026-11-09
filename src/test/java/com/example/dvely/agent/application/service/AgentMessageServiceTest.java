@@ -37,7 +37,7 @@ class AgentMessageServiceTest {
     void pastRequestsCarryHowTheyEndedSoDeclinedOnesAreNotReapplied() {
         // 2026-10-28 dev: "한 줄만 추가" 요청에 모델이 앞선 요청들을 모두 취합했다 — 결과를 거절하고 되돌린 요청까지
         // 이번 작업의 변경으로 되살아났다. 지난 요청마다 어떻게 끝났는지를 붙여 넘긴다.
-        when(repository.findAllByConversationIdOrderByCreatedAtAsc(21L)).thenReturn(List.of(
+        when(repository.findLatestByConversationIdAndRole(21L, ChatRole.USER, ConversationWindow.MAX_TURNS)).thenReturn(List.of(
                 userMessage("'범위 검증' 줄 추가해줘", "t-revert"),
                 userMessage("'카드 검증' 줄 추가해줘", "t-keep"),
                 userMessage("'경쟁' 줄 추가해줘", "t-failed"),
@@ -95,7 +95,7 @@ class AgentMessageServiceTest {
 
     @Test
     void aSingleMessageConversationMarksThatMessageAsCurrent() {
-        when(repository.findAllByConversationIdOrderByCreatedAtAsc(21L)).thenReturn(List.of(
+        when(repository.findLatestByConversationIdAndRole(21L, ChatRole.USER, ConversationWindow.MAX_TURNS)).thenReturn(List.of(
                 new ChatMessage(21L, ChatRole.USER, "포트폴리오 만들어줘", 0)
         ));
 
@@ -106,7 +106,7 @@ class AgentMessageServiceTest {
 
     @Test
     void anEmptyConversationYieldsNoPlanningInput() {
-        when(repository.findAllByConversationIdOrderByCreatedAtAsc(21L)).thenReturn(List.of());
+        when(repository.findLatestByConversationIdAndRole(21L, ChatRole.USER, ConversationWindow.MAX_TURNS)).thenReturn(List.of());
 
         assertThat(service.getUserIntentHistory(21L)).isEmpty();
     }
@@ -133,11 +133,31 @@ class AgentMessageServiceTest {
     }
 
     private void givenConversation() {
-        when(repository.findAllByConversationIdOrderByCreatedAtAsc(21L)).thenReturn(List.of(
+        // 저장소가 이미 잘라 주는 것을 흉내 낸다 — 계획 경로는 사용자 발화만, 대화 경로는 전부(쓴 순서대로)
+        when(repository.findLatestByConversationId(21L, ConversationWindow.MAX_TURNS)).thenReturn(List.of(
                 new ChatMessage(21L, ChatRole.USER, "배경을 하늘색으로 바꿔줘", 0),
                 new ChatMessage(21L, ChatRole.ASSISTANT, PLAN_NOTICE, 0),
                 new ChatMessage(21L, ChatRole.ASSISTANT, START_NOTICE, 0),
                 new ChatMessage(21L, ChatRole.USER, "글자를 바꿔줘", 0)
         ));
+        when(repository.findLatestByConversationIdAndRole(21L, ChatRole.USER, ConversationWindow.MAX_TURNS)).thenReturn(List.of(
+                new ChatMessage(21L, ChatRole.USER, "배경을 하늘색으로 바꿔줘", 0),
+                new ChatMessage(21L, ChatRole.USER, "글자를 바꿔줘", 0)
+        ));
+    }
+
+    @Test
+    void bothPathsAskTheDatabaseForTheWindowOnlyNotTheWholeConversation() {
+        // #625: 예전에는 요청마다 대화 전체를 읽어 자바에서 잘랐다 — 비용이 대화 길이에 비례했다. 창이 뒤에서부터
+        // MAX_TURNS 턴이므로 DB 에서 그만큼만 읽는다.
+        givenConversation();
+
+        service.getConversationContext(21L);
+        service.getUserIntentHistory(21L);
+
+        org.mockito.Mockito.verify(repository).findLatestByConversationId(21L, ConversationWindow.MAX_TURNS);
+        org.mockito.Mockito.verify(repository)
+                .findLatestByConversationIdAndRole(21L, ChatRole.USER, ConversationWindow.MAX_TURNS);
+        org.mockito.Mockito.verifyNoMoreInteractions(repository);
     }
 }

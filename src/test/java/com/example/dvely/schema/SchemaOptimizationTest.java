@@ -104,6 +104,7 @@ class SchemaOptimizationTest {
             "approvals:idx_approvals_project_type_status",
             "chat_sessions:idx_chat_sessions_user_project_list",
             "provisioned_servers:idx_provisioned_servers_connection_status",
+            "chat_messages:idx_chat_messages_session_message",   // V73(#625)
     })
     void 새_인덱스가_존재한다(String tableAndIndex) {
         String[] parts = tableAndIndex.split(":");
@@ -126,6 +127,9 @@ class SchemaOptimizationTest {
             // 어떤 쿼리도 쓰지 않던 것들
             "cloud_connections:idx_cloud_connections_user_status",
             "webhook_deliveries:idx_webhook_deliveries_event",
+            // V73(#625): (chat_session_id, message_id) 로 교체 — 이 인덱스로 거르는 쿼리가 없었고, 남아 있으면 옵티마이저가
+            // 새 인덱스 대신 이것을 골라 정렬했다
+            "chat_messages:idx_chat_messages_task",
     })
     void 중복_또는_미사용_인덱스가_사라졌다(String tableAndIndex) {
         String[] parts = tableAndIndex.split(":");
@@ -151,17 +155,18 @@ class SchemaOptimizationTest {
 
     @Test
     void chat_messages_의_FK_는_남은_복합_인덱스가_받쳐준다() {
-        // 단일 chat_session_id 인덱스를 지웠으므로, 남은 것이 leftmost 로 받쳐주지 않으면
-        // FK 가 무인덱스가 된다.
-        Integer seq = jdbcTemplate.queryForObject(
+        // 단일 chat_session_id 인덱스(V61)도 (chat_session_id, task_id)(V73)도 지웠으므로, 남은 것이 leftmost 로
+        // 받쳐주지 않으면 FK 가 무인덱스가 된다. 두 번째 칼럼이 message_id 라야 대화를 쓴 순서대로 정렬 없이 읽는다.
+        List<String> columns = jdbcTemplate.queryForList(
                 """
-                        select seq_in_index from information_schema.statistics
+                        select column_name from information_schema.statistics
                         where table_schema = database() and table_name = 'chat_messages'
-                          and index_name = 'idx_chat_messages_task' and column_name = 'chat_session_id'
+                          and index_name = 'idx_chat_messages_session_message'
+                        order by seq_in_index
                         """,
-                Integer.class);
+                String.class);
 
-        assertThat(seq).isEqualTo(1);
+        assertThat(columns).containsExactly("chat_session_id", "message_id");
     }
 
     // V62(죽은 테이블·컬럼 제거) 가드는 DeadSchemaRemovalTest 에 있다.
