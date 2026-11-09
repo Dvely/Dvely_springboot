@@ -1223,4 +1223,21 @@ public class DockerContainerService {
             labels.put(key, String.valueOf(value));
         }
     }
+
+    /**
+     * 한 사용자를 위해 만든 컨테이너(프리뷰·빌드) — 멈춘 것까지. 회원 탈퇴가 남김없이 지우는 데 쓴다(#613).
+     *
+     * <p>세션 행이 아니라 생성 때 붙인 {@code qeploy.userId} 라벨로 찾는다. 행과 컨테이너가 어긋난 것(제거가 실패했거나,
+     * 행을 지우는 사이 실행기가 새로 띄운 것)까지 잡기 위해서다. 프리뷰 DB 컨테이너는 이 라벨이 없지만
+     * {@link #removeContainer} 가 프리뷰 컨테이너와 함께 그 세션 네트워크를 되돌린다.</p>
+     */
+    public List<String> listContainerIdsOwnedBy(long userId) {
+        return dockerClient.listContainersCmd()
+                .withShowAll(true)
+                .withLabelFilter(Map.of(AGENT_LABEL, "true", USER_ID_LABEL, String.valueOf(userId)))
+                .exec()
+                .stream()
+                .map(com.github.dockerjava.api.model.Container::getId)
+                .toList();
+    }
 }
