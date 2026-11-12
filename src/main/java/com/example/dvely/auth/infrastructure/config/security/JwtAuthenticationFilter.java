@@ -58,7 +58,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             Pattern.compile("POST /api/v1/deployments/\\d+/retry"),
             Pattern.compile("POST /api/v1/projects/\\d+/environment-variables"),
             Pattern.compile("PATCH /api/v1/projects/\\d+/environment-variables/\\d+"),
-            Pattern.compile("POST /api/v1/projects/\\d+/domains")
+            Pattern.compile("POST /api/v1/projects/\\d+/domains"),
+            // 내 기기 프리뷰 공유(#652). CLI `qeploy share` 가 링크를 만들고 끝낼 때 회수한다.
+            Pattern.compile("POST /api/v1/device-shares"),
+            Pattern.compile("DELETE /api/v1/device-shares/\\d+")
     );
 
     private final TokenPort tokenPort;

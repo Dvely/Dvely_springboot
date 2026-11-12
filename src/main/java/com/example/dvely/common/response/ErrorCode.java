@@ -64,7 +64,10 @@ public enum ErrorCode {
     // 서버 전체 동시 실행 상한(#624). 사용자별 상한(위 *_LIMIT_EXCEEDED)과 코드를 나눈다 — 이쪽은 그 사용자가 아무것도
     // 띄우지 않았어도 걸리므로 "쓰지 않는 프리뷰를 닫으라" 는 안내가 맞지 않는다.
     PREVIEW_CAPACITY_EXCEEDED(429, "PREVIEW_CAPACITY_EXCEEDED", "서버의 프리뷰 자리가 모두 찼습니다"),
-    CODING_AGENT_CAPACITY_EXCEEDED(429, "CODING_AGENT_CAPACITY_EXCEEDED", "서버의 코딩 에이전트 자리가 모두 찼습니다");
+    CODING_AGENT_CAPACITY_EXCEEDED(429, "CODING_AGENT_CAPACITY_EXCEEDED", "서버의 코딩 에이전트 자리가 모두 찼습니다"),
+
+    // 내 기기 프리뷰 공유(#652). 사용자당 살아 있는 링크 수, 서버 전체 연결 터널 수, 링크당 보는 사람 수 상한이다.
+    DEVICE_SHARE_LIMIT_EXCEEDED(429, "DEVICE_SHARE_LIMIT_EXCEEDED", "공유를 더 열 수 없습니다");
 
     private final int status;
     private final String code;
