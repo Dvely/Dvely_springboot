@@ -132,7 +132,7 @@ stream id 는 1단계에서 늘 0 이다(나중 HTTP 중계용 자리). JSON pay
 | `0x61` INPUT | 서버 → 기기 | JSON(§4.3) | 조작권 가진 사람의 입력 |
 | `0x62` CONTROL_REQUEST | 서버 → 기기 | JSON `{viewerId, name}` | 조작권 요청 |
 | `0x63` CONTROL_DECISION | 기기 → 서버 | JSON `{viewerId, granted, ttlSeconds}` | 주인의 결정 |
-| `0x64` PRESENCE | 서버 → 기기 | JSON `{viewers, controller}` | 보는 사람 수·조작 중인 사람 |
+| `0x64` PRESENCE | 서버 → 기기 | JSON `{viewers, controller: {viewerId, name} 또는 null}` | 보는 사람 수·조작 중인 사람 |
 
 `0x01`~`0x25` 는 나중 "직접 열기"(HTTP·WebSocket 중계, §10)에 쓴다. 프로토콜 버전은 연결 URL 의 `?v=1` 로 맞춘다.
 
@@ -140,7 +140,25 @@ stream id 는 1단계에서 늘 0 이다(나중 HTTP 중계용 자리). JSON pay
 
 - 서버 → 브라우저: 바이너리 메시지는 화면 한 장(JPEG). 텍스트 메시지는 JSON `{type: "config" | "presence" | "control" | "offline" | "ended"}`.
 - 브라우저 → 서버: 텍스트 JSON. 첫 메시지 `{type: "join", name, controlSecret?}`. 그 뒤 `input`, `request-control`, `release-control`.
-- **내 제어 링크**의 비밀은 URL 조각(`#c=…`)에 둔다. 조각은 HTTP 요청에 실리지 않아 서버 로그·Referer 에 남지 않는다. 뷰어 JS 가 `join` 으로만 보낸다.
+- **내 제어 링크**의 비밀은 URL 조각(`#c=…`)에 둔다. 조각은 HTTP 요청에 실리지 않아 서버 로그·Referer 에 남지 않는다. 뷰어 JS 가 `join` 으로만 보내고, 보낸 뒤 주소창에서 지운다(`history.replaceState`).
+
+메시지 모양(필드 이름은 이대로 고정한다).
+
+| 방향 | 메시지 |
+|---|---|
+| 브라우저 → 서버 | `{"type":"join","name":"민지","controlSecret":"…"}` (비밀은 없으면 빼기) |
+| 브라우저 → 서버 | `{"type":"input","input":{…§4.3}}` |
+| 브라우저 → 서버 | `{"type":"request-control"}` · `{"type":"release-control"}` |
+| 서버 → 브라우저 | `{"type":"welcome","viewerId":"v3","name":"민지","hasControl":false}` |
+| 서버 → 브라우저 | `{"type":"config","width":390,"height":844,"url":"http://localhost:5173/","title":"Vite App"}` |
+| 서버 → 브라우저 | `{"type":"presence","viewers":2,"controller":{"viewerId":"v1","name":"주인"}}` (조작 중인 사람이 없으면 `null`) |
+| 서버 → 브라우저 | `{"type":"control","state":"granted","ttlSeconds":600}` (`granted` · `denied` · `revoked` · `released` · `pending`) |
+| 서버 → 브라우저 | `{"type":"device","state":"online"}` · `{"type":"device","state":"offline"}` |
+| 서버 → 브라우저 | `{"type":"ended","reason":"revoked"}` (`revoked` · `expired`) |
+| 서버 → 브라우저 | `{"type":"error","message":"…"}` |
+
+- 이름은 1~20자, 비우면 서버가 `보는 사람 N` 을 붙인다. 내 제어 링크로 들어온 사람의 이름은 `주인` 이다.
+- 화면 한 장(바이너리)은 `config` 를 한 번 이상 받은 뒤에 온다. 기기가 다시 연결되면 `config` 가 다시 온다.
 
 ### 4.3 입력
 

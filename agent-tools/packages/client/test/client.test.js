@@ -114,6 +114,58 @@ describe('QeployClient', () => {
   });
 });
 
+describe('device shares', () => {
+  it('creates a share with the documented body and returns the unwrapped data', async () => {
+    const capture = {};
+    const data = {
+      shareId: 7,
+      viewUrl: 'https://k3x9.share.q.test',
+      controlUrl: 'https://k3x9.share.q.test/#c=s',
+      tunnelUrl: 'wss://q.test/api/v1/device-shares/7/tunnel',
+      expiresAt: '2026-11-12T13:00:00Z',
+    };
+    const c = new QeployClient(opts(stub(200, { status: 200, code: 'SUCCESS', data }, { capture })));
+    const result = await c.createDeviceShare({ kind: 'WEB', targetLabel: 'http://localhost:5173', ttlMinutes: 30 });
+    assert.deepEqual(result, data);
+    assert.equal(capture.url, 'https://q.test/api/v1/device-shares');
+    assert.equal(capture.init.method, 'POST');
+    assert.deepEqual(JSON.parse(capture.init.body), {
+      kind: 'WEB',
+      targetLabel: 'http://localhost:5173',
+      ttlMinutes: 30,
+    });
+  });
+
+  it('leaves ttlMinutes out so the server default (60) applies', async () => {
+    const capture = {};
+    const c = new QeployClient(opts(stub(200, { data: {} }, { capture })));
+    await c.createDeviceShare({ kind: 'WEB', targetLabel: 'http://localhost:5173' });
+    assert.deepEqual(JSON.parse(capture.init.body), { kind: 'WEB', targetLabel: 'http://localhost:5173' });
+  });
+
+  it('lists and revokes on the documented paths', async () => {
+    const capture = {};
+    const c = new QeployClient(opts(stub(200, { data: [] }, { capture })));
+    await c.listDeviceShares();
+    assert.equal(capture.url, 'https://q.test/api/v1/device-shares');
+    assert.equal(capture.init.method, 'GET');
+
+    const c2 = new QeployClient(opts(stub(204, undefined, { capture })));
+    assert.equal(await c2.revokeDeviceShare(7), null);
+    assert.equal(capture.url, 'https://q.test/api/v1/device-shares/7');
+    assert.equal(capture.init.method, 'DELETE');
+  });
+
+  it('refuses a share id that would rewrite the path', async () => {
+    let called = false;
+    const c = new QeployClient(opts(async () => { called = true; }));
+    for (const bad of ['../api-tokens', '7/tunnel', 0, -1, '', null]) {
+      await assert.rejects(() => c.revokeDeviceShare(bad), TypeError);
+    }
+    assert.equal(called, false);
+  });
+});
+
 describe('what may reach the URL (#482)', () => {
   it('refuses an id that would rewrite the path, before any request is made', async () => {
     // A read tool must not become a request for an arbitrary endpoint: the model's arguments are

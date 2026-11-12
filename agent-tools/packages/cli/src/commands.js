@@ -3,6 +3,7 @@ import { renderTable, renderDetail } from './render.js';
 import { UsageError } from './confirm.js';
 import { clearConfig, configPath, readConfig, resolveApiUrl, writeConfig } from '@qeploy/client/config';
 import { readSecret } from './prompt.js';
+import { shareCommand } from './share/command.js';
 
 /**
  * The command table.
@@ -428,6 +429,9 @@ export const commands = {
       return { data, text: `${scope} ${key} 생성했습니다.` };
     },
   },
+
+  // Long-running and big enough to live in its own module (src/share/).
+  share: shareCommand,
 };
 
 /**

@@ -33,6 +33,13 @@ server:
     # 클라이언트는 연결 직후 요청을 보내므로 20s 로 줄여도 여유가 있고, 장애 시 스레드가 더 빨리 돈다.
     connection-timeout: 20s
 
+  # #652 — Tomcat WebSocket 의 기본 메시지 버퍼(8KiB)로는 공유 화면 한 장(JPEG, 최대 2MiB)을 받지 못하고 1009 로
+  # 끊긴다. 컨테이너 전역 빈(ServletServerContainerFactoryBean)은 목 서블릿 테스트 기동을 깨뜨려서 컨텍스트 파라미터로 둔다.
+  servlet:
+    context-parameters:
+      org.apache.tomcat.websocket.binaryBufferSize: 3145728
+      org.apache.tomcat.websocket.textBufferSize: 65536
+
 spring:
   profiles:
     active: local
@@ -477,6 +484,22 @@ qeploy:
     global:
       max-live-previews: ${QEPLOY_LIMITS_GLOBAL_MAX_LIVE_PREVIEWS:4}
       max-coding-agent-containers: ${QEPLOY_LIMITS_GLOBAL_MAX_CODING_AGENT_CONTAINERS:2}
+  # #652 — 내 기기 프리뷰 공유. 링크마다 <토큰>.<base-domain> 오리진에서 뷰어를 내보내고, 기기는 API 로 터널을 연다.
+  # 로컬은 *.share.localhost(브라우저가 루프백으로 푼다), 운영은 share.qeploy.com + https + api-public-url 을 env 로 준다.
+  # api-public-url 을 비우면 요청 주소로 터널 주소를 만든다 — nginx 뒤에서는 스킴이 http 로 보이므로 운영에서는 반드시 넣는다.
+  device-share:
+    base-domain: ${QEPLOY_DEVICE_SHARE_BASE_DOMAIN:share.localhost}
+    public-scheme: ${QEPLOY_DEVICE_SHARE_PUBLIC_SCHEME:http}
+    public-port: ${QEPLOY_DEVICE_SHARE_PUBLIC_PORT:8080}
+    api-public-url: ${QEPLOY_DEVICE_SHARE_API_PUBLIC_URL:}
+    default-ttl-minutes: 60
+    max-ttl-minutes: 1440
+    max-active-per-user: 5
+    max-tunnels: 50
+    max-viewers-per-share: 20
+    max-frame-bytes: 2097152
+    max-inputs-per-second: 120
+    control-ttl-seconds: 600
 
 # Cloudflare DNS - managed subdomain automation
 cloudflare:

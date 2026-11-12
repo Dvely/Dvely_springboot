@@ -83,6 +83,9 @@ public class SecurityConfig {
                                 "/api/v1/previews/**",
                                 "/api/v1/tls/allow"
                         ).permitAll()
+                        // 내 기기 프리뷰 공유의 뷰어 소켓(#652). 공유 오리진(<토큰>.share.…)에서만 받는다 — 링크 토큰이 보기
+                        // 자격이고, 호스트·토큰 확인은 핸드셰이크 인터셉터가 한다. API 호스트로 오면 거기서 거절된다.
+                        .requestMatchers("/__qeploy/ws").permitAll()
                         // 템플릿 카탈로그. 내용 자체가 이미 공개 Pages 에 있는 정적 목록이고 사용자
                         // 데이터가 없다. 로그인 전 화면에서도 갤러리를 띄울 수 있게 열어둔다.
                         .requestMatchers(HttpMethod.GET, "/api/v1/templates", "/api/v1/templates/*").permitAll()
