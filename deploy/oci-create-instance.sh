@@ -132,6 +132,8 @@ backoff="$INTERVAL"
 # Oracle 의 안내는 셰이프·폴트 도메인·가용 도메인을 바꿔 보라는 것이다. 도쿄는 가용 도메인이
 # 하나라 폴트 도메인 셋을 돌아가며 지정한다. --no-retry: CLI 기본 재시도가 500(자리 없음)을
 # 2분 가까이 다시 보내므로 끄고, 간격은 이 루프가 정한다.
+# 생성 호출은 사용자당 한도가 낮다. 20초 간격에서도 429(Too many requests for the user)가 나서
+# 시도 사이를 60초로 둔다(2026-11-12 실측).
 FDS="FAULT-DOMAIN-1 FAULT-DOMAIN-2 FAULT-DOMAIN-3"
 while :; do
   for ad in $ADS; do
@@ -166,7 +168,7 @@ while :; do
     if [ "$MAX_ATTEMPTS" -gt 0 ] && [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
       log "최대 시도 횟수 도달"; exit 2
     fi
-    sleep 20
+    sleep 60
    done
   done
   sleep $(( backoff + RANDOM % 15 ))
