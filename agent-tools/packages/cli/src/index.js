@@ -13,7 +13,7 @@ export const VERSION = '0.1.4';
 export const EXIT = { OK: 0, ERROR: 1, USAGE: 2, AUTH: 3 };
 
 /** Flags that take a value; everything else is a boolean switch. */
-const VALUED = new Set(['target-version', 'scope', 'api-url', 'expires-in-days']);
+const VALUED = new Set(['target-version', 'scope', 'api-url', 'expires-in-days', 'viewport', 'ttl']);
 
 const camel = (name) => name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 
@@ -168,6 +168,11 @@ export async function run(argv, deps) {
     if (result.cancelled) {
       err(result.text);
       return EXIT.ERROR;
+    }
+    // A long-running command (`share`) prints as it goes — its links must be out before it ends —
+    // so printing a result again here would repeat them, or append a second JSON document.
+    if (result.printed) {
+      return result.exitCode ?? EXIT.OK;
     }
     out(flags.json ? JSON.stringify(result.data ?? null, null, 2) : terminalSafe(result.text));
     return EXIT.OK;

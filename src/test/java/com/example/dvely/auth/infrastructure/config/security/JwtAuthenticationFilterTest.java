@@ -275,7 +275,8 @@ class JwtAuthenticationFilterTest {
             checked++;
         }
         // An empty loop would pass while proving nothing — e.g. if the client's call style changed.
-        assertThat(checked).isEqualTo(5);
+        // 7 = 배포·재시도·환경변수 2·도메인 + 내 기기 공유 만들기·끝내기(#652).
+        assertThat(checked).isEqualTo(7);
     }
 
     @Test

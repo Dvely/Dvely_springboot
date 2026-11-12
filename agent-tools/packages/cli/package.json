@@ -24,6 +24,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@qeploy/client": "0.1.3"
+    "@qeploy/client": "0.1.3",
+    "ws": "8.21.3"
   }
 }

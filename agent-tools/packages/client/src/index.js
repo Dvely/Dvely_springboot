@@ -348,4 +348,29 @@ export class QeployClient {
   async getServerLogs(serverId) {
     return this.get(`/api/v1/servers/${pathId('serverId', serverId)}/logs`);
   }
+
+  // ── Device shares (내 기기 프리뷰) ─────────────────────────────────────────
+  /**
+   * Creates a share link for a screen running on this machine.
+   *
+   * The plaintext view token and control secret are in this response and nowhere else — the server
+   * keeps hashes only — so the caller must use the URLs it gets back rather than ask again.
+   *
+   * @returns {Promise<{shareId: number, viewUrl: string, controlUrl: string, tunnelUrl: string, expiresAt: string}>}
+   */
+  createDeviceShare({ kind, targetLabel, ttlMinutes } = {}) {
+    return this.post('/api/v1/device-shares', {
+      kind,
+      targetLabel,
+      ...(ttlMinutes ? { ttlMinutes } : {}),
+    });
+  }
+
+  listDeviceShares() {
+    return this.get('/api/v1/device-shares');
+  }
+
+  async revokeDeviceShare(shareId) {
+    return this.request('DELETE', `/api/v1/device-shares/${pathId('shareId', shareId)}`);
+  }
 }
