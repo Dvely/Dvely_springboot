@@ -4,6 +4,49 @@
 
 배포가 하는 일은 셋뿐이다. **jar를 올리고, 바꿔치고, pm2를 재시작한다.** `ecosystem.config.js`는 건드리지 않으므로 시크릿이 CI를 경유하지 않고 서버에만 남는다.
 
+## Oracle Cloud Always Free (2026-11~, #649)
+
+AWS 계정 지원이 2026-10-30 에 끝나 운영 서버를 Oracle Cloud(OCI) Always Free 로 옮긴다. 아래 1~6절의 내용(디렉터리, pm2, Docker, 로그 회전, 시크릿)은 그대로 적용된다. 이 절은 **EC2 와 다른 점만** 적는다. 셋업은 `setup-oracle-server.sh` 하나로 한다.
+
+### 인스턴스 만들기 (콘솔, 사용자 계정)
+
+| 항목 | 값 | 이유 |
+|---|---|---|
+| 홈 리전 | **South Korea Central (Seoul)** | Always Free 는 홈 리전에서만 무료이고, 홈 리전은 바꿀 수 없다. 춘천(South Korea North)에서는 A1 을 만들 수 없다 |
+| 이미지 | Canonical Ubuntu 24.04 (aarch64) | JDK 25 가 기본 저장소에 있다. 기본 계정이 `ubuntu` 라 워크플로를 그대로 쓴다 |
+| 셰이프 | `VM.Standard.A1.Flex` 2 OCPU · 12 GB | 2026-06-15 부터 Always Free A1 한도가 이만큼이다(그 전 4 · 24) |
+| 부트 볼륨 | 100 GB | Always Free 블록 스토리지는 부트 볼륨과 합쳐 200 GB 다 |
+| 네트워크 | 공용 IPv4 할당, SSH 공개키 등록 | |
+
+**VCN 보안 목록에 TCP 80 · 443 인그레스(0.0.0.0/0)를 추가한다.** 22 만 기본으로 열려 있다. `Out of host capacity` 오류는 홈 리전에 빈 A1 자리가 없다는 뜻이라 시간을 두고 다시 만든다.
+
+### 셋업
+
+```bash
+scp deploy/setup-oracle-server.sh ubuntu@<공인 IP>:~
+ssh ubuntu@<공인 IP>
+API_HOST=api.qeploy.com CERT_EMAIL=<메일> bash setup-oracle-server.sh
+```
+
+TLS 는 DNS 가 이 서버를 가리켜야 받을 수 있다. 먼저 Cloudflare 에 `api` A 레코드를 **DNS only(회색 구름)** 로 만든다. 프록시(주황 구름)를 켜면 Cloudflare 가 오래 응답이 없는 요청을 끊어서 SSE·WebSocket 이 끊길 수 있고, 인증서도 Cloudflare 쪽 것이 된다. DNS 가 아직이면 `API_HOST`·`CERT_EMAIL` 없이 먼저 돌리고 나중에 `certbot` 만 다시 실행한다(스크립트가 명령을 알려 준다).
+
+### EC2 와 다른 점
+
+- **호스트 iptables.** OCI Ubuntu 이미지는 22 번 말고 들어오는 연결을 전부 REJECT 한다. 보안 목록만 열면 접속이 안 된다. 스크립트가 80 · 443 을 REJECT 앞에 넣고 Docker 설치 전에 저장한다.
+- **API 가 별도 호스트다.** FE 가 `qeploy.com` 을 GitHub Pages 로 쓰므로 `ecosystem.config.js` 에서 아래 값이 EC2 시절과 다르다.
+
+  | 키 | 값 |
+  |---|---|
+  | `GITHUB_OAUTH_REDIRECT_URI` | `https://api.qeploy.com/api/v1/auth/github/callback` |
+  | `GITHUB_APP_INSTALLATION_REDIRECT_URI` | `https://api.qeploy.com/api/v1/auth/github/app/callback` |
+  | `QEPLOY_PREVIEW_GATEWAY_BASE_URL` | `https://api.qeploy.com` — **비우면 prod 기본값 `https://qeploy.com` 이 쓰여 프리뷰 주소가 Pages 로 가서 열리지 않는다** |
+  | `QEPLOY_CORS_ALLOWED_ORIGINS` · `FRONTEND_REDIRECT_URL` | `https://qeploy.com` 그대로 |
+
+  GitHub 쪽도 같이 바꾼다. OAuth App 의 콜백 URL, GitHub App 의 Callback URL · Setup URL · Webhook URL(`https://api.qeploy.com/api/v1/webhook/github`)이다. FE 저장소 변수 `VITE_API_URL` 도 새 호스트로 바꾼다.
+- **ARM(aarch64).** 앱 · MySQL · 프리뷰(`node:20-alpine`) · 코딩 에이전트 이미지는 그대로 돈다. 사용자 배포 이미지는 `ContainerImageBuilder` 가 `linux/amd64` 로 고정해 빌드하므로 에뮬레이션 없이는 실패하거나 느리다(#556 · #580).
+- **유휴 회수.** 7일 동안 CPU(95번째 백분위) · 네트워크 · 메모리 사용률이 모두 20% 미만이면 Oracle 이 인스턴스를 회수할 수 있다. 데이터는 서버 밖에도 백업해 둔다(#569).
+- **배포 워크플로는 그대로다.** `deploy-ec2.yml` 은 SSH 로 jar 를 올릴 뿐이라 Secrets 의 `EC2_HOST` · `EC2_USER` · `EC2_SSH_KEY` 만 이 서버 값으로 바꾸면 된다. 인스턴스를 다시 만들어 공인 IP 가 바뀌면 `EC2_HOST` 와 DNS 를 함께 고친다.
+
 ## 왜 sudo가 없나
 
 `/var/www/dvely` 이하가 전부 `ubuntu` 소유이고 pm2도 `ubuntu`로 돌기 때문에, 배포 전 과정에 root 권한이 한 번도 필요하지 않다. 배포 계정에 sudo를 주지 않는 것 자체가 가장 확실한 방어라서, 래퍼 스크립트나 `sudoers` 규칙 같은 장치도 필요 없다.
