@@ -7,7 +7,7 @@
 - 기준일: 2026-10-20
 - 기준 커밋: `02a2240` (PR #475 플래너 instruction 언어 반영, develop). 직전 기준은 `113abf0`(2026-08-15, PR #104 프리뷰 게이트웨이 인가 반영)
 - 기준 코드: `src/main/java/com/example/dvely/**/presentation/*Controller.java`
-- 현재 공개 엔드포인트: 121개(2026-11-09 재집계 — User +2 `GET /users/me/withdrawal`·`DELETE /users/me` #613, Approval +1 `GET /approvals/{approvalId}/result-scope` #532는 추가 때 이 줄에 반영되지 않았던 것). 그 전 118개는 2026-10-23 CloudConnection +1(`PUT /cloud-connections/{id}/credentials` #491). 그 전 117개는 직전 기준(`113abf0` 시점) 94개에서 +23 — Agent +2(`GET /agent/ai-providers` §9.6, `GET /agent/conversations/{conversationId}/active-task` §9), AiCredential +3(§16), ApiToken +3(§18), Template +2(§17), CloudConnection +1(`GET /cloud-connections/requirements`), DomainBinding +1(`GET /domains/hosting-targets`), DomainTls +1(`GET /tls/allow`), PreviewGateway +1(SSE 프록시), PreviewRuntimeConfig +2(`GET/PUT /projects/{projectId}/preview/runtime`), Provisioning +7(§19). 2026-09-28 이후로는 수가 바뀌지 않았다
+- 현재 공개 엔드포인트: 124개(2026-11-12 — DeviceShare +3 `POST·GET /device-shares`·`DELETE /device-shares/{shareId}` #652, §20. WebSocket 두 개(기기 터널·뷰어 소켓)는 컨트롤러 매핑이 아니라 세지 않는다). 그 전 121개(2026-11-09 재집계 — User +2 `GET /users/me/withdrawal`·`DELETE /users/me` #613, Approval +1 `GET /approvals/{approvalId}/result-scope` #532는 추가 때 이 줄에 반영되지 않았던 것). 그 전 118개는 2026-10-23 CloudConnection +1(`PUT /cloud-connections/{id}/credentials` #491). 그 전 117개는 직전 기준(`113abf0` 시점) 94개에서 +23 — Agent +2(`GET /agent/ai-providers` §9.6, `GET /agent/conversations/{conversationId}/active-task` §9), AiCredential +3(§16), ApiToken +3(§18), Template +2(§17), CloudConnection +1(`GET /cloud-connections/requirements`), DomainBinding +1(`GET /domains/hosting-targets`), DomainTls +1(`GET /tls/allow`), PreviewGateway +1(SSE 프록시), PreviewRuntimeConfig +2(`GET/PUT /projects/{projectId}/preview/runtime`), Provisioning +7(§19). 2026-09-28 이후로는 수가 바뀌지 않았다
   - 모듈별: Agent 10 · AiCredential 3 · ApiToken 3 · Approval 5 · AuditLog 1 · Auth 7 · Change 3 · Chat 9 · CloudConnection 9 · Deployment 10 · DomainBinding 8 · DomainTls 1 · Environment 5 · PreviewGateway 2 · PreviewRuntimeConfig 2 · PreviewSession 4 · ProjectPreview 2 · Project 24 · Provisioning(DB) 3 · Provisioning(Server) 4 · Template 2 · User 3(`UserController` 1 + `UserWithdrawalController` 2) · Webhook 1
   - 재집계 명령: `grep -rE "@GetMapping|@PostMapping|@PutMapping|@PatchMapping|@DeleteMapping|@RequestMapping\(" src/main/java --include="*Controller.java"` 후 클래스 레벨 `@RequestMapping` 7개(Agent/Auth/PreviewSession/Project/User/UserWithdrawal/Webhook) 제외
 - 이 문서는 현재 코드에 존재하는 API와 PRD 달성을 위해 앞으로 필요한 API를 구분한다.
@@ -1654,7 +1654,7 @@ FE 는 `demoUrl` 을 iframe `src` 에, `thumbnailUrl` 을 `img src` 에 넣는�
 
 - `Authorization: Bearer qp_...` — 필터가 `qp_` 접두사로 PAT 경로를 고른다. JWT 파싱을 먼저 시도하는 방식은 에이전트 요청마다 예외를 던진다.
 - 스코프 `READ`/`WRITE` 2종. **HTTP 메서드로 강제**한다 — `READ` 토큰은 GET 만 가능하고 변경 메서드는 **403**. 엔드포인트별 애노테이션이면 새 엔드포인트가 누군가 애노테이션을 기억한 날에야 보호되지만, 메서드 기준은 작성한 날부터 덮인다.
-- **`WRITE` 도 모든 쓰기가 아니다(#453).** PAT로 통과하는 쓰기는 허용 목록(`JwtAuthenticationFilter.PAT_WRITABLE`)의 다섯 개뿐이다.
+- **`WRITE` 도 모든 쓰기가 아니다(#453).** PAT로 통과하는 쓰기는 허용 목록(`JwtAuthenticationFilter.PAT_WRITABLE`)의 일곱 개뿐이다.
 
   | Method | Path |
   |---|---|
@@ -1663,6 +1663,8 @@ FE 는 `demoUrl` 을 iframe `src` 에, `thumbnailUrl` 을 `img src` 에 넣는�
   | POST | `/api/v1/projects/{projectId}/environment-variables` |
   | PATCH | `/api/v1/projects/{projectId}/environment-variables/{variableId}` |
   | POST | `/api/v1/projects/{projectId}/domains` |
+  | POST | `/api/v1/device-shares` (#652) |
+  | DELETE | `/api/v1/device-shares/{shareId}` (#652) |
 
   나머지 변경 메서드(승인 결정, PAT 발급·폐기, AI 키, 클라우드 연결, 회원 탈퇴(§4.2), 각종 삭제 등)는 `WRITE` 토큰이어도 **403**이다. 그 전에는 WRITE PAT가 브라우저 로그인과 같은 권한이라, 에이전트가 저장된 토큰으로 자기 승인을 누르거나 PAT로 PAT를 재발급할 수 있었다. 거부 목록이 아니라 허용 목록이라 새 엔드포인트는 누군가 열기 전까지 닫혀 있다. 에이전트에 쓰기를 새로 열 때는 이 목록에 한 줄을 더하고, `agent-tools/packages/client`의 쓰기 호출이 목록 밖으로 나가면 `JwtAuthenticationFilterTest`가 깨진다. 브라우저 JWT는 영향이 없다.
 - 403 메시지는 두 가지다: READ 토큰의 쓰기 → "이 토큰은 읽기 전용입니다. write 스코프 토큰이 필요합니다." / 허용 목록 밖의 쓰기 → "이 작업은 개인 액세스 토큰으로 할 수 없습니다. 웹에서 진행해주세요." 본문은 `{"code":"FORBIDDEN","message":"..."}`이다.
@@ -1775,3 +1777,51 @@ PAT(§18)로는 이 중 **조회(GET)만** 된다. 쓰기 메서드는 `WRITE` �
 목록(`ProvisionedDatabaseResponse`): `databaseId`, `projectId`, `method`, `engine`, `origin`(`MANUAL` | `PREVIEW_AUTO` — 서버형 프리뷰가 자동 마련), `status`(`PENDING`·`PROVISIONING` 은 폴링 / `READY`·`FAILED`·`EXPIRED` 는 정지), `host`·`port`(`READY` 전 `null`), `database`, `username`, `expiresAt`(LOCAL 만), `errorCode`(열린 문자열), `errorMessage`, `createdAt`, `updatedAt`. **조회 응답에는 `password` 가 없다.** 시각은 오프셋을 포함한다(`+09:00`).
 
 `DELETE`: RDS 는 생성에 쓴 연결로 인스턴스를 삭제하고 DOCKER 는 EC2 를 정리한다. LOCAL 은 컨테이너를 정리한다. 끝나면 `EXPIRED`. 이미 `EXPIRED` 면 그냥 지나간다. 남의 DB 는 `404`.
+
+## 20. DeviceShare API (내 기기 프리뷰 공유, Issue #652)
+
+내 기기에서 도는 앱 화면(1단계: CLI 가 띄운 dev 브라우저)을 링크로 공유한다. 보는 사람은 같은 화면을 보고, 조작권을 받은 한 사람이 제어한다. 설계: `docs/device-preview-share-design.md`. CLI `qeploy share web <url>` 이 이 API 를 쓴다.
+
+### 20.1 엔드포인트 (3개 + WebSocket 2개)
+
+| 메서드 | 경로 | 인증 | 설명 |
+|---|---|---|---|
+| POST | `/api/v1/device-shares` | 브라우저 · PAT(WRITE) | 공유 만들기 → `201` |
+| GET | `/api/v1/device-shares` | 브라우저 · PAT(READ) | 내 공유 최근 50개 |
+| DELETE | `/api/v1/device-shares/{shareId}` | 브라우저 · PAT(WRITE) | 끝내기(회수) → `204`. 남의 것은 `404` |
+| WS | `/api/v1/device-shares/{shareId}/tunnel?v=1` | PAT(WRITE) · 브라우저 JWT | 기기(CLI) 터널. `Authorization` 헤더 |
+| WS | `https://<토큰>.share.qeploy.com/__qeploy/ws` | 링크 토큰 | 보는 사람 소켓(뷰어 페이지가 연다) |
+
+### 20.2 만들기
+
+```json
+POST /api/v1/device-shares
+{ "kind": "WEB", "targetLabel": "http://localhost:5173", "ttlMinutes": 60 }
+→ 201 {
+  "shareId": 28, "kind": "WEB", "targetLabel": "http://localhost:5173",
+  "viewUrl": "https://<토큰>.share.qeploy.com/",
+  "controlUrl": "https://<토큰>.share.qeploy.com/#c=<비밀>",
+  "tunnelUrl": "wss://api.qeploy.com/api/v1/device-shares/28/tunnel?v=1",
+  "expiresAt": "2026-11-12T18:17:36.296"
+}
+```
+
+- `kind` 는 지금 `WEB` 만 받는다(`ANDROID`·`IOS` 는 `400`). `targetLabel` 1~255자, `ttlMinutes` 1~1440(기본 60).
+- **평문 토큰·비밀은 이 응답에만 실린다.** 서버는 SHA-256 만 둔다. `viewUrl` 은 남에게 줄 보기 링크, `controlUrl` 은 주인만 쓰는 내 제어 링크다(비밀이 URL 조각이라 서버 로그·Referer 에 남지 않는다).
+- 사용자당 살아 있는 링크 5개. 넘으면 `429 DEVICE_SHARE_LIMIT_EXCEEDED`.
+
+### 20.3 목록 응답(`DeviceShareResponse`)
+
+`shareId`, `kind`, `targetLabel`, `tokenPrefix`(앞 6자), `status`(`ACTIVE`·`EXPIRED`·`REVOKED`), `deviceConnected`, `viewers`, `expiresAt`, `revokedAt`, `lastViewedAt`, `createdAt`. 평문 토큰은 없다.
+
+### 20.4 공유 오리진
+
+- 링크마다 `<토큰>.<base-domain>` 이다(로컬 `<토큰>.share.localhost:8080`). API 오리진과 링크끼리 쿠키·저장소가 섞이지 않는다.
+- 보안 체인 앞 `ShareHostFilter` 가 처리한다. `/` → `302 /__qeploy/view`, `/__qeploy/view` → 뷰어 페이지(엄격 CSP), `/__qeploy/ws` → 뷰어 소켓, 그 밖 `404`. 공유 오리진에서는 `/api/v1/**` 에 닿지 않는다.
+- 끝났거나 없는 링크의 `/__qeploy/view` 는 같은 페이지를 `410`·`404` 로 내보내고 뷰어가 "공유가 끝났습니다" 를 띄운다.
+
+### 20.5 터널·뷰어 소켓 메시지
+
+- 기기 터널 프레임은 `[kind 1바이트][stream id 4바이트 BE][payload]`. HELLO·WELCOME·GOODBYE·SCREEN_CONFIG·SCREEN_FRAME(JPEG)·INPUT·CONTROL_REQUEST·CONTROL_DECISION·PRESENCE. 핸드셰이크 거절: 형식 `400`(`?v=1` 없음), 미인증 `401`, READ PAT `403`, 남의 것 `404`, 끝난 링크 `410`.
+- 뷰어 소켓은 JSON 텍스트(`join`·`input`·`request-control`·`release-control` / `welcome`·`config`·`presence`·`control`·`device`·`ended`·`error`)와 바이너리 화면 한 장. 필드는 설계 문서 §4.2 표가 정본이다.
+- 조작권은 한 사람. 내 제어 링크로 들어오면 바로, 보기 링크는 요청 → 기기(CLI) 승인(기본 10분). 입력은 초당 120개 상한.

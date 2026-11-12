@@ -1086,7 +1086,7 @@ InfrastructureChangeApprovalHandler(인프라 설정 승인/거절 집행)
 
 PAT 경로(`ApiTokenAuthenticator`)는 SHA-256 + UNIQUE 인덱스 조회 1회 + `last_used_at` 1시간 스로틀로 이미 가벼워 이번 단위에서 건드리지 않았다.
 
-PAT 인증이 성공한 뒤 같은 필터가 쓰기를 두 번 거른다(#453). ① 변경 메서드(POST/PUT/PATCH/DELETE)인데 `READ` 토큰이면 403. ② `WRITE` 토큰이어도 `METHOD 경로` 가 허용 목록 `PAT_WRITABLE`(배포 생성·재시도, 환경변수 추가·수정, 도메인 추가 — `api.md` §18.3)에 없으면 403. 두 경우 모두 컨트롤러에 닿기 전에 필터가 응답을 직접 쓴다. 이 목록은 `agent-tools/packages/client`(npm `@qeploy/client`, MCP·CLI 가 공유)가 실제로 부르는 쓰기와 맞춰 두며, `JwtAuthenticationFilterTest` 가 클라이언트의 쓰기 호출이 목록 밖으로 나가지 않는지 대조한다. 브라우저 JWT 경로는 이 거름을 타지 않는다.
+PAT 인증이 성공한 뒤 같은 필터가 쓰기를 두 번 거른다(#453). ① 변경 메서드(POST/PUT/PATCH/DELETE)인데 `READ` 토큰이면 403. ② `WRITE` 토큰이어도 `METHOD 경로` 가 허용 목록 `PAT_WRITABLE`(배포 생성·재시도, 환경변수 추가·수정, 도메인 추가, 내 기기 공유 만들기·끝내기 — `api.md` §18.3)에 없으면 403. 두 경우 모두 컨트롤러에 닿기 전에 필터가 응답을 직접 쓴다. 이 목록은 `agent-tools/packages/client`(npm `@qeploy/client`, MCP·CLI 가 공유)가 실제로 부르는 쓰기와 맞춰 두며, `JwtAuthenticationFilterTest` 가 클라이언트의 쓰기 호출이 목록 밖으로 나가지 않는지 대조한다. 브라우저 JWT 경로는 이 거름을 타지 않는다.
 
 ### 18.2 폐기 토큰: 캐시와 DB의 관계
 
@@ -1174,3 +1174,26 @@ LLM 호출에 실릴 키가 어디서 오는지. **배포 설정에서 오는 �
 - **코딩 에이전트는 두 경로로 갈린다** — 계획·채팅은 위 chat-completions 경로로, 코드 생성은 `CodeAgentService` → `CodingAgentWorkspaceBridge` → `CodingAgentExecutionService`(벤더 CLI)로 간다. 양쪽이 **같은 벤더 크리덴셜**을 읽으므로 사용자는 키를 한 번만 등록한다.
 - `CodingAgentWorkspaceBridge` 가 CLI 에 넘기는 프롬프트는 결과 요약을 요청과 같은 언어로(알 수 없으면 한국어) 쓰라고 지시한다(#469, PR #470). 그 요약이 태스크 `summary` 와 결과 메시지로 그대로 사용자에게 간다.
 - `GET /agent/ai-providers`(`AiProviderQueryService`)도 같은 크리덴셜을 근거로 목록을 낸다. 배포 설정 키를 보지 않는다.
+
+## 20. 내 기기 프리뷰 공유 연결 (Issue #652)
+
+```
+qeploy CLI ── POST /api/v1/device-shares ─────────▶ DeviceShareController → DeviceShareService → device_share_links
+   │                                                    (보기 토큰·제어 비밀 해시, 사용자당 5개)
+   └── WS /api/v1/device-shares/{id}/tunnel?v=1 ──▶ JwtAuthenticationFilter(PAT) → TunnelHandshakeInterceptor(주인·상태·WRITE)
+         (Authorization 헤더)                          → DeviceTunnelHandler → ShareSessionRegistry.attachDevice
+                                                                                   │
+보는 사람 브라우저                                                                  ▼
+  GET <토큰>.share.…/__qeploy/view ──▶ ShareHostFilter(보안 체인 앞, 체인으로 안 넘김) → viewer.html(엄격 CSP)
+  WS  <토큰>.share.…/__qeploy/ws   ──▶ ShareHostFilter(통과) → ViewerHandshakeInterceptor(호스트·토큰·상태)
+                                       → ViewerSocketHandler → ShareSessionRegistry.join(내 제어 비밀이면 주인)
+
+ShareSession(링크 하나): 기기 SCREEN_FRAME → 보는 사람마다 "최신 한 장"(WebSocketViewerChannel, 가상 스레드 펌프)
+                         조작권 가진 사람의 input → 기기 INPUT · 손님 request-control → 기기 CONTROL_REQUEST → CONTROL_DECISION
+회수: DELETE /device-shares/{id} → ShareSessionRegistry.end → 기기 GOODBYE · 보는 사람 ended
+점검: ShareSessionRegistry 15초(만료·조작권 시간) · DeviceShareService 15초(DB 에 없거나 끝난 링크 — 탈퇴 CASCADE)
+```
+
+- 공유 오리진 판별은 `ShareHost`(`<26자 base32>.<base-domain>`) 한 곳이다. 필터·뷰어 인터셉터가 같은 판별을 쓴다.
+- 세션은 메모리에만 있다. 서버를 여러 대로 늘리면 링크 → 서버 위치가 필요하다.
+- 기존 서버 프리뷰(`preview` 패키지, Docker 컨테이너)와는 코드·경로를 공유하지 않는다. 화면·문서에서 "서버 프리뷰 / 내 기기 프리뷰" 로 나눠 부른다.
