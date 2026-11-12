@@ -300,6 +300,11 @@ class UserWithdrawalServiceTest {
         insert("""
                 insert into api_tokens (user_id, token_hash, token_prefix, scope, expires_at) values (?, ?, 'qp_', 'READ', ?)
                 """, f.userId, String.format("%064x", System.nanoTime() + 1), LocalDateTime.now().plusDays(1));
+        insert("""
+                insert into device_share_links (user_id, kind, target_label, token_hash, control_secret_hash, token_prefix, expires_at)
+                values (?, 'WEB', 'http://localhost:5173', ?, ?, 'abcdef', ?)
+                """, f.userId, String.format("%064x", System.nanoTime() + 2), String.format("%064x", System.nanoTime() + 3),
+                LocalDateTime.now().plusHours(1));
 
         f.deliveryId = MARK + "d-" + unique;
         jdbc.update("insert into webhook_deliveries (delivery_id, event_type, payload) values (?, 'push', ?)", f.deliveryId,
@@ -340,6 +345,7 @@ class UserWithdrawalServiceTest {
         where.put("refresh_tokens", "user_id = " + f.userId);
         where.put("ai_provider_credentials", "user_id = " + f.userId);
         where.put("api_tokens", "user_id = " + f.userId);
+        where.put("device_share_links", "user_id = " + f.userId);
         where.put("webhook_deliveries", "delivery_id = '" + f.deliveryId + "'");
 
         // 세는 테이블이 탈퇴가 다루는 테이블과 정확히 같아야 한다 — 하나라도 빠지면 이 테스트가 그 테이블을 보지 않는 것이다

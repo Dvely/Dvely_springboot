@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 /** 공유 링크 만들기·목록·회수와 토큰 확인(#652). 연결된 세션은 {@link ShareSessionRegistry} 가 맡는다. */
@@ -96,6 +97,27 @@ public class DeviceShareService {
 
     public void touchViewed(Long shareId) {
         repository.touchViewed(shareId, now());
+    }
+
+    /**
+     * 메모리에 남은 공유 중 DB 에서 사라졌거나(탈퇴로 함께 지워짐) 다른 경로로 끝난 것을 끊는다. 회수 API 는 바로 끊으므로
+     * 이 점검은 그 밖의 경로를 위한 것이다.
+     */
+    @Scheduled(fixedDelay = 15_000, initialDelay = 15_000)
+    public void endSessionsWithoutActiveLink() {
+        LocalDateTime now = now();
+        for (Long shareId : sessions.activeShareIds()) {
+            try {
+                Optional<DeviceShareLink> link = repository.findById(shareId);
+                if (link.isEmpty()) {
+                    sessions.end(shareId, "revoked");
+                } else if (!link.get().isActive(now)) {
+                    sessions.end(shareId, link.get().getRevokedAt() != null ? "revoked" : "expired");
+                }
+            } catch (RuntimeException e) {
+                log.warn("[DeviceShare] 링크 점검 실패 share={}: {}", shareId, e.getMessage());
+            }
+        }
     }
 
     public LocalDateTime now() {

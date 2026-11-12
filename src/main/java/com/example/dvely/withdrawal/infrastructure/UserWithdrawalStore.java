@@ -111,7 +111,8 @@ public class UserWithdrawalStore {
             "project_budget_settings",             // projects
             "project_cloud_connection_settings",   // projects, cloud_connections
             "project_infrastructure_settings",     // projects
-            "provisioned_databases"                // projects
+            "provisioned_databases",               // projects
+            "device_share_links"                   // users (#652). 연결된 공유는 DeviceShareService 가 15초 안에 끊는다
     );
 
     private final EntityManager entityManager;

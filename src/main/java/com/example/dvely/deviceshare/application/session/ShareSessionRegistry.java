@@ -122,6 +122,11 @@ public class ShareSessionRegistry {
         return session == null ? 0 : session.viewerCount();
     }
 
+    /** 지금 메모리에 있는 공유 id. 링크가 DB 에서 사라졌는지 점검할 때 쓴다. */
+    public List<Long> activeShareIds() {
+        return List.copyOf(sessions.keySet());
+    }
+
     int connectedTunnels() {
         return (int) sessions.values().stream().filter(ShareSession::deviceConnected).count();
     }
