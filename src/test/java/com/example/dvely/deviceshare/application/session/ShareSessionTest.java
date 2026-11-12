@@ -87,6 +87,7 @@ class ShareSessionTest {
                 "{\"viewerId\":\"" + id + "\",\"granted\":true,\"ttlSeconds\":600}"));
         assertThat(guest.last("control").path("state").asText()).isEqualTo("granted");
         assertThat(guest.last("presence").path("controller").path("name").asText()).isEqualTo("손님");
+        assertThat(device.lastJson(ShareFrames.PRESENCE).path("controller").path("name").asText()).isEqualTo("손님");
 
         session.onViewerMessage(id, input("{\"type\":\"text\",\"text\":\"안녕\"}"), Instant.now());
         assertThat(device.lastJson(ShareFrames.INPUT).path("text").asText()).isEqualTo("안녕");

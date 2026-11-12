@@ -347,7 +347,7 @@ public class ShareSession {
         if (controller == null) {
             presence.putNull("controller");
         } else {
-            presence.put("controller", controller.name());
+            presence.putObject("controller").put("viewerId", controller.id()).put("name", controller.name());
         }
         device.sendBinary(ShareFrames.encode(ShareFrames.PRESENCE, presence.toString()));
     }

@@ -132,7 +132,7 @@ stream id 는 1단계에서 늘 0 이다(나중 HTTP 중계용 자리). JSON pay
 | `0x61` INPUT | 서버 → 기기 | JSON(§4.3) | 조작권 가진 사람의 입력 |
 | `0x62` CONTROL_REQUEST | 서버 → 기기 | JSON `{viewerId, name}` | 조작권 요청 |
 | `0x63` CONTROL_DECISION | 기기 → 서버 | JSON `{viewerId, granted, ttlSeconds}` | 주인의 결정 |
-| `0x64` PRESENCE | 서버 → 기기 | JSON `{viewers, controller}` | 보는 사람 수·조작 중인 사람 |
+| `0x64` PRESENCE | 서버 → 기기 | JSON `{viewers, controller: {viewerId, name} 또는 null}` | 보는 사람 수·조작 중인 사람 |
 
 `0x01`~`0x25` 는 나중 "직접 열기"(HTTP·WebSocket 중계, §10)에 쓴다. 프로토콜 버전은 연결 URL 의 `?v=1` 로 맞춘다.
 
