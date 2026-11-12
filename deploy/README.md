@@ -12,13 +12,21 @@ AWS 계정 지원이 2026-10-30 에 끝나 운영 서버를 Oracle Cloud(OCI) Al
 
 | 항목 | 값 | 이유 |
 |---|---|---|
-| 홈 리전 | **South Korea Central (Seoul)** | Always Free 는 홈 리전에서만 무료이고, 홈 리전은 바꿀 수 없다. 춘천(South Korea North)에서는 A1 을 만들 수 없다 |
+| 홈 리전 | **Japan East (Tokyo)** | Always Free 는 홈 리전에서만 무료이고, 홈 리전은 바꿀 수 없다. 2026-11-12 가입 때 서울·춘천은 무료 가입 목록에 없었다(춘천은 있어도 A1 을 만들 수 없다). 한국에서 왕복 약 37ms(서울 7ms, 오사카 44ms, 싱가포르 90ms 실측) |
 | 이미지 | Canonical Ubuntu 24.04 (aarch64) | JDK 25 가 기본 저장소에 있다. 기본 계정이 `ubuntu` 라 워크플로를 그대로 쓴다 |
 | 셰이프 | `VM.Standard.A1.Flex` 2 OCPU · 12 GB | 2026-06-15 부터 Always Free A1 한도가 이만큼이다(그 전 4 · 24) |
 | 부트 볼륨 | 100 GB | Always Free 블록 스토리지는 부트 볼륨과 합쳐 200 GB 다 |
 | 네트워크 | 공용 IPv4 할당, SSH 공개키 등록 | |
 
 **VCN 보안 목록에 TCP 80 · 443 인그레스(0.0.0.0/0)를 추가한다.** 22 만 기본으로 열려 있다. `Out of host capacity` 오류는 홈 리전에 빈 A1 자리가 없다는 뜻이라 시간을 두고 다시 만든다.
+
+콘솔 대신 `oci-create-instance.sh` 로 만들 수 있다. 컴파트먼트(`qeploy`)·VCN·인터넷 게이트웨이·80/443 인그레스를 준비하고, 자리가 날 때까지 1분 간격으로 생성을 다시 시도한다(이미 있으면 공인 IP 만 출력). OCI CLI(`brew install oci-cli`)와 `~/.oci/config` 의 API 키 프로필이 필요하다.
+
+```bash
+bash deploy/oci-create-instance.sh          # 성공하면 PUBLIC_IP=... 를 출력한다
+```
+
+**가입은 사용자의 일반 브라우저 창에서 한다.** 자동화 도구가 붙은 브라우저에서 제출하면 카드 확인까지 통과해도 마지막 계정 생성이 이유 없이 실패한다(2026-11-12 실측).
 
 ### 셋업
 
