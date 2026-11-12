@@ -133,6 +133,13 @@ log "MySQL 8.0 설치"
 sudo apt-get install -y mysql-server
 mysql --version
 sudo sed -i 's/^bind-address.*/bind-address = 127.0.0.1/' /etc/mysql/mysql.conf.d/mysqld.cnf
+# 큰 TEXT 행(diff·로그)을 고칠 때 binlog 에 변하지 않은 BLOB/TEXT 까지 적지 않게 한다(#625).
+# 엔티티의 @DynamicUpdate 와 함께 써야 효과가 난다. 시점 복구 여지를 남기려고 binlog 자체는 끄지 않는다.
+sudo tee /etc/mysql/mysql.conf.d/qeploy.cnf >/dev/null <<'CNF'
+[mysqld]
+binlog_format = ROW
+binlog_row_image = NOBLOB
+CNF
 sudo systemctl restart mysql
 
 log "MySQL 스키마/계정 생성"
