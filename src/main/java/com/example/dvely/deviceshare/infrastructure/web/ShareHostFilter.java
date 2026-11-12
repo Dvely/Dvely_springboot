@@ -63,12 +63,14 @@ public class ShareHostFilter extends OncePerRequestFilter {
             return;
         }
         Optional<DeviceShareLink> link = service.findByViewToken(token.get());
-        if (link.isEmpty()) {
-            plain(response, HttpServletResponse.SC_NOT_FOUND, "공유를 찾을 수 없습니다.");
-            return;
-        }
-        if (!link.get().isActive(service.now())) {
-            plain(response, HttpServletResponse.SC_GONE, "끝났거나 만료된 공유입니다.");
+        boolean viewPage = VIEW_PATH.equals(path) && ("GET".equals(request.getMethod()) || "HEAD".equals(request.getMethod()));
+        if (link.isEmpty() || !link.get().isActive(service.now())) {
+            int status = link.isEmpty() ? HttpServletResponse.SC_NOT_FOUND : HttpServletResponse.SC_GONE;
+            if (viewPage) {
+                viewer(request, response, status); // 뷰어가 응답 상태를 읽고 "공유가 끝났습니다" 를 띄운다
+            } else {
+                plain(response, status, link.isEmpty() ? "공유를 찾을 수 없습니다." : "끝났거나 만료된 공유입니다.");
+            }
             return;
         }
         if ("/".equals(path)) {
@@ -77,18 +79,23 @@ public class ShareHostFilter extends OncePerRequestFilter {
             response.setHeader("Location", VIEW_PATH);
             return;
         }
-        if (VIEW_PATH.equals(path) && ("GET".equals(request.getMethod()) || "HEAD".equals(request.getMethod()))) {
-            byte[] html = viewerHtml();
-            securityHeaders(response);
-            response.setHeader("Content-Security-Policy", VIEWER_CSP);
-            response.setContentType("text/html;charset=UTF-8");
-            response.setContentLength(html.length);
-            if ("GET".equals(request.getMethod())) {
-                response.getOutputStream().write(html);
-            }
+        if (viewPage) {
+            viewer(request, response, HttpServletResponse.SC_OK);
             return;
         }
         plain(response, HttpServletResponse.SC_NOT_FOUND, "없는 경로입니다.");
+    }
+
+    private void viewer(HttpServletRequest request, HttpServletResponse response, int status) throws IOException {
+        byte[] html = viewerHtml();
+        securityHeaders(response);
+        response.setStatus(status);
+        response.setHeader("Content-Security-Policy", VIEWER_CSP);
+        response.setContentType("text/html;charset=UTF-8");
+        response.setContentLength(html.length);
+        if ("GET".equals(request.getMethod())) {
+            response.getOutputStream().write(html);
+        }
     }
 
     private byte[] viewerHtml() throws IOException {

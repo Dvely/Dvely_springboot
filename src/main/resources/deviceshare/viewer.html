@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:,">
+<title>Qeploy 화면 공유</title>
+<style>
+:root{--bg:#f4f4f5;--bar:#fff;--fg:#18181b;--mut:#52525b;--line:#d4d4d8;--stage:#e4e4e7;--ov:rgba(244,244,245,.88);--btn:#fff;--btn-h:#ececef;--pri:#1d4ed8;--pri-h:#1e40af;--focus:#2563eb;--on:#16a34a;--wait:#ca8a04;--off:#dc2626;--end:#71717a}
+@media (prefers-color-scheme:dark){:root{--bg:#09090b;--bar:#18181b;--fg:#f4f4f5;--mut:#a1a1aa;--line:#3f3f46;--stage:#000;--ov:rgba(9,9,11,.85);--btn:#27272a;--btn-h:#3f3f46;--pri:#2563eb;--pri-h:#1d4ed8;--focus:#93c5fd;--on:#4ade80;--wait:#facc15;--off:#f87171;--end:#a1a1aa}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%}
+body{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;-webkit-text-size-adjust:100%}
+#bar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:8px 12px;background:var(--bar);border-bottom:1px solid var(--line)}
+.state{display:inline-flex;align-items:center;gap:6px;font-weight:600;white-space:nowrap}
+.state i{width:8px;height:8px;border-radius:50%;background:var(--c)}
+.state.on{--c:var(--on)}.state.wait{--c:var(--wait)}.state.off{--c:var(--off)}.state.end{--c:var(--end)}
+.url{flex:1 1 12rem;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mut);font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.meta{display:inline-flex;flex-wrap:wrap;gap:4px 12px;color:var(--mut)}
+.meta span{white-space:nowrap}
+.acts{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;margin-left:auto}
+button{font:inherit;color:var(--fg);background:var(--btn);border:1px solid var(--line);border-radius:6px;min-height:32px;padding:4px 12px;cursor:pointer;touch-action:manipulation}
+button:hover:not(:disabled){background:var(--btn-h)}
+button:disabled{opacity:.55;cursor:default}
+button.pri{background:var(--pri);border-color:var(--pri);color:#fff;font-weight:600}
+button.pri:hover:not(:disabled){background:var(--pri-h)}
+button.icon{min-width:36px;padding:4px 8px;font-size:16px}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+#ttl{color:var(--mut);font-variant-numeric:tabular-nums;white-space:nowrap}
+#stage{position:relative;flex:1;min-height:0;background:var(--stage);overflow:hidden}
+#screen{position:absolute;inset:0;width:100%;height:100%;display:block;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+#stage.ctl #screen{touch-action:pinch-zoom}
+#stage.typing::after{content:"";position:absolute;inset:0;border:2px solid var(--focus);pointer-events:none}
+.ov{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:16px;background:var(--ov);text-align:center;pointer-events:none}
+.ov .t{margin:0;font-size:17px;font-weight:600}
+.ov .s{margin:6px 0 0;color:var(--mut)}
+#namebox{position:fixed;z-index:10;pointer-events:auto}
+#nameform{width:100%;max-width:22rem;background:var(--bar);border:1px solid var(--line);border-radius:8px;padding:20px;text-align:left}
+#nameform h1{margin:0 0 6px;font-size:18px}
+#nameform p{margin:0 0 14px;color:var(--mut)}
+#nameform label{display:block;font-weight:600;margin-bottom:4px}
+#name{display:block;width:100%;font:inherit;font-size:16px;padding:8px 10px;margin-bottom:12px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+#nameform button{width:100%;min-height:40px}
+#typing{position:absolute;left:8px;top:8px;padding:4px 8px;border:1px solid var(--focus);border-radius:6px;background:var(--bar);font-size:12px;pointer-events:none}
+#kbd{position:fixed;left:0;top:0;width:1px;height:1px;padding:0;border:0;opacity:0;resize:none;font-size:16px;caret-color:transparent;pointer-events:none}
+#toast{position:fixed;left:50%;bottom:16px;z-index:20;transform:translateX(-50%);max-width:calc(100% - 32px);padding:8px 14px;border-radius:6px;background:var(--fg);color:var(--bg);text-align:center;opacity:0;transition:opacity .2s;pointer-events:none}
+#toast.show{opacity:1}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media (pointer:coarse){button{min-height:40px}button.icon{min-width:44px}}
+@media (prefers-reduced-motion:reduce){#toast{transition:none}}
+</style>
+</head>
+<body>
+<header id="bar">
+  <span id="state" class="state wait" aria-live="polite"><i aria-hidden="true"></i><span id="state-t">연결 중</span></span>
+  <span class="url"><span class="sr">현재 주소: </span><span id="url">—</span></span>
+  <span class="meta" id="meta"><span id="viewers">보는 사람 0명</span><span id="ctl">조작 중: 없음</span><span id="ttl" hidden></span></span>
+  <span class="acts">
+    <button type="button" id="b-back" class="icon" aria-label="뒤로" title="뒤로" hidden>←</button>
+    <button type="button" id="b-fwd" class="icon" aria-label="앞으로" title="앞으로" hidden>→</button>
+    <button type="button" id="b-reload" class="icon" aria-label="새로고침" title="새로고침" hidden>↻</button>
+    <button type="button" id="b-kbd" hidden>키보드</button>
+    <button type="button" id="b-rel" hidden>조작 그만</button>
+    <button type="button" id="b-req" class="pri" hidden>조작 요청</button>
+  </span>
+</header>
+<main id="stage">
+  <canvas id="screen" role="img" aria-label="공유된 앱 화면"></canvas>
+  <div id="ov" class="ov" role="status" hidden><div><p id="ov-t" class="t"></p><p id="ov-s" class="s"></p></div></div>
+  <div id="typing" hidden>키보드 입력을 기기로 보냅니다 · Esc 두 번: 나가기</div>
+</main>
+<div id="namebox" class="ov" role="dialog" aria-modal="true" aria-labelledby="name-h" hidden>
+  <form id="nameform">
+    <h1 id="name-h">화면 공유 보기</h1>
+    <p>함께 보는 사람에게 보일 이름을 정하세요. 비워 두면 번호로 표시됩니다.</p>
+    <label for="name">이름</label>
+    <input id="name" maxlength="20" autocomplete="nickname" enterkeyhint="go">
+    <button type="submit" class="pri">보기 시작</button>
+  </form>
+</div>
+<textarea id="kbd" tabindex="-1" aria-label="기기로 보낼 키보드 입력" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+<div id="toast" role="status" aria-live="polite"></div>
+<script>
+'use strict';
+(() => {
+const $ = (id) => document.getElementById(id);
+const canvas = $('screen'), ctx = canvas.getContext('2d'), stage = $('stage'), kbd = $('kbd');
+const BACKOFF = [1, 2, 4, 8, 15];
+const NAME_KEY = 'qeploy-share-name', SECRET_KEY = 'qeploy-share-c';
+const BTN = ['left', 'middle', 'right', 'back', 'forward'];
+
+// 저장소는 사생활 모드·차단 설정에서 던질 수 있다. 없어도 페이지는 돈다.
+function store(kind, key, val) {
+  try {
+    const s = window[kind];
+    if (val === undefined) return s.getItem(key);
+    if (val === null) s.removeItem(key); else s.setItem(key, val);
+  } catch (_) { /* 무시 */ }
+  return null;
+}
+
+const S = {
+  ws: null, joined: false, everJoined: false, ended: '', name: '', secret: null,
+  myId: null, myName: '', hasControl: false, pending: false, online: null,
+  viewers: 0, controller: null, url: '', title: '', cfgW: 0, cfgH: 0,
+  retry: 0, timer: 0, ttlEnd: 0, lastError: '', warned: false
+};
+
+// 내 제어 링크(#c=…): 비밀은 메모리(+이 탭의 sessionStorage, 새로고침 대비)에만 두고 주소창에서 바로 지운다.
+const hash = new URLSearchParams(location.hash.slice(1));
+if (hash.get('c')) {
+  S.secret = hash.get('c');
+  store('sessionStorage', SECRET_KEY, S.secret);
+  try { history.replaceState(history.state, '', location.pathname + location.search); } catch (_) { /* 무시 */ }
+} else {
+  S.secret = store('sessionStorage', SECRET_KEY);
+}
+
+let view = { x: 0, y: 0, w: 0, h: 0 }, bmp = null, busy = false, nextBuf = null;
+let press = null, pendingMove = null, wheel = null, raf = 0, lastFlush = 0;
+let lastDown = { t: 0, x: 0, y: 0, b: '', n: 0 }, composing = false, lastEsc = 0, toastTimer = 0;
+const keysDown = new Map();
+
+const text = (id, v) => { const el = $(id); if (el.textContent !== v) el.textContent = v; };
+function notify(msg) {
+  const t = $('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.classList.remove('show'); toastTimer = setTimeout(() => { t.textContent = ''; }, 300); }, 4000);
+}
+
+/* ---------- 소켓 ---------- */
+function send(msg) {
+  if (S.ws && S.ws.readyState === 1) { S.ws.send(JSON.stringify(msg)); return true; }
+  return false;
+}
+const canInput = () => S.joined && S.hasControl && !S.ended && S.online !== false;
+const sendInput = (input) => canInput() && send({ type: 'input', input });
+
+function connect() {
+  clearTimeout(S.timer); S.timer = 0;
+  if (S.ended) return;
+  let ws;
+  try {
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/__qeploy/ws');
+  } catch (_) { retry(); return; }
+  ws.binaryType = 'arraybuffer';
+  S.ws = ws;
+  let opened = false;
+  ws.onopen = () => {
+    if (ws !== S.ws) return;
+    opened = true;
+    const m = { type: 'join', name: S.name };
+    if (S.secret) m.controlSecret = S.secret;
+    ws.send(JSON.stringify(m));
+  };
+  ws.onmessage = (ev) => {
+    if (ws !== S.ws) return;
+    if (typeof ev.data === 'string') onText(ev.data); else onFrame(ev.data);
+  };
+  ws.onclose = () => {
+    if (ws !== S.ws) return;
+    S.ws = null; S.joined = false; S.pending = false; S.online = null;
+    setControl(false);
+    if (S.ended) return;
+    if (!opened) probe();
+    retry();
+  };
+  render();
+}
+function retry() {
+  if (S.ended || S.timer) return;
+  S.timer = setTimeout(connect, BACKOFF[Math.min(S.retry++, BACKOFF.length - 1)] * 1000);
+  render();
+}
+// 핸드셰이크가 실패하면 링크가 회수·만료(410)됐는지 같은 오리진 페이지로 확인한다.
+function probe() {
+  fetch('/__qeploy/view', { cache: 'no-store' })
+    .then((r) => { if (r.status === 410 || r.status === 404) end('gone'); }, () => {});
+}
+function end(reason) {
+  if (S.ended) return;
+  S.ended = reason;
+  clearTimeout(S.timer); S.timer = 0;
+  const ws = S.ws; S.ws = null; S.joined = false; S.pending = false;
+  if (ws) try { ws.close(1000); } catch (_) { /* 무시 */ }
+  store('sessionStorage', SECRET_KEY, null);
+  $('namebox').hidden = true;
+  setControl(false);
+}
+
+function onText(data) {
+  let m;
+  try { m = JSON.parse(data); } catch (_) { return; }
+  if (!m || typeof m !== 'object') return;
+  switch (m.type) {
+    case 'welcome':
+      S.joined = S.everJoined = true; S.retry = 0; S.lastError = '';
+      S.myId = m.viewerId; S.myName = m.name || '';
+      if (S.secret && !m.hasControl && !S.warned) { S.warned = true; notify('제어 링크로 조작권을 받지 못했습니다. 보기만 할 수 있습니다.'); }
+      setControl(!!m.hasControl);
+      return;
+    case 'config':
+      S.cfgW = +m.width || 0; S.cfgH = +m.height || 0;
+      S.url = String(m.url || ''); S.title = String(m.title || '');
+      S.online = true; // config 는 기기가 붙어 있을 때만 온다
+      draw();
+      break;
+    case 'presence': {
+      S.viewers = m.viewers | 0;
+      S.controller = m.controller && typeof m.controller === 'object' ? m.controller : null;
+      const mine = !!(S.joined && S.controller && S.controller.viewerId === S.myId);
+      if (S.joined && mine !== S.hasControl) { setControl(mine); return; }
+      break;
+    }
+    case 'control': onControl(m); return;
+    case 'device': S.online = m.state === 'online'; break;
+    case 'ended': end(m.reason === 'expired' ? 'expired' : 'revoked'); return;
+    case 'error':
+      if (!S.joined) S.lastError = String(m.message || '');
+      notify(m.message ? String(m.message) : '문제가 생겼습니다.');
+      break;
+    default: return;
+  }
+  render();
+}
+function onControl(m) {
+  switch (m.state) {
+    case 'granted':
+      S.ttlEnd = m.ttlSeconds > 0 ? Date.now() + m.ttlSeconds * 1000 : 0;
+      if (!S.hasControl) notify('조작권을 받았습니다. 화면을 눌러 조작하세요.');
+      setControl(true);
+      return;
+    case 'pending': S.pending = true; notify('조작을 요청했습니다. 주인이 승인하면 조작할 수 있습니다.'); break;
+    case 'denied': S.pending = false; notify('조작 요청이 거절됐습니다.'); break;
+    case 'revoked':
+    case 'released':
+      S.pending = false;
+      if (S.hasControl) notify(m.state === 'revoked' ? '조작권이 회수됐습니다.' : '조작권이 풀렸습니다.');
+      setControl(false);
+      return;
+    default: return;
+  }
+  render();
+}
+function setControl(v) {
+  S.hasControl = v;
+  if (v) S.pending = false;
+  else {
+    S.ttlEnd = 0; pendingMove = null; wheel = null; keysDown.clear();
+    if (press) clearTimeout(press.timer);
+    press = null;
+    if (document.activeElement === kbd) kbd.blur();
+  }
+  render();
+}
+
+/* ---------- 화면 ---------- */
+function render() {
+  let st = '연결됨', cls = 'on';
+  if (S.ended) { st = '공유 종료'; cls = 'end'; }
+  else if (!S.joined) { st = '연결 중'; cls = 'wait'; }
+  else if (S.online === false) { st = '기기 연결 끊김'; cls = 'off'; }
+  $('state').className = 'state ' + cls;
+  text('state-t', st);
+  text('url', S.url || '—');
+  $('url').parentNode.title = S.title ? S.title + ' — ' + S.url : S.url;
+  $('meta').hidden = !!S.ended; // 끝난 뒤의 인원·조작자는 낡은 값이다
+  text('viewers', '보는 사람 ' + S.viewers + '명');
+  const c = S.controller;
+  text('ctl', '조작 중: ' + (!c ? '없음' : c.viewerId === S.myId ? '나 (' + (c.name || S.myName) + ')' : String(c.name || '이름 없음')));
+  const live = S.joined && !S.ended, ctl = live && S.hasControl;
+  for (const id of ['b-back', 'b-fwd', 'b-reload', 'b-kbd']) { $(id).hidden = !ctl; $(id).disabled = S.online === false; }
+  $('b-rel').hidden = !ctl;
+  const req = $('b-req');
+  req.hidden = !live || S.hasControl;
+  req.disabled = S.pending;
+  text('b-req', S.pending ? '대기 중' : '조작 요청');
+  $('ttl').hidden = !ctl || !S.ttlEnd;
+  tick();
+  stage.classList.toggle('ctl', ctl);
+
+  let t = '', s = '';
+  if (S.ended === 'expired') { t = '링크가 만료됐습니다'; s = '공유한 사람에게 새 링크를 받아 주세요.'; }
+  else if (S.ended === 'revoked') { t = '공유가 끝났습니다'; s = '공유한 사람이 공유를 끝냈습니다.'; }
+  else if (S.ended) { t = '공유가 끝났습니다'; s = '링크가 회수됐거나 만료됐습니다.'; }
+  else if (!S.joined) { if ($('namebox').hidden) { t = S.everJoined ? '연결이 끊겨 다시 연결하는 중입니다' : '연결하는 중입니다'; s = S.lastError; } }
+  else if (S.online === false) { t = '기기가 잠시 연결되지 않았습니다'; s = '기기가 다시 연결되면 화면이 이어집니다.'; }
+  else if (!bmp) t = '화면을 기다리는 중입니다';
+  $('ov').hidden = !t;
+  text('ov-t', t); text('ov-s', s);
+  $('ov-s').hidden = !s;
+}
+function tick() {
+  if (!S.ttlEnd) return;
+  const left = Math.max(0, Math.round((S.ttlEnd - Date.now()) / 1000));
+  text('ttl', '남은 시간 ' + Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0'));
+}
+setInterval(tick, 1000);
+
+// 가장 최근 장만 그린다. 디코딩이 밀리면 사이에 온 장은 버린다.
+function onFrame(buf) {
+  nextBuf = buf;
+  if (!busy && !document.hidden) pump();
+}
+function pump() {
+  const buf = nextBuf;
+  if (!buf) return;
+  nextBuf = null; busy = true;
+  createImageBitmap(new Blob([buf], { type: 'image/jpeg' })).then((img) => {
+    const first = !bmp;
+    if (bmp) bmp.close();
+    bmp = img; draw();
+    if (first) render();
+  }, () => {}).then(() => { busy = false; if (nextBuf && !document.hidden) pump(); });
+}
+function draw() {
+  const w = stage.clientWidth, h = stage.clientHeight, dpr = window.devicePixelRatio || 1;
+  const cw = Math.round(w * dpr), ch = Math.round(h * dpr);
+  if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
+  const iw = bmp ? bmp.width : S.cfgW, ih = bmp ? bmp.height : S.cfgH;
+  if (!iw || !ih || !w || !h) { view = { x: 0, y: 0, w: 0, h: 0 }; return; }
+  const k = Math.min(w / iw, h / ih), vw = iw * k, vh = ih * k;
+  view = { x: (w - vw) / 2, y: (h - vh) / 2, w: vw, h: vh };
+  ctx.clearRect(0, 0, cw, ch);
+  if (!bmp) return;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bmp, view.x * dpr, view.y * dpr, vw * dpr, vh * dpr);
+}
+
+/* ---------- 입력: 포인터·휠 ---------- */
+const r4 = (v) => Math.round(v * 10000) / 10000;
+// 그려진 화면 영역에 대한 비율(0~1). 바깥이면 null, 누르고 있는 중이면 가장자리로 붙인다.
+function ratio(e, clamp) {
+  if (!view.w) return null;
+  const r = canvas.getBoundingClientRect();
+  let x = (e.clientX - r.left - view.x) / view.w, y = (e.clientY - r.top - view.y) / view.h;
+  if (x < 0 || x > 1 || y < 0 || y > 1) {
+    if (!clamp) return null;
+    x = Math.min(1, Math.max(0, x)); y = Math.min(1, Math.max(0, y));
+  }
+  return { x: r4(x), y: r4(y) };
+}
+const pointer = (action, p, button, clickCount) => sendInput({ type: 'pointer', action, x: p.x, y: p.y, button, clickCount });
+function countClicks(x, y, type, b) {
+  const now = performance.now(), tol = type === 'mouse' ? 5 : 24, L = lastDown;
+  const n = now - L.t < 500 && b === L.b && Math.abs(x - L.x) <= tol && Math.abs(y - L.y) <= tol ? Math.min(L.n + 1, 3) : 1;
+  lastDown = { t: now, x, y, b, n };
+  return n;
+}
+function schedule() { if (!raf) raf = requestAnimationFrame(flush); }
+// 움직임·휠은 화면 갱신 한 번에 하나씩, 최소 20ms 간격(서버 한도 초당 120개 아래).
+function flush(now) {
+  raf = 0;
+  if (now - lastFlush < 20) { schedule(); return; }
+  lastFlush = now;
+  if (pendingMove) { const m = pendingMove; pendingMove = null; pointer('move', m.p, m.button, 0); }
+  if (wheel) {
+    const w = wheel; wheel = null;
+    const dx = Math.round(w.dx), dy = Math.round(w.dy);
+    if (dx || dy) sendInput({ type: 'wheel', x: w.x, y: w.y, dx, dy });
+  }
+}
+function queueWheel(p, dx, dy) {
+  if (wheel) { wheel.x = p.x; wheel.y = p.y; wheel.dx += dx; wheel.dy += dy; }
+  else wheel = { x: p.x, y: p.y, dx, dy };
+  schedule();
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (!canInput() || press) return;
+  const p = ratio(e, false);
+  if (!p) return;
+  e.preventDefault();
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* 무시 */ }
+  pendingMove = null;
+  if (e.pointerType === 'touch') {
+    // 손가락: 톡 = 클릭, 끌기 = 스크롤(휠), 길게 누른 뒤 끌기 = 드래그
+    press = { id: e.pointerId, touch: true, mode: 'wait', p, x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY };
+    press.timer = setTimeout(() => {
+      if (press && press.mode === 'wait') { press.mode = 'drag'; pointer('down', press.p, 'left', 1); }
+    }, 450);
+    return;
+  }
+  if (e.pointerType === 'mouse') kbd.focus({ preventScroll: true });
+  const b = BTN[e.button] || 'left';
+  press = { id: e.pointerId, p, button: b, n: countClicks(e.clientX, e.clientY, e.pointerType, b) };
+  pointer('down', p, b, press.n);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!canInput() || (press && press.id !== e.pointerId)) return;
+  if (press && press.touch) {
+    if (press.mode === 'wait' && Math.hypot(e.clientX - press.x0, e.clientY - press.y0) > 10) {
+      clearTimeout(press.timer); press.mode = 'scroll';
+    }
+    if (press.mode === 'scroll' && view.w) {
+      const k = (S.cfgW || (bmp && bmp.width) || view.w) / view.w;
+      queueWheel(press.p, (press.lx - e.clientX) * k, (press.ly - e.clientY) * k);
+    }
+    press.lx = e.clientX; press.ly = e.clientY;
+    if (press.mode !== 'drag') return;
+  } else if (!press && e.pointerType === 'touch') return;
+  const p = ratio(e, !!press);
+  if (!p) return;
+  pendingMove = { p, button: press ? press.button || 'left' : 'none' };
+  schedule();
+});
+function endPress(e) {
+  if (!press || press.id !== e.pointerId) return;
+  const pr = press;
+  press = null; clearTimeout(pr.timer);
+  if (!canInput()) return;
+  pendingMove = null;
+  if (pr.touch) {
+    if (pr.mode === 'wait' && e.type === 'pointerup') {
+      const n = countClicks(pr.x0, pr.y0, 'touch', 'left');
+      pointer('down', pr.p, 'left', n); pointer('up', pr.p, 'left', n);
+    } else if (pr.mode === 'drag') pointer('up', ratio(e, true) || pr.p, 'left', 1);
+    return;
+  }
+  pointer('up', ratio(e, true) || pr.p, pr.button, pr.n);
+}
+for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) canvas.addEventListener(t, endPress);
+canvas.addEventListener('wheel', (e) => {
+  if (e.ctrlKey || !canInput()) return; // Ctrl+휠은 브라우저 확대로 남긴다
+  const p = ratio(e, false);
+  if (!p) return;
+  e.preventDefault();
+  const k = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
+  queueWheel(p, e.deltaX * k, e.deltaY * k);
+}, { passive: false });
+canvas.addEventListener('contextmenu', (e) => { if (S.hasControl) e.preventDefault(); });
+// 화면을 눌러도 숨은 textarea 의 포커스(키보드 입력)를 잃지 않게 한다.
+canvas.addEventListener('mousedown', (e) => { if (S.hasControl) e.preventDefault(); });
+
+/* ---------- 입력: 키보드(숨은 textarea — 모바일 키보드·IME) ---------- */
+const MODS = (e) => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
+const key = (action, k, code, mods) => sendInput({ type: 'key', action, key: k, code, modifiers: mods });
+const tap = (k) => { key('down', k, k, 0); key('up', k, k, 0); };
+const clearKbd = () => setTimeout(() => { if (!composing) kbd.value = ''; }, 0);
+function releaseKeys() {
+  for (const [id, k] of keysDown) { key('up', k.key, k.code, 0); keysDown.delete(id); }
+}
+
+kbd.addEventListener('compositionstart', () => { composing = true; });
+kbd.addEventListener('compositionend', (e) => {
+  composing = false;
+  if (e.data) sendInput({ type: 'text', text: e.data });
+  clearKbd();
+});
+kbd.addEventListener('keydown', (e) => {
+  if (composing || e.isComposing || e.keyCode === 229 || e.key === 'Process' || e.key === 'Unidentified' || e.key === 'Dead') return;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.code === 'KeyV' || e.key === 'v' || e.key === 'V')) return; // paste 가 text 로 보낸다
+  if (e.key === 'Escape' && !e.repeat) {
+    const now = performance.now();
+    if (now - lastEsc < 600) { lastEsc = 0; e.preventDefault(); kbd.blur(); return; }
+    lastEsc = now;
+  }
+  e.preventDefault();
+  if (key('down', e.key, e.code, MODS(e))) keysDown.set(e.code || e.key, { key: e.key, code: e.code });
+});
+kbd.addEventListener('keyup', (e) => {
+  const id = e.code || e.key;
+  if (!keysDown.has(id)) return;
+  keysDown.delete(id); e.preventDefault();
+  key('up', e.key, e.code, MODS(e));
+  if (e.key === 'Meta') releaseKeys(); // macOS 는 Cmd 와 함께 누른 키의 keyup 을 주지 않는다
+});
+// keydown 을 막지 못한 입력(안드로이드 가상 키보드 등)은 여기서 text/키로 보낸다. 조합 중 입력은 compositionend 가 보낸다.
+kbd.addEventListener('input', (e) => {
+  const t = e.inputType || '';
+  if (composing || e.isComposing || t.indexOf('Composition') >= 0) return;
+  if (t === 'insertLineBreak' || t === 'insertParagraph') tap('Enter');
+  else if (t === 'deleteContentBackward') tap('Backspace');
+  else if (t === 'deleteContentForward') tap('Delete');
+  else if (e.data) sendInput({ type: 'text', text: e.data });
+  clearKbd();
+});
+kbd.addEventListener('paste', (e) => {
+  e.preventDefault();
+  const t = e.clipboardData && e.clipboardData.getData('text/plain');
+  if (t) sendInput({ type: 'text', text: t.slice(0, 5000) });
+});
+kbd.addEventListener('focus', () => { $('typing').hidden = false; stage.classList.add('typing'); });
+kbd.addEventListener('blur', () => {
+  $('typing').hidden = true; stage.classList.remove('typing');
+  releaseKeys(); composing = false; kbd.value = '';
+});
+
+/* ---------- 버튼·이름 ---------- */
+$('b-req').addEventListener('click', () => {
+  if (S.joined && !S.hasControl && !S.pending && send({ type: 'request-control' })) { S.pending = true; render(); }
+});
+$('b-rel').addEventListener('click', () => { send({ type: 'release-control' }); setControl(false); });
+$('b-back').addEventListener('click', () => sendInput({ type: 'nav', action: 'back' }));
+$('b-fwd').addEventListener('click', () => sendInput({ type: 'nav', action: 'forward' }));
+$('b-reload').addEventListener('click', () => sendInput({ type: 'nav', action: 'reload' }));
+$('b-kbd').addEventListener('click', () => {
+  if (document.activeElement === kbd) kbd.blur(); // 닫힌 모바일 키보드를 다시 띄운다
+  kbd.focus({ preventScroll: true });
+});
+$('nameform').addEventListener('submit', (e) => {
+  e.preventDefault();
+  S.name = $('name').value.trim().slice(0, 20);
+  store('localStorage', NAME_KEY, S.name || null);
+  $('namebox').hidden = true;
+  connect();
+});
+
+new ResizeObserver(() => draw()).observe(stage);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (!busy) pump();
+  if (S.timer) connect();
+});
+addEventListener('online', () => { if (S.timer) connect(); });
+
+let status = 0;
+try { const nav = performance.getEntriesByType('navigation')[0]; status = (nav && nav.responseStatus) || 0; } catch (_) { /* 무시 */ }
+if (status === 410 || status === 404) end('gone');
+else if (S.secret) connect();
+else {
+  $('name').value = store('localStorage', NAME_KEY) || '';
+  $('namebox').hidden = false;
+  render();
+  $('name').focus();
+}
+})();
+</script>
+</body>
+</html>
