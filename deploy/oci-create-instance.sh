@@ -35,7 +35,20 @@ MEMORY_GB=12
 BOOT_GB=100       # Always Free 블록 스토리지는 부트 볼륨 포함 200 GB
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
-oci() { command oci --profile "$OCI_PROFILE" "$@"; }
+# 새 API 키는 서비스 노드마다 퍼지는 시간이 달라, 등록 직후 몇 분 동안은 같은 키로 어떤 호출은
+# 통과하고 어떤 호출은 401 NotAuthenticated 가 난다(2026-11-12 실측: VCN 생성은 되고 바로 다음
+# 인터넷 게이트웨이 생성이 401). 401 이면 20초 쉬고 같은 호출을 다시 한다(최대 10번).
+oci() {
+  local n=0 rc errf outf
+  errf=$(mktemp); outf=$(mktemp)
+  while :; do
+    if command oci --profile "$OCI_PROFILE" "$@" >"$outf" 2>"$errf"; then rc=0; else rc=$?; fi
+    if [ "$rc" -ne 0 ] && grep -q NotAuthenticated "$errf" && [ "$n" -lt 10 ]; then
+      n=$((n + 1)); log "인증 전파 대기 ($n/10)" >&2; sleep 20; continue
+    fi
+    cat "$outf"; cat "$errf" >&2; rm -f "$errf" "$outf"; return "$rc"
+  done
+}
 
 [ -f "$SSH_PUBKEY" ] || { echo "SSH 공개키가 없습니다: $SSH_PUBKEY" >&2; exit 1; }
 
