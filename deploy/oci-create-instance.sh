@@ -129,12 +129,17 @@ ADS=$(oci iam availability-domain list --compartment-id "$TENANCY_ID" --query 'd
 # --- 생성 반복 ----------------------------------------------------------------
 attempt=0
 backoff="$INTERVAL"
+# Oracle 의 안내는 셰이프·폴트 도메인·가용 도메인을 바꿔 보라는 것이다. 도쿄는 가용 도메인이
+# 하나라 폴트 도메인 셋을 돌아가며 지정한다. --no-retry: CLI 기본 재시도가 500(자리 없음)을
+# 2분 가까이 다시 보내므로 끄고, 간격은 이 루프가 정한다.
+FDS="FAULT-DOMAIN-1 FAULT-DOMAIN-2 FAULT-DOMAIN-3"
 while :; do
   for ad in $ADS; do
+   for fd in $FDS; do
     attempt=$((attempt + 1))
-    log "시도 #$attempt ($ad)"
-    if out=$(oci compute instance launch \
-        --compartment-id "$COMPARTMENT_ID" --availability-domain "$ad" \
+    log "시도 #$attempt ($ad / $fd)"
+    if out=$(oci compute instance launch --no-retry \
+        --compartment-id "$COMPARTMENT_ID" --availability-domain "$ad" --fault-domain "$fd" \
         --display-name "$INSTANCE_NAME" --shape "$SHAPE" \
         --shape-config "{\"ocpus\":$OCPUS,\"memoryInGBs\":$MEMORY_GB}" \
         --image-id "$IMAGE_ID" --boot-volume-size-in-gbs "$BOOT_GB" \
@@ -147,17 +152,22 @@ while :; do
       echo "PUBLIC_IP=$ip"
       exit 0
     fi
+    reason=$(printf '%s\n' "$out" | grep -E '"(code|message)"' | tr -d '\n' | tr -s ' ')
     case "$out" in
       *"Out of host capacity"*|*"OutOfHostCapacity"*|*"out of capacity"*)
         log "자리 없음"; backoff="$INTERVAL" ;;
-      *"TooManyRequests"*|*"429"*)
-        backoff=$(( backoff * 2 > 600 ? 600 : backoff * 2 )); log "요청 제한 — ${backoff}s 대기" ;;
+      *"TooManyRequests"*|*'"status": 429'*)
+        # 무료 계정은 생성 호출 한도가 낮다. 다음 폴트 도메인으로 넘어가기 전에 쉰다.
+        backoff=$(( backoff * 2 > 600 ? 600 : backoff * 2 ))
+        log "요청 제한 — ${backoff}s 대기 (${reason})"; sleep "$backoff" ;;
       *)
         echo "$out" >&2; log "예상하지 못한 오류라 멈춥니다."; exit 1 ;;
     esac
     if [ "$MAX_ATTEMPTS" -gt 0 ] && [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
       log "최대 시도 횟수 도달"; exit 2
     fi
+    sleep 20
+   done
   done
   sleep $(( backoff + RANDOM % 15 ))
 done
