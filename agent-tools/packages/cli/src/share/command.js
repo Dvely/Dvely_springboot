@@ -1,14 +1,15 @@
 /**
- * `qeploy share web <url>` (§7) and `qeploy share android` (§12) — share an app screen on this
- * machine through a link.
+ * `qeploy share web <url>` (§7), `qeploy share android` (§12) and `qeploy share ios` (§13) — share
+ * an app screen on this machine through a link.
  *
- * Both run the same link lifecycle: check what can be checked locally, make the link, print it,
+ * All run the same link lifecycle: check what can be checked locally, make the link, print it,
  * start the screen, and on any ending revoke the link unless the server already ended it. What
- * differs — Chrome over CDP, or the emulator over scrcpy — is a "source" with `prepare` (before the
- * link exists), `launch` (returns the running session) and `cleanup`.
+ * differs — Chrome over CDP, the emulator over scrcpy, the simulator over AXe — is a "source" with
+ * `prepare` (before the link exists), `launch` (returns the running session) and `cleanup`, and
+ * optionally `endings` for wording of its own.
  *
- * Everything that touches the outside world — Chrome, adb, sockets, signals, the terminal — comes
- * from a runtime object that tests replace through `deps.share`.
+ * Everything that touches the outside world — Chrome, adb, AXe, simctl, sockets, signals, the
+ * terminal — comes from a runtime object that tests replace through `deps.share`.
  */
 import { readFileSync } from 'node:fs';
 import { UsageError } from '../confirm.js';
@@ -21,6 +22,10 @@ import { ShareSession } from './session.js';
 import { Adb, NO_ADB_MESSAGE, PACKAGE_PATTERN, findAdb } from './android/adb.js';
 import { ScrcpyDevice, findScrcpy } from './android/scrcpy.js';
 import { AndroidShareSession } from './android/session.js';
+import { Axe, findAxe } from './ios/axe.js';
+import { BUNDLE_ID_PATTERN, HOME_SCREEN_BUNDLE_ID, Simctl, UDID_PATTERN, findAppByName } from './ios/simctl.js';
+import { foregroundApp } from './ios/axe-protocol.js';
+import { IosShareSession } from './ios/session.js';
 
 const CLI_VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
@@ -45,6 +50,11 @@ export const defaultShareRuntime = {
   findScrcpy: ({ env }) => findScrcpy({ env }),
   createScrcpyDevice: (options) => new ScrcpyDevice(options),
   createAndroidSession: (options) => new AndroidShareSession(options),
+  platform: process.platform,
+  findAxe: ({ env }) => findAxe({ env }),
+  createAxe: (path) => new Axe(path),
+  createSimctl: () => new Simctl(),
+  createIosSession: (options) => new IosShareSession(options),
   askControl,
   /** @returns {() => void} unsubscribe */
   onInterrupt(handler) {
@@ -77,13 +87,17 @@ const ENDINGS = {
 /** Ends where the link is already over or belongs to another connection — revoking is not ours. */
 const KEEP_LINK = new Set(['revoked', 'expired', 'replaced', 'gone']);
 
-function ending(result) {
+/** @param {object} [own] a source's wording for its reasons, over ENDINGS */
+function ending(result, own = {}) {
   if (result.reason === 'gone') {
     return result.status === 410
       ? { code: EXIT_OK, text: '공유 링크가 이미 끝났습니다(회수 또는 만료).' }
       : { code: EXIT_ERROR, text: '공유 링크를 찾을 수 없어 끝냅니다.' };
   }
-  const known = ENDINGS[result.reason] ?? { code: EXIT_ERROR, text: '공유를 끝냅니다.' };
+  const known = (Object.hasOwn(own, result.reason) ? own[result.reason] : ENDINGS[result.reason]) ?? {
+    code: EXIT_ERROR,
+    text: '공유를 끝냅니다.',
+  };
   if (result.reason === 'device-exit' && result.error?.message) {
     return { ...known, text: `${known.text} (${result.error.message.slice(0, 200)})` };
   }
@@ -261,21 +275,163 @@ function androidSource({ args, flags, rt, env, log }) {
   return source;
 }
 
-const SOURCES = { web: webSource, android: androidSource };
+/** "0.5", "15" → a number within bounds; decimals only where they make sense. */
+function parseNumber(raw, name, { min, max, integer = false }) {
+  const text = String(raw).trim();
+  const n = (integer ? /^\d+$/ : /^(\d+(\.\d+)?|\.\d+)$/).test(text) ? Number(text) : NaN;
+  if (!(n >= min && n <= max)) {
+    throw new UsageError(`${name} 는 ${min}~${max} 사이의 ${integer ? '정수' : '수'}여야 합니다: ${raw}`);
+  }
+  return n;
+}
+
+const PASTEBOARD_WARNING = [
+  '[주의] Simulator 가 내 Mac 클립보드와 자동으로 동기화되고 있습니다.',
+  '       조작권을 받은 사람이 앱의 붙여넣기로, 지금 Mac 에 복사해 둔 내용(비밀번호·토큰 등)을 볼 수 있습니다.',
+  '       끄려면 Simulator 메뉴 Edit > Automatically Sync Pasteboard 의 체크를 해제하세요. (이 CLI 는 설정을 바꾸지 않습니다)',
+].join('\n');
+
+/** §13: an app on an iOS simulator, through the user's AXe. */
+function iosSource({ args, flags, rt, env, log }) {
+  if (args.length > 1) {
+    throw new UsageError('share ios 는 위치 인자를 받지 않습니다. 시뮬레이터는 --udid, 앱은 --app 으로 정합니다.');
+  }
+  const app = flags.app === undefined ? null : String(flags.app).trim();
+  if (app !== null && !BUNDLE_ID_PATTERN.test(app)) {
+    throw new UsageError(`--app 에는 번들 ID 를 줍니다 (예: com.example.app): ${flags.app}`);
+  }
+  if (app === HOME_SCREEN_BUNDLE_ID) {
+    throw new UsageError('홈 화면(SpringBoard)은 앱으로 묶을 수 없습니다. 시뮬레이터 전체를 공유하려면 --any-app 을 씁니다.');
+  }
+  const wantUdid = flags.udid === undefined ? null : String(flags.udid).trim();
+  if (wantUdid !== null && !UDID_PATTERN.test(wantUdid)) {
+    throw new UsageError(`--udid 값이 올바르지 않습니다: ${flags.udid}`);
+  }
+  const scale = flags.scale === undefined ? 0.5 : parseNumber(flags.scale, '--scale', { min: 0.1, max: 1 });
+  const fps = flags.fps === undefined ? 15 : parseNumber(flags.fps, '--fps', { min: 1, max: 30, integer: true });
+  const anyApp = Boolean(flags.anyApp);
+
+  const prepared = { axe: null, simctl: null, simulator: null, bundleId: null, appPid: null, language: null };
+  const source = {
+    apiKind: 'IOS',
+    targetLabel: '',
+    endings: {
+      'device-exit': { code: EXIT_ERROR, text: '시뮬레이터 화면 연결이 끊겨 공유를 끝냅니다.' },
+    },
+    async prepare() {
+      if (rt.platform !== 'darwin') throw new Error('iOS 시뮬레이터 공유는 macOS 에서만 됩니다.');
+      const axeInfo = rt.findAxe({ env });
+      const simctl = rt.createSimctl();
+
+      // §13.4: only a UDID simctl lists as a booted simulator. AXe would take a real iPhone's too.
+      const booted = await simctl.bootedSimulators();
+      let simulator;
+      if (wantUdid) {
+        simulator = booted.find((s) => s.udid.toUpperCase() === wantUdid.toUpperCase());
+        if (!simulator) {
+          throw new Error(
+            `실행 중인 iOS 시뮬레이터 중에 ${wantUdid} 가 없습니다. 실제 기기는 공유하지 않습니다. \`xcrun simctl list devices booted\` 로 확인해 주세요.`
+          );
+        }
+      } else {
+        if (booted.length === 0) {
+          throw new Error('실행 중인 iOS 시뮬레이터가 없습니다. Xcode 나 `xcrun simctl boot <UDID>` 로 띄워 주세요.');
+        }
+        if (booted.length > 1) {
+          const list = booted.map((s) => `${s.name}(${s.runtime}) ${s.udid}`).join(', ');
+          throw new Error(`시뮬레이터가 여러 대입니다: ${list}. --udid 로 하나를 고르세요.`);
+        }
+        simulator = booted[0];
+      }
+
+      const apps = await simctl.apps(simulator.udid);
+      const axe = rt.createAxe(axeInfo.path);
+      let bundleId = app;
+      let appPid = null;
+      if (bundleId) {
+        if (!apps.has(bundleId)) throw new Error(`${simulator.name} 에 ${bundleId} 앱이 설치되어 있지 않습니다.`);
+      } else {
+        // §13.3: the app in front, found by matching the screen's root label with the apps' names.
+        // The home screen's label is blank, so it matches nothing (nor would SpringBoard's name).
+        let root = null;
+        let readError = null;
+        try {
+          const reply = await axe.commands(simulator.udid).request(['describe-ui']);
+          if (reply.didError) throw new Error(`AXe: ${reply.error?.message ?? reply.error?.code ?? 'describe-ui 실패'}`);
+          root = foregroundApp(reply);
+        } catch (e) {
+          readError = e;
+        }
+        const front = root?.label ? findAppByName(apps, root.label) : null;
+        if (!front && !anyApp) {
+          throw new Error(
+            readError
+              ? `시뮬레이터 화면을 읽지 못해 공유할 앱을 알 수 없습니다 (${readError.message}). --app <번들 ID> 로 정해 주세요.`
+              : '지금 시뮬레이터 앞에 떠 있는 앱을 알 수 없습니다(홈 화면이거나 이름이 맞는 앱이 없음). 공유할 앱을 연 뒤 다시 실행하거나 --app <번들 ID> 로 정하세요.'
+          );
+        }
+        bundleId = front?.bundleId ?? null;
+        // From here on the guard follows the app by this process id, not by its name.
+        appPid = front ? root.pid : null;
+      }
+
+      if (await simctl.pasteboardSyncOn()) log(PASTEBOARD_WARNING);
+      if (anyApp) {
+        log(
+          '--any-app: 앱을 묶지 않고 시뮬레이터 전체를 공유합니다. 조작권을 받은 사람은 다른 앱과, 시뮬레이터 Safari 로 내 Mac 의 localhost 에도 닿습니다.'
+        );
+      }
+
+      // A Korean simulator has a Korean keyboard, so Hangul can be typed (simctl.js hasKoreanKeyboard).
+      const [language = null] = await simctl.languages(simulator.udid);
+      Object.assign(prepared, { axe, simctl, simulator, bundleId, appPid, language });
+      source.targetLabel = `${simulator.name} · ${bundleId ?? '시뮬레이터 전체'}`;
+    },
+    async launch({ state, common }) {
+      const { axe, simctl, simulator } = prepared;
+      if (app) prepared.appPid = await simctl.launch(simulator.udid, app);
+      state.video = axe.video({ udid: simulator.udid, fps, scale });
+      state.commands = axe.commands(simulator.udid);
+      return rt.createIosSession({
+        video: state.video,
+        commands: state.commands,
+        simctl,
+        udid: simulator.udid,
+        bundleId: prepared.bundleId,
+        appPid: prepared.appPid,
+        guard: !anyApp,
+        language: prepared.language,
+        targetLabel: source.targetLabel,
+        deviceName: simulator.name,
+        ...common,
+      });
+    },
+    async cleanup(state) {
+      if (!state.video) return null;
+      state.commands?.stop();
+      await Promise.resolve(state.video.stop()).catch(() => {});
+      return 'AXe 화면 전송을 끝냈습니다.';
+    },
+  };
+  return source;
+}
+
+const SOURCES = { web: webSource, android: androidSource, ios: iosSource };
 
 export const shareCommand = {
   usage:
     'qeploy share web <url> [--viewport 390x844] [--ttl 60] [--headed] [--json]\n' +
-    '  qeploy share android [--app <패키지>] [--any-app] [--serial emulator-5554] [--max-size 1280] [--bit-rate 2M] [--ttl 60] [--json]',
+    '  qeploy share android [--app <패키지>] [--any-app] [--serial emulator-5554] [--max-size 1280] [--bit-rate 2M] [--ttl 60] [--json]\n' +
+    '  qeploy share ios [--app <번들 ID>] [--any-app] [--udid <UDID>] [--scale 0.5] [--fps 15] [--ttl 60] [--json]',
   summary:
-    '내 기기에서 도는 앱 화면(웹 앱, Android 에뮬레이터)을 링크로 공유한다. 보는 사람은 설치 없이 보고, 내가 승인하면 조작한다 (WRITE 스코프 토큰 필요)',
+    '내 기기에서 도는 앱 화면(웹 앱, Android 에뮬레이터, iOS 시뮬레이터)을 링크로 공유한다. 보는 사람은 설치 없이 보고, 내가 승인하면 조작한다 (WRITE 스코프 토큰 필요)',
   write: true,
   async run({ client, args, flags, deps, out, err }) {
     const kind = args[0];
     const makeSource = Object.hasOwn(SOURCES, kind ?? '') ? SOURCES[kind] : null;
     if (!makeSource) {
       throw new UsageError(
-        kind ? `지원하지 않는 공유 대상입니다: ${kind} (web 또는 android)` : '공유할 대상이 필요합니다 (web 또는 android).'
+        kind ? `지원하지 않는 공유 대상입니다: ${kind} (web, android, ios)` : '공유할 대상이 필요합니다 (web, android, ios).'
       );
     }
     const ttlMinutes = flags.ttl === undefined ? undefined : parseTtl(flags.ttl);
@@ -352,7 +508,7 @@ export const shareCommand = {
       cleaned = await source.cleanup(state);
     }
 
-    const { code, text } = ending(result);
+    const { code, text } = ending(result, source.endings);
     log([text, revoked ? '링크를 회수했습니다.' : null, cleaned].filter(Boolean).join(' '));
     return { printed: true, exitCode: code, data: share };
   },

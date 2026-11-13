@@ -24,6 +24,9 @@ const VALUED = new Set([
   'serial',
   'max-size',
   'bit-rate',
+  'udid',
+  'scale',
+  'fps',
 ]);
 
 const camel = (name) => name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
