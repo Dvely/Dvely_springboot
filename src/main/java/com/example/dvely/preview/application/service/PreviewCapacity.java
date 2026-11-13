@@ -1,7 +1,5 @@
 package com.example.dvely.preview.application.service;
 
-import com.example.dvely.agent.application.dto.AgentTask;
-import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.common.limit.GlobalLimitProperties;
@@ -11,9 +9,7 @@ import com.example.dvely.common.response.ErrorCode;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
 import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity;
 import com.example.dvely.preview.infrastructure.persistence.repository.SpringDataPreviewSessionRepository;
-import java.util.EnumSet;
 import java.util.List;
-import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -42,10 +38,6 @@ public class PreviewCapacity {
             PreviewSessionStatus.ACTIVE.name(),
             PreviewSessionStatus.PROVISIONING.name()
     );
-
-    // 저절로 닫는 것은 끝난 작업의 프리뷰뿐이다. FAILED 는 뺀다 — 빌드 실패 복구의 재시도가 같은 컨테이너의 작업물을
-    // 이어 쓴다. 결과 승인을 기다리는 작업은 끝나지 않은 상태라 자연히 빠진다(그 프리뷰가 승인 대상이다).
-    private static final Set<TaskStatus> RECLAIMABLE_TASK_STATUSES = EnumSet.of(TaskStatus.DONE, TaskStatus.CANCELLED);
 
     private final SpringDataPreviewSessionRepository repository;
     private final DockerContainerService dockerService;
@@ -123,9 +115,8 @@ public class PreviewCapacity {
         if (!PreviewSessionStatus.ACTIVE.name().equals(session.getStatus()) || session.getTaskId() == null) {
             return false;
         }
-        AgentTask task = taskStore.get(session.getTaskId());
-        // 런 행이 없으면 이어 쓸 작업도 없다.
-        return task == null || RECLAIMABLE_TASK_STATUSES.contains(task.status());
+        // 저절로 닫는 것은 끝난 작업의 프리뷰뿐이다. 규칙은 사람이 닫을 때와 함께 PreviewClosePolicy 에 있다(#650).
+        return PreviewClosePolicy.reclaimable(taskStore.get(session.getTaskId()));
     }
 
     private void close(PreviewSessionEntity session, PreviewSessionStatus status) {
