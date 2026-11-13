@@ -1813,6 +1813,22 @@ macOS 의 iOS 시뮬레이터 화면을 같은 링크 방식으로 공유한다.
 - iOS 의 Caps Lock 언어 전환이 꺼진 시뮬레이터에서는 한/영을 바꾸지 못한다(그 글은 넣지 않고 알린다)
 - 실제 iPhone, 소리, 멀티터치
 
+## 4.63 에이전트 도구 0.2.0 배포 준비 — `share` 명령과 API 주소 `api.qeploy.com` (Issue #668, 2026-11-14)
+
+npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mcp·cli 를 0.2.0 으로 올려 둔다. **배포(npm 업로드)는 서비스를 다시 열 때** 사용자가 Actions(`agent-tools-publish.yml`)로 한다. 절차는 `agent-tools/README.md` "0.2.0 배포" 절.
+
+- **client 의존 버전**: cli·mcp 가 `@qeploy/client` 0.1.3 을 의존했다. 0.1.3 에는 공유 API(`createDeviceShare` 등)가 없어, 그대로 올렸다면 npm 으로 받은 `share` 는 바로 깨졌다. 워크스페이스는 로컬 client 를 이어 붙여 테스트가 이것을 잡지 못한다 → 의존 버전이 저장소의 client 버전과 같은지 보는 테스트를 더했다
+- **API 주소**: 기본값을 `https://api.qeploy.com` 으로 바꿨다(재호스팅 #649, `qeploy.com` 은 웹만)
+  - 예전 기본값 `https://qeploy.com` 은 플래그·환경변수·설정 파일 어디서 오든 새 주소로 읽는다. 0.1.x `qeploy login` 이 저장한 토큰도 따라간다(둘 다 우리 주소라서). 그 밖의 주소는 바꾸지 않는다(#482)
+  - 우리 API 의 중단 안내는 웹 호스트의 `https://qeploy.com/status.json` 에서 읽는다. API 호스트가 없을 때 바로 그 안내가 필요해서다. 다른 주소는 그대로 `<주소>/status.json`
+- **확인**
+  - 테스트 276개(Node 24, `engines` 최소 Node 20.17 둘 다)
+  - `npm pack` 결과물만 빈 폴더에 설치했다. 들어간 것은 `src`·README·LICENSE 뿐이고, 비밀값 패턴이 없다
+  - 설치본 실측: 기본 주소와 0.1.x 로그인 파일 둘 다, 지금(`api.qeploy.com` DNS 없음) 중단 안내를 낸다(종료 코드 1). 로컬 서버로 `share web` 이 연결되고 Ctrl+C 로 링크 회수·Chrome 정리까지 됐다. `qeploy-mcp` 는 `serverInfo.version` 0.2.0, 도구 11개, 도구 호출 정상
+- **남은 것**
+  - 예전 서버 DB 를 옮기지 않으면 0.1.x 때 발급한 토큰은 새 서버에 없다. 그 사용자는 토큰을 새로 발급해 `qeploy login` 을 다시 한다
+
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

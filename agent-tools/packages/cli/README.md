@@ -1,6 +1,6 @@
 # @qeploy/cli
 
-> **⚠️ 서비스 일시 중단 (2026-10-30부터)** — 운영 서버 사정으로 Qeploy 서비스를 일시 중단했습니다. 재개할 때까지 로그인과 모든 도구 호출이 실패합니다. 0.1.4 부터는 그때 "대상을 찾을 수 없습니다" 대신 사이트가 내건 중단 안내([`status.json`](https://qeploy.com/status.json))를 그대로 보여줍니다. 재개 일정은 [qeploy.com](https://qeploy.com) 에서 알립니다.
+> **서비스 상태는 [qeploy.com](https://qeploy.com) 에서 알린다.** 서비스가 멈춰 있으면 모든 호출이 "대상을 찾을 수 없습니다" 대신 사이트가 내건 안내([`status.json`](https://qeploy.com/status.json))를 그대로 보인다.
 
 [Qeploy](https://qeploy.com) 커맨드라인. MCP 를 못 쓰는 에이전트·CI·사람용.
 
@@ -13,6 +13,8 @@ npx @qeploy/cli deploy <projectId> --yes
 
 토큰은 옵션으로 받지 않는다(셸 히스토리·`ps` 에 남는다). 환경변수 `QEPLOY_TOKEN` 이나 `login` 이 저장한
 파일만 읽는다. 종료 코드: 0 성공 · 1 실패 · 2 사용법 오류 · 3 인증 실패(로그인 안 함 포함).
+
+**0.2.0 부터 API 주소는 `https://api.qeploy.com` 이다.** `qeploy.com` 은 웹만 서빙한다. 예전 기본값 `https://qeploy.com`(0.1.x 의 `qeploy login` 이 저장한 주소, `QEPLOY_API_URL`)은 새 주소로 읽으므로 다시 설정할 필요가 없다.
 
 ## 내 기기 프리뷰 공유 — `share web`
 
@@ -44,6 +46,7 @@ Ctrl+C 로 공유를 끝냅니다.
 - 보기 링크로 들어온 사람이 조작을 요청하면 터미널에 묻는다(`y` 면 10분, 30초 안에 답이 없거나 터미널이 아니면 거절).
 - 연결이 끊기면 1·2·4·8·16·30초 간격으로 다시 잇는다. 링크가 회수·만료되면 멈춘다.
 - Ctrl+C 로 끝내면 링크를 회수하고 Chrome 과 임시 프로필을 지운다.
+- 웹의 설정 → **기기 화면 공유**에서 살아 있는 링크(기기 연결·접속 수·남은 시간)를 보고 끝낼 수 있다. 웹에서 끝내면 이 명령도 멈춘다.
 
 ## Android 에뮬레이터 공유 — `share android`
 

@@ -1,6 +1,11 @@
 # Qeploy 에이전트 도구
 
-> **⚠️ 서비스 일시 중단 (2026-10-30부터)** — 운영 백엔드가 내려가 있어 아래 패키지는 지금 쓸 수 없다. `qeploy.com` 은 GitHub Pages 의 웹 프론트만 서빙하므로 `/api/v1/...` 는 HTML 404(쓰기는 본문 없는 405)로 돌아온다. client 0.1.3(mcp 0.1.3·cli 0.1.4)부터는 이런 "API 가 아닌 응답"이나 연결 실패를 받으면 `<API 주소>/status.json` 을 토큰 없이 읽고, `status` 가 `suspended` 면 그 안내문(`title`·`since`·`message`)을 오류로 낸다 — MCP 도구 결과·CLI 출력·`qeploy login` 이 같은 문장을 보인다(CLI 종료 코드는 1, 인증 실패 3 과 섞지 않는다). 파일이 없거나 `suspended` 가 아니면 원래 오류 그대로다. 현황은 `../.notion/ROADMAP.md` "1. 현재 상태".
+> **⚠️ 서비스 일시 중단 (2026-10-30부터)** — 운영 백엔드가 내려가 있어 아래 패키지는 지금 쓸 수 없다. API 가 아닌 응답(웹 호스트의 HTML 404, 본문 없는 405)이나 연결 실패를 받으면 클라이언트가 중단 안내(`status.json`)를 토큰 없이 읽고, `status` 가 `suspended` 면 그 안내문(`title`·`since`·`message`)을 오류로 낸다 — MCP 도구 결과·CLI 출력·`qeploy login` 이 같은 문장을 보인다(CLI 종료 코드는 1, 인증 실패 3 과 섞지 않는다). 파일이 없거나 `suspended` 가 아니면 원래 오류 그대로다.
+>
+> - npm 의 0.1.x(client·mcp 0.1.3, cli 0.1.4)는 API 를 `https://qeploy.com` 으로 부르고 `<API 주소>/status.json` 을 읽는다
+> - **0.2.0(배포 대기, #668)** 은 API 를 `https://api.qeploy.com` 으로 부르고, 우리 API 의 중단 안내는 웹 호스트의 `https://qeploy.com/status.json` 에서 읽는다. `api.qeploy.com` 이 없어도(지금) 안내가 나온다. 배포 시점은 아래 "0.2.0 배포" 절
+>
+> 현황은 `../.notion/ROADMAP.md` "1. 현재 상태".
 
 사용자의 코딩 에이전트(Claude Code · Codex)가 Qeploy 를 **도구로 호출**하기 위한 패키지들이다.
 
@@ -54,7 +59,7 @@ codex mcp add qeploy -- npx -y @qeploy/mcp
 파일이 조용히 덮어쓰면 안 되기 때문입니다.
 
 ```bash
-export QEPLOY_API_URL=https://qeploy.com
+export QEPLOY_API_URL=https://api.qeploy.com
 export QEPLOY_TOKEN=qp_...
 ```
 
@@ -97,7 +102,7 @@ MCP 를 지원하지 않는 에이전트, CI, 그리고 사람이 직접 쓰는 
 인증·스코프·오류 문장이 MCP 와 동일하다.
 
 ```bash
-export QEPLOY_API_URL=https://qeploy.com
+export QEPLOY_API_URL=https://api.qeploy.com
 export QEPLOY_TOKEN=qp_...
 
 npx @qeploy/cli login
@@ -150,6 +155,21 @@ QEPLOY_E2E_URL=http://localhost:8099 QEPLOY_E2E_READ_TOKEN=qp_... ./e2e-cli.sh  
 
 `@qeploy` 조직(npm)에 공개 패키지로 올린다. 무료다. **`client` 를 먼저** 올린다 — 나머지 둘이 그 버전을 의존한다.
 버전을 올릴 때는 `mcp`·`cli` 의 `@qeploy/client` 의존 버전도 같이 올린다.
+
+### 0.2.0 배포 — 서비스를 다시 열 때 (#668)
+
+0.2.0 은 `share` 명령(웹·Android·iOS 화면 공유)과 API 주소 변경(`api.qeploy.com`)을 담는다. 서비스를 다시 여는 날 올린다.
+
+1. 서버가 새 주소에서 응답하는지 본다: `curl -s https://api.qeploy.com/actuator/health` → `{"status":"UP"}`
+2. FE 의 `public/status.json` 을 `operational` 로 바꿔 배포했는지 본다(안 바꾸면 실패한 호출마다 중단 안내가 나온다)
+3. Actions → **Publish agent-tools to npm** → develop 에서 Run workflow. client → mcp → cli 순서로 0.2.0 이 올라간다
+4. 올라간 것으로 확인한다
+   - `npx -y @qeploy/cli@0.2.0 --version` → `0.2.0`
+   - `npx -y @qeploy/cli@0.2.0 login` → `Qeploy: https://api.qeploy.com`. 0.1.x 로 로그인해 둔 사람도 주소를 다시 줄 필요가 없다
+   - `npx -y @qeploy/cli@0.2.0 share web http://localhost:5173` → 링크가 나오고, 웹 설정 → 기기 화면 공유에 보인다
+
+예전 서버의 DB 를 옮기지 않으면 0.1.x 때 발급한 토큰은 새 서버에 없다. 그 사용자는 웹에서 토큰을 새로 발급해
+`qeploy login` 을 다시 해야 하고, 그 전까지는 "인증에 실패했습니다"(종료 코드 3)를 본다.
 
 ### 보통은 GitHub Actions 로
 
