@@ -1,7 +1,7 @@
 # 내 기기 프리뷰 공유 설계 (앱 화면 미러링 + 제어)
 
 > 기준일: 2026-11-12 · 기준 커밋: 67c1ff1a(develop) · 이슈 #652 · 서버 재호스팅 #649
-> 구현 상태: 설계. 1단계(웹 화면) PR 들은 이 문서를 기준으로 한다
+> 구현 상태: 1단계(웹 화면) 구현(#653·#654). 2단계(Android 에뮬레이터)는 §12, 이슈는 2단계 PR 에 적는다
 
 ---
 
@@ -36,7 +36,7 @@ Ctrl+C 로 공유를 끝냅니다.
 | 단계 | 대상 | 화면 | 제어 |
 |---|---|---|---|
 | **1** | 웹(dev 브라우저) | CLI 가 띄운 Chrome 을 DevTools 프로토콜(CDP) 화면 전송 | CDP 입력 이벤트 |
-| 2 | Android 에뮬레이터 | scrcpy H.264 | scrcpy 제어 메시지 |
+| **2** | Android 에뮬레이터 | scrcpy 서버의 H.264 → 뷰어 WebCodecs(§12) | scrcpy 제어 메시지 |
 | 3 | iOS 시뮬레이터(macOS) | serve-sim 또는 AXe | AXe 탭·입력 |
 | 나중 | 로컬 웹 직접 열기 | 받는 사람 브라우저에서 따로 열림(HTTP 중계, §10) | 각자 |
 
@@ -150,7 +150,7 @@ stream id 는 1단계에서 늘 0 이다(나중 HTTP 중계용 자리). JSON pay
 | 브라우저 → 서버 | `{"type":"input","input":{…§4.3}}` |
 | 브라우저 → 서버 | `{"type":"request-control"}` · `{"type":"release-control"}` |
 | 서버 → 브라우저 | `{"type":"welcome","viewerId":"v3","name":"민지","hasControl":false}` |
-| 서버 → 브라우저 | `{"type":"config","width":390,"height":844,"url":"http://localhost:5173/","title":"Vite App"}` |
+| 서버 → 브라우저 | `{"type":"config","width":390,"height":844,"url":"http://localhost:5173/","title":"Vite App","format":"jpeg","kind":"WEB"}` (2단계 h264 는 `codec` 이 붙는다, §12.2) |
 | 서버 → 브라우저 | `{"type":"presence","viewers":2,"controller":{"viewerId":"v1","name":"주인"}}` (조작 중인 사람이 없으면 `null`) |
 | 서버 → 브라우저 | `{"type":"control","state":"granted","ttlSeconds":600}` (`granted` · `denied` · `revoked` · `released` · `pending`) |
 | 서버 → 브라우저 | `{"type":"device","state":"online"}` · `{"type":"device","state":"offline"}` |
@@ -251,7 +251,7 @@ qeploy share web <url> [--viewport 390x844] [--ttl 60] [--headed] [--json]
 | 링크 유출 | 보기만 된다. 조작은 주인 승인. 내 제어 링크 비밀은 URL 조각에만 |
 | 기록 | 화면·타이핑 내용은 저장하지 않는다 |
 
-2단계 에뮬레이터는 입력이 에뮬레이터 안으로만 가지만, 에뮬레이터는 `10.0.2.2` 로 내 기기의 localhost 에 닿는다. 조작권 기본 꺼짐·시간 제한에 더해 Android 화면 고정을 권한다(2단계 설계에서 다룬다).
+2단계 에뮬레이터는 입력이 에뮬레이터 안으로만 가지만, 에뮬레이터는 `10.0.2.2` 로 내 기기의 localhost 에 닿는다. 그래서 공유를 앱 하나로 묶는다(§12.5).
 
 ## 9. 테스트
 
@@ -274,3 +274,86 @@ qeploy share web <url> [--viewport 390x844] [--ttl 60] [--headed] [--json]
 
 - 정함: 앱 화면 단위(컴퓨터 전체 제외), 1단계 웹(CDP), 서버 중계, 링크마다 하위 도메인 오리진, 조작권 한 사람·주인 승인, 내 제어 링크는 URL 조각 비밀.
 - 남음: 보는 사람 이름을 받을지(로그인 없이 자유 입력 vs 익명 번호), 소리(1단계 없음), 여러 탭.
+
+## 12. 2단계: Android 에뮬레이터
+
+```
+qeploy share android [--app <패키지>] [--any-app] [--serial emulator-5554]
+                     [--max-size 1280] [--bit-rate 2M] [--ttl 60] [--json]
+```
+
+서버의 링크·세션·조작권·뷰어는 1단계 그대로 쓴다. 바뀌는 것은 화면 인코딩(JPEG → H.264)과 입력 변환이다.
+
+### 12.1 화면: scrcpy 서버
+
+- CLI 는 사용자가 설치한 scrcpy(`brew install scrcpy`, 4.x·5.x)의 **서버**(`scrcpy-server`, Apache-2.0)만 쓴다. scrcpy 창(데스크톱 클라이언트)은 띄우지 않는다.
+  - 서버와 클라이언트 버전이 정확히 같아야 하므로 `scrcpy --version` 값을 그대로 넘긴다.
+  - 경로를 바꿀 때는 `QEPLOY_SCRCPY_SERVER` · `QEPLOY_SCRCPY_VERSION`.
+- adb 는 `ANDROID_HOME`·`ANDROID_SDK_ROOT`·`~/Library/Android/sdk`·`PATH` 순으로 찾는다.
+- 서버를 `/data/local/tmp/qeploy-scrcpy-server.jar` 로 올리고 `adb forward` 터널로 **영상·제어 소켓 두 개**를 연다(소리 없음, `clipboard_autosync=false`, `cleanup=true`).
+- 영상 소켓
+  - 처음에 코덱 id 가 온다.
+  - 캡처가 시작될 때마다(회전 포함) 세션 패킷으로 가로·세로가 온다.
+  - 그 뒤로 미디어 패킷이 온다. 각 패킷에 설정·키 프레임 표시가 있다.
+  - CLI 는 설정 패킷(SPS·PPS)을 다음 키 프레임 앞에 붙여 한 장으로 만든다. 키 프레임 한 장만 있으면 디코딩을 시작할 수 있다.
+- 기본값: 긴 변 1280px, 2Mbps, 초당 30장. 보는 사람 한 명당 서버 아웃바운드는 시간당 1GB 안쪽이다.
+
+### 12.2 프레임 (터널 `v=1` 에 덧붙임)
+
+| kind | 2단계에서 달라지는 것 |
+|---|---|
+| `0x51` SCREEN_CONFIG | `format: "h264"`, `codec: "avc1.PPCCLL"`(SPS 에서 뽑은 WebCodecs 코덱 문자열), `width`·`height`(영상 크기), `url`: 패키지 이름, `title`: 기기 이름 |
+| `0x52` SCREEN_FRAME | `[flags 1바이트][Annex B 접근 단위]`. flags bit0 = 키 프레임(SPS·PPS 포함) |
+| `0x65` KEYFRAME_REQUEST (서버 → 기기, 새로 추가) | JSON `{}`. 기기는 키 프레임을 새로 만든다(scrcpy `RESET_VIDEO`) |
+
+- 뷰어 소켓 `config` 에 `format`(`jpeg` · `h264`), `codec`(h264 일 때만), `kind`(`WEB` · `ANDROID`, 링크의 종류)를 더한다.
+- h264 일 때 바이너리 메시지는 SCREEN_FRAME payload 그대로(`[flags][Annex B]`)다.
+- 서버는 `codec` 을 `^avc1\.[0-9A-Fa-f]{6}$` 로 거른다. 맞지 않는 h264 설정은 통째로 버린다. 모르는 `format` 은 `jpeg` 로 본다.
+- 링크 종류와 화면 형식은 서로 강제하지 않는다. 둘 다 주인 자신의 기기에서 오는 값이다.
+
+### 12.3 흐름 제어
+
+H.264 는 장마다 앞 장에 기대므로, 1단계처럼 "최신 한 장"으로 덮어쓸 수 없다.
+
+- **서버, 공유마다**
+  - 마지막 키 프레임부터 지금까지의 장(GOP)을 2MiB 까지 둔다. 넘으면 비운다.
+  - 새로 들어온 사람은 이것을 순서대로 받아 지금 화면부터 본다.
+  - 새로 들어온 사람에게 줄 GOP 가 비어 있으면 기기에 KEYFRAME_REQUEST 를 보낸다.
+  - 화면 설정(형식·코덱·크기)이 바뀌거나 기기가 끊기거나 새 연결로 바뀌면 GOP 를 비운다. 새 연결은 새 인코더라서다.
+- **서버, 보는 사람마다**
+  - 순서 큐를 둔다. 새 키 프레임이 오면 아직 못 보낸 장을 버리고 키 프레임부터 보낸다. 밀린 만큼 건너뛴다.
+  - 큐가 3MiB 를 넘으면 비우고 다음 키 프레임까지 기다린다. 기다리는 사람이 있으면 서버가 KEYFRAME_REQUEST 를 보낸다. 큐 상한이 GOP 상한보다 커서 GOP 는 통째로 다시 보낼 수 있다.
+  - 키 프레임 요청은 공유마다 1초에 한 번까지다.
+  - 텍스트(`config` 등)는 영상보다 먼저 나간다. 그래서 새 `config` 가 앞 설정의 장보다 먼저 닿을 수 있고, 뷰어가 `config` 뒤에 키 프레임을 기다리는 규칙이 이것을 받친다.
+  - 공유당 메모리는 GOP 2MiB 에 보는 사람마다 밀린 큐(최대 3MiB)다.
+- **CLI**
+  - 터널 보내기 버퍼가 2MiB 를 넘으면 키 프레임이 아닌 장을 버린다.
+  - 버퍼가 빠지면 `RESET_VIDEO` 로 새 키 프레임부터 다시 보낸다.
+- **뷰어**
+  - WebCodecs `VideoDecoder`(Annex B, `optimizeForLatency`)로 풀어 캔버스에 그린다.
+  - `config` 를 받거나 디코딩 오류가 나면 다음 키 프레임까지 기다린다.
+  - WebCodecs 는 보안 컨텍스트(HTTPS, `*.localhost`)에서만 된다(Chrome·Edge 94+, Safari 16.4+, Firefox 130+). 안 되는 브라우저에는 안내 문구를 띄운다.
+
+### 12.4 입력
+
+| §4.3 입력 | scrcpy 제어 메시지 |
+|---|---|
+| `pointer` down·move·up | `INJECT_TOUCH_EVENT`. 손가락(pointer id −2), 좌표 = 비율 × 지금 영상 크기. 화면 크기 칸에도 지금 영상 크기를 넣는다(다르면 scrcpy 가 버린다) |
+| `wheel` | `INJECT_SCROLL_EVENT`. `dy` 120 = 한 칸, 부호는 반대 |
+| `key` | 이름 있는 키(Enter·Backspace·Delete·Tab·Escape·화살표·Home·End·PageUp·PageDown)는 `INJECT_KEYCODE`. 글자 키는 Ctrl·Meta 없이 눌렸으면 `text` 처럼, 있으면 키코드 + 메타 상태 |
+| `text` | 아스키는 `INJECT_TEXT`(300바이트씩). 한글처럼 키보드로 못 넣는 글자는 `SET_CLIPBOARD`(붙여넣기)로 넣는다. 에뮬레이터 클립보드를 덮어쓴다 |
+| `nav` back | `KEYCODE_BACK`. forward·reload 는 버린다 |
+
+뷰어는 `kind` 가 `ANDROID` 면 뒤로 버튼만 보이고, 앞으로·새로고침은 숨긴다.
+
+### 12.5 안전장치
+
+| 위험 | 막는 방법 |
+|---|---|
+| 실제 폰(내 계정·사진) | 에뮬레이터만 받는다. `ro.boot.qemu`(또는 `ro.kernel.qemu`)가 `1` 이 아니면 시작하지 않는다 |
+| 앱 밖으로 나가 다른 앱 조작(에뮬레이터 Chrome 으로 `10.0.2.2` = 내 localhost) | 공유를 앱 하나로 묶는다. `--app` 이 없으면 시작할 때 앞에 떠 있는 앱으로 묶는다(홈 화면이면 `--app` 을 요구). 1초마다 맨 앞 앱을 보고, 다른 앱이면 묶인 앱을 다시 앞으로 올리고 터미널에 알린다. 권한 대화상자(`permissioncontroller`)는 허용 |
+| 묶지 않고 쓰고 싶을 때 | `--any-app`. 터미널에 경고를 띄운다 |
+| 클립보드 | 에뮬레이터 클립보드를 보내지 않는다(`clipboard_autosync=false`) |
+| 남는 프로세스 | Ctrl+C 면 scrcpy 서버를 끝내고 `adb forward` 를 지운다(서버의 `cleanup=true` 가 기기 쪽 설정을 되돌린다) |
+
+알림창·빠른 설정은 앱 전환이 아니어서 막지 못한다. 에뮬레이터 안에 머무는 동작이라 2단계에서는 그대로 둔다.
