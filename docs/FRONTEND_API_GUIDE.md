@@ -683,16 +683,16 @@ POST /api/v1/api-tokens
 
 ### 4.14 DeviceShare — `com.example.dvely.deviceshare.presentation` (3)
 
-내 기기 프리뷰 공유(#652·#656). 내 기기의 앱 화면을 링크로 공유하고, 보는 사람이 조작권을 받아 제어한다. CLI(`qeploy share web <url>`, `qeploy share android`)가 만들고 뷰어 페이지도 서버가 공유 오리진(`<토큰>.share.qeploy.com/__qeploy/view`)에서 내보낸다. **FE 는 지금 링크 목록·끝내기 화면만 붙이면 된다**(Dvely_FE 별도 이슈).
+내 기기 프리뷰 공유(#652·#656·#662). 내 기기의 앱 화면을 링크로 공유하고, 보는 사람이 조작권을 받아 제어한다. CLI(`qeploy share web <url>`, `share android`, `share ios`)가 만들고 뷰어 페이지도 서버가 공유 오리진(`<토큰>.share.qeploy.com/__qeploy/view`)에서 내보낸다. **FE 는 지금 링크 목록·끝내기 화면만 붙이면 된다**(Dvely_FE 별도 이슈).
 
 | 메서드 | 경로 | 용도 |
 |---|---|---|
-| POST | `/api/v1/device-shares` | 공유 만들기 `{kind, targetLabel, ttlMinutes?}`(kind 는 `"WEB"`·`"ANDROID"`) → `201 {shareId, viewUrl, controlUrl, tunnelUrl, expiresAt}`. 평문은 이 응답에만 |
+| POST | `/api/v1/device-shares` | 공유 만들기 `{kind, targetLabel, ttlMinutes?}`(kind 는 `"WEB"`·`"ANDROID"`·`"IOS"`) → `201 {shareId, viewUrl, controlUrl, tunnelUrl, expiresAt}`. 평문은 이 응답에만 |
 | GET | `/api/v1/device-shares` | 내 공유 최근 50개 `{shareId, kind, targetLabel, tokenPrefix, status, deviceConnected, viewers, expiresAt, revokedAt, lastViewedAt, createdAt}` |
 | DELETE | `/api/v1/device-shares/{shareId}` | 끝내기 → `204`. 연결된 기기·보는 사람이 바로 끊긴다 |
 
 - `status` 는 `ACTIVE`·`EXPIRED`·`REVOKED`. 사용자당 살아 있는 링크 5개, 넘으면 `429 DEVICE_SHARE_LIMIT_EXCEEDED`(메시지 그대로 표시).
-- `kind` 는 `WEB`(웹 앱, `targetLabel` 은 주소)·`ANDROID`(에뮬레이터, `targetLabel` 은 `<기기 이름> · <패키지>`). 목록에서 종류별 아이콘 정도로 나누면 된다.
+- `kind` 는 `WEB`(웹 앱, `targetLabel` 은 주소)·`ANDROID`(에뮬레이터, `targetLabel` 은 `<기기 이름> · <패키지>`)·`IOS`(시뮬레이터, `<시뮬레이터 이름> · <번들 ID>`). 목록에서 종류별 아이콘 정도로 나누면 된다.
 - `controlUrl` 은 주인 전용(열면 바로 조작). 화면에 보여 줄 때도 "남에게 주지 마세요" 를 붙인다. 목록 응답에는 링크가 다시 나오지 않는다(해시만 저장).
 
 ### 4.12 AiCredential — `com.example.dvely.aiaccount.presentation` (3)

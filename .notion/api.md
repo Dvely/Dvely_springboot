@@ -1780,7 +1780,7 @@ PAT(§18)로는 이 중 **조회(GET)만** 된다. 쓰기 메서드는 `WRITE` �
 
 ## 20. DeviceShare API (내 기기 프리뷰 공유, Issue #652 · #656)
 
-내 기기에서 도는 앱 화면(1단계: CLI 가 띄운 dev 브라우저, 2단계: Android 에뮬레이터)을 링크로 공유한다. 보는 사람은 같은 화면을 보고, 조작권을 받은 한 사람이 제어한다. 설계: `docs/device-preview-share-design.md`(2단계 §12). CLI `qeploy share web <url>` 과 `qeploy share android` 가 이 API 를 쓴다.
+내 기기에서 도는 앱 화면(1단계: CLI 가 띄운 dev 브라우저, 2단계: Android 에뮬레이터, 3단계: iOS 시뮬레이터)을 링크로 공유한다. 보는 사람은 같은 화면을 보고, 조작권을 받은 한 사람이 제어한다. 설계: `docs/device-preview-share-design.md`(2단계 §12, 3단계 §13). CLI `qeploy share web <url>` · `share android` · `share ios` 가 이 API 를 쓴다.
 
 ### 20.1 엔드포인트 (3개 + WebSocket 2개)
 
@@ -1806,7 +1806,7 @@ POST /api/v1/device-shares
 }
 ```
 
-- `kind` 는 `WEB`·`ANDROID` 를 받는다(`IOS` 는 `400`). `targetLabel` 1~255자(Android 는 `<기기 이름> · <패키지>`), `ttlMinutes` 1~1440(기본 60).
+- `kind` 는 `WEB`·`ANDROID`·`IOS` 를 받는다(없으면 `400`). `targetLabel` 1~255자(Android 는 `<기기 이름> · <패키지>`, iOS 는 `<시뮬레이터 이름> · <번들 ID>`), `ttlMinutes` 1~1440(기본 60). iOS 화면은 1단계와 같은 JPEG(`format: jpeg`)다.
 - **평문 토큰·비밀은 이 응답에만 실린다.** 서버는 SHA-256 만 둔다. `viewUrl` 은 남에게 줄 보기 링크, `controlUrl` 은 주인만 쓰는 내 제어 링크다(비밀이 URL 조각이라 서버 로그·Referer 에 남지 않는다).
 - 사용자당 살아 있는 링크 5개. 넘으면 `429 DEVICE_SHARE_LIMIT_EXCEEDED`.
 
