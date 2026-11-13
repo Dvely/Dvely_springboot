@@ -45,6 +45,13 @@ public interface SpringDataAgentRunRepository extends JpaRepository<AgentRunEnti
             Pageable pageable
     );
 
+    /**
+     * 작업 id 들의 상태만(#651). 내 프리뷰 목록이 세션마다 작업 상태 하나를 본다. 엔티티로 읽으면 위 {@link ActiveRunView}
+     * 주석의 LONGTEXT·TEXT 가 함께 실려 온다. 행이 없는 id 는 빠진다.
+     */
+    @Query("select run.taskId as taskId, run.status as status from AgentRunEntity run where run.taskId in :taskIds")
+    List<ActiveRunView> findStatusesByTaskIdIn(@Param("taskIds") Collection<String> taskIds);
+
     // Review follow-up (BLOCKING-3): backs TaskStore#requireWaitingResultApproval — acquires and
     // holds a row lock (SELECT ... FOR UPDATE) for the rest of the caller's transaction. Design
     // ADR-Y1 (#55) reuses this exact query as TaskStore#lockTask, the task-row mutex every
