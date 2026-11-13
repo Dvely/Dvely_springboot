@@ -2,7 +2,7 @@
 
 이 문서는 프론트엔드 개발자가 Swagger UI와 함께 참고하는 통합 작업 문서입니다. 컨트롤러·DTO·설계서(`.agent-team/04-architecture/`)의 실제 계약만을 근거로 작성했으며, 추측/날조된 필드나 동작은 없습니다. 필드 하나하나의 상세 스키마(타입, `nullable`, `example`)는 Swagger UI(`/swagger-ui/index.html`)가 항상 최신 소스이므로, 이 문서는 **"무엇을 언제 왜 호출하는가"**에 집중하고 세부 스키마는 Swagger로 위임합니다.
 
-- **컨트롤러 수**: 24개 · **엔드포인트 매핑 수**: 121개 (2026-11-09 실측. 셈법은 `.notion/api.md` §1)
+- **컨트롤러 수**: 25개 · **엔드포인트 매핑 수**: 124개 (2026-11-12 실측, DeviceShare +3. 셈법은 `.notion/api.md` §1)
 - 아래 §4 카탈로그는 아직 전수가 아니다. `AuditLog` · `DatabaseProvisioning` · `DomainTls` · `PreviewRuntimeConfig` · `ServerProvisioning` 컨트롤러는 절이 없으므로, 그 영역은 Swagger UI 를 정본으로 본다.
 - **작성 기준 커밋**: main `eb0ec2d` (U0~U7 · I45 · Cost(#58) · CloudOps(#59) · 결과 승인 2단계(#56) · pendingApprovalId/retryable 재정의(#57) · retry TOCTOU 제거(#64) · 결과 게이트 이력 판정 보강(#62) 머지 완료)
 
@@ -679,7 +679,20 @@ POST /api/v1/api-tokens
 
 `WRITE` 가 짧은 이유는 유출됐을 때 할 수 있는 일이 다르기 때문이다 — 배포하고 환경변수를 바꾸고 도메인을 붙인다. 범위를 벗어나면 **400** 이고 메시지에 스코프가 들어 있으니 그대로 보여주면 된다. 발급 UI 의 만료일 입력은 선택한 스코프에 따라 상한을 바꿔야 한다.
 
-**`WRITE` 도 모든 쓰기가 아니다(#453).** PAT 로 통과하는 쓰기는 배포 생성·재시도, 환경변수 추가·수정, 도메인 추가 다섯 개뿐이고, 승인·토큰 발급/폐기·AI 키·클라우드 연결·회원 탈퇴·삭제 등 나머지는 403 이다. 브라우저 로그인(JWT)은 영향이 없다. 발급 UI 에서 `WRITE` 를 설명할 때 "모든 작업" 처럼 쓰지 말 것.
+**`WRITE` 도 모든 쓰기가 아니다(#453).** PAT 로 통과하는 쓰기는 배포 생성·재시도, 환경변수 추가·수정, 도메인 추가, 내 기기 공유 만들기·끝내기 일곱 개뿐이고, 승인·토큰 발급/폐기·AI 키·클라우드 연결·회원 탈퇴·삭제 등 나머지는 403 이다. 브라우저 로그인(JWT)은 영향이 없다. 발급 UI 에서 `WRITE` 를 설명할 때 "모든 작업" 처럼 쓰지 말 것.
+
+### 4.14 DeviceShare — `com.example.dvely.deviceshare.presentation` (3)
+
+내 기기 프리뷰 공유(#652). 내 기기의 앱 화면을 링크로 공유하고, 보는 사람이 조작권을 받아 제어한다. 1단계는 CLI(`qeploy share web <url>`)가 만들고 뷰어 페이지도 서버가 공유 오리진(`<토큰>.share.qeploy.com/__qeploy/view`)에서 내보낸다. **FE 는 지금 링크 목록·끝내기 화면만 붙이면 된다**(Dvely_FE 별도 이슈).
+
+| 메서드 | 경로 | 용도 |
+|---|---|---|
+| POST | `/api/v1/device-shares` | 공유 만들기 `{kind:"WEB", targetLabel, ttlMinutes?}` → `201 {shareId, viewUrl, controlUrl, tunnelUrl, expiresAt}`. 평문은 이 응답에만 |
+| GET | `/api/v1/device-shares` | 내 공유 최근 50개 `{shareId, kind, targetLabel, tokenPrefix, status, deviceConnected, viewers, expiresAt, revokedAt, lastViewedAt, createdAt}` |
+| DELETE | `/api/v1/device-shares/{shareId}` | 끝내기 → `204`. 연결된 기기·보는 사람이 바로 끊긴다 |
+
+- `status` 는 `ACTIVE`·`EXPIRED`·`REVOKED`. 사용자당 살아 있는 링크 5개, 넘으면 `429 DEVICE_SHARE_LIMIT_EXCEEDED`(메시지 그대로 표시).
+- `controlUrl` 은 주인 전용(열면 바로 조작). 화면에 보여 줄 때도 "남에게 주지 마세요" 를 붙인다. 목록 응답에는 링크가 다시 나오지 않는다(해시만 저장).
 
 ### 4.12 AiCredential — `com.example.dvely.aiaccount.presentation` (3)
 

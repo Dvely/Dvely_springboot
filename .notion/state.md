@@ -9,7 +9,7 @@
 - 제품 기준: `.notion/prd.md` (§15.2는 2026-07-18 사용자 확정으로 예외 개정, §2.23 참고)
 - 구현 기준: 현재 Spring Boot 코드, Flyway migration, 테스트
 - 테스트 결과: **이번 갱신(2026-10-20)에서는 전체 테스트를 다시 집계하지 않았다.** 마지막 집계는 PR #114 머지 시점(2026-08-15)의 통합 main 737/737이다(직전 기준 710 대비 +27 — §2.30 게이트웨이 인가(+16)·§2.31 서브리소스 인가·CORS 수정(+5)·§2.32 빌드 base 흡수(+5)·§2.33 CDN beacon 차단(+1) 신설분). Flyway는 V1~V66 연속(`ls src/main/resources/db/migration | sort -V`, 2026-10-20 확인 — V66은 §4.36)
-- 현재 공개 API: 121개(2026-11-09 재집계, 방식은 `api.md` §1과 동일 — 회원 탈퇴 +2 #613, 결과 승인 반영 범위 +1 #532). 직전 기록 94개(PR #104 시점) 이후의 증가분과 모듈별 내역은 `api.md` §1에 있다
+- 현재 공개 API: 124개(2026-11-12 — 내 기기 프리뷰 공유 +3 #652, §4.60). 그 전 121개(2026-11-09 재집계, 방식은 `api.md` §1과 동일 — 회원 탈퇴 +2 #613, 결과 승인 반영 범위 +1 #532). 직전 기록 94개(PR #104 시점) 이후의 증가분과 모듈별 내역은 `api.md` §1에 있다
 - **운영 상태(2026-10-31): 서비스 일시 중단.** 2026-10-30 AWS 지원 종료로 FE 는 GitHub Pages 로 옮겼고(Dvely_FE #194) 백엔드는 어디에서도 서비스되지 않는다. `qeploy.com/api/v1/...` 는 Pages 의 HTML 404(쓰기는 405)라 이 문서의 "한 것" 은 **코드 기준**이며 지금 운영에서 동작하지 않는다. agent-tools 는 `status.json` 의 중단 안내를 오류로 보인다(#604). 경과와 다음 할 일은 `ROADMAP.md` 1절 2026-10-31 항목
 - 단위 작업 백로그와 우선순위 SSOT는 `.notion/ROADMAP.md`이다. 이 문서는 기능별 완료 여부를, ROADMAP.md는 다음에 무엇을 어떤 순서로 할지를 다룬다.
 
@@ -1075,7 +1075,7 @@ Docker preview 성공률, 배포 성공률, build 실패 해결률, Agent intent
 - `apitoken` 도메인(V60). **해시만 저장**하고 평문은 발급 응답에서 1회만 노출한다 — §4.21 의 BYOK 키와 달리 벤더에 전달할 일이 없어 비교만 하면 된다.
 - 기존 `JwtAuthenticationFilter` 가 `qp_` 접두사로 분기. 기존 JWT 경로는 테스트로 불변을 고정했다.
 - 스코프는 HTTP 메서드로 강제(READ 는 GET 만, 변경 메서드는 403).
-- **WRITE 도 모든 쓰기가 아니다(Issue #453, 2026-10-15).** PAT 로 통과하는 쓰기는 허용 목록 다섯 개뿐이다 — 배포 생성(`POST /projects/{id}/deployments`)·재시도(`POST /deployments/{id}/retry`), 환경변수 추가(`POST /projects/{id}/environment-variables`)·수정(`PATCH .../environment-variables/{variableId}`), 도메인 추가(`POST /projects/{id}/domains`). 나머지 쓰기(승인 결정, 토큰 발급·폐기, AI 키, 클라우드 연결, 삭제 등)는 403 "이 작업은 개인 액세스 토큰으로 할 수 없습니다". 브라우저 JWT 는 영향이 없다
+- **WRITE 도 모든 쓰기가 아니다(Issue #453, 2026-10-15).** PAT 로 통과하는 쓰기는 허용 목록 일곱 개뿐이다 — 배포 생성(`POST /projects/{id}/deployments`)·재시도(`POST /deployments/{id}/retry`), 환경변수 추가(`POST /projects/{id}/environment-variables`)·수정(`PATCH .../environment-variables/{variableId}`), 도메인 추가(`POST /projects/{id}/domains`), 내 기기 공유 만들기(`POST /device-shares`)·끝내기(`DELETE /device-shares/{id}`, #652). 나머지 쓰기(승인 결정, 토큰 발급·폐기, AI 키, 클라우드 연결, 삭제 등)는 403 "이 작업은 개인 액세스 토큰으로 할 수 없습니다". 브라우저 JWT 는 영향이 없다
   - 그 전에는 WRITE PAT 가 브라우저와 같은 권한이었다. "승인·삭제는 에이전트에 노출하지 않는다"가 MCP 가 도구를 안 만든 것으로만 지켜졌고, 셸이 있는 에이전트는 저장된 토큰으로 승인을 스스로 누르거나 PAT 로 PAT 를 재발급할 수 있었다
   - 거부 목록이 아니라 **허용 목록**이다(`JwtAuthenticationFilter.PAT_WRITABLE`, `METHOD 경로` 정규식). 새 엔드포인트는 누군가 열기 전까지 닫혀 있다. `agent-tools/packages/client` 의 쓰기 호출이 목록 밖으로 나가면 `JwtAuthenticationFilterTest` 가 깨진다 — 에이전트에 쓰기를 새로 열 때는 이 목록에 한 줄을 더한다
   - **미실측**: dev/운영에서 실제 WRITE PAT 로 403 을 확인하지는 않았다(사용자 토큰 필요 — `ROADMAP.md` 2026-10-20 "남은 것")
@@ -1726,6 +1726,28 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
   - 변이 결과
     - 테스트가 실패한 것: develop 의 문장, 범위 UPDATE 한 문장, 고르기에 `for update`, 표시 조건 제거, 표시 기록 제거
     - 테스트가 통과한 것: 힌트 제거 2건과 기본 격리. 옵티마이저가 이 데이터에서 같은 계획을 고르고, 두 단계라 격리 수준이 이 시나리오에 영향을 주지 않는다
+
+## 4.60 내 기기 프리뷰 공유 1단계 — 웹 화면 미러링과 조작권 (Issue #652, PR #653·#654, V75, 2026-11-12)
+
+프리뷰를 핵심 기능으로 앞세우는 개편의 첫 단계다. 내 기기에서 도는 앱 화면(1단계: CLI 가 띄운 임시 프로필 Chrome)을 링크로 공유한다. 보는 사람은 설치 없이 같은 화면을 보고, 조작권을 받은 한 사람이 제어한다. 범위는 컴퓨터 전체가 아니라 앱 화면 단위다(2026-11-12 결정). 설계 `docs/device-preview-share-design.md`, API `api.md` §20.
+
+- **새 패키지 `deviceshare`**, 테이블 `device_share_links`(V75). 보기 토큰(128비트 base32 26자, 하위 도메인 라벨)과 내 제어 링크 비밀(256비트)은 SHA-256 만 저장한다
+- **공유 오리진** `<토큰>.<qeploy.device-share.base-domain>`: 보안 체인 앞 `ShareHostFilter` 가 `/__qeploy/view`(뷰어, 엄격 CSP)·`/__qeploy/ws`(뷰어 소켓)만 내보낸다. 공유 오리진에서는 API 컨트롤러에 닿지 않는다
+- **기기 터널** `/api/v1/device-shares/{id}/tunnel?v=1`(WS): 인증은 기존 `JwtAuthenticationFilter`, 핸드셰이크 인터셉터가 주인·상태·WRITE 스코프를 본다. 같은 링크의 새 연결은 옛 연결을 `replaced` 로 닫는다
+- **공유 세션**(메모리, 서버 한 대 전제): 화면은 보는 사람마다 최신 한 장(느린 사람은 장이 빠질 뿐), 조작권 한 사람(내 제어 링크 = 즉시, 손님 = 기기 승인, 기본 10분), 입력 초당 120개 상한. 15초마다 만료·조작권 시간 점검, DB 에서 사라졌거나 끝난 링크(탈퇴 CASCADE 포함)를 끊는다
+- **상한**: 사용자당 살아 있는 링크 5(`429 DEVICE_SHARE_LIMIT_EXCEEDED`), 서버 전체 터널 50, 링크당 보는 사람 20, 화면 한 장 2MiB
+- **Tomcat WebSocket 버퍼**: 기본 8KiB 로는 화면 한 장이 1009 로 끊겨 `server.servlet.context-parameters` 로 3MiB 를 둔다(전역 `ServletServerContainerFactoryBean` 은 목 서블릿 테스트 기동을 깨뜨린다)
+- **CLI** `qeploy share web <url> [--viewport WxH] [--ttl N] [--headed] [--json]`(`agent-tools/packages/cli/src/share/`): 임시 프로필 Chrome 을 CDP 로 화면 전송(JPEG, 보내기 버퍼가 비었을 때만 ack, 초당 15장). 다른 오리진 이동·다운로드·파일 선택·새 탭·붙여넣기 단축키를 막는다. 조작권 요청은 터미널 y/N(30초, TTY 아니면 거절). `ws` 8.21.3 고정
+- **탈퇴**: `device_share_links` 는 users CASCADE(`UserWithdrawalStore.CASCADED_TABLES` 10개가 됐다)
+- **테스트**: 서버 26건(토큰·프레임, 세션 12, 실 MySQL·보안 체인 엔드포인트 8, 실제 Tomcat WebSocket 끝까지 2 — 300KB 화면·한글 입력·회수 시 양쪽 끊김, 탈퇴 정리 1), CLI 185건(npm test). 실측: 로컬 서버 + 실제 Chrome 157 로 주인 즉시 조작·한글 입력, 손님 요청 → CLI 승인 → 손님 클릭 반영
+- **운영 env**(#649 서버에서): `QEPLOY_DEVICE_SHARE_BASE_DOMAIN=share.qeploy.com`, `QEPLOY_DEVICE_SHARE_PUBLIC_SCHEME=https`, `QEPLOY_DEVICE_SHARE_PUBLIC_PORT=0`, `QEPLOY_DEVICE_SHARE_API_PUBLIC_URL=https://api.qeploy.com`(비우면 nginx 뒤에서 `ws://` 터널 주소가 나가고 CLI 가 토큰을 보내지 않는다). DNS `*.share`(DNS only)·와일드카드 인증서(DNS-01)·nginx 공유 호스트 블록 필요
+
+남은 것:
+
+- 2단계 Android 에뮬레이터(scrcpy H.264 + WebCodecs), 3단계 iOS 시뮬레이터 — 같은 터널에 프레임 종류만 더한다
+- 다른 오리진 이동을 막았을 때 뷰어에는 Chrome 의 차단 페이지만 보인다(안내 프레임이 프로토콜에 없다)
+- 공유 세션은 메모리에만 있어 서버 재시작 때 모두 끊긴다(CLI 는 같은 링크로 다시 잇는다). 서버 여러 대로 늘리면 세션 위치가 필요하다
+- FE 링크 관리 화면(목록·끝내기)은 Dvely_FE 별도 이슈
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
