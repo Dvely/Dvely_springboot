@@ -305,12 +305,12 @@ public class ShareSession {
         Viewer viewer = new Viewer(id, name, owner, channel);
         viewers.put(id, viewer);
         channel.sendText(object("type", "welcome").put("viewerId", id).put("name", name)
-                .put("hasControl", false).toString());
+                .put("hasControl", false).put("owner", owner).toString());
         if (configMessage != null) {
             channel.sendText(configMessage);
         }
         channel.sendText(object("type", "device").put("state", deviceReady ? "online" : "offline").toString());
-        if (owner) {
+        if (owner && ownerMayTakeControl()) {
             grant(viewer, 0);
         } else {
             broadcastPresence();
@@ -405,6 +405,15 @@ public class ShareSession {
         device.sendBinary(ShareFrames.encode(ShareFrames.CONTROL_REQUEST,
                 object("viewerId", viewer.id()).put("name", viewer.name()).toString()));
         viewer.channel().sendText(object("type", "control").put("state", "pending").toString());
+    }
+
+    /**
+     * 주인은 들어오자마자 조작권을 받는다. 다만 주인이 승인한 손님이 조작 중이면 그대로 둔다 — 주인 탭이 다시
+     * 연결될 때마다 손님의 조작권을 빼앗지 않도록. 주인은 조작을 요청하면 바로 되찾는다(설계 §5).
+     */
+    private boolean ownerMayTakeControl() {
+        Viewer controller = controllerId == null ? null : viewers.get(controllerId);
+        return controller == null || controller.owner();
     }
 
     /** @param ttlSeconds 0 이면 시간 제한 없음(주인) */

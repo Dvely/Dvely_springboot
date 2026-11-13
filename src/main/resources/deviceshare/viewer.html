@@ -107,7 +107,7 @@ const S = {
   ws: null, joined: false, everJoined: false, ended: '', name: '', secret: null,
   myId: null, myName: '', hasControl: false, pending: false, online: null,
   viewers: 0, controller: null, url: '', title: '', cfgW: 0, cfgH: 0,
-  kind: 'WEB', format: 'jpeg', codec: '', noVideo: false,
+  kind: 'WEB', format: 'jpeg', codec: '', noVideo: false, owner: false, toldOther: false,
   retry: 0, timer: 0, ttlEnd: 0, lastError: '', warned: false
 };
 
@@ -204,8 +204,8 @@ function onText(data) {
   switch (m.type) {
     case 'welcome':
       S.joined = S.everJoined = true; S.retry = 0; S.lastError = '';
-      S.myId = m.viewerId; S.myName = m.name || '';
-      if (S.secret && !m.hasControl && !S.warned) { S.warned = true; notify('제어 링크로 조작권을 받지 못했습니다. 보기만 할 수 있습니다.'); }
+      S.myId = m.viewerId; S.myName = m.name || ''; S.owner = !!m.owner; S.toldOther = false;
+      if (S.secret && !S.owner && !S.warned) { S.warned = true; notify('제어 링크로 조작권을 받지 못했습니다. 보기만 할 수 있습니다.'); }
       setControl(!!m.hasControl);
       return;
     case 'config':
@@ -222,6 +222,11 @@ function onText(data) {
       S.viewers = m.viewers | 0;
       S.controller = m.controller && typeof m.controller === 'object' ? m.controller : null;
       const mine = !!(S.joined && S.controller && S.controller.viewerId === S.myId);
+      // 주인이 승인한 사람이 조작 중이면 주인은 보기로 들어온다. 누르면 바로 되찾는다(설계 §5).
+      if (S.owner && S.joined && S.controller && !mine && !S.toldOther) {
+        S.toldOther = true;
+        notify("'" + String(S.controller.name || '다른 사람') + "' 님이 조작 중입니다. '조작 되찾기'를 누르면 바로 가져옵니다.");
+      }
       if (S.joined && mine !== S.hasControl) { setControl(mine); return; }
       break;
     }
@@ -289,7 +294,7 @@ function render() {
   const req = $('b-req');
   req.hidden = !live || S.hasControl;
   req.disabled = S.pending;
-  text('b-req', S.pending ? '대기 중' : '조작 요청');
+  text('b-req', S.pending ? '대기 중' : S.owner ? '조작 되찾기' : '조작 요청');
   $('ttl').hidden = !ctl || !S.ttlEnd;
   tick();
   stage.classList.toggle('ctl', ctl);

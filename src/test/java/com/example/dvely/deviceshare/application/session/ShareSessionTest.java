@@ -120,17 +120,50 @@ class ShareSessionTest {
     }
 
     @Test
-    void 주인은_들어오자마자_조작권을_받고_앞사람의_조작권은_거둔다() {
+    void 주인은_들어오자마자_조작권을_받는다() {
         FakeViewer guest = new FakeViewer();
-        String guestId = session.join(guest, "손님", false);
-        session.onViewerMessage(guestId, msg("{\"type\":\"request-control\"}"), Instant.now());
-        session.onDeviceFrame(device, frame(ShareFrames.CONTROL_DECISION, "{\"viewerId\":\"" + guestId + "\",\"granted\":true}"));
+        session.join(guest, "손님", false);
 
         FakeViewer owner = new FakeViewer();
         session.join(owner, "아무거나", true);
         assertThat(owner.type("welcome").path("name").asText()).isEqualTo("주인");
+        assertThat(owner.type("welcome").path("owner").asBoolean()).isTrue();
+        assertThat(guest.type("welcome").path("owner").asBoolean()).isFalse();
         assertThat(owner.last("control").path("state").asText()).isEqualTo("granted");
         assertThat(owner.last("control").has("ttlSeconds")).isFalse();
+    }
+
+    @Test
+    void 주인의_다른_탭이_조작_중이면_새로_들어온_주인_탭이_가져간다() {
+        FakeViewer first = new FakeViewer();
+        session.join(first, null, true);
+        FakeViewer second = new FakeViewer();
+        session.join(second, null, true);
+        assertThat(second.last("control").path("state").asText()).isEqualTo("granted");
+        assertThat(first.last("control").path("state").asText()).isEqualTo("revoked");
+    }
+
+    @Test
+    void 손님이_조작_중이면_다시_들어온_주인은_빼앗지_않고_요청하면_바로_되찾는다() {
+        FakeViewer owner = new FakeViewer();
+        String ownerId = session.join(owner, null, true);
+        FakeViewer guest = new FakeViewer();
+        String guestId = session.join(guest, "손님", false);
+        session.onViewerMessage(guestId, msg("{\"type\":\"request-control\"}"), Instant.now());
+        session.onDeviceFrame(device, frame(ShareFrames.CONTROL_DECISION, "{\"viewerId\":\"" + guestId + "\",\"granted\":true}"));
+        assertThat(guest.last("control").path("state").asText()).isEqualTo("granted");
+
+        // 주인 탭이 끊겼다가 다시 들어온다(뒤에 있던 탭의 재연결 등)
+        session.leave(ownerId);
+        FakeViewer back = new FakeViewer();
+        String backId = session.join(back, null, true);
+        assertThat(back.type("welcome").path("owner").asBoolean()).isTrue();
+        assertThat(back.types()).doesNotContain("control");
+        assertThat(back.last("presence").path("controller").path("viewerId").asText()).isEqualTo(guestId);
+        assertThat(guest.last("control").path("state").asText()).isEqualTo("granted");
+
+        session.onViewerMessage(backId, msg("{\"type\":\"request-control\"}"), Instant.now());
+        assertThat(back.last("control").path("state").asText()).isEqualTo("granted");
         assertThat(guest.last("control").path("state").asText()).isEqualTo("revoked");
     }
 
