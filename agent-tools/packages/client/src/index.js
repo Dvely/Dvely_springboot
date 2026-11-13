@@ -1,3 +1,5 @@
+import { canonicalApiUrl, statusUrlFor } from './address.js';
+
 /**
  * Qeploy REST client.
  *
@@ -114,7 +116,8 @@ export class QeployClient {
     if (!baseUrl) throw new Error('QEPLOY_API_URL 이 필요합니다.');
     if (!token) throw new Error('QEPLOY_TOKEN 이 필요합니다.');
     // Trailing slashes would produce "//api/v1/..." which some gateways treat as a different path.
-    this.baseUrl = checkBaseUrl(baseUrl);
+    // The old default (qeploy.com) is only the web front now; see address.js.
+    this.baseUrl = canonicalApiUrl(checkBaseUrl(baseUrl));
     this.token = token;
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
@@ -189,6 +192,8 @@ export class QeployClient {
    * While Qeploy is suspended the web front stays up on static hosting with no API behind it, so
    * every call gets that host's HTML 404 — reported as-is, "대상을 찾을 수 없습니다:
    * /api/v1/projects", as if the project were gone. The site publishes /status.json for this case.
+   * For our own API the file is on the web host (qeploy.com), which stays up when the API host is
+   * gone; for any other address it is `<address>/status.json`.
    *
    * No Authorization header: the file is public, and the token goes nowhere it is not needed. Any
    * failure here — no file, not JSON, not suspended — leaves the original error as it was.
@@ -197,7 +202,7 @@ export class QeployClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, STATUS_TIMEOUT_MS));
     try {
-      const response = await this.fetchImpl(`${this.baseUrl}/status.json`, { signal: controller.signal });
+      const response = await this.fetchImpl(statusUrlFor(this.baseUrl), { signal: controller.signal });
       if (!response.ok) return error;
       const status = JSON.parse(await response.text());
       return status?.status === 'suspended' ? suspendedError(status, error.path) : error;

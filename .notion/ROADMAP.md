@@ -10,6 +10,12 @@
 
 ## 1. 현재 상태
 
+- 2026-11-14: **에이전트 도구 0.2.0 배포를 준비했다(#668). npm 업로드는 서비스를 다시 열 때 한다.** 백엔드 코드 변경 0
+  - client·mcp·cli 를 0.2.0 으로 올렸다. cli 가 공유 API 없는 client 0.1.3 을 의존하던 것을 바로잡았다
+  - API 기본 주소는 `https://api.qeploy.com` 이다. 예전 기본값 `qeploy.com` 은 새 주소로 읽고, 중단 안내는 `qeploy.com/status.json` 에서 읽는다
+  - 상세는 `state.md` §4.63, 배포 절차는 `agent-tools/README.md` "0.2.0 배포"
+  - **다음**: 서비스를 다시 열 때 서버 응답 → FE `status.json` operational → Actions 로 npm 배포
+
 - 2026-11-14: **내 기기 화면 공유를 web·Android·iOS 모두 develop 에 넣었다(#663·#664·#665, 클립보드 경고 #666). FE 링크 관리 화면을 Dvely_FE #206 → PR #207 로 올렸다(병합은 사용자 승인).** 백엔드 코드 변경 0, 마이그레이션 없음(develop 최신 **V75**)
   - **FE 링크 관리 화면**(PR #207)
     - 설정의 빈 자리 "My Computer" 를 "기기 화면 공유" 로 바꿨다(`?section=device-shares`)
