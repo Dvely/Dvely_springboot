@@ -1744,10 +1744,42 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 
 남은 것:
 
-- 2단계 Android 에뮬레이터(scrcpy H.264 + WebCodecs), 3단계 iOS 시뮬레이터 — 같은 터널에 프레임 종류만 더한다
+- ~~2단계 Android 에뮬레이터~~ → §4.61(#656). 3단계 iOS 시뮬레이터는 남았다
 - 다른 오리진 이동을 막았을 때 뷰어에는 Chrome 의 차단 페이지만 보인다(안내 프레임이 프로토콜에 없다)
 - 공유 세션은 메모리에만 있어 서버 재시작 때 모두 끊긴다(CLI 는 같은 링크로 다시 잇는다). 서버 여러 대로 늘리면 세션 위치가 필요하다
 - FE 링크 관리 화면(목록·끝내기)은 Dvely_FE 별도 이슈
+
+## 4.61 내 기기 프리뷰 공유 2단계 — Android 에뮬레이터 (Issue #656, PR #657·#658, 2026-11-13)
+
+§4.60 의 링크·세션·조작권·뷰어 위에 Android 에뮬레이터 화면을 얹었다. 바뀐 것은 화면 인코딩(JPEG → H.264)과 입력 변환이다. 설계 `docs/device-preview-share-design.md` §12. 마이그레이션 없음.
+
+- **서버**
+  - 링크 종류 `ANDROID` 허용(`IOS` 는 400)
+  - 뷰어 `config` 에 `format`(`jpeg`·`h264`)·`codec`(`avc1.PPCCLL` 만)·`kind`
+  - h264 화면은 `[flags][Annex B]` 그대로 나눠 준다. 덮어쓸 수 없어서 공유마다 마지막 키 프레임부터 2MiB(GOP)를 두고 늦게 들어온 사람에게 다시 보낸다
+  - 보는 사람마다 `VideoBacklog`(3MiB 순서 큐): 새 키 프레임이면 밀린 장을 건너뛰고, 넘치면 다음 키 프레임을 기다린다
+  - 키 프레임이 필요하면 기기에 `KEYFRAME_REQUEST`(0x65), 공유마다 1초에 한 번. 설정 변경·기기 끊김·새 연결이면 GOP 를 비운다
+- **뷰어**: WebCodecs `VideoDecoder` 로 풀어 캔버스에 그린다(보안 컨텍스트 필요, 없는 브라우저는 안내). Android 는 뒤로 버튼만, 터치는 그대로 보낸다
+- **CLI** `qeploy share android [--app 패키지] [--any-app] [--serial] [--max-size 1280] [--bit-rate 2M]`
+  - 사용자가 설치한 scrcpy 4.x·5.x 의 **서버만** 쓴다(`brew install scrcpy`, 저장소에 바이너리 없음). adb forward 로 영상·제어 소켓
+  - SPS·PPS 를 모든 키 프레임 앞에 붙인다. 터치(손가락)·스크롤·키코드·아스키 텍스트, 한글은 에뮬레이터 클립보드 붙여넣기
+  - 붙여넣기 뒤 200ms 를 두고 기다리는 글자를 합친다. 연달아 바꾼 클립보드를 앱이 늦게 읽어 마지막 글자만 남던 문제다
+  - 첫 장 전에는 `RESET_VIDEO` 를 보내지 않는다. scrcpy 5.0.1 서버가 캡처 전 리셋에 NPE 로 죽는다
+  - 터널 공유 코드는 `TunnelSession`(tunnel.js)으로 떼어 web·android 가 같이 쓴다
+- **안전장치**
+  - 에뮬레이터만(`ro.boot.qemu`)
+  - 공유를 앱 하나로 묶는다. 1초마다 맨 앞 앱을 보고, 다른 앱이면 되돌린다. 에뮬레이터 Chrome 으로 `10.0.2.2`(내 localhost)에 닿는 것을 막기 위해서다. 권한 대화상자는 허용
+  - `--any-app` 은 경고. 에뮬레이터 클립보드는 밖으로 보내지 않는다
+- **테스트**: 서버 deviceshare 47건(`VideoBacklog` 7, 세션 24, 엔드포인트 9, 실제 Tomcat WebSocket 3 등), agent-tools 211건(`share-android` 26). 실측: Pixel 7 API 35 에뮬레이터 + scrcpy 5.0.1 + Chrome
+  - 576×1280 H.264 가 두 브라우저에서 풀렸다. 늦은 손님도 바로 지금 화면을 봤다
+  - 주인 터치·한글 입력, 손님 요청 → 승인 → 터치가 반영됐다
+  - 홈으로 나가면 1초 안에 앱이 돌아왔다. Ctrl+C 로 링크 회수·scrcpy 종료·forward 제거
+
+남은 것:
+
+- 실제 Android 기기, 소리, 두 손가락(멀티터치)
+- 알림창·빠른 설정은 앱 전환이 아니어서 앱 묶기로 막지 못한다(에뮬레이터 안의 동작)
+- 3단계 iOS 시뮬레이터
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
