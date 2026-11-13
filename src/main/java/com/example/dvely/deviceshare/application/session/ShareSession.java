@@ -1,18 +1,27 @@
 package com.example.dvely.deviceshare.application.session;
 
+import com.example.dvely.deviceshare.domain.value.DeviceShareKind;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.LongSupplier;
+import java.util.regex.Pattern;
 import lombok.extern.slf4j.Slf4j;
 
 /**
  * 공유 링크 하나의 실시간 상태: 기기 연결, 보는 사람들, 조작권. 설계 §4·§5.
+ *
+ * <p>화면은 기기 {@code config} 의 {@code format} 으로 나눈다. {@code jpeg}(1단계)는 "최신 한 장"만 두고,
+ * {@code h264}(2단계, §12.3)는 마지막 키 프레임부터의 장(GOP)을 두어 늦게 온 사람이 지금 화면부터 풀게 한다.</p>
  *
  * <p>상태는 이 객체의 모니터로 지킨다. 채널 보내기는 막히지 않으므로 잠금 안에서 불러도 된다.</p>
  */
@@ -21,18 +30,33 @@ public class ShareSession {
 
     private static final Set<String> INPUT_TYPES = Set.of("pointer", "wheel", "key", "text", "nav");
     private static final String OWNER_NAME = "주인";
+    private static final String JPEG = "jpeg";
+    private static final String H264 = "h264";
+    /** WebCodecs 코덱 문자열 {@code avc1.PPCCLL}. 이것만 뷰어로 넘긴다(설계 §12.2). */
+    private static final Pattern AVC_CODEC = Pattern.compile("avc1\\.[0-9A-Fa-f]{6}");
+    /** 보는 사람 큐 상한({@link VideoBacklog#DEFAULT_MAX_BYTES}, 3MiB)보다 작아야 늦게 온 사람에게 GOP 를 다 다시 보낼 수 있다. */
+    static final int MAX_GOP_BYTES = 2 * 1024 * 1024;
+    static final long KEYFRAME_REQUEST_INTERVAL_NANOS = 1_000_000_000L;
 
     private final long shareId;
+    private final DeviceShareKind kind;
     private final LocalDateTime expiresAt;
     private final ObjectMapper json;
     private final int maxViewers;
     private final int maxFrameBytes;
     private final int maxInputsPerSecond;
+    private final LongSupplier nanoClock;
 
     private DeviceChannel device;
     private boolean deviceReady;
     private String configMessage;
+    private ScreenFormat screen = ScreenFormat.INITIAL;
     private byte[] lastFrame;
+    /** h264 일 때 마지막 키 프레임과 그 뒤의 장. 비어 있으면 늦게 온 사람에게 줄 키 프레임이 없다. */
+    private final Deque<byte[]> gop = new ArrayDeque<>();
+    private long gopBytes;
+    private boolean keyframeRequested;
+    private long lastKeyframeRequestAt;
     private final Map<String, Viewer> viewers = new LinkedHashMap<>();
     private final Set<String> pendingRequests = new LinkedHashSet<>();
     private String controllerId;
@@ -45,14 +69,33 @@ public class ShareSession {
     private record Viewer(String id, String name, boolean owner, ViewerChannel channel) {
     }
 
+    /** 뷰어 디코더 설정을 바꾸는 값. 이 중 하나라도 바뀌면 앞 GOP 는 새 설정으로 풀 수 없다. */
+    private record ScreenFormat(String format, String codec, int width, int height) {
+        static final ScreenFormat INITIAL = new ScreenFormat(JPEG, null, 0, 0);
+
+        boolean h264() {
+            return H264.equals(format);
+        }
+    }
+
+    /** 1단계(웹) 세션. 테스트가 쓴다. */
     ShareSession(long shareId, LocalDateTime expiresAt, ObjectMapper json, int maxViewers, int maxFrameBytes,
                  int maxInputsPerSecond) {
+        this(shareId, DeviceShareKind.WEB, expiresAt, json, maxViewers, maxFrameBytes, maxInputsPerSecond,
+                System::nanoTime);
+    }
+
+    /** @param nanoClock 키 프레임 요청 간격을 재는 시계({@link System#nanoTime} 과 같은 단위) */
+    ShareSession(long shareId, DeviceShareKind kind, LocalDateTime expiresAt, ObjectMapper json, int maxViewers,
+                 int maxFrameBytes, int maxInputsPerSecond, LongSupplier nanoClock) {
         this.shareId = shareId;
+        this.kind = Objects.requireNonNull(kind, "kind");
         this.expiresAt = expiresAt;
         this.json = json;
         this.maxViewers = maxViewers;
         this.maxFrameBytes = maxFrameBytes;
         this.maxInputsPerSecond = maxInputsPerSecond;
+        this.nanoClock = nanoClock;
     }
 
     public long shareId() {
@@ -82,6 +125,7 @@ public class ShareSession {
         DeviceChannel previous = device;
         device = channel;
         deviceReady = false;
+        clearGop(); // 새 연결은 인코더도 새것이라 옛 GOP 뒤에 이어 붙일 수 없다
         if (previous != null && previous != channel) {
             previous.sendBinary(ShareFrames.encode(ShareFrames.GOODBYE, object("reason", "replaced").toString()));
             previous.close("replaced");
@@ -97,6 +141,7 @@ public class ShareSession {
         device = null;
         deviceReady = false;
         lastFrame = null;
+        clearGop();
         pendingRequests.clear();
         broadcast(object("type", "device").put("state", "offline").toString());
     }
@@ -126,11 +171,34 @@ public class ShareSession {
         if (node == null || !node.isObject()) {
             return;
         }
+        // 모르는 format 은 jpeg 로 본다. h264 인데 코덱 문자열이 틀리면 뷰어가 디코더를 만들 수 없으니 설정째 버린다.
+        String format = H264.equals(node.path("format").asText("")) ? H264 : JPEG;
+        String codec = null;
+        if (H264.equals(format)) {
+            codec = node.path("codec").asText("");
+            if (!AVC_CODEC.matcher(codec).matches()) {
+                log.debug("[DeviceShare] 코덱 문자열이 틀린 h264 설정을 버림 share={}", shareId);
+                return;
+            }
+        }
+        ScreenFormat next = new ScreenFormat(format, codec, node.path("width").asInt(0), node.path("height").asInt(0));
+        if (!next.equals(screen)) {
+            clearGop();
+            if (!next.format().equals(screen.format())) {
+                lastFrame = null; // 다른 형식의 마지막 장은 새 뷰어가 풀 수 없다
+            }
+            screen = next;
+        }
         ObjectNode config = object("type", "config");
-        config.put("width", node.path("width").asInt(0));
-        config.put("height", node.path("height").asInt(0));
+        config.put("width", next.width());
+        config.put("height", next.height());
         config.put("url", truncate(node.path("url").asText(""), 2048));
         config.put("title", truncate(node.path("title").asText(""), 200));
+        config.put("format", next.format());
+        if (next.codec() != null) {
+            config.put("codec", next.codec());
+        }
+        config.put("kind", kind.name());
         configMessage = config.toString();
         broadcast(configMessage);
     }
@@ -139,10 +207,66 @@ public class ShareSession {
         if (!deviceReady || frame.payload().length == 0 || frame.payload().length > maxFrameBytes) {
             return;
         }
+        if (screen.h264()) {
+            onVideoFrame(frame.payload());
+            return;
+        }
         lastFrame = frame.payload();
         for (Viewer viewer : viewers.values()) {
             viewer.channel().sendFrame(lastFrame);
         }
+    }
+
+    /** {@code [flags][Annex B]} 를 그대로 나눠 주고 GOP 에 담는다. 키 프레임을 기다리는 사람이 있으면 요청한다. */
+    private void onVideoFrame(byte[] chunk) {
+        if (chunk.length < 2) {
+            return; // flags 만 있고 영상이 없다
+        }
+        boolean keyFrame = isKeyFrame(chunk);
+        keepInGop(chunk, keyFrame);
+        boolean someoneWaiting = false;
+        for (Viewer viewer : viewers.values()) {
+            someoneWaiting |= viewer.channel().sendVideo(chunk, keyFrame);
+        }
+        if (someoneWaiting) {
+            requestKeyFrame();
+        }
+    }
+
+    private void keepInGop(byte[] chunk, boolean keyFrame) {
+        if (keyFrame) {
+            clearGop();
+        } else if (gop.isEmpty()) {
+            return; // 키 프레임 없이는 풀 수 없는 장이라 담아 둘 까닭이 없다
+        }
+        gop.addLast(chunk);
+        gopBytes += chunk.length;
+        if (gopBytes > MAX_GOP_BYTES) {
+            clearGop(); // 늦게 온 사람은 키 프레임을 새로 요청해 받는다
+        }
+    }
+
+    private void clearGop() {
+        gop.clear();
+        gopBytes = 0;
+    }
+
+    /** 공유마다 1초에 한 번까지. 기다리는 사람은 장마다 다시 부르므로, 걸러진 요청도 1초가 지나면 다음 장에서 다시 간다. */
+    private void requestKeyFrame() {
+        if (device == null || !deviceReady) {
+            return;
+        }
+        long now = nanoClock.getAsLong();
+        if (keyframeRequested && now - lastKeyframeRequestAt < KEYFRAME_REQUEST_INTERVAL_NANOS) {
+            return;
+        }
+        keyframeRequested = true;
+        lastKeyframeRequestAt = now;
+        device.sendBinary(ShareFrames.encode(ShareFrames.KEYFRAME_REQUEST, "{}"));
+    }
+
+    private static boolean isKeyFrame(byte[] chunk) {
+        return (chunk[0] & 0x01) != 0;
     }
 
     private void onControlDecision(ShareFrames.Frame frame) {
@@ -191,10 +315,23 @@ public class ShareSession {
         } else {
             broadcastPresence();
         }
-        if (deviceReady && lastFrame != null) {
+        if (deviceReady && screen.h264()) {
+            replayGop(channel);
+        } else if (deviceReady && lastFrame != null) {
             channel.sendFrame(lastFrame);
         }
         return id;
+    }
+
+    /** 늦게 온 사람이 지금 화면부터 풀도록 GOP 를 순서대로 준다. 비었으면(또는 다 담지 못하면) 키 프레임을 요청한다. */
+    private void replayGop(ViewerChannel channel) {
+        boolean waiting = true;
+        for (byte[] chunk : gop) {
+            waiting = channel.sendVideo(chunk, isKeyFrame(chunk));
+        }
+        if (waiting) {
+            requestKeyFrame();
+        }
     }
 
     synchronized void leave(String viewerId) {

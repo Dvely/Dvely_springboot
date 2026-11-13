@@ -21,6 +21,8 @@ public final class ShareFrames {
     public static final int CONTROL_REQUEST = 0x62;
     public static final int CONTROL_DECISION = 0x63;
     public static final int PRESENCE = 0x64;
+    /** 서버 → 기기, JSON {@code {}}. 기기는 H.264 키 프레임을 새로 만든다(설계 §12.2). */
+    public static final int KEYFRAME_REQUEST = 0x65;
 
     private ShareFrames() {
     }

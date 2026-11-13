@@ -156,8 +156,17 @@ class DeviceShareEndpointTest {
                 .andExpect(status().isBadRequest());
         mvc.perform(post("/api/v1/device-shares").header("Authorization", bearer)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"kind\":\"ANDROID\",\"targetLabel\":\"emulator-5554\"}"))
+                        .content("{\"kind\":\"IOS\",\"targetLabel\":\"iPhone 16\"}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void Android_에뮬레이터_공유도_만들_수_있다() throws Exception {
+        mvc.perform(post("/api/v1/device-shares").header("Authorization", bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"ANDROID\",\"targetLabel\":\"emulator-5554\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.kind").value("ANDROID"));
     }
 
     @Test
