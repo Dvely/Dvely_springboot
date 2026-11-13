@@ -1,6 +1,9 @@
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DEFAULT_API_URL, canonicalApiUrl, sameAddress } from './address.js';
+
+export { DEFAULT_API_URL, LEGACY_API_URL, canonicalApiUrl } from './address.js';
 
 /**
  * Where the token issued by `qeploy login` lives.
@@ -52,10 +55,6 @@ export function clearConfig(env = process.env) {
   }
 }
 
-export const DEFAULT_API_URL = 'https://qeploy.com';
-
-const sameAddress = (a, b) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
-
 /**
  * Resolves the token to call the API with.
  *
@@ -78,8 +77,9 @@ export function resolveToken(env = process.env, apiUrl) {
 
   const config = readConfig(env);
   if (config.token) {
-    const savedFor = config.apiUrl ?? DEFAULT_API_URL;
-    if (apiUrl !== undefined && !sameAddress(savedFor, apiUrl)) {
+    // A token saved by 0.1.x is bound to qeploy.com, which is now this API's old name.
+    const savedFor = canonicalApiUrl(config.apiUrl ?? DEFAULT_API_URL);
+    if (apiUrl !== undefined && !sameAddress(savedFor, canonicalApiUrl(apiUrl))) {
       return { token: null, source: null, boundTo: savedFor };
     }
     return { token: config.token, source: configPath(env) };
@@ -96,7 +96,10 @@ export function boundToMessage(boundTo, apiUrl) {
   );
 }
 
-/** Same precedence for the API address, so one `qeploy login` pins both. */
+/**
+ * Same precedence for the API address, so one `qeploy login` pins both. The old default
+ * (`https://qeploy.com`) from any source is read as the API host — see `LEGACY_API_URL`.
+ */
 export function resolveApiUrl(flags = {}, env = process.env) {
-  return flags.apiUrl ?? env.QEPLOY_API_URL ?? readConfig(env).apiUrl ?? DEFAULT_API_URL;
+  return canonicalApiUrl(flags.apiUrl ?? env.QEPLOY_API_URL ?? readConfig(env).apiUrl ?? DEFAULT_API_URL);
 }

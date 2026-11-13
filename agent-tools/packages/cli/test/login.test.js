@@ -74,13 +74,15 @@ describe('config file', () => {
     assert.equal(resolveToken(env, 'https://qeploy.com/').token, 'qp_from_file');
     const other = resolveToken(env, 'https://evil.test');
     assert.equal(other.token, null);
-    assert.equal(other.boundTo, 'https://qeploy.com');
+    // qeploy.com is the old name of the API host, so the token is reported as bound to the new one
+    assert.equal(other.boundTo, 'https://api.qeploy.com');
     // A token the caller put in the environment is theirs to point anywhere.
     assert.equal(resolveToken({ ...env, QEPLOY_TOKEN: 'qp_env' }, 'https://evil.test').token, 'qp_env');
   });
 
   it('treats a stored token without an address as belonging to the default one', () => {
     writeConfig({ token: 'qp_old' }, env);
+    assert.equal(resolveToken(env, 'https://api.qeploy.com').token, 'qp_old');
     assert.equal(resolveToken(env, 'https://qeploy.com').token, 'qp_old');
     assert.equal(resolveToken(env, 'https://elsewhere.test').token, null);
   });
@@ -90,7 +92,33 @@ describe('config file', () => {
     assert.equal(resolveApiUrl({ apiUrl: 'https://from-flag' }, env), 'https://from-flag');
     assert.equal(resolveApiUrl({}, { ...env, QEPLOY_API_URL: 'https://from-env' }), 'https://from-env');
     assert.equal(resolveApiUrl({}, env), 'https://from-file');
-    assert.equal(resolveApiUrl({}, { QEPLOY_CONFIG_HOME: join(home, 'empty') }), 'https://qeploy.com');
+    assert.equal(resolveApiUrl({}, { QEPLOY_CONFIG_HOME: join(home, 'empty') }), 'https://api.qeploy.com');
+  });
+
+  it('reads the old default address (qeploy.com) as the API host wherever it comes from', () => {
+    // 0.1.x saved it at login and its README said to export it; only the web front answers there now.
+    writeConfig({ apiUrl: 'https://qeploy.com' }, env);
+    assert.equal(resolveApiUrl({}, env), 'https://api.qeploy.com');
+    assert.equal(resolveApiUrl({}, { ...env, QEPLOY_API_URL: 'https://qeploy.com/' }), 'https://api.qeploy.com');
+    assert.equal(resolveApiUrl({ apiUrl: 'https://qeploy.com' }, env), 'https://api.qeploy.com');
+    // Nothing else is rewritten
+    assert.equal(resolveApiUrl({ apiUrl: 'https://www.qeploy.com' }, env), 'https://www.qeploy.com');
+    assert.equal(resolveApiUrl({ apiUrl: 'http://localhost:8080' }, env), 'http://localhost:8080');
+  });
+
+  it('hands a token saved by 0.1.x (bound to qeploy.com) to the API host and nowhere else', () => {
+    writeConfig({ token: 'qp_old_login', apiUrl: 'https://qeploy.com' }, env);
+    assert.equal(resolveToken(env, resolveApiUrl({}, env)).token, 'qp_old_login');
+    assert.equal(resolveToken(env, 'https://api.qeploy.com').token, 'qp_old_login');
+    const other = resolveToken(env, 'https://evil.test');
+    assert.equal(other.token, null);
+    assert.equal(other.boundTo, 'https://api.qeploy.com');
+  });
+
+  it('keeps a token saved for the API host away from other addresses', () => {
+    writeConfig({ token: 'qp_new', apiUrl: 'https://api.qeploy.com' }, env);
+    assert.equal(resolveToken(env, 'https://qeploy.com').token, 'qp_new');
+    assert.equal(resolveToken(env, 'https://elsewhere.test').token, null);
   });
 });
 

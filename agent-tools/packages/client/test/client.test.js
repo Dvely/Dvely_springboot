@@ -316,9 +316,54 @@ describe('while the service is suspended', () => {
     assert.equal(calls.length, 0);
   });
 
+  it('reads the notice for our API from the web host, which stays up when the API host is gone', async () => {
+    // The state this release ships into: api.qeploy.com has no DNS yet, qeploy.com serves the notice.
+    const calls = [];
+    const c = new QeployClient({
+      baseUrl: 'https://api.qeploy.com',
+      token: 'qp_x',
+      fetchImpl: async (url, init = {}) => {
+        calls.push({ url, init });
+        if (url === 'https://qeploy.com/status.json') {
+          return { status: 200, ok: true, text: async () => JSON.stringify(NOTICE) };
+        }
+        throw new Error('getaddrinfo ENOTFOUND api.qeploy.com');
+      },
+    });
+    await assert.rejects(() => c.listProjects(), (e) => e.code === 'SERVICE_SUSPENDED');
+    assert.deepEqual(
+      calls.map((call) => call.url),
+      ['https://api.qeploy.com/api/v1/projects', 'https://qeploy.com/status.json']
+    );
+    assert.equal(calls[1].init.headers?.Authorization, undefined);
+  });
+
   it('uses only the string fields of the notice', async () => {
     const { fetchImpl } = staticHost({ status: 'suspended', title: { html: '<b>x</b>' }, message: 42 });
     const c = new QeployClient(opts(fetchImpl));
     await assert.rejects(() => c.listProjects(), (e) => e.toAgentMessage() === 'Qeploy 서비스 일시 중단');
+  });
+});
+
+describe('the API address', () => {
+  it('calls the API host when given the old default (qeploy.com), which now serves only the web front', async () => {
+    const urls = [];
+    const c = new QeployClient({
+      baseUrl: 'https://qeploy.com/',
+      token: 'qp_x',
+      fetchImpl: async (url) => {
+        urls.push(url);
+        return { status: 200, ok: true, text: async () => JSON.stringify({ data: [] }) };
+      },
+    });
+    assert.equal(c.baseUrl, 'https://api.qeploy.com');
+    await c.listProjects();
+    assert.deepEqual(urls, ['https://api.qeploy.com/api/v1/projects']);
+  });
+
+  it('leaves every other address as given', () => {
+    for (const baseUrl of ['https://www.qeploy.com', 'https://q.test', 'http://localhost:8080']) {
+      assert.equal(new QeployClient({ baseUrl, token: 'qp_x', fetchImpl: async () => ({}) }).baseUrl, baseUrl);
+    }
   });
 });
