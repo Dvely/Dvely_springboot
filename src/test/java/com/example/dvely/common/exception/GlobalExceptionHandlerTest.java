@@ -1,6 +1,7 @@
 package com.example.dvely.common.exception;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -55,7 +56,7 @@ class GlobalExceptionHandlerTest {
                         new MissingPathController(), new ClientGoneController(),
                         new UnexpectedErrorController(), new GithubReauthorizationController(),
                         new UserLimitController(), new InternalTailController(),
-                        new JdkOriginController())
+                        new JdkOriginController(), new PreviewInUseController())
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -137,6 +138,21 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.status").value(429))
                 .andExpect(jsonPath("$.code").value("PREVIEW_LIMIT_EXCEEDED"))
                 .andExpect(jsonPath("$.message").value("열린 프리뷰가 3개라 새 프리뷰를 띄울 수 없습니다."));
+    }
+
+    @Test
+    void aPreviewInUseIsA409ThatListsWhatItKeptOpen() throws Exception {
+        // #650: 세 닫기 경로가 같은 응답을 낸다. FE 는 data.blocked 로 어느 작업이 막았는지 보이고, 메시지를 그대로 쓴다.
+        mockMvc.perform(delete("/contract/preview-in-use"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.code").value("PREVIEW_IN_USE"))
+                .andExpect(jsonPath("$.message").value(
+                        "진행 중이거나 결정을 기다리는 작업이 쓰는 프리뷰라 닫을 수 없습니다. 결과 승인을 먼저 결정해 주세요."))
+                .andExpect(jsonPath("$.data.blocked[0].sessionId").value("session-1"))
+                .andExpect(jsonPath("$.data.blocked[0].projectId").value(12))
+                .andExpect(jsonPath("$.data.blocked[0].taskId").value("task-1"))
+                .andExpect(jsonPath("$.data.blocked[0].taskStatus").value("WAITING_RESULT_APPROVAL"));
     }
 
     @Test
@@ -306,6 +322,17 @@ class GlobalExceptionHandlerTest {
             throw new com.example.dvely.common.limit.UserLimitExceededException(
                     com.example.dvely.common.response.ErrorCode.PREVIEW_LIMIT_EXCEEDED,
                     "열린 프리뷰가 3개라 새 프리뷰를 띄울 수 없습니다.");
+        }
+    }
+
+    @RestController
+    private static class PreviewInUseController {
+
+        @DeleteMapping("/contract/preview-in-use")
+        Long close() {
+            throw new com.example.dvely.preview.application.service.PreviewInUseException(List.of(
+                    new com.example.dvely.preview.application.result.InUsePreview("session-1", 12L, "task-1",
+                            com.example.dvely.agent.application.dto.TaskStatus.WAITING_RESULT_APPROVAL)));
         }
     }
 

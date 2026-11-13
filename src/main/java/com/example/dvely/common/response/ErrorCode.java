@@ -67,7 +67,11 @@ public enum ErrorCode {
     CODING_AGENT_CAPACITY_EXCEEDED(429, "CODING_AGENT_CAPACITY_EXCEEDED", "서버의 코딩 에이전트 자리가 모두 찼습니다"),
 
     // 내 기기 프리뷰 공유(#652). 사용자당 살아 있는 링크 수, 서버 전체 연결 터널 수, 링크당 보는 사람 수 상한이다.
-    DEVICE_SHARE_LIMIT_EXCEEDED(429, "DEVICE_SHARE_LIMIT_EXCEEDED", "공유를 더 열 수 없습니다");
+    DEVICE_SHARE_LIMIT_EXCEEDED(429, "DEVICE_SHARE_LIMIT_EXCEEDED", "공유를 더 열 수 없습니다"),
+
+    // 프리뷰 닫기(#650). 진행 중이거나 결정을 기다리는 작업이 쓰는 프리뷰라 닫지 않았다(아무것도 닫지 않았다). 응답
+    // data.blocked 에 막은 세션과 작업 상태가 실린다. 메시지에 다음 행동(결과 승인 결정, 작업 취소)이 들어 있다.
+    PREVIEW_IN_USE(409, "PREVIEW_IN_USE", "진행 중이거나 결정을 기다리는 작업이 쓰는 프리뷰라 닫을 수 없습니다");
 
     private final int status;
     private final String code;

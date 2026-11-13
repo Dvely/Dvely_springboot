@@ -1,8 +1,10 @@
 package com.example.dvely.preview.application.service;
 
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
+import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.common.exception.PreviewEnvironmentUnavailableException;
+import com.example.dvely.preview.application.result.InUsePreview;
 import com.example.dvely.preview.application.result.ProjectPreviewSessionResult;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
 import com.example.dvely.preview.infrastructure.config.PreviewGatewayUrlResolver;
@@ -64,6 +66,7 @@ public class ProjectPreviewService {
     private final ProjectPreviewProvisioner provisioner;
     private final PreviewRuntimeConfigService runtimeConfigService;
     private final PreviewCapacity capacity;
+    private final TaskStore taskStore;
 
     /**
      * 프로젝트 화면이 열릴 때 부르는 조회. 지금 보여줄 프리뷰가 없으면 비어 있는 값을 준다.
@@ -206,6 +209,16 @@ public class ProjectPreviewService {
     private void discardLiveSessions(Long projectId, Long ownerUserId) {
         List<PreviewSessionEntity> live = repository.findByProjectIdAndOwnerUserIdAndStatusIn(
                 projectId, ownerUserId, LIVE_STATUSES);
+        // 진행 중이거나 결정을 기다리는 작업이 쓰는 세션이 하나라도 있으면 아무것도 버리지 않고 새로 띄우지도 않는다(#650).
+        // 그 작업물은 컨테이너 안에만 있다. "버리고 새로 빌드"를 누른 사람은 다른 작업이 이 프로젝트의 컨테이너를 쓰고
+        // 있는지 모르므로, 그것만 남기고 진행하는 대신 거부하고 알린다.
+        List<InUsePreview> inUse = live.stream()
+                .map(session -> PreviewClosePolicy.blockingOwnerClose(session, taskStore::get))
+                .flatMap(Optional::stream)
+                .toList();
+        if (!inUse.isEmpty()) {
+            throw new PreviewInUseException(inUse);
+        }
         for (PreviewSessionEntity session : live) {
             log.info("[ProjectPreview] force 리빌드 — 기존 세션 정리: projectId={} sessionId={} status={}",
                     projectId, session.getId(), session.getStatus());

@@ -20,7 +20,9 @@ import com.example.dvely.agent.presentation.dto.TaskStatusResponse;
 import com.example.dvely.agent.presentation.dto.TaskInputRequest;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.common.response.RawApiResponse;
+import com.example.dvely.preview.application.result.BulkPreviewCloseResult;
 import com.example.dvely.preview.application.service.PreviewSessionService;
+import com.example.dvely.preview.presentation.dto.response.PreviewCloseAllResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -286,21 +288,24 @@ public class AgentController {
 
     @Operation(
             summary = "에이전트 세션 종료",
-            description = "현재 사용자의 PreviewSession을 만료시키고 연결된 Docker 컨테이너를 종료합니다. " +
-                          "작업이 끝난 후 리소스를 반환할 때 호출하세요."
+            description = "현재 사용자의 열린 PreviewSession 을 모두 닫고 Docker 컨테이너를 종료합니다. "
+                    + "진행 중이거나 결정(결과 승인 등)을 기다리는 작업의 프리뷰는 닫지 않고 `kept` 에 남깁니다 — 그 작업물은 "
+                    + "컨테이너 안에만 있습니다(#650). 끝난 작업(DONE·CANCELLED)·실패한 작업(FAILED)·프로젝트 프리뷰는 닫습니다."
     )
     @ApiResponses({
-            @ApiResponse(responseCode = "204", description = "컨테이너 삭제 완료"),
-            @ApiResponse(responseCode = "404", description = "실행 중인 컨테이너 없음"),
+            @ApiResponse(responseCode = "200", description = "닫은 수(`closed`)와 남긴 프리뷰(`kept`)"),
+            @ApiResponse(responseCode = "404", description = "열린 프리뷰 없음"),
+            @ApiResponse(responseCode = "409", description = "PREVIEW_IN_USE — 열린 프리뷰가 모두 작업이 쓰는 것이라 하나도 닫지 않았다. "
+                    + "`data.blocked` 에 막은 세션"),
             @ApiResponse(responseCode = "401", description = "인증 필요")
     })
     @DeleteMapping("/session")
-    public ResponseEntity<Void> closeSession(@AuthenticationPrincipal Long userId) {
-        int closed = previewSessionService.closeAllOwned(userId);
-        if (closed == 0) {
+    public PreviewCloseAllResponse closeSession(@AuthenticationPrincipal Long userId) {
+        BulkPreviewCloseResult result = previewSessionService.closeAllOwned(userId);
+        if (result.closed() == 0 && result.kept().isEmpty()) {
             throw new NotFoundException("종료할 PreviewSession을 찾을 수 없습니다.");
         }
-        return ResponseEntity.noContent().build();
+        return PreviewCloseAllResponse.from(result);
     }
 
     private NotFoundException taskNotFound(String taskId) {
