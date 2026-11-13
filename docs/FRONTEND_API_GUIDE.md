@@ -478,7 +478,7 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 | code | HTTP | 나오는 곳 | FE 처리 |
 |---|---|---|---|
 | `ACTIVE_RUN_LIMIT_EXCEEDED` | 429 | `POST /conversations/{id}/messages`, `POST /agent/tasks`, 도메인 연결·해제, `POST /agent/tasks/{taskId}/retry`, `POST /approvals/{id}/approve`(계획 승인이 작업을 시작시킬 때), `POST /agent/tasks/{taskId}/input` | `message` 표시. 아무것도 반영되지 않았다 — 메시지 전송이면 **메시지가 저장되지 않았으므로** 입력창을 지우지 않고, 승인이면 카드가 PENDING 그대로라 나중에 다시 누르면 되고, 되묻기 답이면 폼을 닫지 않는다 |
-| `PREVIEW_LIMIT_EXCEEDED` | 429 | `POST /projects/{id}/preview-session` | `message` 표시. 열린 프리뷰를 닫을 수 있게 안내(`DELETE /preview-sessions/{id}`) |
+| `PREVIEW_LIMIT_EXCEEDED` | 429 | `POST /projects/{id}/preview-session` | `message` 표시. 열린 프리뷰를 닫을 수 있게 안내 — `GET /preview-sessions`(#651)로 내 프리뷰와 `closable` 을 보여 주고 `DELETE /preview-sessions/{id}` 로 닫는다 |
 | `PREVIEW_CAPACITY_EXCEEDED` | 429 | `POST /projects/{id}/preview-session` | **서버 전체** 프리뷰 자리가 찼다(#624). 이 사용자가 아무것도 띄우지 않았어도 온다 — 위 행의 "프리뷰를 닫으라" 안내를 붙이지 말고 `message` 만 표시. 잠시 뒤 다시 시도하면 된다(다른 사용자의 프리뷰가 닫히면 풀린다). 아무것도 반영되지 않았다 |
 | `PREVIEW_IN_USE` | 409 | `DELETE /preview-sessions/{id}`, `POST /projects/{id}/preview-session?force=true`, `DELETE /agent/session` | 진행 중이거나 결정을 기다리는 작업이 쓰는 프리뷰라 **아무것도 닫지 않았다**(#650). `message` 를 그대로 보이고(결과 승인 대기면 "결과 승인을 먼저 결정해 주세요"), `data.blocked[]`(`sessionId`·`projectId`·`taskId`·`taskStatus`)로 어느 작업인지 보여 준다. 결과 승인 카드로 보내거나 작업 취소를 안내 |
 
@@ -558,17 +558,25 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 
 `CloudConnectionStatus` 전체 값: `VALIDATED · VERIFYING · CHECKING · CONNECTED · PERMISSION_MISSING · BILLING_DISABLED · REGION_UNSUPPORTED · INVALID_CREDENTIAL · UNKNOWN_ERROR`.
 
-### 4.10 Preview — `com.example.dvely.preview.presentation` (7개 논리 엔드포인트, 프록시가 경로 패턴 2개를 가져 Swagger에는 8개로 집계)
+### 4.10 Preview — `com.example.dvely.preview.presentation` (8개 논리 엔드포인트, 프록시가 경로 패턴 2개를 가져 Swagger에는 9개로 집계)
 
 | 메서드 | 경로 | 용도 | 인증 | 응답 |
 |---|---|---|---|---|
 | GET | `/api/v1/projects/{projectId}/preview-session` | **프로젝트의 현재 프리뷰 조회(진입 시 호출)** | Bearer | 200 `ProjectPreviewSession` / **204**(띄워진 프리뷰 없음) / 404(프로젝트 없음) |
 | POST | `/api/v1/projects/{projectId}/preview-session` | **프리뷰 띄우기(버튼)** — preview 브랜치 현재 상태를 clone→빌드→서빙 | Bearer | 200(이미 떠 있는 세션에 붙음) / **202**(준비 시작·진행 중) / 409(저장소 미연결, 또는 `?force=true` 인데 작업이 쓰는 프리뷰가 있어 `PREVIEW_IN_USE`) / **503**(서버의 Docker 실행 환경 문제 — 재시도가 아니라 운영자 조치 필요) / 404 |
 | GET | `/api/v1/previews/{sessionId}/{accessToken}/**` | Docker 프리뷰 컨테이너로 리버스 프록시(HTML/JS/CSS 등 원본 그대로) | URL 내장 토큰 + **소유권 쿠키** | 프리뷰 앱 응답 그대로(`@RawApiResponse`) + CSP `sandbox` 헤더. 세션 없음/토큰 불일치 404, **쿠키 없음/불일치 401** |
+| GET | `/api/v1/preview-sessions` | **내 프리뷰 목록**(#651) — 살아 있는 것(ACTIVE·PROVISIONING)을 오래 안 본 순으로. 상한(`PREVIEW_LIMIT_EXCEEDED`)에 걸렸을 때 무엇을 닫을지 고르는 화면용 | Bearer · PAT(READ) | `{ maxLivePreviews, items[{ sessionId, status, projectId, projectName, taskId, taskStatus, closable, closeBlockedReason, lastAccessedAt, expiresAt, createdAt }] }` — 아래 "내 프리뷰 목록" |
 | POST | `/api/v1/preview-sessions/{sessionId}/access` | **프리뷰 열람 권한 발급(iframe 표시 전 필수)** | Bearer | `{ sessionId, previewUrl, expiresAt }` + 소유권 쿠키(`Set-Cookie`). 404(없음/타 유저), 409(종료·준비 중) |
 | DELETE | `/api/v1/preview-sessions/{sessionId}` | 세션 종료 + 컨테이너 정리 | Bearer | 204(404: 없음/타 유저 소유). **409 `PREVIEW_IN_USE`**: 진행 중이거나 결정(결과 승인 등)을 기다리는 작업의 프리뷰라 닫지 않음 — 아래 "프리뷰 닫기" |
 | GET | `/api/v1/preview-sessions/{sessionId}/status` | 컨테이너 실행 여부·리소스 사용량 조회(p95 ~1.5초 — 폴링은 5초 이상 권장) | Bearer | `{ sessionId, projectId, taskId, sessionStatus(ACTIVE\|PROVISIONING\|CLOSED\|EXPIRED\|FAILED), containerRunning, oomKilled, exitCode, startedAt, expiresAt, resources{ memoryUsageBytes, memoryLimitBytes, memoryUsagePercent, cpuPercent } }`(resources는 미실행/조회 3초 초과 시 null) |
 | GET | `/api/v1/preview-sessions/{sessionId}/logs` | 컨테이너 stdout/stderr 텍스트 조회(영속화 안 됨) | Bearer | `{ sessionId, containerRunning, logText }`(query: `tail`(기본 200, [1,2000] 클램프), `sinceSeconds`) |
+
+**내 프리뷰 목록(#651).** `GET /api/v1/preview-sessions` 는 내 살아 있는 프리뷰를 오래 안 본 순(상한 회수가 고르는 순서)으로 줍니다. 화면을 열 때와 429 `PREVIEW_LIMIT_EXCEEDED` 를 받았을 때 부르고, 폴링한다면 10초 이상 간격으로 합니다.
+- `maxLivePreviews` 는 사용자 상한입니다(서버 전체 수는 내려가지 않습니다). `items.length` 와 비교해 "3개 중 3개" 처럼 보여 주면 됩니다
+- `taskId` 가 null 이면 작업 없이 띄운 프로젝트 프리뷰, `taskStatus` 는 프로젝트 프리뷰이거나 작업 기록이 없으면 null 입니다. `projectName` 은 프로젝트를 찾지 못하면 null 이지만 항목은 그대로 있습니다(닫을 수 있어야 하므로)
+- `closable` 은 `DELETE /preview-sessions/{id}` 와 **같은 규칙**입니다. 버튼 잠금에 그대로 쓰세요. 닫을 수 없으면 `closeBlockedReason` 이 작업 상태 이름(`WAITING_RESULT_APPROVAL` → "결과 승인을 먼저 결정해 주세요", 그 밖 → "작업이 끝나거나 취소한 뒤")이거나, 준비 중이면 `PROVISIONING` 입니다
+- `taskStatus` 가 `FAILED` 면 닫을 수 있지만, 그 작업의 재시도가 처음부터 시작된다고 경고해 주세요
+- 열 주소는 없습니다. 열려면 `POST /preview-sessions/{id}/access`. 서버가 Docker 를 조회하지 않으므로 컨테이너가 막 사라진 항목이 잠깐 보일 수 있고, 닫아도 해가 없습니다
 
 **프리뷰 닫기(#650).** 작업 프리뷰의 작업물은 컨테이너 안에만 있어서, 서버가 작업 상태를 보고 닫을지 정합니다. 끝난 작업(`DONE`·`CANCELLED`)·실패한 작업(`FAILED`)·프로젝트 프리뷰는 닫히고, 그 밖의 상태(진행 중, 승인·입력·결과 승인 대기)는 **409 `PREVIEW_IN_USE`** 입니다. 실패한 작업의 프리뷰를 닫으면 그 작업의 재시도가 처음부터 시작되니, 닫기 전에 경고하는 것이 좋습니다. FE 에서 버튼을 미리 잠가도(Dvely_FE#184) 상태 조회 주기만큼 늦을 수 있으므로 409 를 받을 자리를 남겨 두세요.
 
