@@ -3,6 +3,7 @@ package com.example.dvely.preview.application.service;
 import com.example.dvely.agent.application.dto.AgentTask;
 import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.preview.application.result.InUsePreview;
+import com.example.dvely.preview.domain.value.PreviewSessionStatus;
 import com.example.dvely.preview.infrastructure.persistence.entity.PreviewSessionEntity;
 import java.util.EnumSet;
 import java.util.Optional;
@@ -49,9 +50,33 @@ public final class PreviewClosePolicy {
             return Optional.empty();
         }
         AgentTask task = tasks.apply(session.getTaskId());
-        if (task == null || CLOSABLE_BY_OWNER.contains(task.status())) {
+        if (task == null || !blocksOwnerClose(task.status())) {
             return Optional.empty();
         }
         return Optional.of(new InUsePreview(session.getId(), session.getProjectId(), session.getTaskId(), task.status()));
+    }
+
+    /**
+     * 내 프리뷰 목록(#651)이 보여 줄, 주인이 지금 닫을 수 없는 이유. 닫을 수 있으면 비어 있다.
+     *
+     * <p>{@code DELETE /preview-sessions/{id}} 와 같은 판정이다. 작업이 막으면 그 작업 상태({@code WAITING_RESULT_APPROVAL}
+     * 등, 409)가 이유다. 작업이 막지 않아도 준비 중({@code PROVISIONING})인 세션은 그 경로가 닫지 않으므로(404)
+     * {@code PROVISIONING} 이 이유다.</p>
+     *
+     * @param taskStatus 작업 세션의 작업 상태. 프로젝트 프리뷰이거나 런 행이 없으면 null
+     */
+    static Optional<String> closeBlockedReason(String sessionStatus, TaskStatus taskStatus) {
+        if (blocksOwnerClose(taskStatus)) {
+            return Optional.of(taskStatus.name());
+        }
+        if (PreviewSessionStatus.PROVISIONING.name().equals(sessionStatus)) {
+            return Optional.of(PreviewSessionStatus.PROVISIONING.name());
+        }
+        return Optional.empty();
+    }
+
+    /** 이 작업 상태가 주인의 닫기를 막는가. null(작업 없음·런 행 없음)은 막지 않는다. */
+    private static boolean blocksOwnerClose(TaskStatus taskStatus) {
+        return taskStatus != null && !CLOSABLE_BY_OWNER.contains(taskStatus);
     }
 }
