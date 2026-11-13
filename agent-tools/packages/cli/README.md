@@ -69,7 +69,8 @@ qeploy share android --app com.example.app   # 이 앱을 띄워서 공유
 - 보는 사람 브라우저가 WebCodecs 로 H.264 를 푼다(최신 Chrome·Edge·Safari·Firefox).
 - **에뮬레이터만** 받는다. 실제 폰에는 계정·사진이 있어서다.
 - **공유는 앱 하나로 묶인다.** 1초마다 맨 앞 앱을 보고, 다른 앱(홈 화면, 에뮬레이터 Chrome 으로 내 localhost 인 `10.0.2.2` 등)으로 나가면 공유한 앱을 다시 앞으로 올린다. 권한 대화상자는 허용한다.
-- 한글처럼 키보드로 바로 못 넣는 글자는 에뮬레이터 클립보드에 넣고 붙여넣는다. 에뮬레이터 클립보드는 밖으로 보내지 않는다.
+- 한글처럼 키보드로 바로 못 넣는 글자는 에뮬레이터 클립보드에 넣고 붙여넣는다. CLI 는 에뮬레이터 클립보드를 가져오지 않는다.
+- **에뮬레이터를 창으로 띄우면 에뮬레이터 클립보드가 내 Mac 클립보드로 넘어온다**(에뮬레이터의 Enable clipboard sharing, 기본 켜짐). 조작권을 받은 사람이 복사하거나 한글을 입력하면 내 Mac 클립보드가 바뀌므로, 시작할 때 경고한다. 끄려면 에뮬레이터 Extended controls(⋯) > Settings > General > Enable clipboard sharing 을 끄거나 `-no-window` 로 띄운다.
 - Ctrl+C 로 끝내면 링크를 회수하고 에뮬레이터의 scrcpy 서버와 `adb forward` 를 정리한다.
 
 ## iOS 시뮬레이터 공유 — `share ios` (macOS)

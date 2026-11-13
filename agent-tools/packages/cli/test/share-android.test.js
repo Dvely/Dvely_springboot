@@ -18,7 +18,7 @@ import {
   screenFramePayload,
 } from '../src/share/android/scrcpy-protocol.js';
 import { KEYCODE, META, createTouchState, isKeyboardText, mapAndroidInput } from '../src/share/android/input.js';
-import { findAdb, parseDevices, parseForegroundPackage, parseResolvedComponent } from '../src/share/android/adb.js';
+import { emulatorHasWindow, findAdb, parseDevices, parseForegroundPackage, parseResolvedComponent } from '../src/share/android/adb.js';
 import { findScrcpy } from '../src/share/android/scrcpy.js';
 import { AndroidShareSession, PASTE_GAP_MS } from '../src/share/android/session.js';
 import { run, EXIT } from '../src/index.js';
@@ -261,6 +261,18 @@ describe('adb and scrcpy discovery', () => {
       'com.android.settings/.Settings'
     );
     assert.equal(parseResolvedComponent('No activity found'), null);
+  });
+
+  it('tells from the process list whether the emulator has a window', () => {
+    const qemu = '/Users/me/Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64';
+    assert.equal(emulatorHasWindow(`${qemu} -netdelay none -avd qeploy_test -no-window -no-audio`, 'qeploy_test'), false);
+    assert.equal(emulatorHasWindow(`${qemu} -netdelay none -avd qeploy_test -no-audio`, 'qeploy_test'), true);
+    assert.equal(emulatorHasWindow(`${qemu} @qeploy_test -no-snapshot`, 'qeploy_test'), true);
+    // Android Studio's embedded emulator: Studio passes the clipboard on itself.
+    assert.equal(emulatorHasWindow(`${qemu} -avd Pixel_7 -qt-hide-window -grpc-use-token`, 'Pixel_7'), true);
+    assert.equal(emulatorHasWindow(`${qemu} -avd other -no-window`, 'qeploy_test'), null);
+    assert.equal(emulatorHasWindow('/usr/bin/vim -avd qeploy_test notes.txt', 'qeploy_test'), null, 'only emulator processes count');
+    assert.equal(emulatorHasWindow(`${qemu} -avd qeploy_test -no-window`, ''), null);
   });
 
   it('finds adb in the SDK before PATH', () => {
@@ -534,7 +546,13 @@ describe('qeploy share android', () => {
     return client;
   }
 
-  function fakeAdb({ devices = [{ serial: 'emulator-5554', state: 'device' }], emulator = true, top = 'com.android.settings', installed = true } = {}) {
+  function fakeAdb({
+    devices = [{ serial: 'emulator-5554', state: 'device' }],
+    emulator = true,
+    top = 'com.android.settings',
+    installed = true,
+    hasWindow = false,
+  } = {}) {
     const calls = [];
     const adb = {
       calls,
@@ -546,6 +564,7 @@ describe('qeploy share android', () => {
       homePackage: async () => 'com.google.android.apps.nexuslauncher',
       isInstalled: async () => installed,
       deviceName: async () => 'qeploy_test',
+      hasWindow: async () => hasWindow,
       launchApp: async (pkg) => calls.push(['launch', pkg]),
     };
     return adb;
@@ -650,6 +669,20 @@ describe('qeploy share android', () => {
       assert.match(err, message);
       assert.equal(client.created, null, String(message));
     }
+  });
+
+  it('warns that the Mac clipboard is shared unless the emulator surely has no window (§12.5)', async () => {
+    for (const [hasWindow, expected] of [
+      [true, /창으로 떠 있어/],
+      [null, /확인하지 못했습니다/],
+    ]) {
+      const runtime = fakeRuntime({ adb: fakeAdb({ hasWindow }), end: (rt) => rt.interrupt() });
+      const { err } = await shareCli(['share', 'android'], { runtime });
+      assert.match(err, expected);
+      assert.match(err, /Enable clipboard sharing/);
+    }
+    const quiet = fakeRuntime({ adb: fakeAdb({ hasWindow: false }), end: (rt) => rt.interrupt() });
+    assert.doesNotMatch((await shareCli(['share', 'android'], { runtime: quiet })).err, /클립보드/);
   });
 
   it('shares the whole emulator with --any-app, unguarded and with a warning', async () => {

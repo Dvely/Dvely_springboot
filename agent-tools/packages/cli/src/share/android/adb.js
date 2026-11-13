@@ -66,6 +66,37 @@ export function parseResolvedComponent(output) {
 
 export const PACKAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/;
 
+/**
+ * Whether the emulator running `avdName` has a window, from the local process list (`ps -Ao args=`).
+ *
+ * §12.5, measured on emulator 37.2 (2026-11-13): with a window, what the guest copies lands on the
+ * Mac clipboard (the emulator's "Enable clipboard sharing", on by default); started with
+ * `-no-window`, nothing crossed in either direction. Android Studio's embedded emulator
+ * (`-qt-hide-window`) counts as having one — Studio passes the clipboard on itself.
+ *
+ * @returns {boolean|null} null when no local emulator process runs that AVD (another user, remote)
+ */
+export function emulatorHasWindow(psOutput, avdName) {
+  if (!avdName) return null;
+  const lines = String(psOutput ?? '')
+    .split(/\r?\n/)
+    .filter((l) => /(^|\/)(qemu-system-[\w-]+|emulator)(\s|$)/.test(l.trim().split(/\s+/)[0] ?? ''));
+  const runs = lines.filter((l) => {
+    const args = l.trim().split(/\s+/);
+    return args.some((a, i) => (a === '-avd' && args[i + 1] === avdName) || a === `@${avdName}`);
+  });
+  if (runs.length === 0) return null;
+  return !runs.some((l) => l.trim().split(/\s+/).includes('-no-window'));
+}
+
+function localProcessList() {
+  return new Promise((resolve) => {
+    execFile('/bin/ps', ['-Ao', 'args='], { timeout: 5000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) =>
+      resolve(error ? '' : String(stdout))
+    );
+  });
+}
+
 export class Adb {
   /**
    * @param {string} path adb executable
@@ -115,6 +146,12 @@ export class Adb {
   async isEmulator() {
     const out = await this.shell('getprop ro.boot.qemu; getprop ro.kernel.qemu');
     return out.split(/\r?\n/).some((l) => l.trim() === '1');
+  }
+
+  /** @returns {Promise<boolean|null>} see emulatorHasWindow */
+  async hasWindow(ps = localProcessList) {
+    const avd = (await this.shell('getprop ro.boot.qemu.avd_name')).trim();
+    return emulatorHasWindow(await ps(), avd);
   }
 
   async deviceName() {

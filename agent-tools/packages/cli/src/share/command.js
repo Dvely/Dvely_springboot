@@ -245,6 +245,8 @@ function androidSource({ args, flags, rt, env, log }) {
       prepared.pkg = pkg;
       prepared.deviceName = await device.deviceName().catch(() => serial);
       source.targetLabel = `${prepared.deviceName} · ${pkg ?? '에뮬레이터 전체'}`;
+      const hasWindow = await device.hasWindow().catch(() => null);
+      if (hasWindow !== false) log(emulatorClipboardWarning(hasWindow));
     },
     async launch({ state, common }) {
       if (app) await prepared.adb.launchApp(app);
@@ -283,6 +285,17 @@ function parseNumber(raw, name, { min, max, integer = false }) {
     throw new UsageError(`${name} 는 ${min}~${max} 사이의 ${integer ? '정수' : '수'}여야 합니다: ${raw}`);
   }
   return n;
+}
+
+/** §12.5: with a window, what the guest copies — and the Korean we paste for them — lands on the Mac clipboard. */
+function emulatorClipboardWarning(hasWindow) {
+  return [
+    hasWindow
+      ? '[주의] 에뮬레이터가 창으로 떠 있어, 에뮬레이터 클립보드가 내 Mac 클립보드로 넘어옵니다.'
+      : '[주의] 에뮬레이터가 창 없이(-no-window) 떠 있는지 확인하지 못했습니다. 창이 있으면 에뮬레이터 클립보드가 내 Mac 클립보드로 넘어옵니다.',
+    '       조작권을 받은 사람이 앱에서 복사하거나 한글을 입력하면 내 Mac 클립보드가 그 내용으로 바뀝니다. 모르고 터미널 등에 붙여넣지 마세요.',
+    '       끄려면 에뮬레이터 Extended controls(⋯) > Settings > General > Enable clipboard sharing 을 끄거나, 에뮬레이터를 -no-window 로 띄우세요. (이 CLI 는 설정을 바꾸지 않습니다)',
+  ].join('\n');
 }
 
 const PASTEBOARD_WARNING = [
