@@ -150,8 +150,8 @@ public class ShareSessionRegistry {
     private ShareSession sessionFor(DeviceShareLink link) {
         return sessions.compute(link.getId(), (id, existing) -> existing != null && !existing.isEnded()
                 ? existing
-                : new ShareSession(id, link.getExpiresAt(), json, properties.maxViewersPerShare(),
-                        properties.maxFrameBytes(), properties.maxInputsPerSecond()));
+                : new ShareSession(id, link.getKind(), link.getExpiresAt(), json, properties.maxViewersPerShare(),
+                        properties.maxFrameBytes(), properties.maxInputsPerSecond(), System::nanoTime));
     }
 
     private void dropIfIdle(ShareSession session) {

@@ -31,7 +31,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * 기기 터널과 뷰어 소켓을 실제 Tomcat WebSocket 으로 끝까지 잇는다(#652).
  *
  * <p>확인하는 것: PAT·JWT 헤더로 터널 인증, 공유 오리진 Host 로만 뷰어 소켓이 열림, 8KiB 보다 큰 화면 한 장(Tomcat 기본
- * 버퍼를 넘는 크기)이 보는 사람에게 그대로 감, 조작권 가진 입력이 기기로 감, 회수하면 양쪽이 끊김.</p>
+ * 버퍼를 넘는 크기)이 보는 사람에게 그대로 감, 조작권 가진 입력이 기기로 감, 회수하면 양쪽이 끊김. 2단계(§12): H.264 장이
+ * flags 바이트째 순서대로 가고, 늦게 온 사람이 GOP 를 받고, GOP 가 비었으면 기기에 키 프레임을 요청함.</p>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class DeviceShareWebSocketIntegrationTest {
@@ -109,6 +110,57 @@ class DeviceShareWebSocketIntegrationTest {
     }
 
     @Test
+    void Android_공유는_H264_장을_그대로_순서대로_주고_늦게_온_사람에게_GOP_를_준다() throws Exception {
+        JsonNode share = createShare("ANDROID", "emulator-5554");
+        String viewHost = URI.create(share.path("viewUrl").asText()).getHost() + ":8080";
+        Device device = new Device();
+        WebSocket tunnel = http.newWebSocketBuilder().header("Authorization", bearer)
+                .buildAsync(URI.create(share.path("tunnelUrl").asText()), device).get(5, TimeUnit.SECONDS);
+        try (RawViewerSocket firstSocket = new RawViewerSocket(port, viewHost, "/__qeploy/ws");
+             RawViewerSocket secondSocket = new RawViewerSocket(port, viewHost, "/__qeploy/ws");
+             RawViewerSocket lateSocket = new RawViewerSocket(port, viewHost, "/__qeploy/ws")) {
+            tunnel.sendBinary(ShareFrames.encode(ShareFrames.HELLO, "{\"cliVersion\":\"test\",\"kind\":\"ANDROID\"}"), true).join();
+            assertThat(device.next().kind()).isEqualTo(ShareFrames.WELCOME);
+
+            // 설정 전에 들어온 사람
+            Viewer first = new Viewer(firstSocket);
+            firstSocket.sendText("{\"type\":\"join\",\"name\":\"first\"}");
+            first.nextOfType("welcome");
+            tunnel.sendBinary(ShareFrames.encode(ShareFrames.SCREEN_CONFIG, "{\"format\":\"h264\",\"codec\":\"avc1.42C01F\","
+                    + "\"width\":720,\"height\":1280,\"url\":\"com.example.app\",\"title\":\"Pixel_8\"}"), true).join();
+            JsonNode config = first.nextOfType("config");
+            assertThat(config.path("format").asText()).isEqualTo("h264");
+            assertThat(config.path("codec").asText()).isEqualTo("avc1.42C01F");
+            assertThat(config.path("kind").asText()).isEqualTo("ANDROID");
+
+            // 설정 뒤, 아직 장이 없을 때 들어오면 기기에 키 프레임을 요청한다
+            Viewer second = new Viewer(secondSocket);
+            secondSocket.sendText("{\"type\":\"join\",\"name\":\"second\"}");
+            assertThat(device.nextOfKind(ShareFrames.KEYFRAME_REQUEST).payloadText()).isEqualTo("{}");
+
+            byte[] key = new byte[200 * 1024];
+            key[0] = 1; // flags: 키 프레임
+            key[key.length - 1] = 0x7;
+            byte[] delta = {0, 0, 0, 0, 1, 0x41, 0x9};
+            tunnel.sendBinary(ShareFrames.encode(ShareFrames.SCREEN_FRAME, key), true).join();
+            tunnel.sendBinary(ShareFrames.encode(ShareFrames.SCREEN_FRAME, delta), true).join();
+            for (Viewer viewer : new Viewer[]{first, second}) {
+                assertThat(viewer.nextFrame()).isEqualTo(key);
+                assertThat(viewer.nextFrame()).isEqualTo(delta);
+            }
+
+            // 늦게 온 사람은 설정 뒤에 키 프레임부터 받는다
+            Viewer late = new Viewer(lateSocket);
+            lateSocket.sendText("{\"type\":\"join\",\"name\":\"late\"}");
+            assertThat(late.nextOfType("config").path("codec").asText()).isEqualTo("avc1.42C01F");
+            assertThat(late.nextFrame()).isEqualTo(key);
+            assertThat(late.nextFrame()).isEqualTo(delta);
+        } finally {
+            tunnel.abort();
+        }
+    }
+
+    @Test
     void 인증_없는_터널과_API_호스트의_뷰어_소켓은_열리지_않는다() throws Exception {
         JsonNode share = createShare();
         var noAuth = http.newWebSocketBuilder()
@@ -124,9 +176,14 @@ class DeviceShareWebSocketIntegrationTest {
     }
 
     private JsonNode createShare() throws Exception {
+        return createShare("WEB", "http://localhost:5173");
+    }
+
+    private JsonNode createShare(String kind, String targetLabel) throws Exception {
+        String body = json.createObjectNode().put("kind", kind).put("targetLabel", targetLabel).toString();
         HttpResponse<String> created = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/v1/device-shares"))
                 .header("Authorization", bearer).header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString("{\"kind\":\"WEB\",\"targetLabel\":\"http://localhost:5173\"}"))
+                .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build(), HttpResponse.BodyHandlers.ofString());
         assertThat(created.statusCode()).isEqualTo(201);
         return json.readTree(created.body()).path("data");

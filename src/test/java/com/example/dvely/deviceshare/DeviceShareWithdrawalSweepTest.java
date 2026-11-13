@@ -57,6 +57,11 @@ class DeviceShareWithdrawalSweepTest {
         }
 
         @Override
+        public boolean sendVideo(byte[] chunk, boolean keyFrame) {
+            return false;
+        }
+
+        @Override
         public void close(String reason) {
             closed = reason;
         }

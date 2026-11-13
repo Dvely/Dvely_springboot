@@ -26,8 +26,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 @Tag(name = "DeviceShare", description = """
-        내 기기 프리뷰 공유(#652). 내 기기의 앱 화면(1단계: dev 브라우저)을 링크로 공유하고, 조작권을 받은 한 사람이
-        제어한다. 링크마다 <토큰>.share.qeploy.com 오리진을 쓴다. CLI `qeploy share web <url>` 이 이 API 를 쓴다.
+        내 기기 프리뷰 공유(#652). 내 기기의 앱 화면(1단계: dev 브라우저, 2단계: Android 에뮬레이터)을 링크로 공유하고,
+        조작권을 받은 한 사람이 제어한다. 링크마다 <토큰>.share.qeploy.com 오리진을 쓴다. CLI `qeploy share web <url>` ·
+        `qeploy share android` 가 이 API 를 쓴다.
         """)
 @RestController
 @RequiredArgsConstructor
