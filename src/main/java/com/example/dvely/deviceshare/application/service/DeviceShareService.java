@@ -35,9 +35,6 @@ public class DeviceShareService {
         if (kind == null) {
             throw new IllegalArgumentException("공유할 화면 종류(kind)가 필요합니다.");
         }
-        if (kind != DeviceShareKind.WEB && kind != DeviceShareKind.ANDROID) {
-            throw new IllegalArgumentException("지금은 웹 화면(WEB)과 Android 에뮬레이터(ANDROID) 공유만 지원합니다.");
-        }
         String label = targetLabel == null ? "" : targetLabel.strip();
         if (label.isEmpty() || label.length() > TARGET_LABEL_MAX) {
             throw new IllegalArgumentException("공유 대상(targetLabel)은 1~" + TARGET_LABEL_MAX + "자여야 합니다.");

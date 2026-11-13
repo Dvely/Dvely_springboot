@@ -156,17 +156,22 @@ class DeviceShareEndpointTest {
                 .andExpect(status().isBadRequest());
         mvc.perform(post("/api/v1/device-shares").header("Authorization", bearer)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"kind\":\"IOS\",\"targetLabel\":\"iPhone 16\"}"))
+                        .content("{\"targetLabel\":\"iPhone 17 Pro\"}"))
                 .andExpect(status().isBadRequest());
     }
 
     @Test
-    void Android_에뮬레이터_공유도_만들_수_있다() throws Exception {
+    void Android_에뮬레이터와_iOS_시뮬레이터_공유도_만들_수_있다() throws Exception {
         mvc.perform(post("/api/v1/device-shares").header("Authorization", bearer)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"kind\":\"ANDROID\",\"targetLabel\":\"emulator-5554\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.kind").value("ANDROID"));
+        mvc.perform(post("/api/v1/device-shares").header("Authorization", bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"IOS\",\"targetLabel\":\"iPhone 17 Pro · com.apple.mobilesafari\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.kind").value("IOS"));
     }
 
     @Test

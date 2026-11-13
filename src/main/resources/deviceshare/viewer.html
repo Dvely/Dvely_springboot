@@ -139,6 +139,8 @@ function send(msg) {
   if (S.ws && S.ws.readyState === 1) { S.ws.send(JSON.stringify(msg)); return true; }
   return false;
 }
+// Android·iOS: 손가락을 해석하지 않고 그대로 보낸다(기기가 스크롤·길게 누르기를 안다).
+const isDevice = () => S.kind === 'ANDROID' || S.kind === 'IOS';
 const canInput = () => S.joined && S.hasControl && !S.ended && S.online !== false;
 const sendInput = (input) => canInput() && send({ type: 'input', input });
 
@@ -211,7 +213,7 @@ function onText(data) {
     case 'config':
       S.cfgW = +m.width || 0; S.cfgH = +m.height || 0;
       S.url = String(m.url || ''); S.title = String(m.title || '');
-      S.kind = m.kind === 'ANDROID' ? 'ANDROID' : 'WEB';
+      S.kind = m.kind === 'ANDROID' || m.kind === 'IOS' ? m.kind : 'WEB';
       S.format = m.format === 'h264' ? 'h264' : 'jpeg';
       S.codec = S.format === 'h264' ? String(m.codec || '') : '';
       if (S.format === 'h264') video.configure(); else video.close();
@@ -289,7 +291,8 @@ function render() {
   const live = S.joined && !S.ended, ctl = live && S.hasControl;
   for (const id of ['b-back', 'b-fwd', 'b-reload', 'b-kbd']) { $(id).hidden = !ctl; $(id).disabled = S.online === false; }
   // Android 는 뒤로(시스템 뒤로 키)만 있다. 앞으로·새로고침은 웹 화면에만 있다.
-  if (S.kind === 'ANDROID') { $('b-fwd').hidden = true; $('b-reload').hidden = true; }
+  if (isDevice()) { $('b-fwd').hidden = true; $('b-reload').hidden = true; }
+  if (S.kind === 'IOS') $('b-back').hidden = true; // iOS 는 시스템 뒤로 키가 없다. 앱 안의 뒤로 버튼을 쓴다
   $('b-rel').hidden = !ctl;
   const req = $('b-req');
   req.hidden = !live || S.hasControl;
@@ -440,7 +443,7 @@ canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* 무시 */ }
   pendingMove = null;
-  if (e.pointerType === 'touch' && S.kind !== 'ANDROID') {
+  if (e.pointerType === 'touch' && !isDevice()) {
     // 손가락: 톡 = 클릭, 끌기 = 스크롤(휠), 길게 누른 뒤 끌기 = 드래그. Android 는 손가락을 그대로 보낸다(기기가 스크롤·길게 누르기를 안다)
     press = { id: e.pointerId, touch: true, mode: 'wait', p, x0: e.clientX, y0: e.clientY, lx: e.clientX, ly: e.clientY };
     press.timer = setTimeout(() => {
@@ -465,7 +468,7 @@ canvas.addEventListener('pointermove', (e) => {
     }
     press.lx = e.clientX; press.ly = e.clientY;
     if (press.mode !== 'drag') return;
-  } else if (!press && (e.pointerType === 'touch' || S.kind === 'ANDROID')) return; // Android 는 누르지 않은 움직임을 쓰지 않는다
+  } else if (!press && (e.pointerType === 'touch' || isDevice())) return; // 기기(Android·iOS)는 누르지 않은 움직임을 쓰지 않는다
   const p = ratio(e, !!press);
   if (!p) return;
   pendingMove = { p, button: press ? press.button || 'left' : 'none' };
