@@ -10,8 +10,8 @@
 import { KIND, MAX_PAYLOAD_BYTES, encodeFrame } from '../protocol.js';
 import { TunnelSession } from '../tunnel.js';
 import { ALLOWED_SYSTEM_PACKAGES } from './adb.js';
-import { createTouchState, mapAndroidInput } from './input.js';
-import { encodeSetClipboard, screenFramePayload } from './scrcpy-protocol.js';
+import { createTouchState, isKeyboardText, mapAndroidInput } from './input.js';
+import { encodeSetClipboard, encodeText, screenFramePayload } from './scrcpy-protocol.js';
 
 /** §12.3: above this much unsent on the tunnel, frames that are not key frames are dropped. */
 export const HIGH_WATER_BYTES = 2 * 1024 * 1024;
@@ -22,11 +22,13 @@ const DRAIN_POLL_MS = 100;
 const RESET_MIN_INTERVAL_MS = 1000;
 export const GUARD_INTERVAL_MS = 1000;
 /**
- * After a clipboard paste, the next message waits this long. The app reads the clipboard when the
- * PASTE key reaches it; a second SET_CLIPBOARD before then would make both pastes insert the second
- * text (measured: typing a word a syllable at a time left only its last syllable).
+ * After a clipboard paste, the next message waits this long, and text typed meanwhile is merged
+ * into one paste. The app reads the clipboard some time after the PASTE key; a SET_CLIPBOARD before
+ * then makes the earlier paste insert the later text. Measured on Chrome in an API 35 emulator,
+ * pasting 가·나·다·라·마 at a fixed gap: 200 ms gave 마마마마마, 350 ms 가나다마마, 500 ms and 800 ms
+ * 가나다라마.
  */
-export const PASTE_GAP_MS = 200;
+export const PASTE_GAP_MS = 600;
 
 export class AndroidShareSession extends TunnelSession {
   /**
@@ -51,7 +53,7 @@ export class AndroidShareSession extends TunnelSession {
     this.guardBusy = false;
     this.outside = null; // the package the guard last pulled the share back from
     this.warnedLargeFrame = false;
-    this.outbox = []; // control messages in order; {paste} entries are merged while they wait
+    this.outbox = []; // control messages in order; {text} entries next to each other are merged while they wait
     this.outboxTimer = null;
     this.pasteReadyAt = -Infinity;
   }
@@ -176,13 +178,16 @@ export class AndroidShareSession extends TunnelSession {
   handleInput(input) {
     for (const item of mapAndroidInput(input, this.screen, this.touch)) {
       const last = this.outbox.at(-1);
-      if (!Buffer.isBuffer(item) && last && !Buffer.isBuffer(last)) last.paste += item.paste;
-      else this.outbox.push(Buffer.isBuffer(item) ? item : { paste: item.paste });
+      if (!Buffer.isBuffer(item) && last && !Buffer.isBuffer(last)) last.text += item.text;
+      else this.outbox.push(Buffer.isBuffer(item) ? item : { text: item.text });
     }
     this.drainOutbox();
   }
 
-  /** Sends the outbox in order, holding everything behind a paste for PASTE_GAP_MS. */
+  /**
+   * Sends the outbox in order, holding everything behind a paste for PASTE_GAP_MS. Text that waits
+   * there — Korean typed a syllable at a time, with its spaces — goes in as one paste afterwards.
+   */
   drainOutbox() {
     if (this.outboxTimer || this.closed) return;
     while (this.outbox.length) {
@@ -197,8 +202,10 @@ export class AndroidShareSession extends TunnelSession {
       const item = this.outbox.shift();
       if (Buffer.isBuffer(item)) {
         this.device.sendControl(item);
+      } else if (isKeyboardText(item.text)) {
+        for (const message of encodeText(item.text)) this.device.sendControl(message);
       } else {
-        this.device.sendControl(encodeSetClipboard(item.paste, { paste: true }));
+        this.device.sendControl(encodeSetClipboard(item.text, { paste: true }));
         this.pasteReadyAt = this.now() + PASTE_GAP_MS;
       }
     }

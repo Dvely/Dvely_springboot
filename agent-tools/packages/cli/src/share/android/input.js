@@ -1,9 +1,10 @@
 /**
  * Viewer input (§4.3) → scrcpy control messages (§12.4). Pure: the result is what to write to the
- * control socket, in order — encoded messages, and `{paste: text}` for text the keyboard map cannot
- * type, which the session sends through the clipboard (it has to pace those, see session.js).
+ * control socket, in order — encoded messages, and `{text}` for typed text. The session decides how
+ * text goes in (key presses for ASCII, the clipboard otherwise) because it has to pace and merge
+ * clipboard pastes, see session.js.
  */
-import { KEY_ACTION, MOTION, encodeKeycode, encodeScroll, encodeText, encodeTouch } from './scrcpy-protocol.js';
+import { KEY_ACTION, MOTION, encodeKeycode, encodeScroll, encodeTouch } from './scrcpy-protocol.js';
 
 /** android.view.KeyEvent codes. */
 export const KEYCODE = Object.freeze({
@@ -65,7 +66,7 @@ export function createTouchState() {
  * @param {object} input one §4.3 input
  * @param {{width: number, height: number}} screen the current video size
  * @param {{down: boolean}} state whether a finger is on the screen
- * @returns {(Buffer|{paste: string})[]}
+ * @returns {(Buffer|{text: string})[]}
  */
 export function mapAndroidInput(input, screen, state = createTouchState()) {
   if (!input || typeof input !== 'object') return [];
@@ -181,13 +182,15 @@ function letterOrDigitKeycode(ch) {
   return null;
 }
 
-/** ASCII goes in as key presses; anything else (Korean, emoji) through the clipboard and PASTE. */
 function text(raw) {
   if (typeof raw !== 'string' || raw.length === 0) return [];
-  const value = raw.slice(0, MAX_TEXT_LENGTH);
+  return [{ text: raw.slice(0, MAX_TEXT_LENGTH) }];
+}
+
+/** What INJECT_TEXT can type through the virtual keyboard map; anything else needs the clipboard. */
+export function isKeyboardText(value) {
   // eslint-disable-next-line no-control-regex
-  if (/^[\x20-\x7e\n\t]*$/.test(value)) return encodeText(value);
-  return [{ paste: value }];
+  return /^[\x20-\x7e\n\t]*$/.test(value);
 }
 
 function press(keycode) {
