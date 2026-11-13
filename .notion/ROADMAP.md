@@ -1,6 +1,6 @@
 # Qeploy 단위(Unit) 파이프라인 로드맵
 
-> 기준일: 2026-10-31 · 기준 커밋: c90f031e(develop) · 코드 실측 기반
+> 기준일: 2026-11-12 · 기준 커밋: 32007e30(develop) · 코드 실측 기반
 
 이 문서는 `danto/<도메인>` 단위 작업 파이프라인의 SSOT다. 우선순위, 진행 상태, 세션 인계 정보를 이 문서 하나로 관리한다.
 
@@ -9,6 +9,54 @@
 ---
 
 ## 1. 현재 상태
+
+- 2026-11-11~12: **방향을 바꿨다 — 서버리스 전환은 보류하고, 기존 백엔드를 Oracle Cloud Always Free 로 다시 띄우며, 프리뷰를 핵심 기능으로 앞세운다. 첫 단계로 "내 기기 앱 화면 공유·제어" 1단계(웹)를 develop 에 넣었다 — PR #653·#654(#652), 문서 #655.** develop 최신 마이그레이션은 **V75**. 서비스는 아직 중단 상태다
+  - **방향(사용자 결정)**
+    - 디스코드·줌처럼 내 기기 화면을 웹 링크로 공유한다. 보는 사람이 조작권을 받아 제어까지 한다
+    - 범위는 컴퓨터 전체가 아니라 앱 화면 단위다(dev 브라우저 → Android 에뮬레이터 → iOS 시뮬레이터)
+    - 개편안·계획·리뷰는 아티팩트 "Qeploy 개편안"(2판)과 "Qeploy 개선 계획"에 있다
+    - 특허 청구항 내용은 출원(11/23) 전까지 공개 문서에 쓰지 않는다
+  - **#652 1단계(#653 설계, #654 구현)**
+    - `qeploy share web <url>` 이 보기 링크와 내 제어 링크를 낸다
+    - 링크마다 `<토큰>.share.qeploy.com` 오리진을 쓴다. 서버가 화면 프레임을 나눠 주고, 조작권은 한 사람이 갖는다(손님은 CLI 에서 승인)
+    - 서버 26건·CLI 185건 테스트를 더했다. 로컬 서버 + 실제 Chrome 으로 주인 조작·한글 입력·손님 승인 흐름을 실측했다
+    - 상세는 `state.md` §4.60, `api.md` §20
+  - **#649 서버 재호스팅**
+    - Oracle 계정(`danto7632`, 홈 리전 **도쿄**)을 만들었다. 서울·춘천은 무료 가입 목록에 없었다. 실측 RTT 는 서울 7ms · 도쿄 37ms · 오사카 44ms 다
+    - A1(2 OCPU·12GB)은 `Out of host capacity` 라 `deploy/oci-create-instance.sh` 가 재시도 중이다(사용자가 포기를 말할 때까지 2·12 유지)
+    - 셋업 스크립트·문서는 브랜치 `danto/oracle-hosting`(PR 전, 실서버 검증 뒤 올린다)에 있다
+    - API 주소는 `api.qeploy.com` 이다
+  - **#614 최적화**: 새 서버에 필요한 것만 지금 한다. ARM 서버라 배포 이미지 빌드는 TARGET 으로 두고(unhak 협의 코멘트 사용자 확인 대기), 서버 밖 DB 백업(#569)과 메모리·지표를 챙긴다. 나머지는 운영 재개 뒤 측정하고 정한다
+  - **포스터**(졸업작품 경진대회)
+    - 핵심기술 2번 절을 "프리뷰 (세션별 격리 · 내 기기 화면 공유)"로 바꾸고 실제 공유 화면을 넣은 초안을 만들었다
+    - 파일은 `~/Downloads/…_1112.{pptx,pdf}`, 원고는 `.agent-team/06-research/2026-11-tasks/grad-poster/src/build.py` 다
+    - 사용자 말 "다 되면 확정하자" 에 따라 아직 확정하지 않았다
+  - **다음**
+    - A1 자리를 받으면 셋업 → DNS(`api`·`*.share`) → 와일드카드 인증서 → 운영 env(`QEPLOY_DEVICE_SHARE_*`) → FE `VITE_API_URL` → `status.json`
+    - 2단계 Android 에뮬레이터(scrcpy)
+    - FE 링크 관리 화면(Dvely_FE 이슈)
+    - 11/23 특허 마감, 11/24 대회
+
+- 2026-11-09~10: **회원 탈퇴(#613)·서버 전체 컨테이너 상한과 프리뷰 SSE(#624)·성능 진단 P2 의 DB·쿼리 묶음(#625)·테스트 인프라(#645)·보존 스윕 후속(#618)을 develop 에 넣었다 — PR #637~#647.** 서비스는 여전히 중단 상태이고 main 에는 나가지 않았다. #613·#624 는 사용자 요청으로 닫았다. develop 최신 마이그레이션은 **V74**
+  - #613 탈퇴(#637·#638·#639): `GET /users/me/withdrawal`(막는 자원 조회)·`DELETE /users/me`(브라우저 로그인 전용, PAT 403). 사용자 AWS 에 살아 있는 자원(5종)이 있으면 `409 WITHDRAWAL_BLOCKED` 에 목록을 싣는다(오류 응답 중 `data` 가 있는 유일한 코드). 토큰 폐기·작업 정리·감사(ACCOUNT) 뒤 FK 순서로 지운다. 공개 엔드포인트 121개. FE 쪽은 Dvely_FE#203 에 API 요약과 약관·처리방침 고칠 자리를 코멘트로 남겼다. 남은 것: 지운 프로젝트에 CloudFront 도메인이 남으면 탈퇴가 막히고 풀 길이 없다(#595 와 같은 뿌리)
+  - #624 상한(#640·#641): 서버 전체 프리뷰 4·코딩 에이전트 2(`QEPLOY_LIMITS_GLOBAL_*`, 넘으면 `429 PREVIEW_CAPACITY_EXCEEDED` / CODE 스텝 실패). 프리뷰 SSE 프록시는 청크마다 flush(Spring 7.0.6 은 `getBody()` 가 flush 를 무시한다), 5분 타임아웃 뒤 503, MVC 비동기는 가상 스레드 상한 200·SSE 100. LOCAL DB·kaniko 컨테이너는 이 상한 밖이다
+  - #625 P2 의 DB·쿼리(#642·#643·#644): V73 `chat_messages` 인덱스를 `(chat_session_id, message_id)` 로 교체하고 LLM 대화 창을 DB 에서 자른다 / 매일 토큰 정리를 READ COMMITTED 로(다른 사용자의 회전이 잠금 대기로 실패하던 것) / 배포 이력 목록 limit 200·커서(`X-Qeploy-Next-Cursor`), 활동 로그의 `projects` 조회 5→1
+  - #645 테스트 인프라(#646): 테스트 JVM 의 Hikari `minimum-idle=1`(`build.gradle`) — 컨텍스트 8개가 MySQL 한도 151 에 붙어 있었다(최대 동시 연결 152→19). `select last_insert_id()` 를 따로 읽던 테스트 5곳을 `support/JdbcRows.insert` 로, `LastInsertIdGuardTest` 가 재발을 막는다
+  - #618 후속(#647): V74 `agent_runs.payload_purged_at` + `idx_agent_runs_retention`. 비우기는 잠그지 않는 고르기 + PK 고치기 두 문장이다. 합성 10만 행에서 매시 읽는 행 99,909→11. #646 에서 발견했다 — RC 의 잠긴 행 건너뛰기는 클러스터 인덱스 훑기에서만 일어나고, 범위 UPDATE 는 범위 바로 다음 행까지 잠그려 한다(이 PR 의 첫 버전이 CI 에서 그렇게 실패했다)
+  - 로컬 전체 빌드는 2,245건 중 `ContainerGitCredentialsHardeningTest` 4건만 실패한다(로컬 git 경로 차이, CI 통과). 테스트 DB 는 Docker `qeploy-test-mysql`(13306)
+  - **다음**: #625 나머지는 셋으로 갈린다.
+    - 운영 설정 승인 필요: `@DynamicUpdate`+binlog, `readOnlyPropagatesToServer`
+    - 측정이 먼저: 대형 컬럼 보존, 프리뷰 RSS·npm 캐시·미리 구운 이미지
+    - 코드만: docker exec 링버퍼, JGit 스트리밍, 무한히 자라는 맵 2개, 개요의 GitHub 호출 병렬화, 완료 배포 로그 캐시, 관측 지표
+    - 그 밖에 #623 PR-2(`node_modules` 제외 수신)는 unhak 조율, P0 #615 는 unhak 구역, #595. 서비스 재개 때 `binlog_format=ROW` 확인(#618·#625 의 RC 전제)
+
+- 2026-11-08: **성능 진단 P0·P1 일부를 develop 에 넣었다 — PR #630~#636.**
+  - #617: 툴 로그·실패 요약·지시문 로그에서 파일 내용과 긴 원문을 빼고(#630), `write_file` 을 archive 업로드로 써서 96KiB 넘는 파일도 쓰며 실패를 모델에게 알린다(#631)
+  - #620: 요청이 전달된 뒤의 LLM 실패는 자동 재시도하지 않고, POST 읽기 타임아웃을 번역한다(#632)
+  - #618 PR-1: 보존 스윕을 READ COMMITTED 로, 이벤트 DELETE 를 `created_at` 인덱스 범위로(V72, #633)
+  - #619: 태스크 상태 조회를 읽기 전용 트랜잭션 하나·프로젝션 1회로(#634)
+  - #623 PR-1: 결과 승인 게이트가 같은 CODE 스텝의 서버 측 검사를 다시 하지 않는다(#635)
+  - #616: 서버 정리 cron 이 코딩 에이전트 이미지를 지우지 않게 한다(#636)
 
 - 2026-11-07: **공식 연락 메일·약관·처리방침·GA 를 FE 에 올리고(Dvely_FE #199·#200 → PR #201·#202, main 배포), 성능·비용 진단 결과를 이슈로 남겼다(#614 + 하위 #615~#625). 백엔드 코드 변경 0.**
   - 메일: Cloudflare Email Routing — `contact@`·`support@`·`privacy@`·`security@qeploy.com` → `qeploy.official@gmail.com`(인증 완료, catch-all 끔). MX 3·SPF·DKIM 이 zone 에 추가됐다. 로컬 설정의 Cloudflare 토큰에는 Email Routing 권한이 없어 대시보드로 했다
