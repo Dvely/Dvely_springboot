@@ -85,6 +85,7 @@ public class ViewerSocketHandler extends AbstractWebSocketHandler {
         DeviceShareLink link = (DeviceShareLink) session.getAttributes().get(ATTR_LINK);
         String viewerId = (String) session.getAttributes().get(ATTR_VIEWER_ID);
         if (link != null && viewerId != null) {
+            log.info("[DeviceShare] 보는 사람 나감 share={} viewer={} code={}", link.getId(), viewerId, status.getCode());
             registry.leave(link.getId(), viewerId);
         }
     }

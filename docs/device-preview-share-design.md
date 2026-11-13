@@ -149,7 +149,7 @@ stream id 는 1단계에서 늘 0 이다(나중 HTTP 중계용 자리). JSON pay
 | 브라우저 → 서버 | `{"type":"join","name":"민지","controlSecret":"…"}` (비밀은 없으면 빼기) |
 | 브라우저 → 서버 | `{"type":"input","input":{…§4.3}}` |
 | 브라우저 → 서버 | `{"type":"request-control"}` · `{"type":"release-control"}` |
-| 서버 → 브라우저 | `{"type":"welcome","viewerId":"v3","name":"민지","hasControl":false}` |
+| 서버 → 브라우저 | `{"type":"welcome","viewerId":"v3","name":"민지","hasControl":false,"owner":false}` (`owner` 는 내 제어 링크로 들어왔는지) |
 | 서버 → 브라우저 | `{"type":"config","width":390,"height":844,"url":"http://localhost:5173/","title":"Vite App","format":"jpeg","kind":"WEB"}` (2단계 h264 는 `codec` 이 붙는다, §12.2) |
 | 서버 → 브라우저 | `{"type":"presence","viewers":2,"controller":{"viewerId":"v1","name":"주인"}}` (조작 중인 사람이 없으면 `null`) |
 | 서버 → 브라우저 | `{"type":"control","state":"granted","ttlSeconds":600}` (`granted` · `denied` · `revoked` · `released` · `pending`) |
@@ -184,6 +184,8 @@ stream id 는 1단계에서 늘 0 이다(나중 HTTP 중계용 자리). JSON pay
 
 - 한 번에 한 사람만 조작한다.
 - **내 제어 링크**(`#c=…`)로 들어온 사람은 바로 조작권을 받는다. 주인이 나 자신이기 때문이다.
+  - 다만 주인이 승인한 손님이 조작 중이면 빼앗지 않고 보기로 들어온다. 주인 탭이 다시 연결될 때마다 손님의 조작권이 사라지지 않게 하려는 것이다. 버튼이 "조작 되찾기" 로 바뀌고, 누르면 바로 가져온다
+  - 조작 중인 사람이 주인의 다른 탭이면 새로 들어온 탭이 가져간다
 - **보기 링크**로 들어온 사람은 보기만 한다. "조작 요청"을 누르면 CLI 에 승인 프롬프트가 뜬다(`y` 면 기본 10분). TTY 가 아니면 거절한다.
 - 주인(CLI 또는 내 제어 링크)은 언제든 조작권을 회수한다. 조작 중인 사람이 나가면 조작권이 풀린다.
 - 뷰어 화면에 "지금 조작 중: ○○" 를 늘 보여 준다.

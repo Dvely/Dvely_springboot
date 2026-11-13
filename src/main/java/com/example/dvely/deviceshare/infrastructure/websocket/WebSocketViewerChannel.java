@@ -43,6 +43,7 @@ class WebSocketViewerChannel implements ViewerChannel {
             return;
         }
         if (texts.size() >= MAX_QUEUED_TEXTS) {
+            log.info("[DeviceShare] 보는 사람이 따라오지 못해 연결을 닫음 session={} 밀린 텍스트={}", session.getId(), texts.size());
             closeLocked("slow-consumer");
             return;
         }
@@ -123,7 +124,9 @@ class WebSocketViewerChannel implements ViewerChannel {
                 }
             }
         } catch (IOException | RuntimeException e) {
-            log.debug("[DeviceShare] 보는 사람에게 보내지 못함: {}", e.getMessage());
+            // 끊긴 이유를 남긴다(예: 보내기가 오래 막혀 시간 초과). 화면·입력 내용은 메시지에 없다
+            log.info("[DeviceShare] 보는 사람에게 보내지 못해 연결을 닫음 session={} {}: {}", session.getId(),
+                    e.getClass().getSimpleName(), e.getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
