@@ -11,12 +11,15 @@ import { buildTools } from './tools.js';
  *
  * @param {{enableWrites?: boolean}} options write tools are omitted unless enabled
  */
+/** Reported to the agent in the handshake. Same as package.json (a test holds them together). */
+export const SERVER_VERSION = '0.2.0';
+
 export function createServer(client, options = {}) {
   const tools = buildTools(client, options);
   const byName = new Map(tools.map((t) => [t.name, t]));
 
   const server = new Server(
-    { name: 'qeploy', version: '0.1.3' },
+    { name: 'qeploy', version: SERVER_VERSION },
     { capabilities: { tools: {} } }
   );
 

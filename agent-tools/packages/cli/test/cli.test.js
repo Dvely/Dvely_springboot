@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { QeployApiError } from '@qeploy/client';
-import { run, parseArgs, EXIT, helpText } from '../src/index.js';
+import { run, parseArgs, EXIT, helpText, VERSION } from '../src/index.js';
 import { confirm, UsageError } from '../src/confirm.js';
 import { renderTable, terminalSafe } from '../src/render.js';
 import { Readable, Writable } from 'node:stream';
+import { readFileSync } from 'node:fs';
+import { SERVER_VERSION } from '../../mcp/src/server.js';
 
 /** Runs the CLI with no process, no socket and no terminal — everything outside is injected. */
 async function cli(argv, { client = {}, confirmAnswer = true, secret } = {}) {
@@ -115,6 +117,24 @@ describe('exit codes', () => {
     const { code, out } = await cli(['--version']);
     assert.equal(code, EXIT.OK);
     assert.match(out, /^\d+\.\d+\.\d+$/);
+  });
+});
+
+describe('release versions', () => {
+  const pkg = (name) => JSON.parse(readFileSync(new URL(`../../${name}/package.json`, import.meta.url), 'utf8'));
+
+  it('reports the versions in package.json', () => {
+    assert.equal(VERSION, pkg('cli').version);
+    assert.equal(SERVER_VERSION, pkg('mcp').version);
+  });
+
+  it('depends on exactly the client in this repository', () => {
+    // The workspace links the local client, so tests pass whatever the dependency says. A user
+    // gets the version named here from npm — an old one lacks the calls the new code makes
+    // (0.1.3 has no device-share API, so `share` would break on install).
+    const client = pkg('client').version;
+    assert.equal(pkg('cli').dependencies['@qeploy/client'], client);
+    assert.equal(pkg('mcp').dependencies['@qeploy/client'], client);
   });
 });
 
