@@ -6,51 +6,20 @@
  *   Chrome ◀──CDP input─── INPUT ◀──────────────────────── server ◀── the viewer holding control
  *
  * The CDP side is two small objects, `browser` and `page`, each with `send(method, params)` and
- * `on(event, fn)` — a real flattened session in production, a fake in tests. The tunnel is a real
- * `ws` WebSocket (the built-in one cannot carry the Authorization header).
+ * `on(event, fn)` — a real flattened session in production, a fake in tests. The tunnel, its
+ * reconnects and the control prompts are TunnelSession's (tunnel.js).
  */
-import WebSocket from 'ws';
-import {
-  KIND,
-  HEADER_BYTES,
-  MAX_PAYLOAD_BYTES,
-  decodeFrame,
-  encodeFrame,
-  encodeJsonFrame,
-  parseJsonPayload,
-} from './protocol.js';
+import { KIND, MAX_PAYLOAD_BYTES, encodeFrame } from './protocol.js';
 import { createPointerState, mapInput } from './input.js';
-import {
-  ACK_BUFFER_LIMIT,
-  MAX_FPS,
-  ackDelay,
-  backoffDelay,
-  describeOrigin,
-  historyEntry,
-  isAllowedNavigation,
-} from './policy.js';
+import { ACK_BUFFER_LIMIT, MAX_FPS, ackDelay, describeOrigin, historyEntry, isAllowedNavigation } from './policy.js';
+import { TunnelSession, noop } from './tunnel.js';
 
-/** §5: a granted control lasts ten minutes. */
-export const CONTROL_TTL_SECONDS = 600;
-
-/** GOODBYE reasons after which reconnecting would be wrong (§4.1). */
-export const TERMINAL_GOODBYE = new Set(['revoked', 'expired', 'replaced']);
-
-/**
- * Pings keep the tunnel alive through proxies that drop idle connections (nginx's default read
- * timeout is 60 s, and a still page sends no frames), and notice a dead network sooner than TCP.
- */
-const PING_INTERVAL_MS = 25000;
+export { CONTROL_TTL_SECONDS, TERMINAL_GOODBYE } from './tunnel.js';
 
 /** How often a changing screen may trigger a title lookup. */
 const TITLE_CHECK_MS = 1000;
 
-const noop = () => {};
-
-/** WebSocket readyState OPEN — the same number in `ws` and in the WHATWG API. */
-const OPEN = 1;
-
-export class ShareSession {
+export class ShareSession extends TunnelSession {
   /**
    * @param {object} o
    * @param {URL} o.target the shared page
@@ -65,24 +34,8 @@ export class ShareSession {
    * @param {(question: string) => Promise<boolean>} o.askControl
    * @param {(text: string) => void} [o.log] one line of status for the owner
    */
-  constructor({
-    target,
-    targetLabel,
-    viewport = null,
-    browser,
-    page,
-    targetId = null,
-    tunnelUrl,
-    token,
-    cliVersion,
-    askControl,
-    log = noop,
-    WebSocketImpl = WebSocket,
-    backoff = backoffDelay,
-    pingIntervalMs = PING_INTERVAL_MS,
-    platform = process.platform,
-    now = Date.now,
-  }) {
+  constructor({ target, targetLabel, viewport = null, browser, page, targetId = null, platform = process.platform, ...tunnel }) {
+    super(tunnel);
     Object.assign(this, {
       target,
       targetLabel: targetLabel ?? target.href,
@@ -90,16 +43,7 @@ export class ShareSession {
       browser,
       page,
       targetId,
-      tunnelUrl,
-      token,
-      cliVersion,
-      askControl,
-      log,
-      WebSocketImpl,
-      backoff,
-      pingIntervalMs,
       platform,
-      now,
     });
     this.origin = target.origin;
     this.screen = { width: 0, height: 0, url: target.href, title: '' };
@@ -108,27 +52,11 @@ export class ShareSession {
     this.lastTitleCheck = -Infinity;
     this.titleTimer = null;
 
-    this.socket = null;
-    this.ready = false; // WELCOME received on the current socket
-    this.everConnected = false;
-    this.attempt = 0;
-    this.reconnectTimer = null;
-    this.pingTimer = null;
-    this.sentConfig = null;
-
     this.latestFrame = null;
     this.ackQueue = [];
     this.lastAckAt = -Infinity;
     this.ackTimer = null;
     this.warnedLargeFrame = false;
-
-    this.controlQueue = Promise.resolve();
-    this.presenceLine = null;
-
-    this.closed = false;
-    this.done = new Promise((resolve) => {
-      this.resolveDone = resolve;
-    });
   }
 
   /**
@@ -142,11 +70,6 @@ export class ShareSession {
     await this.setupPage();
     if (!this.closed) this.connect();
     return this.done;
-  }
-
-  /** Ends the share from this side (Ctrl+C, Chrome exiting). Safe to call more than once. */
-  stop(reason = 'interrupt') {
-    this.finish({ reason });
   }
 
   // ── Chrome ───────────────────────────────────────────────────────────────
@@ -373,94 +296,20 @@ export class ShareSession {
     this.pumpAcks();
   }
 
-  // ── Tunnel ───────────────────────────────────────────────────────────────
+  // ── TunnelSession hooks ──────────────────────────────────────────────────
 
-  connect() {
-    if (this.closed) return;
-    const socket = new this.WebSocketImpl(this.tunnelUrl, {
-      headers: { Authorization: `Bearer ${this.token}` },
-      perMessageDeflate: false,
-      maxPayload: HEADER_BYTES + MAX_PAYLOAD_BYTES,
-      handshakeTimeout: 15000,
-    });
-    this.socket = socket;
-    this.ready = false;
-    this.sentConfig = null;
-
-    let handshakeStatus = null;
-    let lastError = null;
-
-    socket.on('unexpected-response', (_req, res) => {
-      // 404/410 mean the link is gone and 401/403 that the token is refused — neither gets better
-      // by retrying. Handling the event means ws leaves the socket to us, so end it here.
-      handshakeStatus = res.statusCode;
-      socket.terminate();
-    });
-    socket.on('open', () => {
-      if (socket !== this.socket) return;
-      this.sendRaw(encodeJsonFrame(KIND.HELLO, { cliVersion: this.cliVersion, kind: 'WEB', target: this.targetLabel }));
-      this.startPing(socket);
-    });
-    socket.on('message', (data, isBinary) => {
-      if (socket !== this.socket || isBinary === false) return;
-      this.onTunnelFrame(data);
-    });
-    socket.on('error', (e) => {
-      lastError = e;
-    });
-    socket.on('close', () => this.onTunnelClose(socket, handshakeStatus, lastError));
+  helloPayload() {
+    return { cliVersion: this.cliVersion, kind: 'WEB', target: this.targetLabel };
   }
 
-  onTunnelFrame(data) {
-    let frame;
-    try {
-      frame = decodeFrame(data);
-    } catch {
-      return;
-    }
-    if (frame.streamId !== 0) return; // phase 1 has only stream 0
-    const body = () => parseJsonPayload(frame.payload) ?? {};
-    switch (frame.kind) {
-      case KIND.WELCOME:
-        return this.onWelcome(body());
-      case KIND.GOODBYE:
-        return this.onGoodbye(body());
-      case KIND.INPUT:
-        return this.onInput(body());
-      case KIND.CONTROL_REQUEST:
-        return this.onControlRequest(body());
-      case KIND.PRESENCE:
-        return this.onPresence(body());
-      default:
-        // A kind this CLI does not know yet (§10 relaying, say) is not an error.
-        return undefined;
-    }
-  }
-
-  onWelcome() {
-    this.ready = true;
-    this.attempt = 0;
-    this.log(this.everConnected ? '다시 연결했습니다.' : '연결했습니다. 화면을 보내는 중입니다.');
-    this.everConnected = true;
+  onReady() {
     this.sendConfigIfChanged();
     // Chrome sends nothing while the page is still, so a viewer would otherwise wait for a change.
     if (this.latestFrame) this.sendFrame(this.latestFrame);
     this.pumpAcks();
   }
 
-  onGoodbye({ reason } = {}) {
-    if (TERMINAL_GOODBYE.has(reason)) {
-      this.finish({ reason });
-      return;
-    }
-    // Anything else (a server restart, say): the close that follows reconnects.
-    this.log(`서버가 연결을 끊었습니다${typeof reason === 'string' ? ` (${reason.slice(0, 40)})` : ''}.`);
-  }
-
-  onInput(payload) {
-    // The viewer's envelope is {type: "input", input}; the tunnel carries the inner object. Taking
-    // either keeps a server that forwards the whole message working.
-    const input = payload?.type === 'input' && payload.input ? payload.input : payload;
+  handleInput(input) {
     const { commands, nav } = mapInput(input, this.screen, this.pointer, { platform: this.platform });
     for (const { method, params } of commands) {
       this.page.send(method, params).catch(noop);
@@ -484,127 +333,8 @@ export class ShareSession {
     await this.page.send('Page.navigateToHistoryEntry', { entryId: entry.id });
   }
 
-  onControlRequest({ viewerId, name } = {}) {
-    if (typeof viewerId !== 'string' && typeof viewerId !== 'number') return;
-    const who = displayName(name);
-    // One question at a time: two prompts racing for the same terminal would garble both.
-    this.controlQueue = this.controlQueue.then(async () => {
-      if (this.closed) return;
-      let granted = false;
-      try {
-        granted = (await this.askControl(`'${who}' 님이 조작권을 요청합니다. 10분 동안 허용할까요?`)) === true;
-      } catch {
-        granted = false;
-      }
-      if (this.closed) return;
-      this.sendRaw(encodeJsonFrame(KIND.CONTROL_DECISION, { viewerId, granted, ttlSeconds: CONTROL_TTL_SECONDS }));
-      this.log(granted ? `'${who}' 님에게 10분 동안 조작권을 줬습니다.` : `'${who}' 님의 조작 요청을 거절했습니다.`);
-    });
-  }
-
-  onPresence({ viewers, controller } = {}) {
-    const count = Number.isInteger(viewers) && viewers >= 0 ? viewers : 0;
-    const who = controller && typeof controller === 'object' ? displayName(controller.name ?? controller.viewerId) : null;
-    const line = `보는 사람 ${count}명 · ${who ? `조작 중: ${who}` : '조작하는 사람 없음'}`;
-    if (line === this.presenceLine) return;
-    this.presenceLine = line;
-    this.log(line);
-  }
-
-  onTunnelClose(socket, handshakeStatus, error) {
-    if (socket !== this.socket) return;
-    this.socket = null;
-    this.ready = false;
-    this.stopPing();
-    if (this.closed) return;
-
-    if (handshakeStatus === 404 || handshakeStatus === 410) {
-      this.finish({ reason: 'gone', status: handshakeStatus });
-      return;
-    }
-    if (handshakeStatus === 401 || handshakeStatus === 403) {
-      this.finish({ reason: 'auth', status: handshakeStatus });
-      return;
-    }
-    if (handshakeStatus === 400) {
-      // The server refused the request itself — the protocol version (`?v=`) it does not speak.
-      this.finish({ reason: 'rejected', status: handshakeStatus });
-      return;
-    }
-
-    const delay = this.backoff(this.attempt++);
-    const why = handshakeStatus ? ` (HTTP ${handshakeStatus})` : error?.message ? ` (${error.message})` : '';
-    this.log(`터널이 끊겼습니다${why}. ${Math.max(1, Math.round(delay / 1000))}초 뒤 다시 연결합니다.`);
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connect();
-    }, delay);
-  }
-
-  startPing(socket) {
-    this.stopPing();
-    if (!this.pingIntervalMs) return;
-    let waiting = false;
-    socket.on('pong', () => {
-      waiting = false;
-    });
-    this.pingTimer = setInterval(() => {
-      if (waiting) {
-        // No pong for a whole interval: the connection is dead even if TCP has not noticed.
-        socket.terminate();
-        return;
-      }
-      waiting = true;
-      try {
-        socket.ping();
-      } catch {
-        // closing already
-      }
-    }, this.pingIntervalMs);
-  }
-
-  stopPing() {
-    if (this.pingTimer) clearInterval(this.pingTimer);
-    this.pingTimer = null;
-  }
-
-  /** @returns {boolean} whether it went out */
-  sendRaw(frame) {
-    const socket = this.socket;
-    if (!socket || socket.readyState !== OPEN) return false;
-    socket.send(frame, { binary: true });
-    return true;
-  }
-
-  finish(result) {
-    if (this.closed) return;
-    this.closed = true;
-    this.ready = false;
-    clearTimeout(this.reconnectTimer);
+  onFinished() {
     clearTimeout(this.ackTimer);
     clearTimeout(this.titleTimer);
-    this.stopPing();
-    const socket = this.socket;
-    this.socket = null;
-    if (socket) {
-      try {
-        if (socket.readyState === OPEN) socket.close(1000);
-        else socket.terminate();
-      } catch {
-        // already gone
-      }
-    }
-    this.resolveDone(result);
   }
-}
-
-/** A viewer-chosen name, made safe to print in the owner's terminal. */
-function displayName(name) {
-  const text = String(name ?? '')
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 40);
-  return text || '이름 없는 사람';
 }
