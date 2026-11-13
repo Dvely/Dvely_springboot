@@ -1158,6 +1158,7 @@ DELETE /agent/session                             # 열린 프리뷰 모두 닫�
 ### 13.4 Preview 운영
 
 ```text
+GET  /preview-sessions                           # 내 살아 있는 프리뷰 목록(#651) — {maxLivePreviews, items[…, closable, closeBlockedReason]}. 오래 안 본 순, Docker 조회 없음
 GET  /projects/{projectId}/preview-session      # 프로젝트의 현재 프리뷰(없으면 204)
 POST /projects/{projectId}/preview-session      # 프리뷰 띄우기(200 연결 / 202 준비 시작 / 409 저장소 미연결 / 429 프리뷰 상한(§2.6) / 503 Docker). ?force=true 는 기존 세션을 닫고 항상 새로 빌드(202). 작업이 쓰는 프리뷰가 있으면 409 PREVIEW_IN_USE(아무것도 버리지 않음)
 POST /preview-sessions/{sessionId}/access       # 열람 권한 발급 — iframe 표시 직전 필수(404 없음·타유저 / 409 종료·준비중)
@@ -1165,6 +1166,21 @@ GET  /preview-sessions/{sessionId}/status
 GET  /preview-sessions/{sessionId}/logs
 DELETE /preview-sessions/{sessionId}            # 204 / 404 없음·타유저·이미 닫힘 / 409 PREVIEW_IN_USE
 ```
+
+**내 프리뷰 목록(#651).** `GET /preview-sessions` 는 내 ACTIVE·PROVISIONING 세션을 `lastAccessedAt` 오름차순(상한 회수가 고르는 순서)으로 준다. 브라우저·PAT(READ) 모두 된다.
+
+```json
+{ "maxLivePreviews": 3,
+  "items": [ { "sessionId": "…", "status": "ACTIVE", "projectId": 12, "projectName": "…", "taskId": "…",
+               "taskStatus": "WAITING_RESULT_APPROVAL", "closable": false, "closeBlockedReason": "WAITING_RESULT_APPROVAL",
+               "lastAccessedAt": "…", "expiresAt": "…", "createdAt": "…" } ] }
+```
+
+- `maxLivePreviews` 는 사용자 상한이다. 서버 전체 수는 다른 사용자의 활동이라 내보내지 않는다
+- `taskId` null = 프로젝트 프리뷰. `taskStatus` 는 프로젝트 프리뷰이거나 런 행이 없으면 null. `projectName` 은 프로젝트 행을 찾지 못하면 null 이고(지운 프로젝트는 이름이 나온다) 항목은 남는다
+- `closable`·`closeBlockedReason` 은 아래 닫기 규칙과 같은 자리(`PreviewClosePolicy`)에서 계산한다. 이유는 막는 작업의 상태 이름이거나, 작업이 막지 않는 준비 중 세션이면 `PROVISIONING`(단건 닫기가 404 를 준다)이다
+- 열 주소(`accessToken`·`publicUrl`)와 컨테이너 정보는 싣지 않는다
+- **Docker 를 조회하지 않는다.** 읽기 전용 트랜잭션 하나에서 세 번 읽는다 — 세션(`(user_id, status)` 인덱스), 작업 상태(`agent_runs` PK IN, 상태만), 프로젝트 이름(PK IN). 그래서 컨테이너가 막 사라진 ACTIVE 행이 잠깐 보일 수 있고, 닫아도 해가 없다
 
 **사람이 닫는 세 경로의 규칙(#650).** 작업 프리뷰의 작업물은 컨테이너 안에만 있다(push 를 결과 승인 뒤로 미룬 작업은 컨테이너가 유일한 사본). 그래서 세 경로 모두 세션에 매달린 작업의 상태를 보고, 진행 중이거나 결정을 기다리는 작업의 프리뷰는 닫지 않는다. 규칙은 `PreviewClosePolicy` 한 곳에 있고, 상한 회수(§2.6)도 같은 자리를 쓴다.
 

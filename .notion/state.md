@@ -1844,6 +1844,18 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - **남은 것**: FE 의 닫기 버튼 잠금·경고(Dvely_FE#184), 실패한 작업의 프리뷰를 닫을 때의 경고는 목록 API(#651)의 `closable` 과 함께
 
 
+## 4.65 내 프리뷰 목록 `GET /api/v1/preview-sessions` (Issue #651, 2026-11-14)
+
+상한(#509)에 걸린 사용자가 어느 프리뷰를 닫아야 하는지 볼 API 가 없었다. 세션 하나를 다루는 API 와 프로젝트의 최근 세션 하나만 있었다. 마이그레이션 없음.
+
+- **응답**: `{maxLivePreviews, items[{sessionId, status, projectId, projectName, taskId, taskStatus, closable, closeBlockedReason, lastAccessedAt, expiresAt, createdAt}]}`, 오래 안 본 순(상한 회수와 같은 순서). 열 주소·컨테이너 정보는 없다. 남의 세션은 없다. PAT(READ)로도 열린다
+- **같은 규칙**: `closable`·`closeBlockedReason` 은 닫기 가드(§4.64)의 `PreviewClosePolicy` 에서 계산한다. 이유는 막는 작업 상태 이름, 또는 작업이 막지 않는 준비 중 세션이면 `PROVISIONING`. 목록의 `closable` 이 실제 `DELETE /preview-sessions/{id}` 결과와 모든 경우(세션 상태 2 × 프로젝트 프리뷰·런 행 없음·작업 상태 10)에 같은지 테스트로 맞춘다
+- **비용**: Docker 를 부르지 않는다. 읽기 전용 트랜잭션 하나에서 세 번 읽는다 — 세션(`(user_id, status)` 인덱스), 작업 상태(`TaskStore.statusesOf`, `agent_runs` PK IN·상태 두 컬럼만), 프로젝트 이름(`findAllByIdInAndOwnerUserId`, 지운 프로젝트 포함). 컨테이너가 막 사라진 ACTIVE 행이 잠깐 보일 수 있지만 닫아도 해가 없다
+- **새 컨트롤러** `PreviewSessionListController` 로 나눴다. 세션 하나를 다루는 `PreviewSessionController` 의 생성자를 건드리지 않는다
+- **테스트**: `PreviewSessionListEndpointTest`(보안 필터 + 실 MySQL — 상한 3 이 찬 사용자에게 셋, 순서·닫을 수 있음·이유, 남의 세션·닫힌 세션 없음, 열 주소 없음, Docker 호출 0회, READ PAT), `PreviewSessionListServiceTest`(항목 계산, 목록 `closable` 과 실제 닫기 결과의 전수 일치). 목록 처리에 Docker 호출을 넣으면 엔드포인트 테스트가 실패하는 것을 되돌려 확인했다
+- **남은 것**: 화면(Dvely_FE#184, FE 설정의 "내 컴퓨터" 자리는 #206 에서 기기 화면 공유가 됐다 — 이 목록은 #184 의 닫기 흐름이나 프리뷰 화면에 둔다), 준비 중인 프로젝트 프리뷰 취소, 승인 대기 컨테이너 일시정지(#625)가 들어오면 상태 하나 추가
+
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

@@ -20,7 +20,9 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -188,6 +190,22 @@ public class TaskStore {
                         parseClarification(view.clarificationJson()),
                         parseAnsweredClarification(taskId, view.answeredClarificationJson())))
                 .orElse(null);
+    }
+
+    /**
+     * 작업 id 들의 상태를 한 문장으로 읽는다(#651 내 프리뷰 목록). 런 행이 없는 id 는 결과에 없다. 소유자는 보지 않는다 —
+     * 부르는 쪽이 이미 자기 세션의 작업 id 만 넘긴다.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, TaskStatus> statusesOf(Collection<String> taskIds) {
+        if (taskIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, TaskStatus> statuses = new HashMap<>();
+        for (SpringDataAgentRunRepository.ActiveRunView view : runRepository.findStatusesByTaskIdIn(taskIds)) {
+            statuses.put(view.getTaskId(), TaskStatus.valueOf(view.getStatus()));
+        }
+        return statuses;
     }
 
     /** {@link #getStatusSnapshot} 의 결과. 실패 정보는 행이 있으면 언제나 있다({@link #getFailure} 와 같다). */
