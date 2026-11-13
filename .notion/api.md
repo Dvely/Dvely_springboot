@@ -67,7 +67,7 @@
 - `503 Service Unavailable`: `PREVIEW_ENVIRONMENT_UNAVAILABLE`(Docker 접근 불가), `TEMPLATE_CATALOG_UNAVAILABLE`(§17.3)
 - `500 Internal Server Error`: 처리되지 않은 외부 연동/서버 오류
 
-도메인 전용 코드: `GITHUB_APP_NOT_INSTALLED`(403) · `GITHUB_APP_REPOSITORY_ACCESS_DENIED`(403) · `GITHUB_APP_REAUTHORIZATION_REQUIRED`(403, 설치는 있으나 사용자 토큰이 없거나 GitHub 가 리프레시를 거부 — 재인증으로 보낸다, #516) · `AI_CREDENTIAL_NOT_REGISTERED`(400) · `INVALID_TOKEN`/`EXPIRED_REFRESH_TOKEN`/`REVOKED_REFRESH_TOKEN`(401) · `WITHDRAWAL_BLOCKED`(409, 사용자 AWS 에 자원이 남아 탈퇴하지 않음 — 오류 응답 가운데 **`data` 가 실리는 유일한 코드**다. 남은 자원 목록이 들어 있다, §4.2).
+도메인 전용 코드: `GITHUB_APP_NOT_INSTALLED`(403) · `GITHUB_APP_REPOSITORY_ACCESS_DENIED`(403) · `GITHUB_APP_REAUTHORIZATION_REQUIRED`(403, 설치는 있으나 사용자 토큰이 없거나 GitHub 가 리프레시를 거부 — 재인증으로 보낸다, #516) · `AI_CREDENTIAL_NOT_REGISTERED`(400) · `INVALID_TOKEN`/`EXPIRED_REFRESH_TOKEN`/`REVOKED_REFRESH_TOKEN`(401) · `WITHDRAWAL_BLOCKED`(409, 사용자 AWS 에 자원이 남아 탈퇴하지 않음 — 오류 응답 가운데 **`data` 가 실리는 코드**다(다른 하나는 `PREVIEW_IN_USE`). 남은 자원 목록이 들어 있다, §4.2). · `PREVIEW_IN_USE`(409, 진행 중이거나 결정을 기다리는 작업이 쓰는 프리뷰라 닫지 않음 — 아무것도 닫지 않았고 `data.blocked` 에 막은 세션 `{sessionId, projectId, taskId, taskStatus}` 목록이 실린다, §13.4·#650)
 
 - 400·403·404·409 의 `message` 는 화면 문구로 쓸 수 있게, 끝에 붙은 내부 식별자·상태값 꼬리(`taskId=…`, `approvalId=…`, `status=…` 등)를 떼고 내려간다(`UserFacingMessage`). 로그에는 원문이 남는다. 사용자에게 의미 있는 값(환경변수 키·저장소·브랜치)과 실패 진단(`exit=…`)은 남는다
 - 클라이언트가 응답 도중 연결을 끊은 경우(SSE 탭 닫기 등, `AsyncRequestNotUsableException`)는 오류 응답을 쓰지 않고 DEBUG 로그 한 줄만 남긴다(#423). ERROR 수를 배포 건강 신호로 쓰기 때문이다.
@@ -1152,19 +1152,34 @@ GET  /agent/tasks/{taskId}
 GET  /agent/conversations/{conversationId}/active-task   # 새로고침 후 진행 태스크 복구(없으면 204)
 POST /agent/tasks/{taskId}/input
 DELETE /agent/tasks/{taskId}
-DELETE /agent/session
+DELETE /agent/session                             # 열린 프리뷰 모두 닫기 → 200 {closed, kept}. 작업이 쓰는 프리뷰는 남김(§13.4) / 404 없음 / 409 PREVIEW_IN_USE(전부 잠김)
 ```
 
 ### 13.4 Preview 운영
 
 ```text
 GET  /projects/{projectId}/preview-session      # 프로젝트의 현재 프리뷰(없으면 204)
-POST /projects/{projectId}/preview-session      # 프리뷰 띄우기(200 연결 / 202 준비 시작 / 409 저장소 미연결 / 429 프리뷰 상한(§2.6) / 503 Docker). ?force=true 는 기존 세션을 닫고 항상 새로 빌드(202)
+POST /projects/{projectId}/preview-session      # 프리뷰 띄우기(200 연결 / 202 준비 시작 / 409 저장소 미연결 / 429 프리뷰 상한(§2.6) / 503 Docker). ?force=true 는 기존 세션을 닫고 항상 새로 빌드(202). 작업이 쓰는 프리뷰가 있으면 409 PREVIEW_IN_USE(아무것도 버리지 않음)
 POST /preview-sessions/{sessionId}/access       # 열람 권한 발급 — iframe 표시 직전 필수(404 없음·타유저 / 409 종료·준비중)
 GET  /preview-sessions/{sessionId}/status
 GET  /preview-sessions/{sessionId}/logs
-DELETE /preview-sessions/{sessionId}
+DELETE /preview-sessions/{sessionId}            # 204 / 404 없음·타유저·이미 닫힘 / 409 PREVIEW_IN_USE
 ```
+
+**사람이 닫는 세 경로의 규칙(#650).** 작업 프리뷰의 작업물은 컨테이너 안에만 있다(push 를 결과 승인 뒤로 미룬 작업은 컨테이너가 유일한 사본). 그래서 세 경로 모두 세션에 매달린 작업의 상태를 보고, 진행 중이거나 결정을 기다리는 작업의 프리뷰는 닫지 않는다. 규칙은 `PreviewClosePolicy` 한 곳에 있고, 상한 회수(§2.6)도 같은 자리를 쓴다.
+
+| 세션 | 사람이 닫기 | 상한 회수(저절로) |
+|---|---|---|
+| 프로젝트 프리뷰(`taskId` 없음) | 닫는다 | 닫지 않는다(사용자가 연 것) |
+| 런 행 없음 · `DONE` · `CANCELLED` | 닫는다 | 닫는다 |
+| `FAILED` | 닫는다. 빌드 실패 복구의 재시도가 이 컨테이너를 이어 쓰므로 닫으면 재시도가 처음부터다 | 닫지 않는다 |
+| 그 밖(`PENDING`·`WAITING_APPROVAL`·`QUEUED`·`RETRY_WAIT`·`RUNNING`·`WAITING_INPUT`·`WAITING_RESULT_APPROVAL`) | **409 `PREVIEW_IN_USE`** | 닫지 않는다 |
+
+- `DELETE /preview-sessions/{id}`: 잠겼으면 409. 준비 중(`PROVISIONING`)인 작업 세션도 같다. 준비 중인 프로젝트 프리뷰는 지금처럼 404
+- `POST /projects/{id}/preview-session?force=true`: 그 프로젝트에 잠긴 세션이 하나라도 있으면 409. 아무것도 버리지 않고 새로 띄우지도 않는다("버리고 새로 빌드"를 누른 사람은 다른 작업이 그 컨테이너를 쓰는지 모른다)
+- `DELETE /agent/session`: 닫을 수 있는 것만 닫고 잠긴 것은 남긴다. 응답이 204 에서 **200 `{ "closed": n, "kept": [ {sessionId, projectId, taskId, taskStatus} ] }`** 로 바뀌었다. 닫은 것이 0개이고 남긴 것만 있으면 409, 열린 프리뷰가 없으면 404
+- 409 메시지는 다음 행동을 적는다. 결과 승인 대기면 "결과 승인을 먼저 결정해 주세요", 그 밖이면 "작업이 끝나거나 작업을 취소한 뒤 닫을 수 있습니다"
+- 확인과 닫기 사이에 작업 상태가 바뀔 수 있다. 닫을 수 있는 상태에서 잠긴 상태로 가는 길은 실패한 작업의 재시도뿐이라(`DONE`·`CANCELLED` 는 끝난 상태) 런 행을 잠그지 않는다 — 잠근 채 컨테이너를 지우면 그 잠금이 수 초 걸린다
 
 프리뷰 세션은 두 경로로 만들어진다(Issue #94).
 
@@ -1326,11 +1341,11 @@ DELETE /users/me              → 200. 로컬 토큰을 지운다(logout 은 부
   최신순, `limit` 기본 200·최대 500. 더 있으면 `X-Qeploy-Next-Cursor` 헤더가 붙고 `after`로 넘기면 그보다 오래된 항목을 받는다.
 - `GET /api/v1/changes/{changeId}`
 - `GET /api/v1/changes/{changeId}/diff`
-- `DELETE /api/v1/preview-sessions/{previewSessionId}`
+- `DELETE /api/v1/preview-sessions/{previewSessionId}` — 진행 중이거나 결정을 기다리는 작업의 프리뷰면 `409 PREVIEW_IN_USE`(§13.4, #650)
 - `GET /api/v1/preview-sessions/{previewSessionId}/status`
 - `GET /api/v1/preview-sessions/{previewSessionId}/logs?tail=&sinceSeconds=` — `tail` 기본 200, [1, 2000] 밖이면 경계값으로 보정. `sinceSeconds`는 "최근 N초". 컨테이너가 이미 없으면 404가 아니라 `containerRunning=false`, `logText=""`
 - `GET /api/v1/projects/{projectId}/preview-session` — 프로젝트의 현재 프리뷰(작업 프리뷰/현재 상태 프리뷰 중 최근 것). ACTIVE 세션은 컨테이너 생존을 확인한 뒤에만 반환한다
-- `POST /api/v1/projects/{projectId}/preview-session` — 작업 지시 없이 `preview` 브랜치 현재 상태로 프리뷰 생성. `?force=true`면 붙지 않고 항상 새로 빌드(202)
+- `POST /api/v1/projects/{projectId}/preview-session` — 작업 지시 없이 `preview` 브랜치 현재 상태로 프리뷰 생성. `?force=true`면 붙지 않고 항상 새로 빌드(202). 그 프로젝트에 작업이 쓰는 프리뷰가 있으면 `409 PREVIEW_IN_USE`
 - `POST /api/v1/preview-sessions/{previewSessionId}/access` — 열람 권한 발급(소유권 쿠키 + accessToken 회전, Issue #77). iframe 표시 직전 필수
 - `GET /api/v1/projects/{projectId}/preview/runtime` — 프리뷰 런타임 설정 조회. 저장값이 없으면 `source=DEFAULT`(`STATIC`). 실제 기동 시에는 저장값이 없으면 클론 내용으로 자동 감지한다(`DETECTED`)
 - `PUT /api/v1/projects/{projectId}/preview/runtime` — **전체 교체**. 본문 `{runtimeType(STATIC|NODE_SERVER|JAVA_FULLSTACK, 필수), startCommand, apiPathPrefix, healthPath, dbEngine(MYSQL|POSTGRESQL)}`. 비운 `apiPathPrefix`는 `/api`, `dbEngine`은 `MYSQL`, `healthPath`는 null로 리셋된다. 일부만 바꾸려면 GET 값을 그대로 실어 보낸다(채팅 `RUNTIME_SETUP`은 부분 갱신). 응답 `source`: `STORED`|`DEFAULT`|`DETECTED`. 남의·없는 프로젝트는 `404`

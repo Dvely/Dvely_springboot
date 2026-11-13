@@ -1829,6 +1829,21 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
   - 예전 서버 DB 를 옮기지 않으면 0.1.x 때 발급한 토큰은 새 서버에 없다. 그 사용자는 토큰을 새로 발급해 `qeploy login` 을 다시 한다
 
 
+## 4.64 사람이 프리뷰를 닫을 때 작업 상태를 본다 (Issue #650, 2026-11-14)
+
+프리뷰를 닫는 세 경로가 세션에 매달린 작업의 상태를 보지 않아, 진행 중이거나 결정을 기다리는 작업의 컨테이너까지 닫았다. 그 작업물은 컨테이너 안에만 있다(push 를 결과 승인 뒤로 미룬 작업 #523 은 컨테이너가 유일한 사본). FE main 의 "버리고 새로 빌드"(`?force=true`)로 지금도 닿는 경로였다. 마이그레이션 없음.
+
+- **규칙 한 곳** `PreviewClosePolicy`: 사람은 프로젝트 프리뷰·런 행 없음·`DONE`·`CANCELLED`·`FAILED` 만 닫는다. 상한 회수(`PreviewCapacity`)는 `DONE`·`CANCELLED`(와 런 행 없음)만 닫는다 — 둘의 차이는 `FAILED` 하나다(재시도가 그 컨테이너를 이어 쓴다). 집합 밖의 상태는 모두 잠긴 것으로 본다
+- **세 경로**(api.md §13.4)
+  - `DELETE /preview-sessions/{id}`: 잠겼으면 409 `PREVIEW_IN_USE`. 준비 중인 작업 세션도 같다
+  - `?force=true`: 그 프로젝트에 잠긴 세션이 하나라도 있으면 409. 아무것도 버리지 않고 새로 띄우지도 않는다
+  - `DELETE /agent/session`: 닫을 수 있는 것만 닫는다. 응답 204 → 200 `{closed, kept}`(FE 호출 0건). 전부 잠겼으면 409
+- **응답**: 새 코드 `PREVIEW_IN_USE`(409). `data.blocked` 에 `{sessionId, projectId, taskId, taskStatus}`. `GlobalExceptionHandler` 가 한 번에 처리한다. `WITHDRAWAL_BLOCKED` 다음으로 `data` 가 실리는 두 번째 오류 코드다
+- **경쟁 조건**: 런 행을 잠그지 않았다. 닫을 수 있는 상태에서 잠긴 상태로 가는 길은 실패한 작업의 재시도뿐이고(`DONE`·`CANCELLED` 는 끝난 상태), 실패한 작업의 프리뷰는 원래 닫을 수 있다. 잠근 채 컨테이너를 지우면 그 잠금이 수 초 걸린다
+- **테스트**: `PreviewCloseGuardTest`(규칙 전수, 단건 닫기 잠긴 상태 7개 거부·컨테이너 제거 0회, 끝난·실패·프로젝트 프리뷰는 닫힘, 일괄 닫기 남김·전부 잠김 409), `ProjectPreviewServiceTest`(force 거부·`DONE` 만 있으면 그대로), `GlobalExceptionHandlerTest`(409 본문), `AgentControllerTest`(200 `{closed, kept}`·없으면 404). 규칙을 빼면 거부 테스트 12개가 실패하는 것을 되돌려 확인했다
+- **남은 것**: FE 의 닫기 버튼 잠금·경고(Dvely_FE#184), 실패한 작업의 프리뷰를 닫을 때의 경고는 목록 API(#651)의 `closable` 과 함께
+
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증
