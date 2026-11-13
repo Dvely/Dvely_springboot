@@ -1778,9 +1778,9 @@ PAT(§18)로는 이 중 **조회(GET)만** 된다. 쓰기 메서드는 `WRITE` �
 
 `DELETE`: RDS 는 생성에 쓴 연결로 인스턴스를 삭제하고 DOCKER 는 EC2 를 정리한다. LOCAL 은 컨테이너를 정리한다. 끝나면 `EXPIRED`. 이미 `EXPIRED` 면 그냥 지나간다. 남의 DB 는 `404`.
 
-## 20. DeviceShare API (내 기기 프리뷰 공유, Issue #652)
+## 20. DeviceShare API (내 기기 프리뷰 공유, Issue #652 · #656)
 
-내 기기에서 도는 앱 화면(1단계: CLI 가 띄운 dev 브라우저)을 링크로 공유한다. 보는 사람은 같은 화면을 보고, 조작권을 받은 한 사람이 제어한다. 설계: `docs/device-preview-share-design.md`. CLI `qeploy share web <url>` 이 이 API 를 쓴다.
+내 기기에서 도는 앱 화면(1단계: CLI 가 띄운 dev 브라우저, 2단계: Android 에뮬레이터)을 링크로 공유한다. 보는 사람은 같은 화면을 보고, 조작권을 받은 한 사람이 제어한다. 설계: `docs/device-preview-share-design.md`(2단계 §12). CLI `qeploy share web <url>` 과 `qeploy share android` 가 이 API 를 쓴다.
 
 ### 20.1 엔드포인트 (3개 + WebSocket 2개)
 
@@ -1806,7 +1806,7 @@ POST /api/v1/device-shares
 }
 ```
 
-- `kind` 는 지금 `WEB` 만 받는다(`ANDROID`·`IOS` 는 `400`). `targetLabel` 1~255자, `ttlMinutes` 1~1440(기본 60).
+- `kind` 는 `WEB`·`ANDROID` 를 받는다(`IOS` 는 `400`). `targetLabel` 1~255자(Android 는 `<기기 이름> · <패키지>`), `ttlMinutes` 1~1440(기본 60).
 - **평문 토큰·비밀은 이 응답에만 실린다.** 서버는 SHA-256 만 둔다. `viewUrl` 은 남에게 줄 보기 링크, `controlUrl` 은 주인만 쓰는 내 제어 링크다(비밀이 URL 조각이라 서버 로그·Referer 에 남지 않는다).
 - 사용자당 살아 있는 링크 5개. 넘으면 `429 DEVICE_SHARE_LIMIT_EXCEEDED`.
 
@@ -1822,6 +1822,7 @@ POST /api/v1/device-shares
 
 ### 20.5 터널·뷰어 소켓 메시지
 
-- 기기 터널 프레임은 `[kind 1바이트][stream id 4바이트 BE][payload]`. HELLO·WELCOME·GOODBYE·SCREEN_CONFIG·SCREEN_FRAME(JPEG)·INPUT·CONTROL_REQUEST·CONTROL_DECISION·PRESENCE. 핸드셰이크 거절: 형식 `400`(`?v=1` 없음), 미인증 `401`, READ PAT `403`, 남의 것 `404`, 끝난 링크 `410`.
-- 뷰어 소켓은 JSON 텍스트(`join`·`input`·`request-control`·`release-control` / `welcome`·`config`·`presence`·`control`·`device`·`ended`·`error`)와 바이너리 화면 한 장. 필드는 설계 문서 §4.2 표가 정본이다.
+- 기기 터널 프레임은 `[kind 1바이트][stream id 4바이트 BE][payload]`. HELLO·WELCOME·GOODBYE·SCREEN_CONFIG·SCREEN_FRAME·INPUT·CONTROL_REQUEST·CONTROL_DECISION·PRESENCE·KEYFRAME_REQUEST(`0x65`, 서버 → 기기). SCREEN_FRAME 은 `format` 이 `jpeg` 면 JPEG 한 장, `h264` 면 `[flags 1바이트(bit0 키 프레임)][Annex B]` 다. 핸드셰이크 거절: 형식 `400`(`?v=1` 없음), 미인증 `401`, READ PAT `403`, 남의 것 `404`, 끝난 링크 `410`.
+- 뷰어 소켓은 JSON 텍스트(`join`·`input`·`request-control`·`release-control` / `welcome`·`config`·`presence`·`control`·`device`·`ended`·`error`)와 바이너리 화면. 필드는 설계 문서 §4.2·§12.2 가 정본이다.
+- `config` 에 `format`(`jpeg`·`h264`), `codec`(h264 일 때 `avc1.PPCCLL`), `kind`(`WEB`·`ANDROID`)가 있다. h264 는 장마다 앞 장에 기대므로 서버가 마지막 키 프레임부터(최대 2MiB) 두었다가 늦게 들어온 사람에게 순서대로 다시 보내고, 보는 사람마다 순서 큐(3MiB)로 보낸다(§12.3). 뷰어는 WebCodecs 로 푼다.
 - 조작권은 한 사람. 내 제어 링크로 들어오면 바로, 보기 링크는 요청 → 기기(CLI) 승인(기본 10분). 입력은 초당 120개 상한.

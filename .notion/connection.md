@@ -1175,7 +1175,7 @@ LLM 호출에 실릴 키가 어디서 오는지. **배포 설정에서 오는 �
 - `CodingAgentWorkspaceBridge` 가 CLI 에 넘기는 프롬프트는 결과 요약을 요청과 같은 언어로(알 수 없으면 한국어) 쓰라고 지시한다(#469, PR #470). 그 요약이 태스크 `summary` 와 결과 메시지로 그대로 사용자에게 간다.
 - `GET /agent/ai-providers`(`AiProviderQueryService`)도 같은 크리덴셜을 근거로 목록을 낸다. 배포 설정 키를 보지 않는다.
 
-## 20. 내 기기 프리뷰 공유 연결 (Issue #652)
+## 20. 내 기기 프리뷰 공유 연결 (Issue #652 · #656)
 
 ```
 qeploy CLI ── POST /api/v1/device-shares ─────────▶ DeviceShareController → DeviceShareService → device_share_links
@@ -1188,12 +1188,17 @@ qeploy CLI ── POST /api/v1/device-shares ─────────▶ Devi
   WS  <토큰>.share.…/__qeploy/ws   ──▶ ShareHostFilter(통과) → ViewerHandshakeInterceptor(호스트·토큰·상태)
                                        → ViewerSocketHandler → ShareSessionRegistry.join(내 제어 비밀이면 주인)
 
-ShareSession(링크 하나): 기기 SCREEN_FRAME → 보는 사람마다 "최신 한 장"(WebSocketViewerChannel, 가상 스레드 펌프)
+ShareSession(링크 하나): 기기 SCREEN_FRAME → jpeg: 보는 사람마다 "최신 한 장" · h264: GOP(2MiB) 보관 + 보는 사람마다
+                         VideoBacklog 순서 큐(3MiB) (WebSocketViewerChannel, 가상 스레드 펌프: 텍스트 → 영상 → JPEG)
+                         키 프레임이 필요하면 기기에 KEYFRAME_REQUEST(0x65, 1초에 한 번)
                          조작권 가진 사람의 input → 기기 INPUT · 손님 request-control → 기기 CONTROL_REQUEST → CONTROL_DECISION
 회수: DELETE /device-shares/{id} → ShareSessionRegistry.end → 기기 GOODBYE · 보는 사람 ended
 점검: ShareSessionRegistry 15초(만료·조작권 시간) · DeviceShareService 15초(DB 에 없거나 끝난 링크 — 탈퇴 CASCADE)
 ```
 
 - 공유 오리진 판별은 `ShareHost`(`<26자 base32>.<base-domain>`) 한 곳이다. 필터·뷰어 인터셉터가 같은 판별을 쓴다.
+- CLI 쪽 화면 출처는 둘이다. 터널·승인·재연결은 `TunnelSession`(tunnel.js)이 같이 쓴다.
+  - `share web`: 임시 프로필 Chrome ── CDP(screencast, Input.*) ── `ShareSession`(session.js)
+  - `share android`: 에뮬레이터 ── adb forward(영상·제어 소켓) ── 사용자 scrcpy 서버 ── `AndroidShareSession`(android/session.js). 1초마다 `dumpsys activity` 로 맨 앞 앱을 보고 앱 밖이면 `am start` 로 되돌린다
 - 세션은 메모리에만 있다. 서버를 여러 대로 늘리면 링크 → 서버 위치가 필요하다.
 - 기존 서버 프리뷰(`preview` 패키지, Docker 컨테이너)와는 코드·경로를 공유하지 않는다. 화면·문서에서 "서버 프리뷰 / 내 기기 프리뷰" 로 나눠 부른다.
