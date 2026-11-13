@@ -79,7 +79,9 @@ public class PreviewSessionController {
     @Operation(
             summary = "Preview session 종료",
             description = "PreviewSession을 즉시 만료 처리하고 연결된 Docker 컨테이너를 종료합니다. " +
-                          "이미 종료/만료된 세션이거나 다른 유저 소유 세션이면 404를 반환합니다."
+                          "이미 종료/만료된 세션이거나 다른 유저 소유 세션이면 404를 반환합니다. " +
+                          "진행 중이거나 결정(결과 승인 등)을 기다리는 작업의 프리뷰는 닫지 않고 409 PREVIEW_IN_USE 를 " +
+                          "반환합니다(`data.blocked` 에 그 세션과 작업 상태, #650). 그 작업물은 컨테이너 안에만 있습니다."
     )
     @DeleteMapping("/{sessionId}")
     public ResponseEntity<Void> close(

@@ -3,6 +3,8 @@ package com.example.dvely.common.exception;
 import com.example.dvely.change.application.service.ResultRevertFailedException;
 import com.example.dvely.change.application.service.ResultRevertUnavailableException;
 import com.example.dvely.common.limit.UserLimitExceededException;
+import com.example.dvely.preview.application.service.PreviewInUseException;
+import com.example.dvely.preview.presentation.dto.response.PreviewInUseResponse;
 import com.example.dvely.common.response.ApiResponse;
 import com.example.dvely.common.response.ErrorCode;
 import jakarta.servlet.http.HttpServletResponse;
@@ -246,6 +248,17 @@ public class GlobalExceptionHandler {
     }
 
     // 429 - 동시 실행 상한: 사용자별(#509)·서버 전체(#624). 정상 거부라 스택 없이 WARN 한 줄만 남긴다.
+    // 409 - 진행 중이거나 결정을 기다리는 작업이 쓰는 프리뷰라 닫지 않았다(#650). 막은 세션을 data 에 싣는다 — 프리뷰를
+    // 닫는 경로가 셋(단건·일괄·force 리빌드)이라 컨트롤러마다 두지 않고 여기 한 번 둔다.
+    @ExceptionHandler(PreviewInUseException.class)
+    public ResponseEntity<ApiResponse<PreviewInUseResponse>> handlePreviewInUse(PreviewInUseException e) {
+        log.info("Preview in use, not closed: {}", e.blocked().stream()
+                .map(preview -> preview.sessionId() + "(" + preview.taskStatus() + ")").toList());
+        ErrorCode code = ErrorCode.PREVIEW_IN_USE;
+        return ResponseEntity.status(code.getStatus())
+                .body(ApiResponse.error(code, e.getMessage(), PreviewInUseResponse.from(e.blocked())));
+    }
+
     @ExceptionHandler(UserLimitExceededException.class)
     public ResponseEntity<ApiResponse<Void>> handleUserLimitExceeded(UserLimitExceededException e) {
         log.warn("User limit exceeded: code={}", e.errorCode().getCode());

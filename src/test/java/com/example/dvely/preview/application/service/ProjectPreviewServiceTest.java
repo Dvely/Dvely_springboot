@@ -12,6 +12,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
+import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.dto.TaskStatus;
+import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.common.exception.PreviewEnvironmentUnavailableException;
 import com.example.dvely.config.CorsProperties;
@@ -26,6 +29,7 @@ import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.agent.infrastructure.docker.ContainerRole;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -55,6 +59,7 @@ class ProjectPreviewServiceTest {
     @Mock private ProjectPreviewProvisioner provisioner;
     @Mock private PreviewRuntimeConfigService runtimeConfigService;
     @Mock private PreviewCapacity capacity;
+    @Mock private TaskStore taskStore;
 
     private ProjectPreviewService service;
     private final List<PreviewSessionEntity> saved = new ArrayList<>();
@@ -68,7 +73,7 @@ class ProjectPreviewServiceTest {
                 properties, new CorsProperties(List.of(), List.of()));
         service = new ProjectPreviewService(
                 repository, projectRepository, dockerService, properties, gatewayUrlResolver,
-                provisioner, runtimeConfigService, capacity);
+                provisioner, runtimeConfigService, capacity, taskStore);
         // 저장된 런타임 타입 없음 → 기본 메모리로 컨테이너 생성.
         when(runtimeConfigService.storedRuntimeType(any())).thenReturn(Optional.empty());
         // 목 생성/스터빙을 when(...) 인자 안에서 하면 Mockito 가 중첩 스터빙으로 보고 실패한다.
@@ -159,6 +164,8 @@ class ProjectPreviewServiceTest {
     @Test
     void forceRebuildClosesTheLiveSessionAndStartsFresh() {
         PreviewSessionEntity active = session(PreviewSessionStatus.ACTIVE, "container-old", "task-1");
+        // 끝난 작업의 세션만 있으면 지금처럼 버리고 새로 띄운다(#650)
+        taskIn("task-1", TaskStatus.DONE);
         // discardLiveSessions 는 [ACTIVE,PROVISIONING] 로, resolveConcurrentProvisioning 은 [PROVISIONING]
         // 으로 조회한다 — 요청 상태로 갈라 각각 옛 세션과 새 세션을 돌려준다.
         when(repository.findByProjectIdAndOwnerUserIdAndStatusIn(eq(PROJECT_ID), eq(USER_ID), any()))
@@ -185,6 +192,39 @@ class ProjectPreviewServiceTest {
         verify(dockerService).createAndStartContainer(eq(ContainerRole.PREVIEW), eq(USER_ID), anyString(), eq(PROJECT_ID), eq(null), eq(null), anyLong());
         verify(provisioner).provision(anyString());
         assertThat(outcome.started()).isTrue();
+    }
+
+    // ── #650: 작업이 쓰는 프리뷰는 버리지 않는다 ───────────────────────────────────────────
+
+    /**
+     * "버리고 새로 빌드"를 누른 사람은 다른 작업이 이 프로젝트의 컨테이너를 쓰는지 모른다. 결과 승인을 기다리는 작업의
+     * 컨테이너가 작업물의 유일한 사본이면, 그것만 남기고 진행하지도 않는다 — 아무것도 버리지 않고 새로 띄우지도 않는다.
+     */
+    @Test
+    void forceRebuildRefusesWhileATaskOfTheProjectStillUsesItsPreview() {
+        PreviewSessionEntity projectPreview = session(PreviewSessionStatus.ACTIVE, "container-project", null);
+        PreviewSessionEntity awaitingApproval = session(PreviewSessionStatus.ACTIVE, "container-task", "task-9");
+        taskIn("task-9", TaskStatus.WAITING_RESULT_APPROVAL);
+        when(repository.findByProjectIdAndOwnerUserIdAndStatusIn(eq(PROJECT_ID), eq(USER_ID), any()))
+                .thenReturn(List.of(projectPreview, awaitingApproval));
+
+        assertThatThrownBy(() -> service.provision(PROJECT_ID, USER_ID, true))
+                .isInstanceOfSatisfying(PreviewInUseException.class, e -> {
+                    assertThat(e.blocked()).hasSize(1);
+                    assertThat(e.blocked().getFirst().sessionId()).isEqualTo("session-container-task");
+                    assertThat(e.blocked().getFirst().taskStatus()).isEqualTo(TaskStatus.WAITING_RESULT_APPROVAL);
+                });
+
+        assertThat(projectPreview.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
+        assertThat(awaitingApproval.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
+        verify(dockerService, never()).removeContainer(anyString());
+        verify(capacity, never()).makeRoom(any());
+        verify(dockerService, never()).createAndStartContainer(any(), any(), anyString(), any(), any(), any(), anyLong());
+    }
+
+    private void taskIn(String taskId, TaskStatus status) {
+        when(taskStore.get(taskId)).thenReturn(
+                new AgentTask(taskId, USER_ID, PROJECT_ID, null, status, null, null, null, null, Instant.now()));
     }
 
     // ── #509: 사용자별 프리뷰 상한 ──────────────────────────────────────────────────────────

@@ -5,6 +5,8 @@ import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.preview.application.port.out.DeadPreviewSessionReclaimer;
+import com.example.dvely.preview.application.result.BulkPreviewCloseResult;
+import com.example.dvely.preview.application.result.InUsePreview;
 import com.example.dvely.preview.application.result.PreviewAccessGrant;
 import com.example.dvely.preview.application.result.PreviewSessionInfo;
 import com.example.dvely.preview.domain.value.PreviewSessionStatus;
@@ -16,6 +18,7 @@ import com.example.dvely.preview.infrastructure.security.PreviewAccessCookies;
 import com.example.dvely.agent.infrastructure.docker.ContainerRole;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -341,23 +344,65 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
         return true;
     }
 
+    /**
+     * 주인이 프리뷰 하나를 닫는다. 없거나 남의 것이거나 이미 닫혔으면 {@code false}(404).
+     *
+     * <p>진행 중이거나 결정을 기다리는 작업의 프리뷰는 닫지 않고 {@link PreviewInUseException}(409 {@code PREVIEW_IN_USE})을
+     * 던진다(#650). 그 작업물은 컨테이너 안에만 있다. 준비 중(PROVISIONING)인 작업 세션도 같다. 준비 중인 프로젝트 프리뷰의
+     * 취소는 이 경로가 다루지 않는다(지금처럼 404).</p>
+     *
+     * <p>확인과 닫기 사이에 작업 상태가 바뀔 수 있다. 닫을 수 있는 상태에서 잠긴 상태로 가는 길은 실패한 작업의 재시도뿐이다
+     * (DONE·CANCELLED 는 끝난 상태다). 실패한 작업의 프리뷰는 원래 닫을 수 있으므로 이 창은 받아들인다 — 런 행을 잠근 채
+     * 컨테이너를 지우면 그 잠금이 수 초 걸린다.</p>
+     */
     public boolean closeOwned(String sessionId, Long ownerUserId) {
         PreviewSessionEntity session = repository.findByIdAndOwnerUserId(sessionId, ownerUserId)
                 .orElse(null);
-        if (session == null || !PreviewSessionStatus.ACTIVE.name().equals(session.getStatus())) {
+        if (session == null) {
+            return false;
+        }
+        boolean active = PreviewSessionStatus.ACTIVE.name().equals(session.getStatus());
+        boolean provisioning = PreviewSessionStatus.PROVISIONING.name().equals(session.getStatus());
+        if (!active && !provisioning) {
+            return false;
+        }
+        Optional<InUsePreview> inUse = PreviewClosePolicy.blockingOwnerClose(session, taskStore::get);
+        if (inUse.isPresent()) {
+            throw new PreviewInUseException(List.of(inUse.get()));
+        }
+        if (!active) {
             return false;
         }
         expire(session, PreviewSessionStatus.CLOSED);
         return true;
     }
 
-    public int closeAllOwned(Long ownerUserId) {
+    /**
+     * 주인의 열린 프리뷰를 모두 닫는다. 진행 중이거나 결정을 기다리는 작업의 프리뷰는 남긴다(#650).
+     *
+     * <p>닫은 것이 없고 남긴 것만 있으면 {@link PreviewInUseException} 을 던진다. 둘 다 없으면 닫은 수 0 으로 돌려준다
+     * (호출하는 쪽이 404 로 바꾼다).</p>
+     */
+    public BulkPreviewCloseResult closeAllOwned(Long ownerUserId) {
         List<PreviewSessionEntity> sessions = repository.findByOwnerUserIdAndStatus(
                 ownerUserId,
                 PreviewSessionStatus.ACTIVE.name()
         );
-        sessions.forEach(session -> expire(session, PreviewSessionStatus.CLOSED));
-        return sessions.size();
+        List<InUsePreview> kept = new ArrayList<>();
+        int closed = 0;
+        for (PreviewSessionEntity session : sessions) {
+            Optional<InUsePreview> inUse = PreviewClosePolicy.blockingOwnerClose(session, taskStore::get);
+            if (inUse.isPresent()) {
+                kept.add(inUse.get());
+                continue;
+            }
+            expire(session, PreviewSessionStatus.CLOSED);
+            closed++;
+        }
+        if (closed == 0 && !kept.isEmpty()) {
+            throw new PreviewInUseException(kept);
+        }
+        return new BulkPreviewCloseResult(closed, kept);
     }
 
     /**

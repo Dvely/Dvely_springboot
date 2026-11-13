@@ -28,6 +28,9 @@ import com.example.dvely.agent.presentation.dto.TaskInputRequest;
 import com.example.dvely.agent.presentation.dto.TaskStatusResponse;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.preview.application.service.PreviewSessionService;
+import com.example.dvely.preview.application.result.BulkPreviewCloseResult;
+import com.example.dvely.preview.application.result.InUsePreview;
+import com.example.dvely.preview.presentation.dto.response.PreviewCloseAllResponse;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -43,6 +46,7 @@ class AgentControllerTest {
     private AgentOrchestrator agentOrchestrator;
     private AgentController controller;
     private AgentTask task;
+    private PreviewSessionService previewSessionService;
 
     @BeforeEach
     void setUp() {
@@ -50,11 +54,12 @@ class AgentControllerTest {
         inputWaitStore = mock(InputWaitStore.class);
         agentFacade = mock(AgentFacade.class);
         agentOrchestrator = mock(AgentOrchestrator.class);
+        previewSessionService = mock(PreviewSessionService.class);
         controller = new AgentController(
                 agentFacade,
                 agentOrchestrator,
                 taskStore,
-                mock(PreviewSessionService.class),
+                previewSessionService,
                 mock(AgentEventStreamService.class),
                 mock(AiProviderQueryService.class),
                 // 실물을 쓴다 — #57 의 retryable 조립 규칙이 이 서비스로 옮겨졌다(#619).
@@ -261,6 +266,28 @@ class AgentControllerTest {
         TaskStatusResponse response = controller.getTaskStatus(1L, "task-1").getBody();
 
         assertThat(response.previewCreated()).isFalse();
+    }
+
+    @Test
+    void closingAllPreviewsReportsWhatClosedAndWhatWasKeptForATask() {
+        // #650: 결과 승인을 기다리는 작업의 프리뷰는 남는다. 204 로는 그것을 말할 수 없어 200 과 본문으로 바꿨다.
+        when(previewSessionService.closeAllOwned(1L)).thenReturn(new BulkPreviewCloseResult(1, List.of(
+                new InUsePreview("session-9", 11L, "task-9", TaskStatus.WAITING_RESULT_APPROVAL))));
+
+        PreviewCloseAllResponse response = controller.closeSession(1L);
+
+        assertThat(response.closed()).isEqualTo(1);
+        assertThat(response.kept()).singleElement().satisfies(kept -> {
+            assertThat(kept.sessionId()).isEqualTo("session-9");
+            assertThat(kept.taskStatus()).isEqualTo(TaskStatus.WAITING_RESULT_APPROVAL);
+        });
+    }
+
+    @Test
+    void closingAllPreviewsWithNothingOpenIsStillNotFound() {
+        when(previewSessionService.closeAllOwned(1L)).thenReturn(new BulkPreviewCloseResult(0, List.of()));
+
+        assertThatThrownBy(() -> controller.closeSession(1L)).isInstanceOf(NotFoundException.class);
     }
 
     /** {@link TaskStore#getStatusSnapshot} 의 결과. 실패 정보는 행이 있으면 언제나 있다. */

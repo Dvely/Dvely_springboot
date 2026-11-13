@@ -480,6 +480,7 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 | `ACTIVE_RUN_LIMIT_EXCEEDED` | 429 | `POST /conversations/{id}/messages`, `POST /agent/tasks`, 도메인 연결·해제, `POST /agent/tasks/{taskId}/retry`, `POST /approvals/{id}/approve`(계획 승인이 작업을 시작시킬 때), `POST /agent/tasks/{taskId}/input` | `message` 표시. 아무것도 반영되지 않았다 — 메시지 전송이면 **메시지가 저장되지 않았으므로** 입력창을 지우지 않고, 승인이면 카드가 PENDING 그대로라 나중에 다시 누르면 되고, 되묻기 답이면 폼을 닫지 않는다 |
 | `PREVIEW_LIMIT_EXCEEDED` | 429 | `POST /projects/{id}/preview-session` | `message` 표시. 열린 프리뷰를 닫을 수 있게 안내(`DELETE /preview-sessions/{id}`) |
 | `PREVIEW_CAPACITY_EXCEEDED` | 429 | `POST /projects/{id}/preview-session` | **서버 전체** 프리뷰 자리가 찼다(#624). 이 사용자가 아무것도 띄우지 않았어도 온다 — 위 행의 "프리뷰를 닫으라" 안내를 붙이지 말고 `message` 만 표시. 잠시 뒤 다시 시도하면 된다(다른 사용자의 프리뷰가 닫히면 풀린다). 아무것도 반영되지 않았다 |
+| `PREVIEW_IN_USE` | 409 | `DELETE /preview-sessions/{id}`, `POST /projects/{id}/preview-session?force=true`, `DELETE /agent/session` | 진행 중이거나 결정을 기다리는 작업이 쓰는 프리뷰라 **아무것도 닫지 않았다**(#650). `message` 를 그대로 보이고(결과 승인 대기면 "결과 승인을 먼저 결정해 주세요"), `data.blocked[]`(`sessionId`·`projectId`·`taskId`·`taskStatus`)로 어느 작업인지 보여 준다. 결과 승인 카드로 보내거나 작업 취소를 안내 |
 
 - 승인·되묻기를 기다리는 작업은 "진행 중"으로 세지 않습니다. 작업 상한은 `PENDING`·`QUEUED`·`RETRY_WAIT`·`RUNNING` 만 셉니다. 대신 기다리던 작업을 다시 돌리는 순간(계획 승인, 되묻기 답, 재시도)에 상한을 봅니다. 결과 승인·저장소 연결 승인은 상한을 보지 않습니다.
 - 프리뷰는 자리가 없으면 서버가 먼저 **끝난 작업의 프리뷰**를 오래 안 본 순서로 닫습니다(`EXPIRED`). 그래서 대개는 거절 없이 새로 뜨고, 대신 오래된 작업 결과 프리뷰가 닫혀 있을 수 있습니다. 닫힌 프리뷰는 TTL 로 만료된 것과 똑같이 보입니다(닫힌 이유는 따로 내려가지 않습니다):
@@ -562,12 +563,21 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 | 메서드 | 경로 | 용도 | 인증 | 응답 |
 |---|---|---|---|---|
 | GET | `/api/v1/projects/{projectId}/preview-session` | **프로젝트의 현재 프리뷰 조회(진입 시 호출)** | Bearer | 200 `ProjectPreviewSession` / **204**(띄워진 프리뷰 없음) / 404(프로젝트 없음) |
-| POST | `/api/v1/projects/{projectId}/preview-session` | **프리뷰 띄우기(버튼)** — preview 브랜치 현재 상태를 clone→빌드→서빙 | Bearer | 200(이미 떠 있는 세션에 붙음) / **202**(준비 시작·진행 중) / 409(저장소 미연결) / **503**(서버의 Docker 실행 환경 문제 — 재시도가 아니라 운영자 조치 필요) / 404 |
+| POST | `/api/v1/projects/{projectId}/preview-session` | **프리뷰 띄우기(버튼)** — preview 브랜치 현재 상태를 clone→빌드→서빙 | Bearer | 200(이미 떠 있는 세션에 붙음) / **202**(준비 시작·진행 중) / 409(저장소 미연결, 또는 `?force=true` 인데 작업이 쓰는 프리뷰가 있어 `PREVIEW_IN_USE`) / **503**(서버의 Docker 실행 환경 문제 — 재시도가 아니라 운영자 조치 필요) / 404 |
 | GET | `/api/v1/previews/{sessionId}/{accessToken}/**` | Docker 프리뷰 컨테이너로 리버스 프록시(HTML/JS/CSS 등 원본 그대로) | URL 내장 토큰 + **소유권 쿠키** | 프리뷰 앱 응답 그대로(`@RawApiResponse`) + CSP `sandbox` 헤더. 세션 없음/토큰 불일치 404, **쿠키 없음/불일치 401** |
 | POST | `/api/v1/preview-sessions/{sessionId}/access` | **프리뷰 열람 권한 발급(iframe 표시 전 필수)** | Bearer | `{ sessionId, previewUrl, expiresAt }` + 소유권 쿠키(`Set-Cookie`). 404(없음/타 유저), 409(종료·준비 중) |
-| DELETE | `/api/v1/preview-sessions/{sessionId}` | 세션 종료 + 컨테이너 정리 | Bearer | 204(404: 없음/타 유저 소유) |
+| DELETE | `/api/v1/preview-sessions/{sessionId}` | 세션 종료 + 컨테이너 정리 | Bearer | 204(404: 없음/타 유저 소유). **409 `PREVIEW_IN_USE`**: 진행 중이거나 결정(결과 승인 등)을 기다리는 작업의 프리뷰라 닫지 않음 — 아래 "프리뷰 닫기" |
 | GET | `/api/v1/preview-sessions/{sessionId}/status` | 컨테이너 실행 여부·리소스 사용량 조회(p95 ~1.5초 — 폴링은 5초 이상 권장) | Bearer | `{ sessionId, projectId, taskId, sessionStatus(ACTIVE\|PROVISIONING\|CLOSED\|EXPIRED\|FAILED), containerRunning, oomKilled, exitCode, startedAt, expiresAt, resources{ memoryUsageBytes, memoryLimitBytes, memoryUsagePercent, cpuPercent } }`(resources는 미실행/조회 3초 초과 시 null) |
 | GET | `/api/v1/preview-sessions/{sessionId}/logs` | 컨테이너 stdout/stderr 텍스트 조회(영속화 안 됨) | Bearer | `{ sessionId, containerRunning, logText }`(query: `tail`(기본 200, [1,2000] 클램프), `sinceSeconds`) |
+
+**프리뷰 닫기(#650).** 작업 프리뷰의 작업물은 컨테이너 안에만 있어서, 서버가 작업 상태를 보고 닫을지 정합니다. 끝난 작업(`DONE`·`CANCELLED`)·실패한 작업(`FAILED`)·프로젝트 프리뷰는 닫히고, 그 밖의 상태(진행 중, 승인·입력·결과 승인 대기)는 **409 `PREVIEW_IN_USE`** 입니다. 실패한 작업의 프리뷰를 닫으면 그 작업의 재시도가 처음부터 시작되니, 닫기 전에 경고하는 것이 좋습니다. FE 에서 버튼을 미리 잠가도(Dvely_FE#184) 상태 조회 주기만큼 늦을 수 있으므로 409 를 받을 자리를 남겨 두세요.
+
+```json
+// 409
+{ "status": 409, "code": "PREVIEW_IN_USE",
+  "message": "진행 중이거나 결정을 기다리는 작업이 쓰는 프리뷰라 닫을 수 없습니다. 결과 승인을 먼저 결정해 주세요.",
+  "data": { "blocked": [ { "sessionId": "…", "projectId": 12, "taskId": "…", "taskStatus": "WAITING_RESULT_APPROVAL" } ] } }
+```
 
 `ProjectPreviewSession` = `{ sessionId, projectId, taskId, status(ACTIVE|PROVISIONING|FAILED), expiresAt, failureReason }`
 — `taskId`가 `null`이면 프로젝트 단위로 띄운 "현재 상태" 프리뷰, 값이 있으면 그 Agent 작업이 만든 프리뷰입니다.

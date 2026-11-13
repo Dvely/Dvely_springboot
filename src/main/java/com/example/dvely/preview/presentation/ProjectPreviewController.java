@@ -62,7 +62,9 @@ public class ProjectPreviewController {
                     + "요청이 겹쳐도 프로젝트당 컨테이너는 하나만 남습니다(먼저 만들어진 세션이 유지되고 나머지는 즉시 정리).\n\n"
                     + "`force=true` 를 붙이면 붙지 않고 **항상 새로 띄웁니다** — 기존 세션을 닫고 preview 브랜치를 "
                     + "다시 clone→build 합니다(따라서 언제나 202). 컨테이너는 살아 있는데 안쪽 앱만 죽어 502만 나오는 "
-                    + "세션을 되살리거나, 저장소 연결 직후 옛 작업 컨테이너 대신 브랜치의 현재 내용을 띄우고 싶을 때 씁니다."
+                    + "세션을 되살리거나, 저장소 연결 직후 옛 작업 컨테이너 대신 브랜치의 현재 내용을 띄우고 싶을 때 씁니다. "
+                    + "이 프로젝트에 진행 중이거나 결정(결과 승인 등)을 기다리는 작업의 프리뷰가 있으면 아무것도 버리지 않고 "
+                    + "새로 띄우지도 않으며 **409 PREVIEW_IN_USE** 를 줍니다(`data.blocked` 에 그 세션, #650)."
     )
     @PostMapping("/api/v1/projects/{projectId}/preview-session")
     public ResponseEntity<ProjectPreviewSessionResponse> provision(
