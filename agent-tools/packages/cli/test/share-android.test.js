@@ -669,7 +669,7 @@ describe('qeploy share android', () => {
       ['share', 'android', '--max-size', 'big'],
       ['share', 'android', '--bit-rate', '100'],
       ['share', 'android', '--serial', 'a b'],
-      ['share', 'ios'],
+      ['share', 'tvos'],
     ]) {
       const { code, client } = await shareCli(argv);
       assert.equal(code, EXIT.USAGE, argv.join(' '));
