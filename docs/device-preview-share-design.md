@@ -37,7 +37,7 @@ Ctrl+C 로 공유를 끝냅니다.
 |---|---|---|---|
 | **1** | 웹(dev 브라우저) | CLI 가 띄운 Chrome 을 DevTools 프로토콜(CDP) 화면 전송 | CDP 입력 이벤트 |
 | **2** | Android 에뮬레이터 | scrcpy 서버의 H.264 → 뷰어 WebCodecs(§12) | scrcpy 제어 메시지 |
-| 3 | iOS 시뮬레이터(macOS) | serve-sim 또는 AXe | AXe 탭·입력 |
+| **3** | iOS 시뮬레이터(macOS) | AXe `stream-video` JPEG → 1단계 JPEG 경로(§13) | AXe `serve` 탭·스와이프·키 |
 | 나중 | 로컬 웹 직접 열기 | 받는 사람 브라우저에서 따로 열림(HTTP 중계, §10) | 각자 |
 
 1단계를 웹으로 하는 이유: 화면(JPEG 프레임)·입력(CDP)이 가장 단순해서 공통 기반(터널, 뷰어, 조작권, 링크)을 먼저 검증할 수 있다. 2·3단계는 화면 인코딩과 입력 변환만 바꾼다.
@@ -359,3 +359,60 @@ H.264 는 장마다 앞 장에 기대므로, 1단계처럼 "최신 한 장"으�
 | 남는 프로세스 | Ctrl+C 면 scrcpy 서버를 끝내고 `adb forward` 를 지운다(서버의 `cleanup=true` 가 기기 쪽 설정을 되돌린다) |
 
 알림창·빠른 설정은 앱 전환이 아니어서 막지 못한다. 에뮬레이터 안에 머무는 동작이라 2단계에서는 그대로 둔다.
+
+## 13. 3단계: iOS 시뮬레이터 (macOS)
+
+```
+qeploy share ios [--app <번들 ID>] [--any-app] [--udid <시뮬레이터 UDID>]
+                 [--scale 0.5] [--fps 15] [--ttl 60] [--json]
+```
+
+서버와 뷰어는 1·2단계를 그대로 쓴다. 화면은 1단계와 같은 **JPEG** 라서 서버 전달 경로(최신 한 장)가 바뀌지 않는다. 링크 종류 `IOS` 만 받게 한다.
+
+### 13.1 도구: AXe
+
+- 사용자가 설치한 [AXe](https://github.com/cameroncooke/AXe)(MIT, `brew install cameroncooke/axe/axe`, 2.x)를 쓴다. Xcode 의 `simctl` 에는 입력을 넣는 명령이 없어서다. 저장소에 바이너리를 넣지 않는다.
+- **화면**: `axe stream-video --udid … --format raw --fps 15 --scale 0.5 --quality 70`
+  - 출력은 `[길이 u32 BE][JPEG]` 의 반복이다. CLI 는 이것을 SCREEN_FRAME 으로 그대로 보낸다.
+  - 크기는 JPEG SOF 에서 읽는다. 크기가 바뀌면(회전) SCREEN_CONFIG 를 다시 보낸다.
+- **입력**: `axe serve --udid …` 프로세스 하나에 한 줄에 명령 하나를 보낸다. 응답은 한 줄 JSON 이다.
+  - 명령은 차례로 하나씩 보내고 응답을 기다린다. 실측 기준 명령 하나에 150ms 안팎이다.
+  - serve 의 줄은 셸과 같은 규칙으로 쪼개진다. 텍스트는 작은따옴표로 감싸고, 안의 `'` 는 `'\''` 로 쓴다.
+- **좌표**: AXe 는 논리 포인트를 쓴다. 화면 크기(포인트)는 `describe-ui --minimal-keys` 의 루트 `frame` 에서 읽고, 회전하면 다시 읽는다.
+
+### 13.2 입력
+
+AXe 는 손가락을 누른 채 움직이는 입력을 받지 않는다. 그래서 CLI 가 한 번의 터치를 모았다가, 손을 뗄 때 한 명령으로 재생한다.
+
+| §4.3 입력 | AXe |
+|---|---|
+| `pointer` down → up, 10pt 안, 0.5초 미만 | `tap -x -y` |
+| 같은 자리에서 0.5초 이상 | `tap -x -y --hold <초>` (길게 누르기) |
+| 움직였다 | `draw x1,y1 … xn,yn --duration <초>` (지나간 점을 최대 40개로 줄여 실제 걸린 시간대로) |
+| `wheel` | `swipe` (누른 자리에서 `dy` 만큼, 0.3초) |
+| `key` 이름 있는 키 | `key <HID>`: Enter 40, Escape 41, Backspace 42, Tab 43, 화살표 79~82, Delete 76, Home 74, End 77, PageUp 75, PageDown 78 |
+| `key` 글자 + Ctrl·Cmd | `key-combo --modifiers 227 --key <HID>` (Cmd). **Cmd+V 는 보내지 않는다**(§13.4) |
+| `text`·글자 키 | US 키보드로 칠 수 있는 아스키면 `type '…'`, 줄바꿈은 `key 40`. 그 밖의 글자(한글 등)는 넣지 않고 주인 터미널에 한 번 알린다 |
+| `nav` | 없음. iOS 는 앱 안의 뒤로 버튼을 쓴다. 뷰어는 `kind` 가 `IOS` 면 뒤로·앞으로·새로고침을 모두 숨긴다 |
+
+- 화면 가장자리에서 시작하는 움직임은 막는다. 아래 3%(홈으로 가기), 위 3%(알림·제어 센터)다. 앱을 벗어나는 길이라서다.
+- 뷰어의 손가락 처리는 Android 와 같다(터치를 해석하지 않고 그대로 보낸다).
+
+### 13.3 앱 묶기
+
+- `--app` 이 있으면 `xcrun simctl launch <udid> <번들 ID>` 로 띄운다.
+- 없으면 시작할 때 앞에 떠 있는 앱을 쓴다. `describe-ui` 루트의 이름을 `simctl listapps` 의 표시 이름과 맞춰 번들 ID 를 찾는다. 못 찾거나 홈 화면이면 `--app` 을 요구한다.
+- 2초마다 `describe-ui` 루트 이름을 본다. 다르면 `simctl launch` 로 다시 앞으로 올리고 터미널에 알린다.
+- `--any-app` 은 묶지 않는다(경고).
+
+### 13.4 안전장치
+
+| 위험 | 막는 방법 |
+|---|---|
+| 실제 iPhone(AXe 는 실기기도 다룬다) | `xcrun simctl list devices booted` 에 있는 UDID 만 받는다 |
+| **Mac 클립보드가 보인다** | Simulator 는 기본으로 Mac 클립보드와 자동 동기화한다(`com.apple.iphonesimulator PasteboardAutomaticSync`, 이 맥은 1). 켜져 있으면 조작권을 받은 사람이 앱의 붙여넣기로 내 Mac 클립보드를 볼 수 있다. CLI 는 시작할 때 이 값을 읽어 켜져 있으면 크게 경고한다(설정은 바꾸지 않는다. Simulator 메뉴 Edit > Automatically Sync Pasteboard). Cmd+V 는 보내지 않는다. 한글 입력에 클립보드를 쓰지 않는 이유도 같다 |
+| 앱 밖으로 나감 | 가장자리 스와이프 차단 + 2초 앱 확인(§13.3). 홈 버튼 명령은 없다 |
+| 여러 시뮬레이터가 켜져 있음 | 하나면 그것, 여럿이면 `--udid` 를 요구한다 |
+| 남는 프로세스 | Ctrl+C 면 `stream-video`·`serve` 를 끝낸다 |
+
+Android 에뮬레이터도 호스트 클립보드 공유가 기본으로 켜져 있을 수 있다. 확인한 뒤 2단계에도 같은 경고를 붙인다(남은 일).
