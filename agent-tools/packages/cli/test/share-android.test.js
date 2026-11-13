@@ -17,10 +17,10 @@ import {
   parseScrcpyVersion,
   screenFramePayload,
 } from '../src/share/android/scrcpy-protocol.js';
-import { KEYCODE, META, createTouchState, mapAndroidInput } from '../src/share/android/input.js';
+import { KEYCODE, META, createTouchState, isKeyboardText, mapAndroidInput } from '../src/share/android/input.js';
 import { findAdb, parseDevices, parseForegroundPackage, parseResolvedComponent } from '../src/share/android/adb.js';
 import { findScrcpy } from '../src/share/android/scrcpy.js';
-import { AndroidShareSession } from '../src/share/android/session.js';
+import { AndroidShareSession, PASTE_GAP_MS } from '../src/share/android/session.js';
 import { run, EXIT } from '../src/index.js';
 
 const cleanups = [];
@@ -213,9 +213,7 @@ describe('viewer input → scrcpy (§12.4)', () => {
     const [shiftLeft] = mapAndroidInput({ type: 'key', action: 'down', key: 'ArrowLeft', modifiers: 8 }, screen);
     assert.equal(shiftLeft.readUInt32BE(10), META.SHIFT);
 
-    const typed = mapAndroidInput({ type: 'key', action: 'down', key: 'a', code: 'KeyA', modifiers: 0 }, screen);
-    assert.deepEqual(kinds(typed), [1]);
-    assert.equal(typed[0].subarray(5).toString(), 'a');
+    assert.deepEqual(mapAndroidInput({ type: 'key', action: 'down', key: 'a', code: 'KeyA', modifiers: 0 }, screen), [{ text: 'a' }]);
     assert.deepEqual(mapAndroidInput({ type: 'key', action: 'up', key: 'a', modifiers: 0 }, screen), []);
 
     // Cmd+A on a Mac is Ctrl+A on Android.
@@ -225,10 +223,10 @@ describe('viewer input → scrcpy (§12.4)', () => {
     assert.deepEqual(mapAndroidInput({ type: 'key', action: 'down', key: 'Shift', modifiers: 8 }, screen), []);
   });
 
-  it('types ASCII and pastes what the keyboard map cannot type', () => {
-    assert.deepEqual(kinds(mapAndroidInput({ type: 'text', text: 'hello world' }, screen)), [1]);
-    assert.deepEqual(mapAndroidInput({ type: 'text', text: '안녕하세요' }, screen), [{ paste: '안녕하세요' }]);
-    assert.deepEqual(mapAndroidInput({ type: 'key', action: 'down', key: '한', modifiers: 0 }, screen), [{ paste: '한' }]);
+  it('leaves typed text to the session, which knows what the keyboard map can type', () => {
+    assert.deepEqual(mapAndroidInput({ type: 'text', text: '안녕하세요' }, screen), [{ text: '안녕하세요' }]);
+    assert.deepEqual(mapAndroidInput({ type: 'key', action: 'down', key: '한', modifiers: 0 }, screen), [{ text: '한' }]);
+    assert.ok(isKeyboardText('hello world\n') && !isKeyboardText('안녕'));
   });
 
   it('has back, and nothing else, for navigation', () => {
@@ -434,18 +432,36 @@ describe('android share session (§12)', () => {
     assert.equal(device.stopped, true);
   });
 
-  it('paces clipboard pastes and merges the text that waits, keeping the order of everything', async () => {
-    const { session, device } = newAndroidSession();
+  it('types ASCII at once, and paces clipboard pastes, merging the text that waits behind one', async () => {
+    let t = 0;
+    const { session, device } = newAndroidSession({ now: () => t });
     session.screen = { width: 576, height: 1280, codec: 'avc1.42C029' };
-    for (const ch of '에뮬레이터') session.handleInput({ type: 'key', action: 'down', key: ch, modifiers: 0 });
-    session.handleInput({ type: 'text', text: '!' });
-    // The first syllable goes at once; the rest wait behind it, merged into one paste.
-    assert.equal(device.controls.length, 1);
-    assert.equal(device.controls[0].subarray(14).toString(), '에');
-    await until(() => device.controls.length === 3, 2000); // two 200 ms gaps, real time
-    assert.equal(device.controls[1][0], 9);
-    assert.equal(device.controls[1].subarray(14).toString(), '뮬레이터');
-    assert.equal(device.controls[2][0], 1, 'the ASCII after it still comes after it');
+    session.handleInput({ type: 'text', text: 'ok' });
+    assert.deepEqual(
+      device.controls.map((m) => [m[0], m.subarray(5).toString()]),
+      [[1, 'ok']],
+      'no paste waiting: ASCII goes straight in as key presses'
+    );
+
+    // Korean typed a syllable at a time, with spaces, then Backspace: the first syllable is pasted
+    // at once, the rest waits out the gap and goes in as one paste, and the key keeps its place.
+    for (const ch of '에뮬레이터 화면') session.handleInput({ type: 'text', text: ch });
+    session.handleInput({ type: 'key', action: 'down', key: 'Backspace', modifiers: 0 });
+    session.handleInput({ type: 'text', text: '공유' });
+    assert.equal(device.controls.length, 2);
+    assert.equal(device.controls[1].subarray(14).toString(), '에');
+
+    t = PASTE_GAP_MS; // the fake clock moves; the outbox timer still runs in real time
+    await until(() => device.controls.length === 3, 2000);
+    assert.equal(device.controls[2][0], 9);
+    assert.equal(device.controls[2].subarray(14).toString(), '뮬레이터 화면');
+
+    // Everything behind a paste waits for the gap, the key included; the text after it does not wait
+    // for the key.
+    t = 2 * PASTE_GAP_MS;
+    await until(() => device.controls.length === 5, 2000);
+    assert.deepEqual([device.controls[3][0], device.controls[3].readUInt32BE(2)], [0, KEYCODE.DEL]);
+    assert.equal(device.controls[4].subarray(14).toString(), '공유');
   });
 
   it('ends with device-exit when the emulator stream stops', async () => {
