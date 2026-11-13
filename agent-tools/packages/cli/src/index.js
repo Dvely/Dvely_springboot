@@ -13,7 +13,18 @@ export const VERSION = '0.1.4';
 export const EXIT = { OK: 0, ERROR: 1, USAGE: 2, AUTH: 3 };
 
 /** Flags that take a value; everything else is a boolean switch. */
-const VALUED = new Set(['target-version', 'scope', 'api-url', 'expires-in-days', 'viewport', 'ttl']);
+const VALUED = new Set([
+  'target-version',
+  'scope',
+  'api-url',
+  'expires-in-days',
+  'viewport',
+  'ttl',
+  'app',
+  'serial',
+  'max-size',
+  'bit-rate',
+]);
 
 const camel = (name) => name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 

@@ -20,6 +20,8 @@ export const KIND = Object.freeze({
   CONTROL_REQUEST: 0x62,
   CONTROL_DECISION: 0x63,
   PRESENCE: 0x64,
+  /** Server → device: send a fresh key frame (H.264, §12.2). */
+  KEYFRAME_REQUEST: 0x65,
 });
 
 /** The version the tunnel URL announces with `?v=1` (§4.1). */

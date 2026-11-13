@@ -45,4 +45,31 @@ Ctrl+C 로 공유를 끝냅니다.
 - 연결이 끊기면 1·2·4·8·16·30초 간격으로 다시 잇는다. 링크가 회수·만료되면 멈춘다.
 - Ctrl+C 로 끝내면 링크를 회수하고 Chrome 과 임시 프로필을 지운다.
 
+## Android 에뮬레이터 공유 — `share android`
+
+에뮬레이터에 떠 있는 앱 화면을 같은 방식으로 공유한다. 보는 사람이 조작권을 받으면 터치·스크롤·키 입력·한글 입력이 에뮬레이터로 들어간다.
+
+```bash
+qeploy share android                         # 지금 앞에 떠 있는 앱
+qeploy share android --app com.example.app   # 이 앱을 띄워서 공유
+```
+
+| 옵션 | 뜻 |
+|---|---|
+| `--app <패키지>` | 공유할 앱. 없으면 지금 앞에 떠 있는 앱(홈 화면이면 이 옵션이 필요하다) |
+| `--any-app` | 앱으로 묶지 않고 에뮬레이터 전체를 공유한다(경고가 뜬다) |
+| `--serial emulator-5554` | 에뮬레이터가 여러 대일 때 고른다 |
+| `--max-size 1280` | 화면 긴 변(px). 기본 1280 |
+| `--bit-rate 2M` | 영상 비트레이트. 기본 2Mbps |
+| `--ttl 60` · `--json` | `share web` 과 같다 |
+
+- **준비물**
+  - Android SDK platform-tools(`adb`). `ANDROID_HOME` 이나 기본 SDK 위치에서 찾는다
+  - scrcpy 4.x·5.x(`brew install scrcpy`). 그 안의 서버만 쓰고 scrcpy 창은 띄우지 않는다. 다른 위치라면 `QEPLOY_SCRCPY_SERVER`·`QEPLOY_SCRCPY_VERSION`
+- 보는 사람 브라우저가 WebCodecs 로 H.264 를 푼다(최신 Chrome·Edge·Safari·Firefox).
+- **에뮬레이터만** 받는다. 실제 폰에는 계정·사진이 있어서다.
+- **공유는 앱 하나로 묶인다.** 1초마다 맨 앞 앱을 보고, 다른 앱(홈 화면, 에뮬레이터 Chrome 으로 내 localhost 인 `10.0.2.2` 등)으로 나가면 공유한 앱을 다시 앞으로 올린다. 권한 대화상자는 허용한다.
+- 한글처럼 키보드로 바로 못 넣는 글자는 에뮬레이터 클립보드에 넣고 붙여넣는다. 에뮬레이터 클립보드는 밖으로 보내지 않는다.
+- Ctrl+C 로 끝내면 링크를 회수하고 에뮬레이터의 scrcpy 서버와 `adb forward` 를 정리한다.
+
 자세한 내용: https://github.com/Dvely/Dvely_springboot/tree/main/agent-tools
