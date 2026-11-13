@@ -37,7 +37,7 @@ Ctrl+C 로 공유를 끝냅니다.
 |---|---|---|---|
 | **1** | 웹(dev 브라우저) | CLI 가 띄운 Chrome 을 DevTools 프로토콜(CDP) 화면 전송 | CDP 입력 이벤트 |
 | **2** | Android 에뮬레이터 | scrcpy 서버의 H.264 → 뷰어 WebCodecs(§12) | scrcpy 제어 메시지 |
-| **3** | iOS 시뮬레이터(macOS) | AXe `stream-video` JPEG → 1단계 JPEG 경로(§13) | AXe `serve` 탭·스와이프·키 |
+| **3** | iOS 시뮬레이터(macOS) | AXe `stream-video` JPEG → 1단계 JPEG 경로(§13) | AXe 명령(탭·draw·키) |
 | 나중 | 로컬 웹 직접 열기 | 받는 사람 브라우저에서 따로 열림(HTTP 중계, §10) | 각자 |
 
 1단계를 웹으로 하는 이유: 화면(JPEG 프레임)·입력(CDP)이 가장 단순해서 공통 기반(터널, 뷰어, 조작권, 링크)을 먼저 검증할 수 있다. 2·3단계는 화면 인코딩과 입력 변환만 바꾼다.
@@ -374,11 +374,12 @@ qeploy share ios [--app <번들 ID>] [--any-app] [--udid <시뮬레이터 UDID>]
 - 사용자가 설치한 [AXe](https://github.com/cameroncooke/AXe)(MIT, `brew install cameroncooke/axe/axe`, 2.x)를 쓴다. Xcode 의 `simctl` 에는 입력을 넣는 명령이 없어서다. 저장소에 바이너리를 넣지 않는다.
 - **화면**: `axe stream-video --udid … --format raw --fps 15 --scale 0.5 --quality 70`
   - 출력은 `[길이 u32 BE][JPEG]` 의 반복이다. CLI 는 이것을 SCREEN_FRAME 으로 그대로 보낸다.
+  - 실측(AXe 2.0.4, iPhone 17 Pro): 603×1311, 장당 약 92KB, 초당 약 9.6장. **화면이 그대로여도 같은 장을 계속 내보내서**, CLI 는 앞 장과 바이트가 같은 장을 보내지 않는다.
   - 크기는 JPEG SOF 에서 읽는다. 크기가 바뀌면(회전) SCREEN_CONFIG 를 다시 보낸다.
-- **입력**: `axe serve --udid …` 프로세스 하나에 한 줄에 명령 하나를 보낸다. 응답은 한 줄 JSON 이다.
-  - 명령은 차례로 하나씩 보내고 응답을 기다린다. 실측 기준 명령 하나에 150ms 안팎이다.
-  - serve 의 줄은 셸과 같은 규칙으로 쪼개진다. 텍스트는 작은따옴표로 감싸고, 안의 `'` 는 `'\''` 로 쓴다.
-- **좌표**: AXe 는 논리 포인트를 쓴다. 화면 크기(포인트)는 `describe-ui --minimal-keys` 의 루트 `frame` 에서 읽고, 회전하면 다시 읽는다.
+- **입력**: 명령마다 `axe --output json <명령> … --udid …` 를 하나씩 띄운다. 2.0.4 에는 여러 명령을 받는 상주 모드가 없다.
+  - 순서를 지키려고 앞 명령이 끝난 뒤 다음을 띄운다. 실측: 처음 1.9초, 그 뒤 명령 하나에 0.29초.
+  - 인자는 배열로 넘긴다(셸을 거치지 않아 따옴표 처리가 없다).
+- **좌표**: AXe 는 논리 포인트를 쓴다. 화면 크기(포인트)는 `axe displays` 의 `activeScreen`(예: 402×874, 배율 3)에서 읽고, 영상 크기가 바뀌면 다시 읽는다.
 
 ### 13.2 입력
 
@@ -401,7 +402,7 @@ AXe 는 손가락을 누른 채 움직이는 입력을 받지 않는다. 그래�
 ### 13.3 앱 묶기
 
 - `--app` 이 있으면 `xcrun simctl launch <udid> <번들 ID>` 로 띄운다.
-- 없으면 시작할 때 앞에 떠 있는 앱을 쓴다. `describe-ui` 루트의 이름을 `simctl listapps` 의 표시 이름과 맞춰 번들 ID 를 찾는다. 못 찾거나 홈 화면이면 `--app` 을 요구한다.
+- 없으면 시작할 때 앞에 떠 있는 앱을 쓴다. `describe-ui` 의 루트(`type: Application`)의 `AXLabel` 을 `simctl listapps` 의 표시 이름과 맞춰 번들 ID 를 찾는다. 못 찾거나 홈 화면이면 `--app` 을 요구한다.
 - 2초마다 `describe-ui` 루트 이름을 본다. 다르면 `simctl launch` 로 다시 앞으로 올리고 터미널에 알린다.
 - `--any-app` 은 묶지 않는다(경고).
 
