@@ -1206,7 +1206,7 @@ DELETE /preview-sessions/{sessionId}            # 204 / 404 없음·타유저·�
 
 게이트웨이(`GET /api/v1/previews/{sessionId}/{accessToken}/**`)는 URL만으로 열리지 않는다(Issue #77). `POST /preview-sessions/{sessionId}/access`가 소유자를 확인하고 `HttpOnly` 소유권 쿠키(`Path=/api/v1/previews/{sessionId}/`)를 `Set-Cookie`로 내려주며, 문서 탐색(`Sec-Fetch-Dest`가 document/iframe/frame/embed/object이거나 헤더 없음)을 쿠키 없이 하면 **401**이다. JS/CSS/이미지 같은 서브리소스는 회전된 accessToken URL만으로 통과한다(#108 — sandbox 문서는 서브리소스에 쿠키를 싣지 않는다)(`qeploy.preview.require-access-cookie`, 기본 true, dev 프로필 기본 false). 이 호출은 accessToken을 **회전**시키므로 응답 `{ sessionId, previewUrl, expiresAt }`의 `previewUrl`만 유효하고, 이전에 발급된 주소는 즉시 404가 된다.
 
-게이트웨이 응답 코드: 세션 없음·토큰 불일치 `404` / 문서 탐색에 쿠키 없음 `401` / 요청 본문 10 MiB 초과 `413` / 본문을 끝까지 못 읽음 `400` / 안쪽 앱에 닿지 못함 `502`(일시 실패가 아니면 세션을 회수해, 다음 `GET /projects/{id}/preview-session`이 `204`가 된다). `Accept: text/event-stream` 요청은 스트리밍 프록시로 갈리고 `Last-Event-ID`를 전달한다(그 외 계약은 같다). 응답은 공통 envelope로 감싸지 않는다.
+게이트웨이 응답 코드: 세션 없음·토큰 불일치 `404` / 문서 탐색에 쿠키 없음 `401` / 요청 본문 10 MiB 초과 `413` / 본문을 끝까지 못 읽음 `400` / 안쪽 앱에 닿지 못함 `502`(일시 실패가 아니면 세션을 회수해, 다음 `GET /projects/{id}/preview-session`이 `204`가 된다. 단 작업이 끝나지 않은(`DONE`·`CANCELLED` 가 아닌) 작업 세션은 회수하지 않고 `502` 만 준다 — 작업물이 그 컨테이너에 있다, #678). `Accept: text/event-stream` 요청은 스트리밍 프록시로 갈리고 `Last-Event-ID`를 전달한다(그 외 계약은 같다). 응답은 공통 envelope로 감싸지 않는다.
 
 스트리밍 프록시(#624):
 
