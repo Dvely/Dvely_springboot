@@ -1,6 +1,7 @@
 package com.example.dvely.preview.application.service;
 
 import com.example.dvely.agent.application.dto.AgentTask;
+import com.example.dvely.agent.application.dto.TaskStatus;
 import com.example.dvely.agent.infrastructure.docker.DockerContainerService;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
 import com.example.dvely.common.exception.NotFoundException;
@@ -306,7 +307,8 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
      * <p>호스트 포트로 프록시하던 시절에 만들어진 행이 그렇다. 배포 순간에 열려 있던 프리뷰를
      * 끊지 않기 위한 것이고, 세션 수명이 짧아 곧 사라진다. 조회에 실패해도 예외를 올리지 않는다 —
      * 컨테이너가 이미 사라진 세션일 수 있고, 그 판정과 회수는 게이트웨이의 502 경로
-     * ({@link #reclaimUnreachable})가 이미 하고 있다. 여기서 던지면 회수 대신 500 이 나간다.</p>
+     * ({@link #reclaimUnreachable})와 {@code findCurrent} 의 컨테이너 생존 확인이 이미 하고 있다. 여기서 던지면
+     * 회수 대신 500 이 나간다.</p>
      */
     private void ensureContainerIp(PreviewSessionEntity session) {
         if (session.getContainerIp() != null && !session.getContainerIp().isBlank()) {
@@ -331,11 +333,22 @@ public class PreviewSessionService implements DeadPreviewSessionReclaimer {
      * <p>ACTIVE 가 아니면(다른 요청이 방금 회수했거나 만료) no-op — 동시 실패 요청이 여럿 들어와도 회수는
      * 사실상 1회다({@code expire} 가 상태를 바꾸고 {@code removeContainer} 는 멱등). 게이트웨이만 호출하므로
      * (host-affine) 이 판정은 항상 로컬 컨테이너에 대한 것이다.</p>
+     *
+     * <p>작업이 끝나지 않은(DONE·CANCELLED 가 아닌) 세션은 회수하지 않는다(#678). 규칙은 상한 회수와 같고
+     * {@link PreviewClosePolicy} 에 있다. 죽은 것은 앱 프로세스뿐이고 작업물은 컨테이너 안에 멀쩡하다. 예전에는 여기서
+     * 지웠다 — 앱을 죽인 변경이 결과 승인을 기다리면, 사용자가 확인하려고 프리뷰를 여는 순간 승인하거나 거절할 작업물이
+     * 사라졌다. 남겨 둔 세션은 502 를 계속 받고, 작업이 끝나면 다음 실패 때 회수된다.</p>
      */
     @Override
     public boolean reclaimUnreachable(String sessionId) {
         PreviewSessionEntity session = repository.findById(sessionId).orElse(null);
         if (session == null || !PreviewSessionStatus.ACTIVE.name().equals(session.getStatus())) {
+            return false;
+        }
+        Optional<TaskStatus> blocking = PreviewClosePolicy.blockingUnreachableReclaim(session, taskStore::get);
+        if (blocking.isPresent()) {
+            log.warn("[PreviewSession] 안쪽 앱 무응답이지만 작업이 쓰는 프리뷰라 회수하지 않음: sessionId={} projectId={} taskId={} taskStatus={}",
+                    session.getId(), session.getProjectId(), session.getTaskId(), blocking.get());
             return false;
         }
         log.warn("[PreviewSession] 안쪽 앱 무응답으로 회수(컨테이너는 살아있으나 서버 프로세스가 죽음): sessionId={} projectId={}",

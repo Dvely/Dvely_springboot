@@ -11,7 +11,8 @@ import java.util.Set;
 import java.util.function.Function;
 
 /**
- * 프리뷰를 닫아도 되는지 — 저절로 닫을 때(상한 회수)와 사람이 닫을 때(#650)의 규칙을 한 곳에 둔다.
+ * 프리뷰를 닫아도 되는지 — 저절로 닫을 때(상한 회수, 게이트웨이의 무응답 회수 #678)와 사람이 닫을 때(#650)의 규칙을 한 곳에
+ * 둔다.
  *
  * <p>작업 세션의 작업물은 그 컨테이너 안에만 있다. push 를 결과 승인 뒤로 미룬 작업(#523)은 컨테이너가 유일한 사본이고,
  * 진행 중인 작업은 다음 스텝이 그 작업물을 이어 쓴다. 닫으면 되살릴 수 없으므로, 작업이 끝났거나(DONE·CANCELLED) 실패한
@@ -24,7 +25,7 @@ import java.util.function.Function;
  */
 public final class PreviewClosePolicy {
 
-    /** 저절로 닫아도 되는 작업 상태. {@link PreviewCapacity} 가 쓴다. */
+    /** 저절로 닫아도 되는 작업 상태. {@link PreviewCapacity} 와 게이트웨이의 무응답 회수가 쓴다. */
     static final Set<TaskStatus> RECLAIMABLE = EnumSet.of(TaskStatus.DONE, TaskStatus.CANCELLED);
 
     /** 주인이 닫아도 되는 작업 상태. */
@@ -36,6 +37,27 @@ public final class PreviewClosePolicy {
     /** 상한 회수가 이 작업의 프리뷰를 닫아도 되는가. 런 행이 없으면 이어 쓸 작업도 없다. */
     static boolean reclaimable(AgentTask task) {
         return task == null || RECLAIMABLE.contains(task.status());
+    }
+
+    /**
+     * 게이트웨이가 안쪽 앱 무응답으로 이 세션을 회수하려 할 때 막는 작업 상태(#678). 막지 않으면 비어 있다.
+     *
+     * <p>죽은 것은 앱 프로세스뿐이고 컨테이너 안의 작업물(git)은 멀쩡하다. 회수는 컨테이너를 지우므로 작업 세션에는 상한
+     * 회수와 같은 규칙을 쓴다 — 잠긴 작업의 세션을 남겨 두어야 결과 승인·거절과 재시도가 그 작업물을 쓴다.</p>
+     *
+     * <p>프로젝트 프리뷰(작업 없음)는 막지 않는다. 브랜치를 새로 띄우면 같은 것이 돌아오고, 회수해야 FE 가 새 빌드 버튼으로
+     * 돌아간다. 상한 회수가 프로젝트 프리뷰를 닫지 않는 것과 다르다 — 그쪽은 사용자가 보려고 띄운 살아 있는 프리뷰를 남의 자리
+     * 때문에 닫지 않으려는 것이고, 여기는 이미 응답하지 않는 프리뷰다.</p>
+     *
+     * @param tasks 작업 id 로 런을 읽는다. 작업 세션일 때만 부른다
+     */
+    static Optional<TaskStatus> blockingUnreachableReclaim(PreviewSessionEntity session,
+                                                           Function<String, AgentTask> tasks) {
+        if (session.getTaskId() == null) {
+            return Optional.empty();
+        }
+        AgentTask task = tasks.apply(session.getTaskId());
+        return reclaimable(task) ? Optional.empty() : Optional.of(task.status());
     }
 
     /**

@@ -17,7 +17,8 @@ public interface DeadPreviewSessionReclaimer {
 
     /**
      * ACTIVE 세션을 EXPIRED 로 닫고 컨테이너를 회수한다. 이미 ACTIVE 가 아니면(다른 요청이 방금 회수했거나
-     * 만료됐으면) 아무것도 하지 않는다.
+     * 만료됐으면) 아무것도 하지 않는다. 작업이 끝나지 않은(DONE·CANCELLED 가 아닌) 세션도 회수하지 않는다(#678) —
+     * 앱만 죽었고 그 작업물은 컨테이너 안에 있다. 실패한 작업도 재시도가 그 작업물을 이어 쓴다.
      *
      * @return 이 호출이 실제로 회수했으면 true
      */
