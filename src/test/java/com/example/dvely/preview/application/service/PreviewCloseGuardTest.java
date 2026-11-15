@@ -39,6 +39,9 @@ import org.junit.jupiter.params.provider.EnumSource;
 /**
  * 사람이 프리뷰를 닫는 경로가 작업 상태를 본다(#650). 진행 중이거나 결정을 기다리는 작업의 컨테이너에는 그 작업물의 유일한
  * 사본이 있다 — 닫으면 되살릴 수 없으므로, 거부하고 컨테이너 제거를 한 번도 부르지 않아야 한다.
+ *
+ * <p>게이트웨이가 안쪽 앱 무응답으로 회수하는 경로도 같은 이유로 작업 상태를 본다(#678). 사람이 닫으려 하면 막히는 프리뷰를
+ * 서버가 스스로 지우면 안 된다.</p>
  */
 class PreviewCloseGuardTest {
 
@@ -193,7 +196,74 @@ class PreviewCloseGuardTest {
         assertThat(service.closeAllOwned(OWNER)).isEqualTo(new BulkPreviewCloseResult(0, List.of()));
     }
 
+    // ── 게이트웨이의 무응답 회수 (#678) ─────────────────────────────────────────────────────
+
+    @Test
+    void theGatewayReclaimsATaskSessionExactlyWhenTheCapacityReclaimWould() {
+        Set<TaskStatus> kept = Arrays.stream(TaskStatus.values())
+                .filter(status -> PreviewClosePolicy.blockingUnreachableReclaim(
+                        session("s", "t", PreviewSessionStatus.ACTIVE), id -> task(id, status)).isPresent())
+                .collect(Collectors.toCollection(() -> EnumSet.noneOf(TaskStatus.class)));
+
+        // 사람이 닫을 수 없는 일곱 개에 더해, 재시도가 작업물을 이어 쓰는 FAILED 도 남긴다
+        Set<TaskStatus> expected = EnumSet.copyOf(LOCKED);
+        expected.add(TaskStatus.FAILED);
+        assertThat(kept).isEqualTo(expected);
+        assertThat(EnumSet.complementOf(EnumSet.copyOf(kept))).isEqualTo(PreviewClosePolicy.RECLAIMABLE);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = TaskStatus.class, mode = EnumSource.Mode.EXCLUDE, names = {"DONE", "CANCELLED"})
+    void anUnreachableAppDoesNotDeleteTheWorkOfAnUnfinishedTask(TaskStatus status) {
+        PreviewSessionEntity session = found(session("s1", "task-1", PreviewSessionStatus.ACTIVE));
+        running("task-1", status);
+
+        assertThat(service.reclaimUnreachable("s1")).isFalse();
+
+        assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.ACTIVE.name());
+        verify(dockerService, never()).removeContainer(anyString());
+        verify(repository, never()).save(any());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = TaskStatus.class, names = {"DONE", "CANCELLED"})
+    void anUnreachableAppOfAFinishedTaskIsStillReclaimed(TaskStatus status) {
+        PreviewSessionEntity session = found(session("s1", "task-1", PreviewSessionStatus.ACTIVE));
+        running("task-1", status);
+
+        assertThat(service.reclaimUnreachable("s1")).isTrue();
+
+        assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.EXPIRED.name());
+        verify(dockerService).removeContainer("container-s1");
+    }
+
+    @Test
+    void anUnreachableProjectPreviewIsStillReclaimedWithoutReadingATask() {
+        // FE 가 "없음"을 보고 새 빌드 버튼으로 돌아가는 self-heal 은 그대로다
+        PreviewSessionEntity session = found(session("s1", null, PreviewSessionStatus.ACTIVE));
+
+        assertThat(service.reclaimUnreachable("s1")).isTrue();
+
+        assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.EXPIRED.name());
+        verify(dockerService).removeContainer("container-s1");
+        verify(taskStore, never()).get(anyString());
+    }
+
+    @Test
+    void anUnreachableSessionWhoseRunIsGoneIsStillReclaimed() {
+        PreviewSessionEntity session = found(session("s1", "gone", PreviewSessionStatus.ACTIVE));
+
+        assertThat(service.reclaimUnreachable("s1")).isTrue();
+
+        assertThat(session.getStatus()).isEqualTo(PreviewSessionStatus.EXPIRED.name());
+    }
+
     // ── 도우미 ──────────────────────────────────────────────────────────────────────────
+
+    private PreviewSessionEntity found(PreviewSessionEntity session) {
+        when(repository.findById(session.getId())).thenReturn(Optional.of(session));
+        return session;
+    }
 
     private PreviewSessionEntity owned(PreviewSessionEntity session) {
         when(repository.findByIdAndOwnerUserId(session.getId(), OWNER)).thenReturn(Optional.of(session));

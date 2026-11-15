@@ -217,7 +217,7 @@ public class PreviewGatewayService {
             // 죽으면 이 자리에 온다 — attach·findCurrent 의 컨테이너-생존 확인으로는 못 걸러지는 사각이다.
             // 한 번 더 빠르게 확인해 일시적 실패가 아니면 세션을 회수한다(EXPIRED + 컨테이너 제거). 그러면
             // findCurrent 가 "없음"으로 답해 FE 가 새 빌드 CTA 로 자동 복귀한다. 게이트웨이는 host-affine 이라
-            // 이 판정은 항상 로컬 컨테이너에 대한 것이다.
+            // 이 판정은 항상 로컬 컨테이너에 대한 것이다. 작업이 쓰는 세션은 회수하지 않고 502 만 준다(#678).
             if (reclaimEnabled && isInnerAppUnreachable(session)) {
                 reclaimer.reclaimUnreachable(session.sessionId());
             }
