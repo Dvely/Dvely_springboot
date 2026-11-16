@@ -1921,7 +1921,20 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - **피드백 알림**: 터미널에 `피드백 #N · 손님 '이름' · <요소> · "글 앞부분"`(제어 문자·이스케이프 제거). 손님 것은 받을지 묻는다(`askFeedback` — `y` 받기, 다른 답 받지 않기, 60초 무응답·터미널 아님은 **받기 전으로 둠**). 조작권 질문과 같은 줄에 서서 섞이지 않는다
 - **테스트**: CLI 304건(새 28 — 프로브 검증·결과 배치·이미지 상한·16KiB 덜어 내기, 알림 한 줄, 프로젝트 판정·경로 바꾸기(밖·링크·`node_modules`·다른 오리진 거절)·소스 후보 순서·시간 상한, `inspectPoint` 가짜 DOM(React 소유 파일·입력값 비공개·Vue·Svelte·배경), 실 터널 소켓으로 짚기 → 결과·`TIMEOUT`·`NO_ELEMENT`·잘못된 프로브·입력 0건, 받기 질문 세 갈래, `--project` 없는 폴더 거절, `askFeedback`)
 - **실측**: 로컬 서버 + 실제 CLI + Vite·React 19 예제(`App` ‹ `ProfileForm` ‹ `SaveButton`)에서 보기 링크로 `저장` 을 짚음 → 뷰어 `<button> "저장"`·`SaveButton` → 보냄 → 주인 프롬프트에 선택자 `main > form.profile > div.actions > button.save`, 컴포넌트 세 개와 각 파일·정의 줄(`SaveButton.jsx:1`·`ProfileForm.jsx:4`·`App.jsx:3`), 보이는 텍스트 후보 `SaveButton.jsx:4`, 잘라 낸 이미지(버튼+여백)·화면. 터미널은 알림 뒤 "받기 전으로 둡니다"(TTY 아님). 처음 실측에서 React 19 줄이 변환된 모듈 기준(18줄)으로 나와 정의 줄 찾기로 고쳤다
-- **남은 것**: Android(`uiautomator`·Activity·`screencap`, #682 PR-2), iOS(PR-3, 여유분), MCP·CLI 내보내기(#683)
+- **남은 것**: iOS(PR-3, 여유분), MCP·CLI 내보내기(#683). Android 는 §4.71
+
+## 4.71 짚기 피드백 — CLI Android 요소 풀기 (Issue #682 PR-2, 2026-11-17)
+
+`qeploy share android` 도 짚기에 답한다(adb 가 있을 때만 HELLO `features: ["pin"]`). 서버·뷰어는 그대로다. 설계 §14.3 "Android 구현".
+
+- **읽기**(`android/pin.js`, `Adb.uiDump`·`screencapRaw`·`foregroundActivity`): `uiautomator dump`·`screencap`(날 픽셀)·`dumpsys activity` 를 `adb exec-out` 으로 함께. 모두 읽기이고 에뮬레이터에 입력을 보내지 않는다
+- **뷰 고르기**: 누를 수 있거나 텍스트·설명·앱 id 가 있는 가장 작은 뷰, 글자만 있는 노드는 누를 수 있는 바깥으로. 플랫폼 틀(`android:id/…`)은 무시하고, 화면을 덮는 말 없는 뷰만 걸리면 `NO_ELEMENT`. 비밀번호 입력란의 글은 읽지 않는다
+- **기술**: 화면 `패키지/Activity`, 클래스 끝 이름·id·비율 테두리·앱 id 가 있는 바깥 요소, 컴포넌트는 앱 클래스와 Activity. **실측에서 커스텀 뷰(`FancyButton extends Button`)는 접근성 클래스 `Button` 으로 나왔다** — 앱 이름은 주로 Activity·id·문자열로 찾는다
+- **소스 후보**: Activity 정의(Kotlin `fun`·`object`·Swift `struct` 도 정의로 본다) → `@+id/`·`R.id.` → 보이는 텍스트. `strings.xml` 에서 찾은 글이면 그 이름을 쓰는 레이아웃·코드를 먼저 낸다
+- **이미지**(`jpeg.js`): CLI 의존성을 늘리지 않으려고 날 픽셀을 잘라 줄이고 기본 JPEG(표준 표, 4:4:4)으로 직접 만든다. macOS `sips` 로 읽히는 것을 확인했다
+- **테스트**: CLI 315건(새 11 — 덤프 읽기·엔티티·부모, 뷰 고르기(커스텀 버튼·Compose 글자·비밀번호·바깥), 기술(Activity·플랫폼 틀 제외), 배경 `NO_ELEMENT`, Activity 읽기, screencap 머리 12·16·RGB565·잘못된 길이, JPEG SOF 크기, 자르기·상한, 예제 Android 프로젝트에서 소스 후보 다섯 개의 순서, 빈 트리·덤프 실패에도 점·이미지, 실 터널 소켓으로 HELLO `pin`·짚기 결과·**에뮬레이터 입력 0건**)
+- **실측**(로컬 서버 + 실제 CLI + API 35 에뮬레이터 + SDK 도구로 손수 빌드한 예제 APK `com.example.pin`): 보기 링크로 `저장` 을 짚음 → 뷰어 테두리가 버튼에 맞음·`<Button> "저장"`·`MainActivity` → 보냄 → 터미널 알림 → 주인 프롬프트에 `Android · com.example.pin/.MainActivity`, `<Button>` "저장" · id `save`, 바깥 `#form`, 소스 후보 `MainActivity.java:6`·`activity_main.xml:15`(id)·`:19`(문자열 사용)·`strings.xml:4`, 잘라 낸 이미지 3.5KB·화면 24KB. 짚기 한 번 약 2.1초(`screencap` 1.1초·덤프 2.2초를 함께)
+- **남은 것**: iOS(PR-3, 여유분), MCP·CLI 내보내기(#683)
 
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
