@@ -61,7 +61,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             Pattern.compile("POST /api/v1/projects/\\d+/domains"),
             // 내 기기 프리뷰 공유(#652). CLI `qeploy share` 가 링크를 만들고 끝낼 때 회수한다.
             Pattern.compile("POST /api/v1/device-shares"),
-            Pattern.compile("DELETE /api/v1/device-shares/\\d+")
+            Pattern.compile("DELETE /api/v1/device-shares/\\d+"),
+            // 짚기 피드백(#681). 에이전트는 고쳤다고 표시만 한다. 받기·무시는 사람(브라우저·기기 터미널)만 한다 —
+            // 받기 전 손님 글이 에이전트 지시가 되지 않게 하려는 것이다
+            Pattern.compile("POST /api/v1/device-share-feedback/\\d+/fixed")
     );
 
     private final TokenPort tokenPort;

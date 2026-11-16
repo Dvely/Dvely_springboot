@@ -23,6 +23,14 @@ public final class ShareFrames {
     public static final int PRESENCE = 0x64;
     /** 서버 → 기기, JSON {@code {}}. 기기는 H.264 키 프레임을 새로 만든다(설계 §12.2). */
     public static final int KEYFRAME_REQUEST = 0x65;
+    /** 서버 → 기기, JSON {@code {probeId, x, y}}. 그 점의 요소를 풀어 달라(설계 §14.4). */
+    public static final int PIN_PROBE = 0x66;
+    /** 기기 → 서버. {@code [JSON 길이 u32][JSON][잘라 낸 이미지 길이 u32][JPEG][화면 JPEG]}(§14.3). */
+    public static final int PIN_RESULT = 0x67;
+    /** 서버 → 기기, JSON. 새 피드백 알림. 손님 것({@code state: NEW})이면 CLI 가 받을지 묻는다. */
+    public static final int FEEDBACK_NOTICE = 0x68;
+    /** 기기 → 서버, JSON {@code {feedbackId, accepted}}. 주인의 받기·무시. */
+    public static final int FEEDBACK_DECISION = 0x69;
 
     private ShareFrames() {
     }

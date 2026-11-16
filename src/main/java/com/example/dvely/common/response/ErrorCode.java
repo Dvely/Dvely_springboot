@@ -75,7 +75,10 @@ public enum ErrorCode {
 
     // 프로젝트 삭제(#595). 이 프로젝트로 만든 서버·DB 가 사용자 AWS 에 살아 있거나 배포가 진행 중이라 지우지 않았다(GitHub
     // 저장소도 그대로다). 응답 data 에 남은 자원 목록이 실린다 — 탈퇴(WITHDRAWAL_BLOCKED)와 같은 모양이다.
-    PROJECT_DELETION_BLOCKED(409, "PROJECT_DELETION_BLOCKED", "정리하지 않은 AWS 자원이 남아 있어 프로젝트를 삭제할 수 없습니다");
+    PROJECT_DELETION_BLOCKED(409, "PROJECT_DELETION_BLOCKED", "정리하지 않은 AWS 자원이 남아 있어 프로젝트를 삭제할 수 없습니다"),
+
+    // 짚기 피드백(#681). 설계 §14.2 에 없는 상태 변경이거나 그 사이 다른 요청이 먼저 바꿨다
+    DEVICE_SHARE_FEEDBACK_INVALID_TRANSITION(409, "DEVICE_SHARE_FEEDBACK_INVALID_TRANSITION", "지금 상태에서는 그렇게 바꿀 수 없습니다");
 
     private final int status;
     private final String code;

@@ -1,5 +1,6 @@
 package com.example.dvely.deviceshare.infrastructure.websocket;
 
+import com.example.dvely.deviceshare.application.service.ShareFeedbackService;
 import com.example.dvely.deviceshare.application.session.ShareFrames;
 import com.example.dvely.deviceshare.application.session.ShareSessionRegistry;
 import com.example.dvely.deviceshare.domain.model.DeviceShareLink;
@@ -23,6 +24,7 @@ public class DeviceTunnelHandler extends BinaryWebSocketHandler {
     private static final String ATTR_CHANNEL = "deviceShare.deviceChannel";
 
     private final ShareSessionRegistry registry;
+    private final ShareFeedbackService feedback;
     private final Map<String, WebSocketDeviceChannel> open = new ConcurrentHashMap<>();
 
     @Override
@@ -48,7 +50,23 @@ public class DeviceTunnelHandler extends BinaryWebSocketHandler {
             log.debug("[DeviceShare] 잘못된 프레임 share={}: {}", link.getId(), e.getMessage());
             return;
         }
+        if (frame.kind() == ShareFrames.FEEDBACK_DECISION) {
+            // 받기·무시는 저장이 필요해 세션 밖에서(설계 §14). DB 오류로 터널을 끊지 않는다
+            try {
+                feedback.onDeviceDecision(link, frame);
+            } catch (RuntimeException e) {
+                log.warn("[DeviceShare] 피드백 받기·무시 처리 실패 share={}: {}", link.getId(), e.getMessage());
+            }
+            return;
+        }
         registry.onDeviceFrame(link.getId(), channel, frame);
+        if (frame.kind() == ShareFrames.HELLO) {
+            try {
+                feedback.renotifyPending(link);
+            } catch (RuntimeException e) {
+                log.warn("[DeviceShare] 받기 전 피드백 다시 알리기 실패 share={}: {}", link.getId(), e.getMessage());
+            }
+        }
     }
 
     @Override

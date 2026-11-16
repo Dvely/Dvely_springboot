@@ -1,6 +1,7 @@
 package com.example.dvely.deviceshare.infrastructure.websocket;
 
 import com.example.dvely.deviceshare.application.service.DeviceShareService;
+import com.example.dvely.deviceshare.application.service.ShareFeedbackService;
 import com.example.dvely.deviceshare.application.session.ShareSessionRegistry;
 import com.example.dvely.deviceshare.domain.model.DeviceShareLink;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -31,6 +32,7 @@ public class ViewerSocketHandler extends AbstractWebSocketHandler {
 
     private final ShareSessionRegistry registry;
     private final DeviceShareService service;
+    private final ShareFeedbackService feedback;
     private final ObjectMapper json;
     private final Map<String, WebSocketViewerChannel> open = new ConcurrentHashMap<>();
 
@@ -53,7 +55,12 @@ public class ViewerSocketHandler extends AbstractWebSocketHandler {
         }
         String viewerId = (String) session.getAttributes().get(ATTR_VIEWER_ID);
         if (viewerId != null) {
-            registry.onViewerMessage(link.getId(), viewerId, node);
+            // 짚기 피드백의 보내기·확인·다시 열기는 저장이 필요해 세션 밖에서 처리한다(설계 §14)
+            if (ShareFeedbackService.handlesViewerMessage(node.path("type").asText(""))) {
+                feedback.onViewerMessage(link, viewerId, node);
+            } else {
+                registry.onViewerMessage(link.getId(), viewerId, node);
+            }
             return;
         }
         if (!"join".equals(node.path("type").asText(""))) {
