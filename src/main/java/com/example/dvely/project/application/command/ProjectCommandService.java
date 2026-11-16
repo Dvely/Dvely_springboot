@@ -5,6 +5,7 @@ import com.example.dvely.audit.application.AuditRecorder;
 import com.example.dvely.audit.domain.value.AuditAction;
 import com.example.dvely.audit.domain.value.AuditActorType;
 import com.example.dvely.audit.domain.value.AuditOutcome;
+import com.example.dvely.cloudresource.application.LiveResource;
 import com.example.dvely.project.application.command.dto.ConnectProjectRepositoryCommand;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
 import com.example.dvely.project.application.command.dto.ProjectDeleteMode;
@@ -13,6 +14,7 @@ import com.example.dvely.project.application.port.out.GithubRepositoryPort;
 import com.example.dvely.project.application.port.out.UserProfilePort;
 import com.example.dvely.project.application.result.ProjectDetailResult;
 import com.example.dvely.project.application.result.ProjectRepositoryResult;
+import com.example.dvely.project.application.service.ProjectDeletionBlockedException;
 import com.example.dvely.project.application.service.ProjectDeletionService;
 import com.example.dvely.project.application.service.RepositoryProvisioningService;
 import com.example.dvely.project.domain.exception.ProjectNotFoundException;
@@ -21,6 +23,7 @@ import com.example.dvely.project.domain.repository.ProjectRepository;
 import com.example.dvely.project.domain.service.ProjectDomainService;
 import com.example.dvely.project.domain.value.RepositoryVisibility;
 import com.example.dvely.template.application.service.TemplateCatalogGuard;
+import java.util.List;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -175,6 +178,12 @@ public class ProjectCommandService {
      * 감사 기록을 그 직후에 남기는 순서(H3)도 그대로 두었다.</p>
      */
     public void deleteProject(Long ownerUserId, Long projectId, ProjectDeleteMode deleteMode) {
+        // 사용자 AWS 에 살아 있는 서버·DB·진행 중인 배포가 있으면 아무것도 지우지 않는다(#595). 되돌릴 수 없는 GitHub 저장소
+        // 삭제보다 먼저 본다 — 막힐 삭제 때문에 저장소부터 사라지면 안 된다.
+        List<LiveResource> live = projectDeletionService.findLiveResources(ownerUserId, projectId);
+        if (!live.isEmpty()) {
+            throw new ProjectDeletionBlockedException(live);
+        }
         if (deleteMode == ProjectDeleteMode.PROJECT_AND_REPOSITORY) {
             deleteRemoteRepository(ownerUserId, getProject(ownerUserId, projectId));
         }
