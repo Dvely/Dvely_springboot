@@ -1,9 +1,6 @@
 package com.example.dvely.withdrawal.infrastructure;
 
-import com.example.dvely.withdrawal.application.LiveResource;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.Query;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -130,61 +127,6 @@ public class UserWithdrawalStore {
     }
 
     /**
-     * 사용자 AWS 계정에 남은 자원. 소프트 삭제한 프로젝트의 것도 센다 — 화면에서 사라졌어도 과금은 계속된다.
-     *
-     * <ul>
-     *   <li>서버: 진행 중(QUEUED·BUILDING·PROVISIONING·RUNNING)이거나, 종료되지 않았는데 인스턴스·EIP 가 기록돼 있다.
-     *       승인 대기(PENDING)나 만들기 전에 실패한 것(인스턴스 없음)은 남은 자원이 아니다</li>
-     *   <li>DB: 사용자 AWS 의 RDS·Docker DB 중 생성 대기·생성 중·사용 중. 프리뷰 안 DB(LOCAL)는 우리 호스트의 것이다</li>
-     *   <li>CDN: CloudFront 배포가 기록된 도메인, 그리고 아직 끝나지 않은 CloudFront·인증서 정리 작업</li>
-     *   <li>배포: 대기(PENDING)·진행 중(IN_PROGRESS). 워커가 이미 집어 간 배포는 행을 지워도 멈추지 않고 사용자 AWS 에
-     *       S3 버킷 같은 자원을 만든 뒤에야 끝난다. 멈춘 진행 중 배포는 회수 워커가 정해진 시간 안에 닫는다</li>
-     * </ul>
-     */
-    public List<LiveResource> findLiveResources(long userId) {
-        List<LiveResource> live = new ArrayList<>();
-        for (Object[] row : rows("""
-                select server_id, project_id, coalesce(instance_id, public_host), status from provisioned_servers
-                 where project_id in (%s)
-                   and (status in ('QUEUED', 'BUILDING', 'PROVISIONING', 'RUNNING')
-                        or (status <> 'TERMINATED' and (instance_id is not null or elastic_ip_allocation_id is not null)))
-                 order by server_id
-                """.formatted(PROJECTS), userId)) {
-            live.add(new LiveResource(LiveResource.Type.SERVER, number(row[0]), number(row[1]), (String) row[2], (String) row[3]));
-        }
-        for (Object[] row : rows("""
-                select database_id, project_id, concat(method, ' ', engine), status from provisioned_databases
-                 where project_id in (%s)
-                   and method in ('RDS', 'DOCKER') and status in ('PENDING', 'PROVISIONING', 'READY')
-                 order by database_id
-                """.formatted(PROJECTS), userId)) {
-            live.add(new LiveResource(LiveResource.Type.DATABASE, number(row[0]), number(row[1]), (String) row[2], (String) row[3]));
-        }
-        for (Object[] row : rows("""
-                select domain_id, project_id, domain_name, status from domains
-                 where project_id in (%s) and cloudfront_distribution_id is not null
-                 order by domain_id
-                """.formatted(PROJECTS), userId)) {
-            live.add(new LiveResource(LiveResource.Type.CDN, number(row[0]), number(row[1]), (String) row[2], (String) row[3]));
-        }
-        for (Object[] row : rows("""
-                select deletion_id, hostname from cdn_deletions
-                 where cloud_connection_id in (%s)
-                 order by deletion_id
-                """.formatted(CLOUD_CONNECTIONS), userId)) {
-            live.add(new LiveResource(LiveResource.Type.CDN_DELETION, number(row[0]), null, (String) row[1], "PENDING"));
-        }
-        for (Object[] row : rows("""
-                select history_id, project_id, title, status from deployment_histories
-                 where (user_id = :userId or project_id in (%s)) and status in ('PENDING', 'IN_PROGRESS')
-                 order by history_id
-                """.formatted(PROJECTS), userId)) {
-            live.add(new LiveResource(LiveResource.Type.DEPLOYMENT, number(row[0]), number(row[1]), (String) row[2], (String) row[3]));
-        }
-        return live;
-    }
-
-    /**
      * 아직 끝나지 않은 에이전트 런. 탈퇴 전에 취소한다 — 행을 지운 뒤에는 실행기가 취소를 알아챌 길이 없다(런이 없으면
      * "취소되지 않음" 으로 읽는다).
      */
@@ -220,16 +162,6 @@ public class UserWithdrawalStore {
         for (Step step : STEPS) {
             entityManager.createNativeQuery(step.sql()).setParameter("userId", userId).executeUpdate();
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private List<Object[]> rows(String sql, long userId) {
-        Query query = entityManager.createNativeQuery(sql).setParameter("userId", userId);
-        return (List<Object[]>) query.getResultList();
-    }
-
-    private static long number(Object value) {
-        return ((Number) value).longValue();
     }
 
     private record Step(String table, String sql) {}

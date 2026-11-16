@@ -1,5 +1,7 @@
 package com.example.dvely.withdrawal.application;
 
+import com.example.dvely.cloudresource.application.LiveResource;
+import com.example.dvely.cloudresource.infrastructure.LiveResourceQuery;
 import com.example.dvely.withdrawal.infrastructure.UserWithdrawalStore;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -27,11 +29,12 @@ import org.springframework.transaction.annotation.Transactional;
 public class UserWithdrawalService {
 
     private final UserWithdrawalStore store;
+    private final LiveResourceQuery liveResources;
 
     /** 탈퇴를 막을 자원이 있는지 미리 본다(화면 안내용). 잠그지 않는다. */
     @Transactional(readOnly = true)
     public List<LiveResource> findLiveResources(long userId) {
-        return store.findLiveResources(userId);
+        return liveResources.ofUser(userId);
     }
 
     /**
@@ -47,7 +50,7 @@ public class UserWithdrawalService {
         if (!store.lockUser(userId)) {
             return false;
         }
-        List<LiveResource> live = store.findLiveResources(userId);
+        List<LiveResource> live = liveResources.ofUser(userId);
         if (!live.isEmpty()) {
             throw new WithdrawalBlockedException(live);
         }

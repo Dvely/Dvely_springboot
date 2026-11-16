@@ -1,5 +1,6 @@
 package com.example.dvely.withdrawal.presentation.dto;
 
+import com.example.dvely.cloudresource.presentation.dto.LiveResourceResponse;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.List;
 

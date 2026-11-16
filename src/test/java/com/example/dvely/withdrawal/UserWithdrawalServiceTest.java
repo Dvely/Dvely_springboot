@@ -3,7 +3,7 @@ package com.example.dvely.withdrawal;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.example.dvely.withdrawal.application.LiveResource;
+import com.example.dvely.cloudresource.application.LiveResource;
 import com.example.dvely.withdrawal.application.UserWithdrawalService;
 import com.example.dvely.withdrawal.application.WithdrawalBlockedException;
 import com.example.dvely.withdrawal.infrastructure.UserWithdrawalStore;

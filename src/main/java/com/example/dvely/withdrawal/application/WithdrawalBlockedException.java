@@ -1,5 +1,6 @@
 package com.example.dvely.withdrawal.application;
 
+import com.example.dvely.cloudresource.application.LiveResource;
 import java.util.List;
 
 /** 사용자 AWS 계정에 살아 있는 자원이 남아 탈퇴하지 않았다(#613). 아무것도 지우지 않은 상태다. */
