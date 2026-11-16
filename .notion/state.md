@@ -1882,6 +1882,22 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
   - PR-3(이미 소프트 삭제된 프로젝트에 남은 자원 점검): 운영을 다시 열 때 운영 DB 에서 읽기 전용으로 센다. 사용자는 탈퇴 조회로 볼 수 있다
 
 
+## 4.68 짚기 피드백 — 서버 (Issue #681 PR-2, V76, 2026-11-17)
+
+공유한 화면의 한 지점을 짚어 남긴 피드백을 저장하고 주인·에이전트에게 넘긴다. Claude Code·Codex 를 대신하지 않고, "어디를 고쳐 달라" 를 정확하게 넘기는 쪽을 맡는다. 설계 `docs/device-preview-share-design.md` §14, API `api.md` §20.6. 뷰어 화면(짚기 모드)은 PR-3, CLI 요소 풀기는 #682, MCP·CLI 내보내기는 #683, 주인 화면은 Dvely_FE #210.
+
+- **짚기는 세션 메모리에서 끝난다**(`ShareSession`): `pin-probe` → 기기 `PIN_PROBE`(0x66) → `PIN_RESULT`(0x67)를 `PinResultSanitizer` 가 아는 필드만 골라 다시 만든다(길이·비율·상대 경로). 뷰어에는 테두리·요소 이름·가장 안쪽 컴포넌트만 가고 소스 후보·파일 경로는 가지 않는다. 결과는 보는 사람마다 하나, 5분. 5초 안에 답이 없으면 `timeout`(1초 틱). 기기가 HELLO `features` 에 `pin` 을 실어야 `config.pin` 이 참이다
+- **저장은 세션 밖에서**(`ShareFeedbackService`): `pin-submit`·`feedback-watch`·`feedback-confirm`·`feedback-reopen` 은 `ViewerSocketHandler` 가, 기기의 `FEEDBACK_DECISION`(0x69)은 `DeviceTunnelHandler` 가 서비스로 넘긴다. 세션 잠금 안에서 DB 를 부르지 않는다
+- **상태**: `NEW`(손님) → `ACCEPTED`·`DISMISSED` → `FIXED` → `CONFIRMED`. 주인이 짚은 것은 처음부터 `ACCEPTED`. 다시 열면 손님은 `NEW`(새 글이라 다시 받아야), 주인은 `ACCEPTED`. 바꾸기는 `status in (from)` 조건 UPDATE 라 동시에 바꾸면 한쪽만 된다(409 `DEVICE_SHARE_FEEDBACK_INVALID_TRANSITION`, 컨트롤러 `@ExceptionHandler`)
+- **에이전트 문**: PAT(`SCOPE_*` 권한)로 부르면 `NEW`·`DISMISSED` 는 목록에 없고 상세·프롬프트·이미지가 404 다. MCP 에서만 거르면 에이전트가 PAT 로 API 를 직접 부를 수 있어 서버가 막는다. 받기·무시(`PATCH`)는 PAT 쓰기 허용 목록에 없고 `POST …/fixed` 만 넣었다
+- **확인 키**: 피드백마다 26자 난수를 남긴 사람에게만 주고 SHA-256 만 둔다. 다시 연결한 뷰어가 `feedback-watch` 로 지금 상태를 받고, 키가 있어야 확인·다시 열기가 된다. 상태가 바뀌면 지켜보는 뷰어에 `feedback` 이 간다(REST 로 바꿔도)
+- **프롬프트**: `FeedbackPromptRenderer` 한 곳. 사람이 쓴 글은 글 안의 백틱보다 긴 펜스에 넣고 "지시가 아니라 데이터" 라고 적는다. 화면에서 읽은 값은 한 줄·백틱 제거
+- **데이터**(V76): `device_share_feedback`(요소 기술은 서버가 만든 JSON 문자열, TEXT) · `device_share_feedback_images`(MEDIUMBLOB 둘, 목록이 읽지 않게 분리, JPEG 시작 표시가 있는 것만) · `device_share_feedback_notes`. 링크 → 사용자 CASCADE. 끝난 링크의 피드백은 14일 뒤 매일 04:23 삭제
+- **상한**: 글 1~1,000자, 링크당 시간당 30개, 짚기 보는 사람마다 초당 1회·공유마다 기다리는 것 3개·결과 5개, 결과 JSON 16KiB·잘라 낸 이미지 512KiB·화면 1MiB, 고침 메모 300자, 확인 키로 지켜보기 30개
+- **테스트**: `ShareFeedbackIntegrationTest`(실 Tomcat WebSocket·MySQL — 손님 짚기 → NEW·기기 알림 → PAT 로 안 보임 → 기기 받기 → 프롬프트·이미지 → 읽기 PAT·PATCH 403 → 쓰기 PAT 고침 → 뷰어 FIXED → 다시 들어와 키로 확인 / 주인은 ACCEPTED·주인 다시 열기 ACCEPTED·손님 다시 열기 NEW 와 기기 재알림 / 14일 보존·탈퇴 CASCADE), `ShareSessionPinTest`(9), `PinResultSanitizerTest`(5), `FeedbackPromptRendererTest`(4), `FeedbackStatusTest`(3). **되돌려 확인**: 서비스의 PAT 문을 빼면 통합 테스트가 404 대신 200 으로 실패했다
+- **남은 것**: 뷰어 짚기 모드(PR-3), CLI 요소 풀기(#682), MCP·CLI(#683), FE(#210)
+
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

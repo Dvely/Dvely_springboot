@@ -109,7 +109,8 @@ public class UserWithdrawalStore {
             "project_cloud_connection_settings",   // projects, cloud_connections
             "project_infrastructure_settings",     // projects
             "provisioned_databases",               // projects
-            "device_share_links"                   // users (#652). 연결된 공유는 DeviceShareService 가 15초 안에 끊는다
+            "device_share_links"                   // users (#652). 연결된 공유는 DeviceShareService 가 15초 안에 끊는다.
+                                                   // 그 아래 짚기 피드백 3개 테이블(#681)도 링크 CASCADE 로 함께 지워진다
     );
 
     private final EntityManager entityManager;

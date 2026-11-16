@@ -247,6 +247,7 @@ function unwrapResponse(body: unknown): unknown {
 | 409 | `CONFLICT` | 상태 충돌(낙관적 락 경합, 이미 처리된 승인, 잘못된 상태 전이 등) | 동시 수정 경합(I45), 이미 결정된 Approval 재결정, FAILED가 아닌 배포 재시도, PENDING 승인이 남아있거나 attempt가 maxAttempts에 도달한 `/retry` 호출, `WAITING_RESULT_APPROVAL`이 아닌 태스크의 결과 승인 재개 시도, **RESULT 승인 approve 중 preview↔main GitHub merge 충돌/실패**(승인은 PENDING으로 롤백 유지 — 재시도 또는 거절 필요), **REPOSITORY_BINDING 승인 approve 중 저장소 생성/push 실패**(마찬가지로 PENDING 유지. 프리뷰 컨테이너가 이미 만료됐다면 재시도해도 실패하므로 거절로 정리), **`preview`와 병합 대상 브랜치에 공통 조상이 없거나 병합 대상 브랜치가 없음**(저장소 연결이 잘못된 상태 — 메시지에 저장소·브랜치 이름이 담기며, 재시도해도 같은 오류라 저장소 설정을 고쳐야 함) 등 |
 | 409 | `WITHDRAWAL_BLOCKED` | 사용자 AWS 에 자원이 남아 탈퇴하지 않음. **`data` 에 남은 자원 목록이 있다**(`{ withdrawable: false, liveResources: [...] }`) | `DELETE /users/me` — 아무것도 지워지지 않았다. 목록으로 정리 방법을 안내한다(§2.7, #613) |
 | 409 | `PROJECT_DELETION_BLOCKED` | 이 프로젝트로 만든 서버·DB 가 사용자 AWS 에 살아 있거나 배포가 진행 중이라 지우지 않음. **`data` 에 남은 자원 목록이 있다**(`{ deletable: false, liveResources: [...] }`) | `DELETE /projects/{id}` — 아무것도 지워지지 않았다(GitHub 저장소도 그대로). 목록으로 정리 방법을 안내한다(§2.8, #595) |
+| 409 | `DEVICE_SHARE_FEEDBACK_INVALID_TRANSITION` | 짚기 피드백을 지금 상태에서 그렇게 바꿀 수 없음(예: 받기 전인데 고침) 또는 그 사이 다른 곳에서 바뀜 | `PATCH`·`POST …/fixed` on `/device-share-feedback/{id}` — 목록을 다시 읽는다(#681) |
 | 500 | `INTERNAL_SERVER_ERROR` | 예기치 못한 서버 오류 | 미처리 예외 |
 
 **409(`CONFLICT`) 복구 패턴(공용)**: `Project`·`ProjectCloudConnectionSetting` 등 낙관적 락(`@Version`)이 걸린 리소스를 동시에 수정하면 409가 반환됩니다. FE는 최신 상태를 재조회(`GET`)한 뒤 사용자에게 재시도를 안내하세요(자동 재적용 없음 — 사용자가 마지막으로 본 화면 기준의 의도가 이미 낡았을 수 있으므로).
@@ -738,9 +739,9 @@ POST /api/v1/api-tokens
 
 `WRITE` 가 짧은 이유는 유출됐을 때 할 수 있는 일이 다르기 때문이다 — 배포하고 환경변수를 바꾸고 도메인을 붙인다. 범위를 벗어나면 **400** 이고 메시지에 스코프가 들어 있으니 그대로 보여주면 된다. 발급 UI 의 만료일 입력은 선택한 스코프에 따라 상한을 바꿔야 한다.
 
-**`WRITE` 도 모든 쓰기가 아니다(#453).** PAT 로 통과하는 쓰기는 배포 생성·재시도, 환경변수 추가·수정, 도메인 추가, 내 기기 공유 만들기·끝내기 일곱 개뿐이고, 승인·토큰 발급/폐기·AI 키·클라우드 연결·회원 탈퇴·삭제 등 나머지는 403 이다. 브라우저 로그인(JWT)은 영향이 없다. 발급 UI 에서 `WRITE` 를 설명할 때 "모든 작업" 처럼 쓰지 말 것.
+**`WRITE` 도 모든 쓰기가 아니다(#453).** PAT 로 통과하는 쓰기는 배포 생성·재시도, 환경변수 추가·수정, 도메인 추가, 내 기기 공유 만들기·끝내기, 짚기 피드백 고침 표시 여덟 개뿐이고, 승인·토큰 발급/폐기·AI 키·클라우드 연결·회원 탈퇴·삭제 등 나머지는 403 이다. 브라우저 로그인(JWT)은 영향이 없다. 발급 UI 에서 `WRITE` 를 설명할 때 "모든 작업" 처럼 쓰지 말 것.
 
-### 4.14 DeviceShare — `com.example.dvely.deviceshare.presentation` (3)
+### 4.14 DeviceShare — `com.example.dvely.deviceshare.presentation` (3 + 짚기 피드백 7)
 
 내 기기 프리뷰 공유(#652·#656·#662). 내 기기의 앱 화면을 링크로 공유하고, 보는 사람이 조작권을 받아 제어한다. CLI(`qeploy share web <url>`, `share android`, `share ios`)가 만들고 뷰어 페이지도 서버가 공유 오리진(`<토큰>.share.qeploy.com/__qeploy/view`)에서 내보낸다. **FE 는 지금 링크 목록·끝내기 화면만 붙이면 된다**(Dvely_FE 별도 이슈).
 
@@ -753,6 +754,26 @@ POST /api/v1/api-tokens
 - `status` 는 `ACTIVE`·`EXPIRED`·`REVOKED`. 사용자당 살아 있는 링크 5개, 넘으면 `429 DEVICE_SHARE_LIMIT_EXCEEDED`(메시지 그대로 표시).
 - `kind` 는 `WEB`(웹 앱, `targetLabel` 은 주소)·`ANDROID`(에뮬레이터, `targetLabel` 은 `<기기 이름> · <패키지>`)·`IOS`(시뮬레이터, `<시뮬레이터 이름> · <번들 ID>`). 목록에서 종류별 아이콘 정도로 나누면 된다.
 - `controlUrl` 은 주인 전용(열면 바로 조작). 화면에 보여 줄 때도 "남에게 주지 마세요" 를 붙인다. 목록 응답에는 링크가 다시 나오지 않는다(해시만 저장).
+
+#### 짚기 피드백 (#681, Dvely_FE #210)
+
+보는 사람이 공유 화면의 한 지점을 짚어 남긴 피드백. 짚기·보내기·확인은 서버의 뷰어 페이지가 한다. **FE 는 주인 쪽 목록·상세·받기/무시·고침 표시·프롬프트 복사를 붙인다.** 모양은 `api.md` §20.6.
+
+| 메서드 | 경로 | 용도 |
+|---|---|---|
+| GET | `/api/v1/device-shares/{shareId}/feedback` | 공유 하나의 피드백 최근 100개 `[{feedbackId, shareId, kind, status, authorRole, authorName, screenLabel, label, component, body, createdAt, updatedAt}]` |
+| GET | `/api/v1/device-share-feedback?status=NEW,ACCEPTED&limit=20` | 내 모든 공유의 피드백(기본 `ACCEPTED`, 최대 50) |
+| GET | `/api/v1/device-share-feedback/{feedbackId}` | 상세 `{feedback, element, notes, hasCrop, hasScreen}` |
+| GET | `/api/v1/device-share-feedback/{feedbackId}/prompt` | `{markdown}` — "프롬프트로 복사" 는 이 값을 그대로 복사한다 |
+| GET | `/api/v1/device-share-feedback/{feedbackId}/image?kind=crop` | `image/jpeg` 바이트(envelope 없음). 인증 헤더가 필요해 `<img src>` 로는 안 된다 — `fetch` → blob URL. `kind=screen` 은 화면 전체. 없으면 404 |
+| PATCH | `/api/v1/device-share-feedback/{feedbackId}` | `{status: "ACCEPTED" \| "DISMISSED" \| "CONFIRMED"}` → 상세 |
+| POST | `/api/v1/device-share-feedback/{feedbackId}/fixed` | `{note?}`(300자) → 상세. 고쳤다고 표시, 메모는 짚은 사람에게 보인다 |
+
+- `status`: `NEW`(받기 전, 강조) · `ACCEPTED`(받음) · `DISMISSED`(무시함) · `FIXED`(고침) · `CONFIRMED`(확인됨). 버튼은 `NEW` → 받기·무시, `DISMISSED` → 받기, `ACCEPTED` → 고침 표시·무시, `FIXED` → 확인·다시 받기(`ACCEPTED`).
+- **받기 전 글은 에이전트에게 나가지 않는다.** 받기를 누르는 것이 "이 글을 에이전트에게 넘겨도 된다" 는 뜻이라고 화면에 적는다. `body` 는 손님이 쓴 글이라 텍스트로만 그린다.
+- `label`(`<button> "저장"`)이 `null` 이면 "요소를 찾지 못함 — 짚은 위치와 이미지만" 으로 보인다.
+- 409 `DEVICE_SHARE_FEEDBACK_INVALID_TRANSITION`: 그 사이 다른 곳(기기 터미널·에이전트)에서 상태가 바뀌었다. 목록을 다시 읽는다.
+- 살아 있는 공유가 있으면 지금처럼 10초마다 다시 읽으면 된다(새 피드백·에이전트의 고침 표시가 반영된다).
 
 ### 4.12 AiCredential — `com.example.dvely.aiaccount.presentation` (3)
 

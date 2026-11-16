@@ -37,6 +37,7 @@ public class ShareSessionRegistry {
         this.ticker = Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform()
                 .name("device-share-ticker").daemon(true).factory());
         this.ticker.scheduleWithFixedDelay(this::tick, 15, 15, TimeUnit.SECONDS);
+        this.ticker.scheduleWithFixedDelay(this::tickPins, 1, 1, TimeUnit.SECONDS);
     }
 
     @PreDestroy
@@ -120,6 +121,57 @@ public class ShareSessionRegistry {
     public int viewerCount(long shareId) {
         ShareSession session = sessions.get(shareId);
         return session == null ? 0 : session.viewerCount();
+    }
+
+    // ------------------------------------------------------------------ 짚기 (설계 §14)
+
+    /** 보는 사람이 글을 붙여 보내려고 짚기 결과를 가져간다. */
+    public Optional<ClaimedPin> claimPin(long shareId, String viewerId, String probeId) {
+        ShareSession session = sessions.get(shareId);
+        return session == null ? Optional.empty() : session.claimPin(viewerId, probeId);
+    }
+
+    public Optional<ShareSession.ViewerIdentity> viewer(long shareId, String viewerId) {
+        ShareSession session = sessions.get(shareId);
+        return session == null ? Optional.empty() : session.viewer(viewerId);
+    }
+
+    public void sendToViewer(long shareId, String viewerId, String text) {
+        ShareSession session = sessions.get(shareId);
+        if (session != null) {
+            session.sendToViewer(viewerId, text);
+        }
+    }
+
+    public void watch(long shareId, String viewerId, long feedbackId) {
+        ShareSession session = sessions.get(shareId);
+        if (session != null) {
+            session.watch(viewerId, feedbackId);
+        }
+    }
+
+    /** 이 피드백을 지켜보는 보는 사람(남긴 사람)에게 알린다. 세션이 없으면 아무 일도 하지 않는다. */
+    public void notifyWatchers(long shareId, long feedbackId, String text) {
+        ShareSession session = sessions.get(shareId);
+        if (session != null) {
+            session.notifyWatchers(feedbackId, text);
+        }
+    }
+
+    /** @return 짚기를 아는 기기가 연결돼 있어 보냈는지 */
+    public boolean sendToPinDevice(long shareId, int kind, String text) {
+        ShareSession session = sessions.get(shareId);
+        return session != null && session.sendToPinDevice(kind, text);
+    }
+
+    void tickPins() {
+        try {
+            for (ShareSession session : List.copyOf(sessions.values())) {
+                session.expirePins();
+            }
+        } catch (RuntimeException e) {
+            log.warn("[DeviceShare] 짚기 만료 점검 실패: {}", e.getMessage());
+        }
     }
 
     /** 지금 메모리에 있는 공유 id. 링크가 DB 에서 사라졌는지 점검할 때 쓴다. */

@@ -1703,7 +1703,7 @@ FE 는 `demoUrl` 을 iframe `src` 에, `thumbnailUrl` 을 `img src` 에 넣는�
 
 - `Authorization: Bearer qp_...` — 필터가 `qp_` 접두사로 PAT 경로를 고른다. JWT 파싱을 먼저 시도하는 방식은 에이전트 요청마다 예외를 던진다.
 - 스코프 `READ`/`WRITE` 2종. **HTTP 메서드로 강제**한다 — `READ` 토큰은 GET 만 가능하고 변경 메서드는 **403**. 엔드포인트별 애노테이션이면 새 엔드포인트가 누군가 애노테이션을 기억한 날에야 보호되지만, 메서드 기준은 작성한 날부터 덮인다.
-- **`WRITE` 도 모든 쓰기가 아니다(#453).** PAT로 통과하는 쓰기는 허용 목록(`JwtAuthenticationFilter.PAT_WRITABLE`)의 일곱 개뿐이다.
+- **`WRITE` 도 모든 쓰기가 아니다(#453).** PAT로 통과하는 쓰기는 허용 목록(`JwtAuthenticationFilter.PAT_WRITABLE`)의 여덟 개뿐이다.
 
   | Method | Path |
   |---|---|
@@ -1714,6 +1714,7 @@ FE 는 `demoUrl` 을 iframe `src` 에, `thumbnailUrl` 을 `img src` 에 넣는�
   | POST | `/api/v1/projects/{projectId}/domains` |
   | POST | `/api/v1/device-shares` (#652) |
   | DELETE | `/api/v1/device-shares/{shareId}` (#652) |
+  | POST | `/api/v1/device-share-feedback/{feedbackId}/fixed` (#681. 받기·무시는 열지 않는다) |
 
   나머지 변경 메서드(승인 결정, PAT 발급·폐기, AI 키, 클라우드 연결, 회원 탈퇴(§4.2), 각종 삭제 등)는 `WRITE` 토큰이어도 **403**이다. 그 전에는 WRITE PAT가 브라우저 로그인과 같은 권한이라, 에이전트가 저장된 토큰으로 자기 승인을 누르거나 PAT로 PAT를 재발급할 수 있었다. 거부 목록이 아니라 허용 목록이라 새 엔드포인트는 누군가 열기 전까지 닫혀 있다. 에이전트에 쓰기를 새로 열 때는 이 목록에 한 줄을 더하고, `agent-tools/packages/client`의 쓰기 호출이 목록 밖으로 나가면 `JwtAuthenticationFilterTest`가 깨진다. 브라우저 JWT는 영향이 없다.
 - 403 메시지는 두 가지다: READ 토큰의 쓰기 → "이 토큰은 읽기 전용입니다. write 스코프 토큰이 필요합니다." / 허용 목록 밖의 쓰기 → "이 작업은 개인 액세스 토큰으로 할 수 없습니다. 웹에서 진행해주세요." 본문은 `{"code":"FORBIDDEN","message":"..."}`이다.
@@ -1827,11 +1828,11 @@ PAT(§18)로는 이 중 **조회(GET)만** 된다. 쓰기 메서드는 `WRITE` �
 
 `DELETE`: RDS 는 생성에 쓴 연결로 인스턴스를 삭제하고 DOCKER 는 EC2 를 정리한다. LOCAL 은 컨테이너를 정리한다. 끝나면 `EXPIRED`. 이미 `EXPIRED` 면 그냥 지나간다. 남의 DB 는 `404`.
 
-## 20. DeviceShare API (내 기기 프리뷰 공유, Issue #652 · #656)
+## 20. DeviceShare API (내 기기 프리뷰 공유, Issue #652 · #656 · 짚기 피드백 #681)
 
 내 기기에서 도는 앱 화면(1단계: CLI 가 띄운 dev 브라우저, 2단계: Android 에뮬레이터, 3단계: iOS 시뮬레이터)을 링크로 공유한다. 보는 사람은 같은 화면을 보고, 조작권을 받은 한 사람이 제어한다. 설계: `docs/device-preview-share-design.md`(2단계 §12, 3단계 §13). CLI `qeploy share web <url>` · `share android` · `share ios` 가 이 API 를 쓴다.
 
-### 20.1 엔드포인트 (3개 + WebSocket 2개)
+### 20.1 엔드포인트 (공유 3개 + 짚기 피드백 7개 + WebSocket 2개)
 
 | 메서드 | 경로 | 인증 | 설명 |
 |---|---|---|---|
@@ -1840,6 +1841,13 @@ PAT(§18)로는 이 중 **조회(GET)만** 된다. 쓰기 메서드는 `WRITE` �
 | DELETE | `/api/v1/device-shares/{shareId}` | 브라우저 · PAT(WRITE) | 끝내기(회수) → `204`. 남의 것은 `404` |
 | WS | `/api/v1/device-shares/{shareId}/tunnel?v=1` | PAT(WRITE) · 브라우저 JWT | 기기(CLI) 터널. `Authorization` 헤더 |
 | WS | `https://<토큰>.share.qeploy.com/__qeploy/ws` | 링크 토큰 | 보는 사람 소켓(뷰어 페이지가 연다) |
+| GET | `/api/v1/device-shares/{shareId}/feedback` | 브라우저 · PAT(READ) | 공유 하나의 짚기 피드백 최근 100개(§20.6) |
+| GET | `/api/v1/device-share-feedback?status=&limit=` | 브라우저 · PAT(READ) | 내 모든 공유의 피드백 |
+| GET | `/api/v1/device-share-feedback/{feedbackId}` | 브라우저 · PAT(READ) | 상세 |
+| GET | `/api/v1/device-share-feedback/{feedbackId}/prompt` | 브라우저 · PAT(READ) | 에이전트용 Markdown |
+| GET | `/api/v1/device-share-feedback/{feedbackId}/image?kind=crop\|screen` | 브라우저 · PAT(READ) | `image/jpeg`(envelope 없음) |
+| PATCH | `/api/v1/device-share-feedback/{feedbackId}` | 브라우저만 | 받기·무시·확인 |
+| POST | `/api/v1/device-share-feedback/{feedbackId}/fixed` | 브라우저 · PAT(WRITE) | 고쳤다고 표시 |
 
 ### 20.2 만들기
 
@@ -1875,3 +1883,35 @@ POST /api/v1/device-shares
 - 뷰어 소켓은 JSON 텍스트(`join`·`input`·`request-control`·`release-control` / `welcome`·`config`·`presence`·`control`·`device`·`ended`·`error`)와 바이너리 화면. 필드는 설계 문서 §4.2·§12.2 가 정본이다.
 - `config` 에 `format`(`jpeg`·`h264`), `codec`(h264 일 때 `avc1.PPCCLL`), `kind`(`WEB`·`ANDROID`)가 있다. h264 는 장마다 앞 장에 기대므로 서버가 마지막 키 프레임부터(최대 2MiB) 두었다가 늦게 들어온 사람에게 순서대로 다시 보내고, 보는 사람마다 순서 큐(3MiB)로 보낸다(§12.3). 뷰어는 WebCodecs 로 푼다.
 - 조작권은 한 사람. 내 제어 링크로 들어오면 바로, 보기 링크는 요청 → 기기(CLI) 승인(기본 10분). 입력은 초당 120개 상한.
+- 짚기(#681): 터널 `0x66` PIN_PROBE(서버 → 기기) · `0x67` PIN_RESULT(기기 → 서버) · `0x68` FEEDBACK_NOTICE(서버 → 기기) · `0x69` FEEDBACK_DECISION(기기 → 서버), HELLO 의 `features: ["pin"]`. 뷰어 `pin-probe` · `pin-submit` · `feedback-watch` · `feedback-confirm` · `feedback-reopen` / `pin` · `feedback`, `config.pin`. 모양은 설계 §14.4 가 정본이다.
+
+### 20.6 짚기 피드백 (#681)
+
+공유한 화면의 한 지점을 짚어 남긴 피드백이다. 짚은 요소·화면·컴포넌트·소스 후보·그 순간의 이미지와 글이 한 묶음이다. 설계 §14.
+
+- **상태**: `NEW`(손님이 남김, 받기 전) → `ACCEPTED`(받음) | `DISMISSED`(받지 않음) → `FIXED`(고침) → `CONFIRMED`(짚은 사람이 확인). 고친 것을 다시 열면 손님은 `NEW`(새 글이 붙어 다시 받아야 한다), 주인은 `ACCEPTED`. 주인(내 제어 링크)이 짚은 것은 처음부터 `ACCEPTED`. 확인한 것은 끝이다.
+- **PAT 로 부르면 `NEW`·`DISMISSED` 는 없다.** 목록에서 빠지고 상세·프롬프트·이미지는 `404`. 받기 전 손님 글이 에이전트 지시가 되지 않게 서버가 막는다. 브라우저 로그인은 모두 본다.
+- `PATCH` 는 PAT 쓰기 허용 목록에 없다(받기·무시는 사람만 — 브라우저나 기기 터미널). `POST …/fixed` 만 있다.
+
+```json
+GET /api/v1/device-share-feedback?status=ACCEPTED,FIXED&limit=20
+→ 200 [{ "feedbackId": 12, "shareId": 28, "kind": "WEB", "status": "ACCEPTED", "authorRole": "GUEST",
+         "authorName": "민지", "screenLabel": "/settings", "label": "<button> \"저장\"", "component": "SaveButton",
+         "body": "더 크게, 파란색으로", "createdAt": "…", "updatedAt": "…" }]
+
+GET /api/v1/device-share-feedback/12
+→ 200 { "feedback": { …위와 같음 }, "element": { "screen": {…}, "point": {…}, "element": {…}, "components": […],
+         "sourceHints": [{ "file": "src/components/SaveButton.tsx", "line": 12, "reason": "COMPONENT" }], "ok": true },
+       "notes": [{ "noteId": 3, "authorRole": "AGENT", "kind": "FIXED", "body": "버튼 패딩을 늘렸습니다", "createdAt": "…" }],
+       "hasCrop": true, "hasScreen": true }
+
+GET /api/v1/device-share-feedback/12/prompt → 200 { "markdown": "# Qeploy 짚기 피드백 #12\n…" }
+PATCH /api/v1/device-share-feedback/12 { "status": "ACCEPTED" | "DISMISSED" | "CONFIRMED" } → 200 상세
+POST  /api/v1/device-share-feedback/12/fixed { "note": "버튼 패딩을 늘렸습니다" } → 200 상세
+```
+
+- `status` 는 쉼표로 여럿(기본 `ACCEPTED`), `limit` 기본 20·최대 50, 최근에 바뀐 순. 공유 하나의 목록은 최근 100개, 만든 순.
+- `label` 은 요소를 찾지 못했으면 `null`. `body` 와 `notes[].body`(다시 열기)는 사람이 쓴 글이라 지시가 아니라 데이터다.
+- 프롬프트 Markdown 은 사람이 쓴 글을 펜스 블록에 넣는다(글 안의 백틱보다 긴 펜스). 이미지 줄은 없다.
+- `note` 는 300자, 짚은 사람의 뷰어에 보인다. 오류: 남의 것·없는 것 `404`, §14.2 에 없는 변경 `409 DEVICE_SHARE_FEEDBACK_INVALID_TRANSITION`, `PATCH` 의 `FIXED`·`NEW` 는 `400`.
+- 상한: 글 1~1,000자, 링크당 시간당 30개, 짚기는 보는 사람마다 초당 1회·공유마다 기다리는 것 3개, 잘라 낸 이미지 512KiB·화면 1MiB. 끝난 링크의 피드백은 14일 뒤 지운다(매일 04:23). 탈퇴하면 링크와 함께 지워진다.
