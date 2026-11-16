@@ -177,6 +177,16 @@ export function clearListings() {
 // ── search ─────────────────────────────────────────────────────────────────
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Where a component is defined: a function or class (JS/TS, Java), a Kotlin `fun`/`class`/`object`
+ * (Compose, Activities, custom views), a Swift `struct`/`class`, or `const Name =` (arrow
+ * components, `styled`). The name is the first capture that matched.
+ */
+const definitionPattern = (alternatives) =>
+  new RegExp(
+    `\\b(?:function|class|fun|object|interface|struct)\\s+(${alternatives})\\b|\\b(?:const|let|var|val)\\s+(${alternatives})\\s*[=:]`
+  );
 const lineAt = (body, index) => body.slice(0, index).split('\n').length;
 const stem = (file) => basename(file).replace(/\.[^.]+$/, '');
 
@@ -192,7 +202,7 @@ export async function definitionLine(project, file, name) {
     const full = join(project, file);
     if ((await stat(full)).size > MAX_FILE_BYTES) return null;
     const body = await readFile(full, 'utf8');
-    const m = new RegExp(`\\b(?:function|class)\\s+${escape(name)}\\b|\\b(?:const|let|var)\\s+${escape(name)}\\s*[=:]`).exec(body);
+    const m = definitionPattern(escape(name)).exec(body);
     return m ? lineAt(body, m.index) : null;
   } catch {
     return null;
@@ -246,11 +256,10 @@ export async function findSourceHints({ project, components = [], element = {}, 
 
   // 2. Components known only by name, the id and the visible text, in one pass over the files.
   const alternatives = names.map(escape).join('|');
-  const defRe = names.length
-    ? new RegExp(`\\b(?:function|class)\\s+(${alternatives})\\b|\\b(?:const|let|var)\\s+(${alternatives})\\s*[=:]`)
-    : null;
+  const defRe = names.length ? definitionPattern(alternatives) : null;
   const idRe = id ? new RegExp(`\\bid\\s*=\\s*\\{?\\s*["'\`]${escape(id)}["'\`]|@\\+?id/${escape(id)}\\b|\\bR\\.id\\.${escape(id)}\\b`) : null;
-  const found = { def: [], id: [], text: [] };
+  const found = { def: [], id: [], text: [], textRef: [] };
+  const stringNames = [];
   const want = max;
   for (const file of files) {
     if (now() > deadline) break;
@@ -273,7 +282,31 @@ export async function findSourceHints({ project, components = [], element = {}, 
     }
     if (text && found.text.length < want) {
       const i = body.indexOf(text);
-      if (i >= 0) found.text.push({ file, line: lineAt(body, i) });
+      if (i >= 0) {
+        found.text.push({ file, line: lineAt(body, i) });
+        // Android: the text lives in res/values*/strings.xml; the layout or code uses its name.
+        if (/(^|\/)values[^/]*\/[^/]+\.xml$/.test(file)) {
+          const name = /<string\s+name="([A-Za-z0-9_.]+)"[^>]*>\s*$/.exec(body.slice(body.lastIndexOf('\n', i) + 1, i));
+          if (name && !stringNames.includes(name[1])) stringNames.push(name[1]);
+        }
+      }
+    }
+  }
+  if (stringNames.length && now() <= deadline) {
+    const refs = stringNames.slice(0, 3).map(escape).join('|');
+    const refRe = new RegExp(`@string/(?:${refs})\\b|\\bR\\.string\\.(?:${refs})\\b`);
+    for (const file of files) {
+      if (now() > deadline || found.textRef.length >= want) break;
+      if (/(^|\/)values[^/]*\//.test(file) || !/\.(xml|kt|java)$/.test(file)) continue;
+      try {
+        const full = join(project, file);
+        if ((await stat(full)).size > MAX_FILE_BYTES) continue;
+        const body = await readFile(full, 'utf8');
+        const m = refRe.exec(body);
+        if (m) found.textRef.push({ file, line: lineAt(body, m.index) });
+      } catch {
+        // unreadable: skip
+      }
     }
   }
   // A definition in the file named after the component beats one elsewhere; a file name alone
@@ -288,6 +321,8 @@ export async function findSourceHints({ project, components = [], element = {}, 
     }
   }
   for (const h of found.id) add(h.file, h.line, 'ID');
+  // Where the text is used (a layout, a screen) before where it is defined (strings.xml).
+  for (const h of found.textRef) add(h.file, h.line, 'TEXT');
   for (const h of found.text) add(h.file, h.line, 'TEXT');
   return hints;
 }

@@ -64,7 +64,18 @@ export function parseResolvedComponent(output) {
   return /^[A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+$/.test(last) ? last : null;
 }
 
+/** `topResumedActivity=ActivityRecord{… u0 com.example/.MainActivity t12}` → package and activity. */
+export function parseForegroundActivity(output) {
+  const m = /(?:topResumedActivity|ResumedActivity)[=:]\s*ActivityRecord\{\S+\s+u\d+\s+([A-Za-z0-9_.]+)\/([A-Za-z0-9_.$]+)/.exec(
+    String(output ?? '')
+  );
+  return m ? { package: m[1], activity: m[2] } : null;
+}
+
 export const PACKAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/;
+
+/** Where `uiautomator dump` writes; shell-writable on every emulator image. */
+const UI_DUMP_PATH = '/data/local/tmp/qeploy-pin.xml';
 
 /**
  * Whether the emulator running `avdName` has a window, from the local process list (`ps -Ao args=`).
@@ -131,6 +142,41 @@ export class Adb {
 
   shell(command, options) {
     return this.run(['shell', command], options);
+  }
+
+  /** `adb exec-out …` as bytes: no pty, no newline translation (screenshots). */
+  execOut(command, { timeout = EXEC_TIMEOUT_MS, maxBuffer = 8 * 1024 * 1024 } = {}) {
+    return new Promise((resolve, reject) => {
+      execFile(this.path, this.args(['exec-out', command]), { timeout, maxBuffer, encoding: 'buffer' }, (error, stdout, stderr) => {
+        if (error) {
+          const detail = String(stderr || error.message).trim().split('\n').at(-1);
+          reject(new Error(`adb exec-out 실패: ${detail}`));
+          return;
+        }
+        resolve(stdout);
+      });
+    });
+  }
+
+  /**
+   * §14.3: the on-screen view tree, read through accessibility (read-only). Null when the dump
+   * failed — "could not get idle state" while something animates, for one.
+   */
+  async uiDump() {
+    const out = await this.execOut(`uiautomator dump ${UI_DUMP_PATH} >/dev/null 2>&1; cat ${UI_DUMP_PATH} 2>/dev/null; rm -f ${UI_DUMP_PATH}`, {
+      timeout: 3500,
+    });
+    const xml = out.toString('utf8');
+    return xml.includes('<hierarchy') ? xml : null;
+  }
+
+  /** Raw pixels with a small header (parseScreencap); PNG would need a decoder. */
+  screencapRaw() {
+    return this.execOut('screencap', { timeout: 3000, maxBuffer: 64 * 1024 * 1024 });
+  }
+
+  async foregroundActivity() {
+    return parseForegroundActivity(await this.shell('dumpsys activity activities 2>/dev/null | grep -m1 topResumedActivity'));
   }
 
   /** A long-running `adb shell …`, its output going to the callbacks. */

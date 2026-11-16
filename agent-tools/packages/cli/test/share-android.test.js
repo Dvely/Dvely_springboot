@@ -520,6 +520,57 @@ describe('android share session (§12)', () => {
 
 // ── the command ──────────────────────────────────────────────────────────────
 
+describe('android pinning over a real tunnel socket (§14, #682)', () => {
+  const DUMP =
+    '<hierarchy rotation="0"><node class="android.widget.FrameLayout" bounds="[0,0][100,200]" clickable="false">' +
+    '<node class="android.widget.Button" text="저장" resource-id="com.example.app:id/save" clickable="true" bounds="[10,100][90,130]" />' +
+    '</node></hierarchy>';
+  function screencap(width = 100, height = 200) {
+    const buf = Buffer.alloc(16 + width * height * 4, 200);
+    buf.writeUInt32LE(width, 0);
+    buf.writeUInt32LE(height, 4);
+    buf.writeUInt32LE(1, 8);
+    buf.writeUInt32LE(0, 12);
+    return buf;
+  }
+  const fakeAdb = () => ({
+    uiDump: async () => DUMP,
+    screencapRaw: async () => screencap(),
+    foregroundActivity: async () => ({ package: 'com.example.app', activity: '.MainActivity' }),
+    foregroundPackage: async () => 'com.example.app',
+    launchApp: async () => {},
+  });
+
+  it('offers pins only with adb, answers a probe without sending the device any input', { timeout: 10000 }, async () => {
+    const server = await tunnelServer();
+    const { session, device } = newAndroidSession({ tunnelUrl: server.url, adb: fakeAdb() });
+    session.run();
+    const conn = await server.nextConnection();
+    const hello = await conn.next();
+    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'ANDROID', target: 'qeploy_test · com.example.app', features: ['pin'] });
+    conn.send(KIND.WELCOME, { shareId: 7 });
+    await until(() => device.resets === 1);
+    const controlsBefore = device.controls.length;
+
+    conn.send(KIND.PIN_PROBE, { probeId: 'p1', x: 0.5, y: 0.575 });
+    const answer = await conn.next();
+    assert.equal(answer.kind, KIND.PIN_RESULT);
+    const n = answer.payload.readUInt32BE(0);
+    const json = JSON.parse(answer.payload.subarray(4, 4 + n).toString('utf8'));
+    const cropLength = answer.payload.readUInt32BE(4 + n);
+    const crop = answer.payload.subarray(8 + n, 8 + n + cropLength);
+    const screen = answer.payload.subarray(8 + n + cropLength);
+    assert.equal(json.probeId, 'p1');
+    assert.equal(json.ok, true);
+    assert.deepEqual(json.element, { type: 'Button', text: '저장', id: 'save', bounds: { x: 0.1, y: 0.5, w: 0.8, h: 0.15 } });
+    assert.equal(json.screen.label, 'com.example.app/.MainActivity');
+    assert.deepEqual(json.components, [{ name: 'MainActivity' }]);
+    assert.deepEqual([crop[0], crop[1], crop[2]], [0xff, 0xd8, 0xff]);
+    assert.deepEqual([screen[0], screen[1], screen[2]], [0xff, 0xd8, 0xff]);
+    assert.equal(device.controls.length, controlsBefore, 'a probe sends the emulator nothing');
+  });
+});
+
 describe('qeploy share android', () => {
   const share = {
     shareId: 9,
