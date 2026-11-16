@@ -127,7 +127,7 @@ DELETE /api/v1/users/me              (확인 뒤)
 
 정리 버튼을 누른 뒤에는 `GET /users/me/withdrawal` 을 다시 불러 목록을 갱신하세요. 이 조회는 DB 만 읽으므로 몇 번을 불러도 됩니다.
 
-**조회가 비었어도 `DELETE` 가 409 일 수 있습니다** — 확인 창을 띄운 사이 배포가 시작된 경우 등. 서버가 삭제 직전에 한 번 더 확인하기 때문입니다. 이때 본문의 `data` 에 같은 모양의 목록이 실려 있습니다(오류 응답 중 `data` 가 있는 유일한 경우, §3.3). axios 의 `error.response.data.data.liveResources` 로 읽을 수 있고, `ApiError` 로 바꾸는 경로에서는 `data` 가 버려지니 그때는 `GET /users/me/withdrawal` 을 다시 부르면 됩니다.
+**조회가 비었어도 `DELETE` 가 409 일 수 있습니다** — 확인 창을 띄운 사이 배포가 시작된 경우 등. 서버가 삭제 직전에 한 번 더 확인하기 때문입니다. 이때 본문의 `data` 에 같은 모양의 목록이 실려 있습니다(오류 응답에 `data` 가 실리는 몇 안 되는 경우, §3.3). axios 의 `error.response.data.data.liveResources` 로 읽을 수 있고, `ApiError` 로 바꾸는 경로에서는 `data` 가 버려지니 그때는 `GET /users/me/withdrawal` 을 다시 부르면 됩니다.
 
 ```json
 {
@@ -156,6 +156,43 @@ DELETE /api/v1/users/me              (확인 뒤)
 
 - 개인 액세스 토큰(PAT)으로는 탈퇴할 수 없습니다(403). 브라우저 로그인으로만 됩니다
 - 다른 기기의 로그인은 access 토큰 만료(최대 1시간)까지 남지만 할 수 있는 일이 없고, 토큰 갱신은 401 입니다
+
+### 2.8 프로젝트 삭제 (#595, FE #186)
+
+```
+GET    /api/v1/projects/{id}/deletion   (삭제 확인 창을 열 때)
+→ { deletable, liveResources: [ { type, id, projectId, label, status } ] }
+
+DELETE /api/v1/projects/{id}?deleteMode=…   (확인 뒤)
+→ 204: 삭제 완료
+→ 409 PROJECT_DELETION_BLOCKED: AWS 에 이 프로젝트의 자원이 남아 있음. 아무것도 지워지지 않았다(GitHub 저장소도 그대로)
+```
+
+**이 프로젝트로 만든 서버·DB 가 사용자 AWS 계정에 살아 있으면 프로젝트를 지우지 못합니다.** 프로젝트가 목록에서 사라지면 그 서버·DB 를 Qeploy 에서 볼 수도 끌 수도 없는데 과금은 계속되기 때문입니다. 함께 종료해 주지는 않습니다 — 되돌릴 수 없는 삭제를 한 번에 묶지 않으려는 것입니다. 확인 창을 열 때 `GET /deletion` 으로 목록을 받아, `deletable` 이 `false` 면 먼저 정리하게 안내하세요. 모양은 탈퇴(§2.7)와 같고, 나오는 `type` 은 셋뿐입니다.
+
+| `type` | 화면에 쓸 이름 | `label` | 정리 방법 |
+|---|---|---|---|
+| `SERVER` | EC2 서버 | 인스턴스 id | 인프라 탭의 서버 종료(`POST /api/v1/servers/{id}/terminate`) |
+| `DATABASE` | 데이터베이스 | `RDS MYSQL` 처럼 방식과 엔진 | 인프라 탭의 DB 삭제(`DELETE /api/v1/databases/{id}`) |
+| `DEPLOYMENT` | 진행 중인 배포 | 배포 제목 | 기다립니다. 끝나면 목록에서 빠집니다 |
+
+프론트 S3 도메인의 CloudFront 는 삭제가 함께 정리하므로 목록에 나오지 않습니다. 정리한 뒤에는 `GET /deletion` 을 다시 불러 목록을 갱신하세요(DB 만 읽습니다).
+
+**조회가 비었어도 `DELETE` 가 409 일 수 있습니다** — 확인 창을 띄운 사이 배포가 시작된 경우 등. 이때 본문의 `data` 가 `GET /deletion` 과 같은 모양입니다. `deleteMode=PROJECT_AND_REPOSITORY` 여도 409 면 GitHub 저장소는 지워지지 않았습니다(서버가 저장소를 지우기 전에 확인합니다).
+
+```json
+{
+  "status": 409,
+  "code": "PROJECT_DELETION_BLOCKED",
+  "message": "AWS 계정에 이 프로젝트로 만든 자원이 1개 남아 있어 삭제하지 않았습니다. 인프라 탭에서 서버·DB 를 종료하고 진행 중인 배포가 끝난 뒤 다시 삭제하세요.",
+  "data": {
+    "deletable": false,
+    "liveResources": [
+      { "type": "SERVER", "id": 3, "projectId": 11, "label": "i-0abc", "status": "RUNNING" }
+    ]
+  }
+}
+```
 
 ---
 
@@ -193,7 +230,7 @@ function unwrapResponse(body: unknown): unknown {
 
 ### 3.3 에러 코드 카탈로그
 
-에러도 같은 envelope(단, `data` 없음 — `WITHDRAWAL_BLOCKED` 하나만 예외로 `data` 가 있다)로 내려옵니다. `code`가 안정적인 판별자이고, `message`는 상황별 상세 문구(같은 `code`라도 메시지는 케이스마다 다를 수 있음)입니다.
+에러도 같은 envelope(단, `data` 없음 — `WITHDRAWAL_BLOCKED` · `PROJECT_DELETION_BLOCKED` · `PREVIEW_IN_USE` 만 예외로 `data` 가 있다)로 내려옵니다. `code`가 안정적인 판별자이고, `message`는 상황별 상세 문구(같은 `code`라도 메시지는 케이스마다 다를 수 있음)입니다.
 
 | HTTP | code | 의미 | 대표 발생 상황 |
 |---|---|---|---|
@@ -209,6 +246,7 @@ function unwrapResponse(body: unknown): unknown {
 | 405 | `METHOD_NOT_ALLOWED` | 지원하지 않는 HTTP 메서드 | 라우트는 있으나 메서드 불일치 |
 | 409 | `CONFLICT` | 상태 충돌(낙관적 락 경합, 이미 처리된 승인, 잘못된 상태 전이 등) | 동시 수정 경합(I45), 이미 결정된 Approval 재결정, FAILED가 아닌 배포 재시도, PENDING 승인이 남아있거나 attempt가 maxAttempts에 도달한 `/retry` 호출, `WAITING_RESULT_APPROVAL`이 아닌 태스크의 결과 승인 재개 시도, **RESULT 승인 approve 중 preview↔main GitHub merge 충돌/실패**(승인은 PENDING으로 롤백 유지 — 재시도 또는 거절 필요), **REPOSITORY_BINDING 승인 approve 중 저장소 생성/push 실패**(마찬가지로 PENDING 유지. 프리뷰 컨테이너가 이미 만료됐다면 재시도해도 실패하므로 거절로 정리), **`preview`와 병합 대상 브랜치에 공통 조상이 없거나 병합 대상 브랜치가 없음**(저장소 연결이 잘못된 상태 — 메시지에 저장소·브랜치 이름이 담기며, 재시도해도 같은 오류라 저장소 설정을 고쳐야 함) 등 |
 | 409 | `WITHDRAWAL_BLOCKED` | 사용자 AWS 에 자원이 남아 탈퇴하지 않음. **`data` 에 남은 자원 목록이 있다**(`{ withdrawable: false, liveResources: [...] }`) | `DELETE /users/me` — 아무것도 지워지지 않았다. 목록으로 정리 방법을 안내한다(§2.7, #613) |
+| 409 | `PROJECT_DELETION_BLOCKED` | 이 프로젝트로 만든 서버·DB 가 사용자 AWS 에 살아 있거나 배포가 진행 중이라 지우지 않음. **`data` 에 남은 자원 목록이 있다**(`{ deletable: false, liveResources: [...] }`) | `DELETE /projects/{id}` — 아무것도 지워지지 않았다(GitHub 저장소도 그대로). 목록으로 정리 방법을 안내한다(§2.8, #595) |
 | 500 | `INTERNAL_SERVER_ERROR` | 예기치 못한 서버 오류 | 미처리 예외 |
 
 **409(`CONFLICT`) 복구 패턴(공용)**: `Project`·`ProjectCloudConnectionSetting` 등 낙관적 락(`@Version`)이 걸린 리소스를 동시에 수정하면 409가 반환됩니다. FE는 최신 상태를 재조회(`GET`)한 뒤 사용자에게 재시도를 안내하세요(자동 재적용 없음 — 사용자가 마지막으로 본 화면 기준의 의도가 이미 낡았을 수 있으므로).
@@ -340,7 +378,8 @@ Accept: text/event-stream
 | GET | `/api/v1/projects` | 내 프로젝트 목록(최신 수정순) | - | `[{ projectId, name, deployStatus, currentUrl, updatedAt, updatedAtRelativeText, startMode, templateType }]` — `startMode`·`templateType` 는 상세와 같은 값(템플릿 없으면 `templateType` null) | - |
 | GET | `/api/v1/projects/{id}` | 프로젝트 상세(메타데이터) | - | `{ projectId, name, status, startMode, templateType, draftMode, createdAt, updatedAt }` (`templateType`은 콘텐츠 템플릿 — 프레임워크가 아님, §5.1) | 404 |
 | PATCH | `/api/v1/projects/{id}` | 프로젝트명 수정(현재 name만 수정 가능) | `{ name }` | `ProjectDetailResponse` (위와 동일 shape) | 400, 404 |
-| DELETE | `/api/v1/projects/{id}` | 프로젝트 삭제 | query: `deleteMode`(`PROJECT_ONLY` 기본값 \| `PROJECT_AND_REPOSITORY`) | 204 | 404, 409(락 경합) |
+| GET | `/api/v1/projects/{id}/deletion` | 삭제 가능 여부(삭제를 막는 AWS 자원 목록, §2.8) | - | `{ deletable, liveResources: [{ type, id, projectId, label, status }] }` | 404 |
+| DELETE | `/api/v1/projects/{id}` | 프로젝트 삭제 | query: `deleteMode`(`PROJECT_ONLY` 기본값 \| `PROJECT_AND_REPOSITORY`) | 204 | 404, 409(락 경합), 409 `PROJECT_DELETION_BLOCKED`(AWS 자원이 남음 — `data` 에 목록, §2.8) |
 | GET | `/api/v1/projects/{id}/overview` | 개요(도메인/배포/커밋/저장소·클라우드 상태/운영조치) | - | `{ currentUrl, deployStatus, currentVersion, repositoryVersion, latestCommit, repositoryHealth, domainSummary, cloudSummary, operationActions[] }` | 404 |
 | GET | `/api/v1/projects/{id}/activity-logs` | 활동 로그(Deployment/Change/Approval/Domain 통합) | - | `[{ type, message, occurredAt }]` — `type`은 고정 목록이 아니다(아래 참고) | - |
 

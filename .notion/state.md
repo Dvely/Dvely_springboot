@@ -1621,7 +1621,7 @@ SSE(`/agent/tasks/{id}/events/stream`)를 보던 브라우저가 떠나면 Sprin
 
 남은 것:
 
-- **삭제한 프로젝트의 CloudFront 도메인은 사용자가 풀 수 없다.** 프로젝트 삭제가 도메인을 정리하지 않고, `DELETE /domains/{id}` 는 `findByIdAndOwnerUserIdAndDeletedFalse` 라 404 다. AWS 콘솔에서 지워도 도메인 행이 남아 탈퇴를 계속 막는다. 서버(`POST /servers/{id}/terminate`)와 DB(`DELETE /databases/{id}`)는 소유권 확인이 삭제 여부를 보지 않아 목록의 id 로 끌 수 있다. 근본 해결은 #595
+- **삭제한 프로젝트의 CloudFront 도메인은 사용자가 풀 수 없다.** 프로젝트 삭제가 도메인을 정리하지 않고, `DELETE /domains/{id}` 는 `findByIdAndOwnerUserIdAndDeletedFalse` 라 404 다. AWS 콘솔에서 지워도 도메인 행이 남아 탈퇴를 계속 막는다. 서버(`POST /servers/{id}/terminate`)와 DB(`DELETE /databases/{id}`)는 소유권 확인이 삭제 여부를 보지 않아 목록의 id 로 끌 수 있다. #595 PR-1(§4.67)은 서버·DB·배포만 막으므로 이 경우는 남는다
 - 다른 기기의 access 토큰은 jti 를 몰라 폐기하지 못한다. 만료(기본 1시간)까지 인증은 통과하지만 사용자 행이 없어 할 수 있는 일이 없다
 - GitHub App 설치는 사용자가 GitHub 에서 직접 해제해야 한다. 그 전까지 들어오는 웹훅은 처리할 프로젝트가 없고 7일 보존 정리로 지워진다
 - S3 정적 사이트 버킷은 DB 에 기록이 없어 막는 자원으로 세지 않는다
@@ -1866,6 +1866,20 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - **테스트**: `PreviewCloseGuardTest`(규칙 전수 — 막는 집합이 잠긴 7개 + `FAILED`, 회수 집합이 `RECLAIMABLE` 과 같음, 끝나지 않은 상태 8개는 상태 유지·컨테이너 제거 0회, `DONE`·`CANCELLED`·프로젝트 프리뷰·런 행 없음은 회수). 가드를 빼면 8개가 실패하는 것을 되돌려 확인했다
 - **로컬 실측**(이 PR 의 jar, 실 MySQL·Docker): 안쪽 앱이 없는 컨테이너 세 개. 결과 승인 대기 세션은 502 를 네 번 받는 동안 ACTIVE·컨테이너 유지, 목록은 `closable=false`, 사람이 닫으면 409. 끝난 작업·프로젝트 프리뷰는 첫 502 에 EXPIRED·컨테이너 제거. 작업을 `DONE` 으로 바꾸자 다음 502 에서 회수됐다
 - **남은 것**: 남긴 세션의 iframe 은 계속 502 다. FE 가 "앱이 응답하지 않지만 작업물은 그대로" 를 보여 줄지는 FE 에서 정한다
+
+## 4.67 사용자 AWS 에 자원이 남은 프로젝트는 지우지 않는다 (Issue #595 PR-1, 2026-11-16)
+
+프로젝트를 지워도 그 프로젝트로 만든 EC2(EIP)·RDS·Docker DB 는 사용자 AWS 에 남았다. 프로젝트가 화면에서 사라지니 끌 길이 없고 과금은 계속됐다. 정책은 이슈가 권한 (a) — **막고 목록을 돌려준다.** 함께 종료(b)는 하지 않는다(되돌릴 수 없는 삭제를 한 번에 묶지 않는다). 마이그레이션 없음.
+
+- **판정**: 회원 탈퇴(§4.52)의 "살아 있는 자원" 조건을 `cloudresource` 패키지로 옮겨(`LiveResource`·`LiveResourceQuery`·`LiveResourceResponse`) 둘이 같이 쓴다. `ofUser` 는 탈퇴가 보던 다섯 종류 그대로, `ofProject` 는 그 프로젝트의 서버·DB·배포만 본다. CDN 은 삭제가 스스로 정리(`cleanupProjectS3Domains`)하므로 보지 않는다
+- **두 번 본다**: `ProjectCommandService.deleteProject` 가 GitHub 저장소 삭제(되돌릴 수 없다) **전에** 보고, `ProjectDeletionService.purge` 가 소프트 삭제 트랜잭션 안에서 한 번 더 본다. 둘 다 `ProjectDeletionBlockedException` → `409 PROJECT_DELETION_BLOCKED`, `data` 는 `{ deletable, liveResources }`
+- **미리 보기**: `GET /api/v1/projects/{projectId}/deletion`(같은 모양, 읽기 전용 트랜잭션). 내 프로젝트가 아니거나 삭제했으면 404
+- **잠그지 않는다**: 판정과 소프트 삭제 사이에 그 프로젝트의 서버 생성이 승인되는 좁은 틈은 남는다. 그 서버는 탈퇴 조회에 나오고 id 로 끌 수 있다(서버 종료는 프로젝트 삭제 여부를 보지 않는다)
+- **오류 `data`**: `WITHDRAWAL_BLOCKED`·`PREVIEW_IN_USE` 에 이어 세 번째로 `data` 가 실리는 오류 코드다(컨트롤러 `@ExceptionHandler`)
+- **테스트**: `ProjectDeletionGuardTest`(실 MySQL — 판정 조건 전수: 진행 중·인스턴스 남은 실패 서버·RDS·Docker DB·대기 배포는 막고, 승인 대기 서버·종료 서버·LOCAL·실패 DB·끝난 배포·CloudFront 도메인·다른 프로젝트의 서버는 막지 않음 / 막히면 소프트 삭제 안 됨, 서버를 끄면 삭제됨 / 남의 프로젝트 404), `ProjectCommandServiceTest`(저장소 모드에서 막히면 GitHub 호출 0회·로컬 정리 0회·감사 0건), `ProjectDeletionContractTest`(409 본문·미리 보기 응답), 탈퇴 테스트 17건 그대로 통과
+- **남은 것**
+  - FE 삭제 확인 창(Dvely_FE #186): `GET /deletion` 목록과 정리 경로 안내
+  - PR-3(이미 소프트 삭제된 프로젝트에 남은 자원 점검): 운영을 다시 열 때 운영 DB 에서 읽기 전용으로 센다. 사용자는 탈퇴 조회로 볼 수 있다
 
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
