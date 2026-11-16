@@ -2,7 +2,7 @@
 
 > 기준일: 2026-11-12 · 기준 커밋: 67c1ff1a(develop) · 이슈 #652 · 서버 재호스팅 #649
 > 구현 상태: 1단계(웹 화면) 구현(#653·#654). 2단계(Android 에뮬레이터)는 §12, 3단계(iOS 시뮬레이터)는 §13
-> 개정: 2026-11-17 · 기준 커밋: 0540e17c(develop) — §14 짚기 피드백(#681·#682·#683). 서버(#685)·뷰어(#686)·CLI 웹 요소 풀기(#682 PR-1) 구현, Android·iOS 요소 풀기와 MCP(#683)는 아직
+> 개정: 2026-11-17 · 기준 커밋: fb2ab8a1(develop) — §14 짚기 피드백(#681·#682·#683). 서버(#685)·뷰어(#686)·CLI 웹(#687)·Android(#682 PR-2) 요소 풀기 구현, iOS 와 MCP(#683)는 아직
 
 ---
 
@@ -512,7 +512,14 @@ PIN_RESULT payload 는 `[JSON 길이 u32 BE][JSON][잘라 낸 이미지 길이 u
   - 프로젝트 폴더: `--project`, 없으면 지금 폴더가 프로젝트(`package.json`·`.git`·`build.gradle` 등)일 때만. 홈 폴더에서 띄워도 홈을 뒤지지 않는다
   - 이미지: 잘라 낸 것은 요소 + 16px(요소가 없으면 짚은 점 둘레 240×160)를 `Page.captureScreenshot`(clip, 페이지 좌표, 긴 변 800px 이하), 화면은 마지막 screencast 프레임(보는 사람이 본 그 장)
   - 짚기는 한 번에 하나씩 처리한다. 4초 안에 못 끝내면 `TIMEOUT` 과 마지막 화면을 보낸다(서버는 5초에 뷰어에 알린다)
-  - HELLO 의 `features: ["pin"]` 은 `resolvePin` 이 있는 세션(지금은 웹)만 싣는다. Android·iOS 는 #682 PR-2·PR-3
+  - HELLO 의 `features: ["pin"]` 은 `resolvePin` 이 있는 세션만 싣는다(웹, adb 가 있는 Android). iOS 는 #682 PR-3
+- **Android 구현**(#682 PR-2, `agent-tools/packages/cli/src/share/android/pin.js`·`src/share/jpeg.js`)
+  - 읽기: `adb exec-out` 으로 `uiautomator dump`(`/data/local/tmp` 에 쓰고 읽고 지운다)·`screencap`(날 픽셀)·`dumpsys activity`(지금 Activity)를 함께 부른다. 모두 읽기다
+  - 뷰 고르기: 점을 품은 것 가운데 누를 수 있거나 텍스트·설명·앱의 id 가 있는 가장 작은 것. 누를 수 없는 글자 노드(Compose)면 3단계 안의 누를 수 있는 바깥으로 올리고 이름은 글자로 한다. 화면의 80% 이상이고 아무것도 말하지 않는 것만 걸리면 `NO_ELEMENT`. `android:id/…`(플랫폼 틀)는 이름으로도 바깥 요소로도 치지 않는다. `password="true"` 는 글을 읽지 않는다
+  - 기술: `screen.label` 은 `패키지/Activity`(`package`·`activity` 도), `element.type` 은 클래스 끝 이름, `id` 는 `:id/` 뒤. 컴포넌트는 앱 클래스(플랫폼·androidx·material 제외)와 Activity 이름. 실측(API 35)에서 `FancyButton extends Button` 은 접근성 클래스 `android.widget.Button` 으로 나왔다 — 직접 만든 뷰 이름은 대개 나오지 않는다
+  - 소스 후보: Activity 정의(`class MainActivity`, Kotlin `fun`·`object` 도) → id(`@+id/save`·`R.id.save`) → 보이는 텍스트. 텍스트가 `res/values*/strings.xml` 에서 나오면 그 이름(`@string/…`·`R.string.…`)을 쓰는 레이아웃·코드를 먼저 낸다
+  - 이미지: 의존성을 늘리지 않으려고 `screencap` 날 픽셀(머리 12·16바이트, RGBA·RGBX·BGRA·RGB565)을 CLI 가 잘라 줄이고 기본 JPEG(표준 표, 4:4:4)으로 만든다. 잘라 낸 것은 뷰 + 24px(긴 변 800px), 화면은 긴 변 1280px. 상한을 넘으면 품질·크기를 낮춘다
+  - 시간(실측, API 35 에뮬레이터 1080×2400): `screencap` 약 1.1초·`uiautomator dump` 약 2.2초를 함께 불러 한 번에 약 2.1초. 4초 상한 안이다
 
 ### 14.4 메시지
 

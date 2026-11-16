@@ -12,6 +12,7 @@ import { TunnelSession } from '../tunnel.js';
 import { ALLOWED_SYSTEM_PACKAGES } from './adb.js';
 import { createTouchState, isKeyboardText, mapAndroidInput } from './input.js';
 import { encodeSetClipboard, encodeText, screenFramePayload } from './scrcpy-protocol.js';
+import { resolveAndroidPin } from './pin.js';
 
 /** §12.3: above this much unsent on the tunnel, frames that are not key frames are dropped. */
 export const HIGH_WATER_BYTES = 2 * 1024 * 1024;
@@ -39,10 +40,11 @@ export class AndroidShareSession extends TunnelSession {
    * @param {boolean} [o.guard] keep the share inside `pkg` (§12.5)
    * @param {string} o.targetLabel what HELLO announces
    * @param {string} o.deviceName the config's title
+   * @param {string|null} [o.project] where pinned views' source candidates are looked for (§14.3)
    */
-  constructor({ device, adb = null, pkg = null, guard = true, targetLabel, deviceName, guardIntervalMs = GUARD_INTERVAL_MS, ...tunnel }) {
+  constructor({ device, adb = null, pkg = null, guard = true, targetLabel, deviceName, project = null, guardIntervalMs = GUARD_INTERVAL_MS, ...tunnel }) {
     super(tunnel);
-    Object.assign(this, { device, adb, pkg, guard: guard && Boolean(pkg) && Boolean(adb), targetLabel, deviceName, guardIntervalMs });
+    Object.assign(this, { device, adb, pkg, guard: guard && Boolean(pkg) && Boolean(adb), targetLabel, deviceName, project, guardIntervalMs });
     this.screen = { width: 0, height: 0, codec: null };
     this.touch = createTouchState();
     this.needKey = true;
@@ -173,6 +175,15 @@ export class AndroidShareSession extends TunnelSession {
 
   onKeyframeRequest() {
     this.requestKeyFrame();
+  }
+
+  /** §14.3: pins are read through adb, so a session without it does not offer them. */
+  canPin() {
+    return Boolean(this.adb);
+  }
+
+  resolvePin(probe) {
+    return resolveAndroidPin({ adb: this.adb, probe, project: this.project });
   }
 
   handleInput(input) {

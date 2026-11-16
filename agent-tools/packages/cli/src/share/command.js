@@ -198,6 +198,8 @@ function androidSource({ args, flags, rt, env, log }) {
   const source = {
     apiKind: 'ANDROID',
     targetLabel: '',
+    /** §14: answers pins (view, Activity, source candidates) */
+    pins: true,
     async prepare() {
       const adbPath = rt.findAdb({ env });
       if (!adbPath) throw new Error(NO_ADB_MESSAGE);
@@ -439,7 +441,7 @@ const SOURCES = { web: webSource, android: androidSource, ios: iosSource };
 export const shareCommand = {
   usage:
     'qeploy share web <url> [--viewport 390x844] [--project <폴더>] [--ttl 60] [--headed] [--json]\n' +
-    '  qeploy share android [--app <패키지>] [--any-app] [--serial emulator-5554] [--max-size 1280] [--bit-rate 2M] [--ttl 60] [--json]\n' +
+    '  qeploy share android [--app <패키지>] [--any-app] [--serial emulator-5554] [--max-size 1280] [--bit-rate 2M] [--project <폴더>] [--ttl 60] [--json]\n' +
     '  qeploy share ios [--app <번들 ID>] [--any-app] [--udid <UDID>] [--scale 0.5] [--fps 15] [--ttl 60] [--json]',
   summary:
     '내 기기에서 도는 앱 화면(웹 앱, Android 에뮬레이터, iOS 시뮬레이터)을 링크로 공유한다. 보는 사람은 설치 없이 보고, 내가 승인하면 조작한다 (WRITE 스코프 토큰 필요)',
