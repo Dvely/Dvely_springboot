@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { KIND, MAX_PAYLOAD_BYTES, decodeFrame, encodeJsonFrame, parseJsonPayload } from '../src/share/protocol.js';
 import { ShareSession } from '../src/share/session.js';
@@ -29,7 +32,7 @@ async function until(predicate, ms = 3000) {
  * Stands in for Chrome: records every CDP command, answers the few whose result the session reads,
  * and lets a test fire events at the session.
  */
-function fakeCdp() {
+function fakeCdp(extraResults = {}) {
   const calls = [];
   const waiters = [];
   const listeners = { browser: new Map(), page: new Map() };
@@ -46,6 +49,7 @@ function fakeCdp() {
     'Page.getLayoutMetrics': () => ({ cssLayoutViewport: { clientWidth: 1280, clientHeight: 800 } }),
     'Page.navigate': () => ({ frameId: 'MAIN' }),
     'Page.getNavigationHistory': () => structuredClone(history),
+    ...extraResults,
   };
   const scope = (name) => ({
     send: async (method, params = {}) => {
@@ -166,7 +170,8 @@ describe('share session over a real tunnel socket', () => {
     assert.equal(hello.kind, KIND.HELLO);
     assert.equal(hello.streamId, 0);
     assert.equal(hello.binary, true);
-    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'WEB', target: 'http://localhost:5173' });
+    // §14: a web share answers pins, so it says so; Android and iOS do not yet (their tests check)
+    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'WEB', target: 'http://localhost:5173', features: ['pin'] });
     assert.ok(!cdp.calls.some((c) => c.method === 'Page.screencastFrameAck'), 'no ack before WELCOME');
 
     conn.send(KIND.WELCOME, { shareId: 7, expiresAt: '2026-11-12T13:00:00Z' });
@@ -324,6 +329,164 @@ describe('share session over a real tunnel socket', () => {
       assert.equal(hits, 1);
     });
   }
+});
+
+/** `[json length][json][crop length][crop][screen]` (§14.3) */
+function readPinResult(payload) {
+  const n = payload.readUInt32BE(0);
+  const json = JSON.parse(payload.subarray(4, 4 + n).toString('utf8'));
+  const c = payload.readUInt32BE(4 + n);
+  return { json, crop: payload.subarray(8 + n, 8 + n + c), screen: payload.subarray(8 + n + c) };
+}
+
+function demoProject() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'qeploy-share-pin-')));
+  const file = (rel, body) => {
+    mkdirSync(join(root, rel, '..'), { recursive: true });
+    writeFileSync(join(root, rel), body);
+  };
+  file('package.json', '{}');
+  file('src/components/SaveButton.tsx', 'export function SaveButton() {\n  return <button id="save">저장</button>;\n}\n');
+  file('src/pages/Settings.tsx', 'import { SaveButton } from "../components/SaveButton";\n\nexport default function Settings() {\n  return <SaveButton />;\n}\n');
+  return root;
+}
+
+/** What inspectPoint returns for the save button of the demo page. */
+const SAVE_BUTTON = {
+  ok: true,
+  screen: { label: '/settings', url: 'http://localhost:5173/settings', title: 'Vite App' },
+  view: { width: 390, height: 844, dpr: 2, pageX: 0, pageY: 300 },
+  element: { type: 'button', text: '저장', id: 'save', selector: 'form > button#save', bounds: { x: 0.1, y: 0.2, w: 0.3, h: 0.05 } },
+  rect: { x: 39, y: 168.8, width: 117, height: 42.2 },
+  ancestors: [{ type: 'form', id: null, text: null }],
+  components: [
+    { name: 'SaveButton', source: { url: 'http://localhost:5173/src/components/SaveButton.tsx?t=17', line: 2 } },
+    { name: 'Settings', source: { url: 'http://evil.example/src/pages/Settings.tsx', line: 3 } },
+  ],
+  framework: 'react',
+};
+
+describe('pinning over a real tunnel socket (§14, #682)', () => {
+  async function connected(results, overrides = {}) {
+    const server = await tunnelServer();
+    const cdp = fakeCdp(results);
+    const made = newSession(cdp, { tunnelUrl: server.url, ...overrides });
+    made.session.run();
+    const conn = await server.nextConnection();
+    cdp.emit('page', 'Page.screencastFrame', frameEvent(JPEG, 1));
+    const hello = await conn.next();
+    assert.deepEqual(hello.json.features, ['pin']);
+    conn.send(KIND.WELCOME, { shareId: 7 });
+    assert.equal((await conn.next()).kind, KIND.SCREEN_CONFIG);
+    assert.equal((await conn.next()).kind, KIND.SCREEN_FRAME);
+    return { ...made, cdp, conn };
+  }
+
+  it('answers a probe with the element, its components, source candidates, a crop and the screen — and never touches input', { timeout: 10000 }, async () => {
+    const project = demoProject();
+    const crop = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x42, 0xff, 0xd9]);
+    const { cdp, conn } = await connected(
+      {
+        'Runtime.evaluate': () => ({ result: { type: 'object', value: structuredClone(SAVE_BUTTON) } }),
+        'Page.captureScreenshot': () => ({ data: crop.toString('base64') }),
+      },
+      { project }
+    );
+    const inputsBefore = cdp.calls.filter((c) => c.method.startsWith('Input.')).length;
+
+    conn.send(KIND.PIN_PROBE, { probeId: 'p1', x: 0.2, y: 0.22 });
+    const answer = await conn.next();
+    assert.equal(answer.kind, KIND.PIN_RESULT);
+    const { json, crop: sentCrop, screen } = readPinResult(answer.payload);
+
+    assert.equal(json.probeId, 'p1');
+    assert.equal(json.ok, true);
+    assert.deepEqual(json.point, { x: 0.2, y: 0.22 });
+    assert.deepEqual(json.screen, { label: '/settings', url: 'http://localhost:5173/settings', title: 'Vite App' });
+    assert.deepEqual(json.element, SAVE_BUTTON.element);
+    assert.deepEqual(json.ancestors, [{ type: 'form' }]);
+    // The dev server's own module URL becomes a project path; one from another origin does not. A
+    // stack line is a line of the served module, so the definition's line on disk is used instead.
+    assert.deepEqual(json.components, [{ name: 'SaveButton', file: 'src/components/SaveButton.tsx', line: 1 }, { name: 'Settings' }]);
+    assert.deepEqual(json.sourceHints[0], { file: 'src/components/SaveButton.tsx', line: 1, reason: 'COMPONENT' });
+    assert.ok(json.sourceHints.some((h) => h.file === 'src/pages/Settings.tsx' && h.line === 3 && h.reason === 'COMPONENT'), JSON.stringify(json.sourceHints));
+    assert.ok(json.sourceHints.every((h) => !h.file.startsWith('/')));
+    assert.deepEqual(sentCrop, crop);
+    assert.deepEqual(screen, JPEG, 'the screen is the frame the viewer saw');
+
+    const evaluate = cdp.calls.find((c) => c.method === 'Runtime.evaluate');
+    assert.equal(evaluate.scope, 'page');
+    assert.equal(evaluate.params.returnByValue, true);
+    assert.match(evaluate.params.expression, /^\(function inspectPoint\(args\)/);
+    assert.match(evaluate.params.expression, /\{"x":0\.2,"y":0\.22,/);
+    const shot = cdp.calls.find((c) => c.method === 'Page.captureScreenshot');
+    // The element plus a 16 px margin, in page coordinates (scrolled 300 px).
+    assert.deepEqual(shot.params.clip, { x: 23, y: 452.8, width: 149, height: 74.2, scale: 1 });
+    assert.equal(cdp.calls.filter((c) => c.method.startsWith('Input.')).length, inputsBefore, 'a probe sends no input');
+  });
+
+  it('answers TIMEOUT with the last screen when the page does not answer in time', { timeout: 10000 }, async () => {
+    const { conn } = await connected({ 'Runtime.evaluate': () => new Promise(() => {}) }, { pinDeadlineMs: 50 });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p2', x: 0.5, y: 0.5 });
+    const { json, crop, screen } = readPinResult((await conn.next()).payload);
+    assert.deepEqual(json, { probeId: 'p2', ok: false, reason: 'TIMEOUT', point: { x: 0.5, y: 0.5 } });
+    assert.equal(crop.length, 0);
+    assert.deepEqual(screen, JPEG);
+  });
+
+  it('says NO_ELEMENT for the background, with a crop around the point', { timeout: 10000 }, async () => {
+    const { conn, cdp } = await connected({
+      'Runtime.evaluate': () => ({ result: { value: { ok: false, reason: 'NO_ELEMENT', screen: { label: '/' }, view: SAVE_BUTTON.view } } }),
+      'Page.captureScreenshot': () => ({ data: JPEG.toString('base64') }),
+    });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p3', x: 0.5, y: 0.5 });
+    const { json, crop } = readPinResult((await conn.next()).payload);
+    assert.deepEqual(json, { probeId: 'p3', ok: false, reason: 'NO_ELEMENT', point: { x: 0.5, y: 0.5 }, screen: { label: '/' } });
+    assert.deepEqual(crop, JPEG);
+    const shot = cdp.calls.find((c) => c.method === 'Page.captureScreenshot');
+    assert.deepEqual(shot.params.clip, { x: 75, y: 642, width: 240, height: 160, scale: 1 });
+  });
+
+  it('ignores a malformed probe', { timeout: 10000 }, async () => {
+    const { conn, cdp } = await connected({ 'Runtime.evaluate': () => ({ result: { value: SAVE_BUTTON } }) });
+    conn.send(KIND.PIN_PROBE, { probeId: 'x1', x: 0.5, y: 0.5 });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p4', x: 2, y: 0.5 });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p5', x: 0.5, y: 0.5 });
+    const { json } = readPinResult((await conn.next()).payload);
+    assert.equal(json.probeId, 'p5', 'only the well-formed probe was answered');
+    assert.equal(cdp.calls.filter((c) => c.method === 'Runtime.evaluate').length, 1);
+  });
+
+  it('asks the owner about a guest feedback, and only an answer decides', { timeout: 10000 }, async () => {
+    const answers = [true, null, false];
+    const asked = [];
+    const { conn, logs } = await connected({}, {
+      askFeedback: async (question) => {
+        asked.push(question);
+        return answers.shift();
+      },
+    });
+    const notice = (id, extra = {}) => ({ feedbackId: id, author: { role: 'GUEST', name: '민지' }, label: '<button> "저장"', comment: '더 크게', state: 'NEW', ...extra });
+
+    conn.send(KIND.FEEDBACK_NOTICE, notice(21));
+    let decision = await conn.next();
+    assert.equal(decision.kind, KIND.FEEDBACK_DECISION);
+    assert.deepEqual(decision.json, { feedbackId: 21, accepted: true });
+    assert.match(asked[0], /#21/);
+    assert.ok(logs.some((l) => l === `피드백 #21 · 손님 '민지' · <button> "저장" · "더 크게"`), logs.join('\n'));
+
+    // No answer leaves it waiting: nothing goes to the server (the next frame is #23's).
+    conn.send(KIND.FEEDBACK_NOTICE, notice(22));
+    conn.send(KIND.FEEDBACK_NOTICE, notice(23));
+    decision = await conn.next();
+    assert.deepEqual(decision.json, { feedbackId: 23, accepted: false });
+    assert.ok(logs.some((l) => l.includes('#22 은 받기 전으로 둡니다')));
+
+    // The owner's own feedback is already taken: told, not asked.
+    conn.send(KIND.FEEDBACK_NOTICE, notice(24, { author: { role: 'OWNER', name: '주인' }, state: 'ACCEPTED' }));
+    await until(() => logs.some((l) => l.startsWith('피드백 #24 · 내가 남김')));
+    assert.equal(asked.length, 3);
+  });
 });
 
 describe('share session: what the shared Chrome may do (§8)', () => {
@@ -657,6 +820,20 @@ describe('qeploy share web', () => {
     assert.match(err, /Chrome 을 찾지 못했습니다/);
     assert.match(err, /CHROME_PATH/);
     assert.equal(client.created, null);
+  });
+
+  it('looks for source candidates in --project, and refuses a folder that is not there before making a link', async () => {
+    const missing = await shareCli(['share', 'web', 'http://localhost:5173', '--project', '/no/such/folder']);
+    assert.equal(missing.code, EXIT.USAGE);
+    assert.equal(missing.client.created, null);
+
+    const project = demoProject();
+    const runtime = fakeRuntime({ end: (rt) => rt.interrupt() });
+    const { code, err } = await shareCli(['share', 'web', 'http://localhost:5173', '--project', project], { runtime });
+    assert.equal(code, EXIT.OK, err);
+    assert.equal(runtime.sessionOptions.project, project);
+    assert.equal(typeof runtime.sessionOptions.askFeedback, 'function');
+    assert.match(err, /소스 후보를 .+ 에서 찾습니다/);
   });
 
   it('refuses bad arguments as usage errors, before making a link', async () => {

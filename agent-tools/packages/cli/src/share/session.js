@@ -13,6 +13,7 @@ import { KIND, MAX_PAYLOAD_BYTES, encodeFrame } from './protocol.js';
 import { createPointerState, mapInput } from './input.js';
 import { ACK_BUFFER_LIMIT, MAX_FPS, ackDelay, describeOrigin, historyEntry, isAllowedNavigation } from './policy.js';
 import { TunnelSession, noop } from './tunnel.js';
+import { resolveWebPin } from './pin-web.js';
 
 export { CONTROL_TTL_SECONDS, TERMINAL_GOODBYE } from './tunnel.js';
 
@@ -28,13 +29,14 @@ export class ShareSession extends TunnelSession {
    * @param {{send: Function, on: Function}} o.browser
    * @param {{send: Function, on: Function}} o.page
    * @param {string} [o.targetId] the shared tab; any other tab that opens is closed
+   * @param {string|null} [o.project] where pinned elements' source candidates are looked for (§14.3)
    * @param {string} o.tunnelUrl already checked (wss, `?v=1`)
    * @param {string} o.token the PAT
    * @param {string} o.cliVersion
    * @param {(question: string) => Promise<boolean>} o.askControl
    * @param {(text: string) => void} [o.log] one line of status for the owner
    */
-  constructor({ target, targetLabel, viewport = null, browser, page, targetId = null, platform = process.platform, ...tunnel }) {
+  constructor({ target, targetLabel, viewport = null, browser, page, targetId = null, project = null, platform = process.platform, ...tunnel }) {
     super(tunnel);
     Object.assign(this, {
       target,
@@ -43,6 +45,7 @@ export class ShareSession extends TunnelSession {
       browser,
       page,
       targetId,
+      project,
       platform,
     });
     this.origin = target.origin;
@@ -315,6 +318,16 @@ export class ShareSession extends TunnelSession {
       this.page.send(method, params).catch(noop);
     }
     if (nav) this.navigate(nav).catch(noop);
+  }
+
+  /** §14.3: what is at the viewer's point. Reads the page only; the crop is a fresh screenshot. */
+  resolvePin(probe) {
+    return resolveWebPin({ page: this.page, probe, project: this.project, origin: this.origin, screen: this.latestFrame });
+  }
+
+  /** The screen as the viewer last saw it, for a probe that ran out of time. */
+  pinScreen() {
+    return this.latestFrame;
   }
 
   /** §8: the only address changes a controller can make are back, forward and reload. */
