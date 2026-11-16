@@ -9,8 +9,8 @@
 <link rel="icon" href="data:,">
 <title>Qeploy 화면 공유</title>
 <style>
-:root{--bg:#f4f4f5;--bar:#fff;--fg:#18181b;--mut:#52525b;--line:#d4d4d8;--stage:#e4e4e7;--ov:rgba(244,244,245,.88);--btn:#fff;--btn-h:#ececef;--pri:#1d4ed8;--pri-h:#1e40af;--focus:#2563eb;--on:#16a34a;--wait:#ca8a04;--off:#dc2626;--end:#71717a}
-@media (prefers-color-scheme:dark){:root{--bg:#09090b;--bar:#18181b;--fg:#f4f4f5;--mut:#a1a1aa;--line:#3f3f46;--stage:#000;--ov:rgba(9,9,11,.85);--btn:#27272a;--btn-h:#3f3f46;--pri:#2563eb;--pri-h:#1d4ed8;--focus:#93c5fd;--on:#4ade80;--wait:#facc15;--off:#f87171;--end:#a1a1aa}}
+:root{--bg:#f4f4f5;--bar:#fff;--fg:#18181b;--mut:#52525b;--line:#d4d4d8;--stage:#e4e4e7;--ov:rgba(244,244,245,.88);--btn:#fff;--btn-h:#ececef;--pri:#1d4ed8;--pri-h:#1e40af;--focus:#2563eb;--on:#16a34a;--wait:#ca8a04;--off:#dc2626;--end:#71717a;--pin:#a21caf;--pin-fg:#fff;--pin-bg:rgba(162,28,175,.16);--shadow:0 6px 24px rgba(0,0,0,.18)}
+@media (prefers-color-scheme:dark){:root{--bg:#09090b;--bar:#18181b;--fg:#f4f4f5;--mut:#a1a1aa;--line:#3f3f46;--stage:#000;--ov:rgba(9,9,11,.85);--btn:#27272a;--btn-h:#3f3f46;--pri:#2563eb;--pri-h:#1d4ed8;--focus:#93c5fd;--on:#4ade80;--wait:#facc15;--off:#f87171;--end:#a1a1aa;--pin:#f0abfc;--pin-fg:#18181b;--pin-bg:rgba(240,171,252,.2);--shadow:0 6px 24px rgba(0,0,0,.6)}}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{margin:0;height:100%}
@@ -47,11 +47,45 @@ button.icon{min-width:36px;padding:4px 8px;font-size:16px}
 #nameform button{width:100%;min-height:40px}
 #typing{position:absolute;left:8px;top:8px;padding:4px 8px;border:1px solid var(--focus);border-radius:6px;background:var(--bar);font-size:12px;pointer-events:none}
 #kbd{position:fixed;left:0;top:0;width:1px;height:1px;padding:0;border:0;opacity:0;resize:none;font-size:16px;caret-color:transparent;pointer-events:none}
-#toast{position:fixed;left:50%;bottom:16px;z-index:20;transform:translateX(-50%);max-width:calc(100% - 32px);padding:8px 14px;border-radius:6px;background:var(--fg);color:var(--bg);text-align:center;opacity:0;transition:opacity .2s;pointer-events:none}
+#toast{position:fixed;left:50%;bottom:16px;z-index:20;transform:translateX(-50%);width:max-content;max-width:calc(100% - 32px);padding:8px 14px;border-radius:6px;background:var(--fg);color:var(--bg);text-align:center;opacity:0;transition:opacity .2s;pointer-events:none}
 #toast.show{opacity:1}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-@media (pointer:coarse){button{min-height:40px}button.icon{min-width:44px}}
-@media (prefers-reduced-motion:reduce){#toast{transition:none}}
+/* 짚기 피드백(설계 §14) */
+button[aria-pressed="true"]{background:var(--pin);border-color:var(--pin);color:var(--pin-fg);font-weight:600}
+button[aria-pressed="true"]:hover:not(:disabled){background:var(--pin)}
+#b-mine.alert{border-color:var(--pin)}
+#mine-n:not(:empty){display:inline-block;min-width:18px;margin-left:4px;padding:0 5px;border-radius:9px;background:var(--pin);color:var(--pin-fg);font-size:12px;font-weight:700;line-height:18px;text-align:center}
+#stage.pin #screen{cursor:crosshair;touch-action:manipulation}
+#pinhint{position:absolute;left:8px;top:8px;max-width:calc(100% - 16px);padding:4px 8px;border:1px solid var(--pin);border-radius:6px;background:var(--bar);font-size:12px;pointer-events:none}
+#pin-box{position:absolute;border:2px solid var(--pin);border-radius:3px;background:var(--pin-bg);box-shadow:0 0 0 1px rgba(255,255,255,.8);pointer-events:none}
+#pin-dot{position:absolute;width:18px;height:18px;margin:-9px 0 0 -9px;border:2px solid var(--pin);border-radius:50%;background:var(--pin-bg);box-shadow:0 0 0 1px rgba(255,255,255,.8);pointer-events:none}
+#pin-dot.wait{animation:pinwait 1s ease-in-out infinite}
+@keyframes pinwait{50%{transform:scale(1.6);opacity:.55}}
+.card{position:absolute;z-index:5;background:var(--bar);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}
+#sheet{left:12px;right:12px;bottom:12px;max-width:24rem;margin-left:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
+#sheet.top{bottom:auto;top:12px}
+#sheet.left{margin-left:0;margin-right:auto}
+#sheet p{margin:0}
+#sh-t{font-weight:600;overflow-wrap:anywhere}
+#sh-s,#sh-h,.fb-d{color:var(--mut);font-size:13px}
+#sheet textarea,.fb textarea{display:block;width:100%;min-height:4.5em;max-height:40vh;resize:vertical;font:inherit;font-size:16px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.row{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px}
+#sh-n{margin-right:auto;color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums}
+#mine{top:8px;right:8px;z-index:6;width:calc(100% - 16px);max-width:24rem;max-height:calc(100% - 16px);overflow:auto;padding:12px}
+#mine .head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+#mine h2{margin:0;font-size:15px}
+#mine .head p{margin:0 auto 0 0;color:var(--mut);font-size:12px}
+#mine ul{list-style:none;margin:0;padding:0}
+.fb{display:flex;flex-direction:column;gap:6px;padding:10px 0;border-top:1px solid var(--line)}
+.fb p{margin:0}
+.fb-h{display:flex;align-items:baseline;gap:8px;min-width:0}
+.fb-l{font-weight:600;min-width:0;overflow-wrap:anywhere}
+.fb-c{white-space:pre-wrap;overflow-wrap:anywhere}
+.fb-n{padding:6px 8px;border-left:3px solid var(--pin);background:var(--pin-bg);border-radius:0 4px 4px 0;overflow-wrap:anywhere}
+.chip{flex:none;padding:0 6px;border:1px solid var(--c);border-radius:9px;color:var(--c);font-size:12px;font-weight:600;line-height:18px}
+.s-NEW{--c:var(--wait)}.s-ACCEPTED{--c:var(--pri)}.s-DISMISSED{--c:var(--end)}.s-FIXED{--c:var(--pin)}.s-CONFIRMED{--c:var(--on)}
+@media (pointer:coarse){button{min-height:40px}button.icon{min-width:44px}#pinhint .kb{display:none}}
+@media (prefers-reduced-motion:reduce){#toast{transition:none}#pin-dot.wait{animation:none}}
 </style>
 </head>
 <body>
@@ -64,6 +98,8 @@ button.icon{min-width:36px;padding:4px 8px;font-size:16px}
     <button type="button" id="b-fwd" class="icon" aria-label="앞으로" title="앞으로" hidden>→</button>
     <button type="button" id="b-reload" class="icon" aria-label="새로고침" title="새로고침" hidden>↻</button>
     <button type="button" id="b-kbd" hidden>키보드</button>
+    <button type="button" id="b-pin" aria-pressed="false" title="화면의 한 곳을 짚어 고칠 점을 남깁니다" hidden>짚기</button>
+    <button type="button" id="b-mine" aria-expanded="false" aria-controls="mine" hidden>내 피드백<span id="mine-n"></span></button>
     <button type="button" id="b-rel" hidden>조작 그만</button>
     <button type="button" id="b-req" class="pri" hidden>조작 요청</button>
   </span>
@@ -72,6 +108,21 @@ button.icon{min-width:36px;padding:4px 8px;font-size:16px}
   <canvas id="screen" role="img" aria-label="공유된 앱 화면"></canvas>
   <div id="ov" class="ov" role="status" hidden><div><p id="ov-t" class="t"></p><p id="ov-s" class="s"></p></div></div>
   <div id="typing" hidden>키보드 입력을 기기로 보냅니다 · Esc 두 번: 나가기</div>
+  <div id="pinhint" hidden>짚기 — 고칠 곳을 누르세요. 기기는 조작되지 않습니다<span class="kb"> · Esc: 끝내기</span></div>
+  <div id="pin-box" hidden></div>
+  <div id="pin-dot" hidden></div>
+  <section id="sheet" class="card" aria-label="짚은 곳에 글 남기기" hidden>
+    <p id="sh-t" aria-live="polite"></p>
+    <p id="sh-s"></p>
+    <label for="sh-c" class="sr">글</label>
+    <textarea id="sh-c" maxlength="1000" rows="3" enterkeyhint="enter" placeholder="무엇을 어떻게 바꾸면 좋을지 적어 주세요. 다른 곳을 짚으면 대상만 바뀌고 글은 남습니다."></textarea>
+    <div class="row"><span id="sh-n">0/1000</span><button type="button" id="sh-x">취소</button><button type="button" id="sh-ok" class="pri" disabled>보내기</button></div>
+    <p id="sh-h"></p>
+  </section>
+  <section id="mine" class="card" aria-labelledby="mine-h" hidden>
+    <div class="head"><h2 id="mine-h">내 피드백</h2><p>이 브라우저에서 남긴 것</p><button type="button" id="mine-x" class="icon" aria-label="닫기">×</button></div>
+    <ul id="mine-l"></ul>
+  </section>
 </main>
 <div id="namebox" class="ov" role="dialog" aria-modal="true" aria-labelledby="name-h" hidden>
   <form id="nameform">
@@ -108,7 +159,12 @@ const S = {
   myId: null, myName: '', hasControl: false, pending: false, online: null,
   viewers: 0, controller: null, url: '', title: '', cfgW: 0, cfgH: 0,
   kind: 'WEB', format: 'jpeg', codec: '', noVideo: false, owner: false, toldOther: false,
-  retry: 0, timer: 0, ttlEnd: 0, lastError: '', warned: false
+  retry: 0, timer: 0, ttlEnd: 0, lastError: '', warned: false, pinOk: false
+};
+// 짚기(설계 §14). point 가 있으면 글 쓰는 창이 열려 있다. sent·acked 는 이 소켓에서 보낸 짚기와 바로 온 답(pending·번호 없는 failed)의 수다.
+const P = {
+  mode: false, point: null, waiting: false, result: null, probeId: null, resolvedAt: 0,
+  sent: 0, acked: 0, lastSent: 0, queued: 0, stale: false, submitting: false
 };
 
 // 내 제어 링크(#c=…): 비밀은 메모리(+이 탭의 sessionStorage, 새로고침 대비)에만 두고 주소창에서 바로 지운다.
@@ -141,7 +197,8 @@ function send(msg) {
 }
 // Android·iOS: 손가락을 해석하지 않고 그대로 보낸다(기기가 스크롤·길게 누르기를 안다).
 const isDevice = () => S.kind === 'ANDROID' || S.kind === 'IOS';
-const canInput = () => S.joined && S.hasControl && !S.ended && S.online !== false;
+// 짚기 모드에서는 조작권이 있어도 아무것도 기기로 보내지 않는다(설계 §14.1).
+const canInput = () => S.joined && S.hasControl && !S.ended && S.online !== false && !P.mode;
 const sendInput = (input) => canInput() && send({ type: 'input', input });
 
 function connect() {
@@ -171,6 +228,7 @@ function connect() {
     if (ws !== S.ws) return;
     S.ws = null; S.joined = false; S.pending = false; S.online = null;
     video.close();
+    pinSocketLost();
     setControl(false);
     if (S.ended) return;
     if (!opened) probe();
@@ -196,6 +254,8 @@ function end(reason) {
   if (ws) try { ws.close(1000); } catch (_) { /* 무시 */ }
   store('sessionStorage', SECRET_KEY, null);
   $('namebox').hidden = true;
+  setPinMode(false);
+  $('mine').hidden = true;
   setControl(false);
 }
 
@@ -208,6 +268,7 @@ function onText(data) {
       S.joined = S.everJoined = true; S.retry = 0; S.lastError = '';
       S.myId = m.viewerId; S.myName = m.name || ''; S.owner = !!m.owner; S.toldOther = false;
       if (S.secret && !S.owner && !S.warned) { S.warned = true; notify('제어 링크로 조작권을 받지 못했습니다. 보기만 할 수 있습니다.'); }
+      watchMine(); renderMine(); // 새 소켓은 새 사람이다. 내가 남긴 피드백의 지금 상태를 다시 받는다
       setControl(!!m.hasControl);
       return;
     case 'config':
@@ -218,6 +279,9 @@ function onText(data) {
       S.codec = S.format === 'h264' ? String(m.codec || '') : '';
       if (S.format === 'h264') video.configure(); else video.close();
       S.online = true; // config 는 기기가 붙어 있을 때만 온다
+      S.pinOk = m.pin === true; // 짚기를 아는 기기(HELLO features 에 "pin")일 때만
+      if (!S.pinOk) setPinMode(false);
+      else if (P.stale && P.mode && P.point) probePin(P.point); // 다시 연결됐다. 서버는 끊긴 사람의 결과를 버렸다
       draw();
       break;
     case 'presence': {
@@ -233,11 +297,16 @@ function onText(data) {
       break;
     }
     case 'control': onControl(m); return;
+    case 'pin': onPin(m); return;
+    case 'feedback': onFeedback(m); return;
     case 'device': S.online = m.state === 'online'; if (!S.online) video.reset(); break;
     case 'ended': end(m.reason === 'expired' ? 'expired' : 'revoked'); return;
     case 'error':
       if (!S.joined) S.lastError = String(m.message || '');
       notify(m.message ? String(m.message) : '문제가 생겼습니다.');
+      // 서버 오류는 무엇에 대한 것인지 적혀 오지 않는다. 기다리던 보내기·확인을 풀어 다시 누를 수 있게 한다
+      if (P.submitting) { P.submitting = false; renderPin(); }
+      if (mineBusy) { mineBusy = 0; renderMine(); }
       break;
     default: return;
   }
@@ -289,7 +358,8 @@ function render() {
   const c = S.controller;
   text('ctl', '조작 중: ' + (!c ? '없음' : c.viewerId === S.myId ? '나 (' + (c.name || S.myName) + ')' : String(c.name || '이름 없음')));
   const live = S.joined && !S.ended, ctl = live && S.hasControl;
-  for (const id of ['b-back', 'b-fwd', 'b-reload', 'b-kbd']) { $(id).hidden = !ctl; $(id).disabled = S.online === false; }
+  // 짚기 모드에서는 기기로 아무것도 보내지 않으므로 조작 버튼도 쉰다
+  for (const id of ['b-back', 'b-fwd', 'b-reload', 'b-kbd']) { $(id).hidden = !ctl; $(id).disabled = S.online === false || P.mode; }
   // Android 는 뒤로(시스템 뒤로 키)만 있다. 앞으로·새로고침은 웹 화면에만 있다.
   if (isDevice()) { $('b-fwd').hidden = true; $('b-reload').hidden = true; }
   if (S.kind === 'IOS') $('b-back').hidden = true; // iOS 는 시스템 뒤로 키가 없다. 앱 안의 뒤로 버튼을 쓴다
@@ -301,6 +371,18 @@ function render() {
   $('ttl').hidden = !ctl || !S.ttlEnd;
   tick();
   stage.classList.toggle('ctl', ctl);
+  const pin = $('b-pin');
+  pin.hidden = !live || !S.pinOk;
+  pin.disabled = S.online === false && !P.mode; // 켜져 있으면 기기가 끊겨도 끌 수 있어야 한다
+  pin.setAttribute('aria-pressed', P.mode ? 'true' : 'false');
+  const fixed = mine.filter((f) => f.state === 'FIXED').length, mb = $('b-mine');
+  mb.hidden = !mine.length || !!S.ended;
+  if (mb.hidden) $('mine').hidden = true;
+  mb.classList.toggle('alert', fixed > 0);
+  text('mine-n', fixed ? String(fixed) : '');
+  mb.setAttribute('aria-label', fixed ? '내 피드백, 확인할 것 ' + fixed + '개' : '내 피드백');
+  mb.setAttribute('aria-expanded', $('mine').hidden ? 'false' : 'true');
+  renderPin();
 
   let t = '', s = '';
   if (S.ended === 'expired') { t = '링크가 만료됐습니다'; s = '공유한 사람에게 새 링크를 받아 주세요.'; }
@@ -338,6 +420,10 @@ function pump() {
   }, () => {}).then(() => { busy = false; if (nextBuf && !document.hidden) pump(); });
 }
 function draw() {
+  drawFrame();
+  if (P.mode) placePin(); // 짚은 곳 표시는 그려진 화면 영역을 따라간다
+}
+function drawFrame() {
   const w = stage.clientWidth, h = stage.clientHeight, dpr = window.devicePixelRatio || 1;
   const cw = Math.round(w * dpr), ch = Math.round(h * dpr);
   if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
@@ -554,6 +640,305 @@ kbd.addEventListener('focus', () => { $('typing').hidden = false; stage.classLis
 kbd.addEventListener('blur', () => {
   $('typing').hidden = true; stage.classList.remove('typing');
   releaseKeys(); composing = false; kbd.value = '';
+});
+
+/* ---------- 짚기 피드백(설계 §14) ---------- */
+// 짚기는 입력이 아니다. 좌표만 보내고 기기는 그 자리의 요소를 읽기만 한다. 그래서 보기 링크도 짚을 수 있다.
+// 확인 키는 공유 오리진의 localStorage 에 둔다. 오리진이 링크마다 달라 링크끼리 섞이지 않는다(§14.4).
+const MINE_KEY = 'qeploy-share-feedback', MINE_MAX = 30, BODY_MAX = 1000, NOTE_MAX = 300;
+const PROBE_GAP = 1050; // 서버 한도는 보는 사람마다 초당 1회
+const RESOLVED_TTL = 290 * 1000; // 서버는 짚기 결과를 5분 둔다. 그보다 조금 일찍 다시 짚는다
+const FB_STATE = {
+  NEW: ['받기 전', '공유한 사람이 아직 받지 않았습니다.'],
+  ACCEPTED: ['받음', '받은 상태입니다. 코딩 에이전트가 읽을 수 있고, 고치면 여기로 알려 드립니다.'],
+  DISMISSED: ['받지 않음', '공유한 사람이 이번에는 받지 않았습니다.'],
+  FIXED: ['고침', '지금 화면을 보고 확인하거나, 아직이면 다시 열어 주세요.'],
+  CONFIRMED: ['확인함', '고친 것을 확인했습니다.']
+};
+const PIN_FAIL = {
+  offline: '기기가 연결되어 있지 않아 짚을 수 없습니다.',
+  timeout: '기기가 답하지 않았습니다. 다시 짚어 주세요.',
+  busy: '짚기가 몰렸습니다. 잠시 뒤 다시 짚어 주세요.',
+  unsupported: '이 공유는 짚기를 지원하지 않습니다.'
+};
+const PIN_MISS = {
+  NO_ELEMENT: '이 자리에서 요소를 찾지 못했습니다. 짚은 자리와 화면만 보냅니다.',
+  UNSUPPORTED: '이 화면은 요소를 읽을 수 없습니다. 짚은 자리와 화면만 보냅니다.',
+  TIMEOUT: '요소를 찾는 데 오래 걸려 짚은 자리와 화면만 보냅니다.'
+};
+const comment = $('sh-c');
+let mine = loadMine(), mineBusy = 0, reopenId = 0, reopenDraft = '';
+
+function loadMine() {
+  try {
+    const v = JSON.parse(store('localStorage', MINE_KEY) || '[]');
+    if (!Array.isArray(v)) return [];
+    return v.filter((f) => f && Number.isSafeInteger(f.id) && f.id > 0 && typeof f.key === 'string' && FB_STATE[f.state])
+      .slice(-MINE_MAX)
+      .map((f) => ({ id: f.id, key: f.key, state: f.state, label: String(f.label || ''), comment: String(f.comment || ''), note: String(f.note || '') }));
+  } catch (_) { return []; }
+}
+const saveMine = () => store('localStorage', MINE_KEY, JSON.stringify(mine.slice(-MINE_MAX)));
+function watchMine() {
+  if (mine.length) send({ type: 'feedback-watch', items: mine.slice(-MINE_MAX).map((f) => ({ id: f.id, key: f.key })) });
+}
+const pinAvailable = () => S.pinOk && S.joined && !S.ended && S.online !== false;
+const chars = (s) => Array.from(s).length; // 서버처럼 코드 포인트로 센다
+
+// 누르고 있던 것은 떼고 들어간다. 기기에 누른 채로 남지 않게.
+function cancelPress() {
+  const pr = press;
+  if (!pr) return;
+  press = null; clearTimeout(pr.timer);
+  if (!pr.touch || pr.mode === 'drag') pointer('up', pr.p, pr.button || 'left', pr.n || 1);
+}
+function setPinMode(on) {
+  if (on === P.mode) return;
+  if (on) {
+    if (!pinAvailable()) return;
+    cancelPress(); pendingMove = null; wheel = null;
+    P.mode = true; // 이 뒤로 canInput() 이 거짓이다
+    if (document.activeElement === kbd) kbd.blur();
+  } else {
+    P.mode = false;
+    closeSheet(false);
+  }
+  render();
+}
+function closeSheet(clear) {
+  clearTimeout(P.queued);
+  Object.assign(P, { point: null, waiting: false, result: null, probeId: null, resolvedAt: 0, queued: 0, stale: false, submitting: false });
+  if (clear) comment.value = '';
+  if (document.activeElement === comment) comment.blur();
+  renderPin();
+}
+// 다시 짚으면 대상만 바뀌고 쓰던 글은 남는다.
+function probePin(p) {
+  if (!pinAvailable()) { notify(PIN_FAIL.offline); return; }
+  clearTimeout(P.queued);
+  Object.assign(P, { point: p, waiting: true, result: null, probeId: null, resolvedAt: 0, stale: false, queued: 0 });
+  const wait = P.lastSent + PROBE_GAP - Date.now();
+  if (wait > 0) P.queued = setTimeout(sendProbe, wait); else sendProbe();
+  renderPin();
+}
+function sendProbe() {
+  P.queued = 0;
+  if (!P.point || !P.waiting) return;
+  if (send({ type: 'pin-probe', x: P.point.x, y: P.point.y })) { P.sent++; P.lastSent = Date.now(); }
+  else { P.stale = true; P.waiting = false; renderPin(); } // 소켓이 다시 이어지면 같은 자리를 다시 짚는다
+}
+function pinSocketLost() {
+  clearTimeout(P.queued);
+  P.queued = 0; P.sent = 0; P.acked = 0; P.probeId = null; P.submitting = false; mineBusy = 0;
+  if (P.point) { P.stale = true; P.waiting = false; P.result = null; }
+  renderPin(); renderMine(); // 확인·다시 열기는 연결이 이어질 때까지 쉰다
+}
+function pinFailed(reason) {
+  P.waiting = false; P.probeId = null; P.result = null;
+  notify(PIN_FAIL[reason] || '짚지 못했습니다. 다시 짚어 주세요.');
+  if (!comment.value.trim()) closeSheet(false); else renderPin();
+}
+function onPin(m) {
+  const id = typeof m.probeId === 'string' ? m.probeId : null;
+  if (m.state === 'pending' || (m.state === 'failed' && !id)) {
+    // 짚기 하나마다 바로 한 번 오는 답이다. 순서대로 오므로 개수로 마지막 짚기의 답인지 안다
+    P.acked++;
+    if (P.acked !== P.sent || !P.waiting) return;
+    if (m.state === 'pending') P.probeId = id; else pinFailed(m.reason);
+    return;
+  }
+  if (!id || id !== P.probeId || P.acked !== P.sent || !P.waiting) return; // 지난 짚기의 답
+  if (m.state === 'failed') { pinFailed(m.reason); return; }
+  if (m.state !== 'resolved') return;
+  P.waiting = false; P.resolvedAt = Date.now();
+  P.result = { bounds: bounds(m.bounds), label: str(m.label), component: str(m.component), reason: str(m.reason) };
+  renderPin();
+  if (!comment.value && matchMedia('(pointer:fine)').matches) comment.focus({ preventScroll: true });
+}
+const str = (v) => (typeof v === 'string' && v ? v : null);
+function bounds(b) {
+  if (!b || typeof b !== 'object') return null;
+  const n = (v) => (typeof v === 'number' && isFinite(v) ? Math.min(1, Math.max(0, v)) : NaN);
+  const r = { x: n(b.x), y: n(b.y), w: n(b.w), h: n(b.h) };
+  return [r.x, r.y, r.w, r.h].some(isNaN) || !r.w || !r.h ? null : r;
+}
+function renderPin() {
+  const open = P.mode && !!P.point, sheet = $('sheet');
+  stage.classList.toggle('pin', P.mode);
+  $('pinhint').hidden = !P.mode || open;
+  sheet.hidden = !open;
+  placePin();
+  if (!open) return;
+  // 짚은 곳을 가리지 않게 반대편에 둔다
+  sheet.classList.toggle('top', P.point.y > 0.55);
+  sheet.classList.toggle('left', P.point.x > 0.5);
+  const r = P.result;
+  let t, s = '';
+  if (P.stale) t = '연결이 다시 이어지면 같은 자리를 다시 짚습니다';
+  else if (P.waiting) t = '짚은 곳의 요소를 찾는 중입니다…';
+  else if (!r) t = '짚지 못했습니다. 다시 짚어 주세요.';
+  else if (r.reason) { t = '짚은 자리'; s = PIN_MISS[r.reason] || PIN_MISS.NO_ELEMENT; }
+  else { t = r.label || '짚은 요소'; s = r.component ? '컴포넌트 ' + r.component : ''; }
+  text('sh-t', t); text('sh-s', s);
+  $('sh-s').hidden = !s;
+  text('sh-h', S.owner
+    ? '받은 상태로 저장되어 코딩 에이전트(MCP)가 바로 읽을 수 있습니다.'
+    : '글과 짚은 순간의 화면 한 장이 공유한 사람에게 갑니다. 공유한 사람이 받으면 코딩 에이전트가 읽습니다.');
+  updateSend();
+}
+function placePin() {
+  const dot = $('pin-dot'), box = $('pin-box');
+  const p = P.mode && view.w ? P.point : null, b = p && P.result ? P.result.bounds : null;
+  dot.hidden = !p || !!b;
+  box.hidden = !b;
+  dot.classList.toggle('wait', !!(p && P.waiting));
+  if (b) {
+    box.style.left = view.x + b.x * view.w + 'px'; box.style.top = view.y + b.y * view.h + 'px';
+    box.style.width = b.w * view.w + 'px'; box.style.height = b.h * view.h + 'px';
+  } else if (p) {
+    dot.style.left = view.x + p.x * view.w + 'px'; dot.style.top = view.y + p.y * view.h + 'px';
+  }
+}
+function updateSend() {
+  const n = chars(comment.value);
+  text('sh-n', n + '/' + BODY_MAX);
+  $('sh-ok').disabled = !P.result || P.waiting || P.stale || P.submitting || !S.joined || !comment.value.trim() || n > BODY_MAX;
+  text('sh-ok', P.submitting ? '보내는 중' : '보내기');
+}
+function submitPin() {
+  if ($('sh-ok').disabled) return;
+  if (Date.now() - P.resolvedAt > RESOLVED_TTL) {
+    // 서버가 결과를 버렸을 때다. 같은 자리를 다시 짚고, 화면이 바뀌었을 수 있으니 확인한 뒤 보내게 한다
+    notify('짚은 지 오래되어 같은 자리를 다시 짚었습니다. 대상을 확인하고 보내 주세요.');
+    probePin(P.point);
+    return;
+  }
+  if (send({ type: 'pin-submit', probeId: P.probeId, comment: comment.value.trim() })) { P.submitting = true; updateSend(); }
+}
+function onFeedback(m) {
+  const id = Number(m.id), state = FB_STATE[m.state] ? m.state : null;
+  if (!Number.isSafeInteger(id) || id <= 0 || !state) return;
+  if (typeof m.key === 'string' && m.key && P.submitting) {
+    // 방금 보낸 것. 확인 키는 이때 한 번만 온다
+    mine = loadMine().filter((f) => f.id !== id); // 다른 탭이 저장한 것을 덮지 않게 다시 읽는다
+    mine.push({ id, key: m.key, state, label: (P.result && P.result.label) || '짚은 자리', comment: comment.value.trim().slice(0, 200), note: '' });
+    saveMine();
+    closeSheet(true);
+    notify(state === 'ACCEPTED' ? '보냈습니다. 코딩 에이전트가 바로 읽을 수 있습니다.' : '보냈습니다. 공유한 사람이 받으면 코딩 에이전트에게 갑니다.');
+    renderMine(); render();
+    return;
+  }
+  const f = mine.find((x) => x.id === id);
+  if (!f) return;
+  const was = f.state, wasNote = f.note;
+  f.state = state;
+  f.note = state === 'FIXED' && typeof m.note === 'string' ? m.note.slice(0, NOTE_MAX) : state === 'FIXED' ? f.note : '';
+  if (mineBusy === id) mineBusy = 0;
+  if (reopenId === id && state !== 'FIXED') { reopenId = 0; reopenDraft = ''; }
+  if (was !== state || wasNote !== f.note) saveMine(); // 같은 값을 다시 쓰지 않는다. 다른 탭에 storage 이벤트를 만들지 않게
+  if (state === 'FIXED' && was !== 'FIXED') notify('고쳤다는 알림이 왔습니다 — ' + (f.label || '짚은 자리') + '. 지금 화면을 보고 확인해 주세요.');
+  renderMine(); render();
+}
+
+const el = (tag, cls, txt) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (txt != null) e.textContent = txt;
+  return e;
+};
+function button(label, cls, onClick) {
+  const b = el('button', cls, label);
+  b.type = 'button';
+  b.addEventListener('click', onClick);
+  return b;
+}
+// 기기·손님이 보낸 값은 모두 textContent 로만 그린다.
+function renderMine() {
+  const list = $('mine-l'), focused = document.activeElement && document.activeElement.id === 'ro-c';
+  list.textContent = '';
+  for (const f of mine.slice().reverse()) {
+    const li = el('li', 'fb'), head = el('div', 'fb-h'), [name, desc] = FB_STATE[f.state];
+    head.append(el('span', 'chip s-' + f.state, name), el('span', 'fb-l', f.label || '짚은 자리'));
+    li.append(head);
+    if (f.comment) li.append(el('p', 'fb-c', f.comment));
+    if (f.state === 'FIXED' && f.note) li.append(el('p', 'fb-n', '고친 내용: ' + f.note));
+    li.append(el('p', 'fb-d', desc));
+    if (f.state === 'FIXED') {
+      const busy = mineBusy === f.id || !S.joined, row = el('div', 'row');
+      if (reopenId === f.id) {
+        const ta = el('textarea');
+        ta.id = 'ro-c'; ta.rows = 2; ta.maxLength = BODY_MAX; ta.value = reopenDraft;
+        ta.setAttribute('aria-label', '다시 여는 까닭');
+        ta.placeholder = '무엇이 아직 맞지 않는지 적어 주세요';
+        const ok = button('다시 열기', 'pri', () => {
+          const c = ta.value.trim();
+          if (!c || chars(c) > BODY_MAX) { notify('다시 여는 까닭을 1~' + BODY_MAX + '자로 써 주세요.'); return; }
+          if (send({ type: 'feedback-reopen', id: f.id, key: f.key, comment: c })) { mineBusy = f.id; renderMine(); }
+        });
+        ta.addEventListener('input', () => { reopenDraft = ta.value; });
+        ok.disabled = busy;
+        row.append(button('취소', '', () => { reopenId = 0; reopenDraft = ''; renderMine(); }), ok);
+        li.append(ta, row);
+        if (focused) setTimeout(() => ta.focus({ preventScroll: true }), 0);
+      } else {
+        const yes = button('확인', 'pri', () => {
+          if (send({ type: 'feedback-confirm', id: f.id, key: f.key })) { mineBusy = f.id; renderMine(); }
+        });
+        const again = button('다시 열기', '', () => {
+          reopenId = f.id; reopenDraft = ''; renderMine();
+          const ta = $('ro-c');
+          if (ta) ta.focus({ preventScroll: true });
+        });
+        yes.disabled = again.disabled = busy;
+        row.append(again, yes);
+        li.append(row);
+      }
+    }
+    list.append(li);
+  }
+}
+
+$('b-pin').addEventListener('click', () => setPinMode(!P.mode));
+canvas.addEventListener('click', (e) => {
+  if (!P.mode) return;
+  const p = ratio(e, false);
+  if (!p) return;
+  e.preventDefault();
+  probePin(p);
+});
+comment.addEventListener('input', updateSend);
+comment.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); submitPin(); }
+  else if (e.key === 'Escape' && !e.isComposing) {
+    e.stopPropagation();
+    if (comment.value.trim()) comment.blur(); else closeSheet(true);
+  }
+});
+$('sh-ok').addEventListener('click', submitPin);
+$('sh-x').addEventListener('click', () => closeSheet(true));
+$('b-mine').addEventListener('click', () => {
+  const panel = $('mine');
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) renderMine();
+  render();
+});
+$('mine-x').addEventListener('click', () => { $('mine').hidden = true; render(); $('b-mine').focus(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.target === kbd || e.isComposing) return;
+  const panel = $('mine');
+  if (!panel.hidden && panel.contains(document.activeElement)) { panel.hidden = true; render(); $('b-mine').focus(); return; }
+  if (!P.mode) return;
+  if (P.point) { if (!comment.value.trim()) closeSheet(true); return; }
+  setPinMode(false);
+});
+// 같은 링크를 연 다른 탭이 남긴 것도 함께 보고 지켜본다.
+addEventListener('storage', (e) => {
+  if (e.key !== MINE_KEY) return;
+  const known = new Set(mine.map((f) => f.id));
+  mine = loadMine();
+  const fresh = mine.filter((f) => !known.has(f.id)).map((f) => ({ id: f.id, key: f.key }));
+  if (fresh.length) send({ type: 'feedback-watch', items: fresh });
+  renderMine(); render();
 });
 
 /* ---------- 버튼·이름 ---------- */

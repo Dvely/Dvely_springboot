@@ -1895,7 +1895,20 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - **데이터**(V76): `device_share_feedback`(요소 기술은 서버가 만든 JSON 문자열, TEXT) · `device_share_feedback_images`(MEDIUMBLOB 둘, 목록이 읽지 않게 분리, JPEG 시작 표시가 있는 것만) · `device_share_feedback_notes`. 링크 → 사용자 CASCADE. 끝난 링크의 피드백은 14일 뒤 매일 04:23 삭제
 - **상한**: 글 1~1,000자, 링크당 시간당 30개, 짚기 보는 사람마다 초당 1회·공유마다 기다리는 것 3개·결과 5개, 결과 JSON 16KiB·잘라 낸 이미지 512KiB·화면 1MiB, 고침 메모 300자, 확인 키로 지켜보기 30개
 - **테스트**: `ShareFeedbackIntegrationTest`(실 Tomcat WebSocket·MySQL — 손님 짚기 → NEW·기기 알림 → PAT 로 안 보임 → 기기 받기 → 프롬프트·이미지 → 읽기 PAT·PATCH 403 → 쓰기 PAT 고침 → 뷰어 FIXED → 다시 들어와 키로 확인 / 주인은 ACCEPTED·주인 다시 열기 ACCEPTED·손님 다시 열기 NEW 와 기기 재알림 / 14일 보존·탈퇴 CASCADE), `ShareSessionPinTest`(9), `PinResultSanitizerTest`(5), `FeedbackPromptRendererTest`(4), `FeedbackStatusTest`(3). **되돌려 확인**: 서비스의 PAT 문을 빼면 통합 테스트가 404 대신 200 으로 실패했다
-- **남은 것**: 뷰어 짚기 모드(PR-3), CLI 요소 풀기(#682), MCP·CLI(#683), FE(#210)
+- **남은 것**: CLI 요소 풀기(#682), MCP·CLI(#683), FE(#210). 뷰어 짚기 모드는 §4.69
+
+## 4.69 짚기 피드백 — 뷰어 (Issue #681 PR-3, 2026-11-17)
+
+공유 뷰어(`src/main/resources/deviceshare/viewer.html`)에 짚기 모드를 붙였다. 설계 §14.1·§14.4. 서버는 바꾸지 않았다.
+
+- **짚기 모드**: 막대의 `짚기`(aria-pressed)는 `config.pin` 이 참일 때만 보인다. 켜면 화면을 눌러도 기기로 아무것도 가지 않는다(`canInput()` 이 거짓, 누르고 있던 것은 떼고 들어간다, 뒤로·앞으로·새로고침·키보드 버튼도 쉰다). 조작권이 없는 보기 링크도 짚는다. Esc 로 끈다
+- **짚은 뒤**: 누른 점에 표시가 뜨고 기기 답이 오면 테두리(`bounds`)를 그린다. 글 쓰는 창이 짚은 곳의 반대편에 뜨고 요소 이름·가장 안쪽 컴포넌트를 보인다. 요소를 못 찾으면(`reason`) "짚은 자리와 화면만 보냅니다". 다른 곳을 다시 짚으면 대상만 바뀌고 글은 남는다. Cmd/Ctrl+Enter 로 보낸다
+- **답 맞추기**: `pin-probe` 하나마다 바로 오는 답(`pending` 또는 번호 없는 `failed`)을 세어 마지막 짚기의 답만 받는다. 짚기는 1.05초 간격으로 보낸다(서버 한도 초당 1회). 결과를 받은 지 290초가 지나 보내면 같은 자리를 다시 짚고 확인을 받는다(서버는 5분 둔다)
+- **연결이 끊기면**: 서버는 끊긴 사람의 결과를 버린다. 뷰어는 쓰던 글을 두고, 다시 연결되어 기기가 있으면(`config`) 같은 자리를 자동으로 다시 짚는다. 기기만 끊긴 동안은 받은 결과로 그대로 보낼 수 있다
+- **내 피드백**: 확인 키를 `localStorage` 의 `qeploy-share-feedback`(최근 30개, `{id, key, state, label, comment, note}`)에 둔다. 오리진이 링크마다 달라 링크끼리 섞이지 않는다. 연결할 때마다 `feedback-watch` 로 지금 상태를 받는다. `고침` 이 오면 알림과 배지가 뜨고 고친 내용과 `확인`·`다시 열기`(글 1~1,000자)를 보인다. 같은 링크를 연 다른 탭이 남긴 것도 `storage` 이벤트로 보고 지켜본다
+- **안전**: 기기·손님이 보낸 값(요소 이름·컴포넌트·고친 내용·글)은 모두 `textContent` 로만 그린다. `ViewerPageTest` 가 HTML 해석 경로(`innerHTML` 등)·외부 자원이 없는지와 짚기 메시지 이름이 서버(`ShareFeedbackService.handlesViewerMessage`)와 같은지 본다. 일부러 `innerHTML` 을 넣고 메시지 이름을 틀리게 하면 두 테스트가 실패했다
+- **실측**(로컬 서버 + 가짜 기기 — 목업 화면, `features:["pin"]`, 정해 둔 요소로 답): 손님이 `저장` 을 짚어 보냄 → 기기 받기 → 뷰어 `받음` → PAT `fixed` → 뷰어 알림·배지·고친 내용 → 다시 열기 → `받기 전` → 기기 다시 받기 → 다시 고침 → 새로고침 뒤 키로 상태 복원 → `확인`. 빈 곳(NO_ELEMENT)·기기 무응답(5초 timeout)·기기 끊김(offline)·서버 재시작 중 쓰던 글 보존과 자동 다시 짚기·주인 제어 링크(조작권이 있어도 짚기 중 입력 0건, 짚기를 끄면 다시 입력)·두 탭 동기화·폰 폭(390px) 라이트·다크(가로 넘침 없음)를 확인했다
+- **남은 것**: 실제 CLI 가 요소를 푸는 일(#682)이 들어오면 웹·Android 로 다시 실측한다
 
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
