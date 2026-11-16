@@ -464,10 +464,10 @@ Android 에뮬레이터는 실측해 보니 방향이 반대였다(에뮬레이�
 | `NEW` | 손님이 남겼고 주인이 아직 보지 않았다 | 손님의 `pin-submit`, 손님의 다시 열기 |
 | `ACCEPTED` | 주인이 받았다. 에이전트에게 나간다 | 주인(기기 터널 `y`, 웹). 주인이 직접 짚은 것은 처음부터 이 상태 |
 | `DISMISSED` | 받지 않았다 | 주인(기기 터널 `n`, 웹) |
-| `FIXED` | 고쳤다고 표시했다 | 주인(웹, CLI), 에이전트(MCP) |
+| `FIXED` | 고쳤다고 표시했다 | 주인(웹, CLI), 에이전트(MCP). 받은 것(`ACCEPTED`)만 |
 | `CONFIRMED` | 짚은 사람이 고친 화면을 보고 확인했다 | 짚은 사람(뷰어), 주인 |
 
-- 바뀌는 길: `NEW → ACCEPTED | DISMISSED`, `DISMISSED → ACCEPTED`(되돌리기), `ACCEPTED → FIXED | DISMISSED`, `FIXED → CONFIRMED | NEW`(다시 열기, 글을 붙인다).
+- 바뀌는 길: `NEW → ACCEPTED | DISMISSED`, `DISMISSED → ACCEPTED`(되돌리기), `ACCEPTED → FIXED | DISMISSED`, `FIXED → CONFIRMED | NEW | ACCEPTED`(다시 열기. 손님이 글을 붙이면 `NEW`, 주인이 열면 `ACCEPTED`).
 - **손님 글은 주인이 받아야 에이전트로 간다.** 다시 열기도 손님 글이 새로 붙으므로 `NEW` 로 돌아가 다시 받아야 한다(§14.7).
 
 ### 14.3 요소 기술 (기기 → 서버, #682)
@@ -590,8 +590,8 @@ PIN_RESULT payload 는 `[JSON 길이 u32 BE][JSON][잘라 낸 이미지 길이 u
 | `author_key_hash` | CHAR(64) | 확인 키 SHA-256 hex |
 | `kind` | VARCHAR(16) | 링크 종류(`WEB` · `ANDROID` · `IOS`) |
 | `screen_label` | VARCHAR(512) | §14.3 `screen.label` |
-| `element_json` | JSON | §14.3 를 서버가 다시 만든 것(16KiB 이하) |
-| `comment` | VARCHAR(1000) | 처음 글 |
+| `element_json` | TEXT | §14.3 를 서버가 다시 만든 JSON 문자열(16KiB 이하). 서버가 만든 값만 들어가 MySQL JSON 검사가 필요 없다 |
+| `body` | VARCHAR(1000) | 처음 글 |
 | `status` | VARCHAR(16) | §14.2 |
 | `created_at` · `updated_at` | DATETIME(6) | |
 
@@ -599,10 +599,10 @@ PIN_RESULT payload 는 `[JSON 길이 u32 BE][JSON][잘라 낸 이미지 길이 u
 
 `device_share_feedback_images`: `feedback_id` PK·FK(CASCADE), `crop` MEDIUMBLOB, `screen` MEDIUMBLOB. 목록이 이미지를 읽지 않도록 테이블을 나눈다.
 
-`device_share_feedback_notes`: `note_id` PK, `feedback_id` FK(CASCADE), `author_role`(`OWNER` · `GUEST` · `AGENT`), `kind`(`FIXED` · `REOPEN` · `CONFIRM`), `text` VARCHAR(1000), `created_at`.
+`device_share_feedback_notes`: `note_id` PK, `feedback_id` FK(CASCADE), `author_role`(`OWNER` · `GUEST` · `AGENT`), `kind`(`FIXED` · `REOPEN` · `CONFIRM`), `body` VARCHAR(1000), `created_at`.
 
-- 세 테이블 모두 `device_share_links` → `users` CASCADE 로 탈퇴 때 함께 지워진다(`UserWithdrawalStore.CASCADED_TABLES` 에 적는다).
-- **보존**: 링크가 끝나고(회수 또는 만료) 14일이 지난 피드백은 하루 한 번 지운다.
+- 세 테이블 모두 `device_share_links` → `users` CASCADE 로 탈퇴 때 함께 지워진다. 사용자 열이 없어 `UserWithdrawalCoverageTest` 가 "사용자의 것" 으로 잡지 않으므로 `CASCADED_TABLES` 에는 넣지 않는다(그 목록은 직접 지우는 부모에서 CASCADE 되는 것만 받는다). `device_share_links` 줄 주석에 적었다.
+- **보존**: 링크가 끝나고(회수 또는 만료) 14일이 지난 피드백은 매일 04:23 에 지운다.
 - 1단계의 "화면 내용은 저장하지 않는다"(§6.1, §8)의 유일한 예외다. 짚은 그 순간의 한 장과 잘라 낸 이미지만 남는다.
 
 **API**
@@ -614,7 +614,7 @@ PIN_RESULT payload 는 `[JSON 길이 u32 BE][JSON][잘라 낸 이미지 길이 u
 | `GET /api/v1/device-share-feedback/{id}` | 브라우저 · PAT(READ) | 상세(요소 기술·노트 포함) |
 | `GET /api/v1/device-share-feedback/{id}/prompt` | 브라우저 · PAT(READ) | `{markdown}`(§14.5) |
 | `GET /api/v1/device-share-feedback/{id}/image?kind=crop\|screen` | 브라우저 · PAT(READ) | `image/jpeg`. 없으면 404 |
-| `PATCH /api/v1/device-share-feedback/{id}` | 브라우저만 | `{status: ACCEPTED \| DISMISSED \| CONFIRMED}` |
+| `PATCH /api/v1/device-share-feedback/{id}` | 브라우저만 | `{status: ACCEPTED \| DISMISSED \| CONFIRMED}`. 그 밖의 값은 400 |
 | `POST /api/v1/device-share-feedback/{id}/fixed` | 브라우저 · PAT(WRITE) | `{note?}`(300자) → `FIXED`. 메모는 짚은 사람에게 보인다 |
 
 - 남의 피드백은 404 다(링크의 `user_id` 로 본다).

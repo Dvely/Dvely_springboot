@@ -1194,6 +1194,16 @@ ShareSession(링크 하나): 기기 SCREEN_FRAME → jpeg: 보는 사람마다 "
                          조작권 가진 사람의 input → 기기 INPUT · 손님 request-control → 기기 CONTROL_REQUEST → CONTROL_DECISION
 회수: DELETE /device-shares/{id} → ShareSessionRegistry.end → 기기 GOODBYE · 보는 사람 ended
 점검: ShareSessionRegistry 15초(만료·조작권 시간) · DeviceShareService 15초(DB 에 없거나 끝난 링크 — 탈퇴 CASCADE)
+
+짚기 피드백(#681, 설계 §14):
+  뷰어 pin-probe ──▶ ShareSession(메모리) ──PIN_PROBE 0x66──▶ 기기 ──PIN_RESULT 0x67──▶ PinResultSanitizer(아는 필드만)
+                     → 뷰어 pin(resolved: 테두리·이름만, 소스 후보 없음) · 결과는 보는 사람마다 하나, 5분(1초 틱이 5초 답 없음·5분 정리)
+  뷰어 pin-submit·feedback-watch·confirm·reopen ──▶ ViewerSocketHandler → ShareFeedbackService(세션 밖, DB)
+                     → device_share_feedback(+images·notes) · 뷰어 feedback(id·확인 키) · 기기 FEEDBACK_NOTICE 0x68
+  기기 FEEDBACK_DECISION 0x69 ──▶ DeviceTunnelHandler → ShareFeedbackService(NEW → ACCEPTED·DISMISSED) · HELLO 뒤 받기 전 것 다시 알림
+  주인 API /api/v1/device-share-feedback/** ──▶ ShareFeedbackController → ShareFeedbackService (PAT 면 NEW·DISMISSED 404)
+                     → 상태가 바뀌면 ShareSessionRegistry.notifyWatchers → 남긴 사람 뷰어 feedback
+  보존: ShareFeedbackService 매일 04:23 — 끝나고 14일 지난 링크의 피드백 삭제(이미지·노트 CASCADE)
 ```
 
 - 공유 오리진 판별은 `ShareHost`(`<26자 base32>.<base-domain>`) 한 곳이다. 필터·뷰어 인터셉터가 같은 판별을 쓴다.
