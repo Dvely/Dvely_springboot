@@ -2,7 +2,7 @@
 
 > 기준일: 2026-11-12 · 기준 커밋: 67c1ff1a(develop) · 이슈 #652 · 서버 재호스팅 #649
 > 구현 상태: 1단계(웹 화면) 구현(#653·#654). 2단계(Android 에뮬레이터)는 §12, 3단계(iOS 시뮬레이터)는 §13
-> 개정: 2026-11-17 · 기준 커밋: c585d82f(develop) — §14 짚기 피드백(#681·#682·#683). 서버(#685)·뷰어(#681 PR-3) 구현, CLI 요소 풀기(#682)·MCP(#683)는 아직
+> 개정: 2026-11-17 · 기준 커밋: 0540e17c(develop) — §14 짚기 피드백(#681·#682·#683). 서버(#685)·뷰어(#686)·CLI 웹 요소 풀기(#682 PR-1) 구현, Android·iOS 요소 풀기와 MCP(#683)는 아직
 
 ---
 
@@ -229,7 +229,7 @@ stream id 는 1단계에서 늘 0 이다(나중 HTTP 중계용 자리). JSON pay
 ## 7. CLI (1단계: 웹)
 
 ```
-qeploy share web <url> [--viewport 390x844] [--ttl 60] [--headed] [--json]
+qeploy share web <url> [--viewport 390x844] [--project <폴더>] [--ttl 60] [--headed] [--json]
 ```
 
 1. `POST /device-shares` 로 링크를 만들고 보기 링크·내 제어 링크를 출력한다.
@@ -504,6 +504,15 @@ PIN_RESULT payload 는 `[JSON 길이 u32 BE][JSON][잘라 낸 이미지 길이 u
 - 실패: `{"probeId": "p7", "ok": false, "reason": "NO_ELEMENT" | "UNSUPPORTED" | "TIMEOUT"}`. 이미지는 그래도 보낸다.
 - **서버는 아는 필드만 골라 다시 만든다.** 모르는 필드는 버리고, 길이를 자른다(텍스트 200자, 선택자 300자, 파일 경로 300자, 라벨 512자). 파일 경로는 상대 경로만 받는다(`/` 로 시작하거나 `..`·`\0` 이 있으면 버린다). 비율은 0~1 로 자른다. 전체 JSON 16KiB, 잘라 낸 이미지 512KiB, 화면 1MiB 를 넘으면 그 부분을 버린다. 한 프레임 상한 2MiB(§4.4) 안에 든다.
 - 소스 후보는 기기가 자기 프로젝트 폴더에서 찾는다(#682). 코드는 서버로 가지 않고 파일 경로와 줄 번호만 간다.
+- **웹 구현**(#682 PR-1, `agent-tools/packages/cli/src/share/pin-web.js`·`source-hints.js`)
+  - 읽기: `Runtime.evaluate` 한 번으로 `document.elementFromPoint`(열린 shadow root 안까지)를 읽는다. 버튼의 글자·아이콘을 짚으면 5단계 안의 버튼·링크·입력란으로 올린다. 입력란은 입력한 값을 보내지 않고 이름표·`placeholder`·`name` 으로 가리킨다
+  - 컴포넌트: React 는 fiber 를 위로 따라가며 함수·`forwardRef`·`memo` 이름을 모으고, 각 컴포넌트가 렌더한 JSX 의 위치(`_debugOwner` 가 그 컴포넌트인 fiber 의 `_debugSource`, React 19 는 `_debugStack`)를 그 컴포넌트의 파일로 본다. React 19 스택의 줄은 개발 서버가 변환한 모듈의 줄이라 버리고, 파일에서 정의한 줄(`function Name`·`const Name =`)을 다시 찾는다. Vue 3 `__vueParentComponent`(`type.__file`)·Vue 2 `__vue__`, Svelte `__svelte_meta.loc`
+  - 경로: 절대 경로·개발 서버 모듈 URL(같은 오리진만, Vite `/@fs/`)을 프로젝트 상대 경로로 바꾼다. 실제 경로(`realpath`)가 프로젝트 밖·숨은 폴더·`node_modules` 면 버린다
+  - 소스 후보 순서: 개발 서버가 알려 준 컴포넌트 파일 → 이름만 아는 컴포넌트의 정의(없으면 같은 이름의 파일) → id(`id="…"`, `@+id/…`, `R.id.…`) → 보이는 텍스트(2~80자). 약 1초·5개, 파일 4,000개·256KiB 까지. 파일 목록은 30초 캐시
+  - 프로젝트 폴더: `--project`, 없으면 지금 폴더가 프로젝트(`package.json`·`.git`·`build.gradle` 등)일 때만. 홈 폴더에서 띄워도 홈을 뒤지지 않는다
+  - 이미지: 잘라 낸 것은 요소 + 16px(요소가 없으면 짚은 점 둘레 240×160)를 `Page.captureScreenshot`(clip, 페이지 좌표, 긴 변 800px 이하), 화면은 마지막 screencast 프레임(보는 사람이 본 그 장)
+  - 짚기는 한 번에 하나씩 처리한다. 4초 안에 못 끝내면 `TIMEOUT` 과 마지막 화면을 보낸다(서버는 5초에 뷰어에 알린다)
+  - HELLO 의 `features: ["pin"]` 은 `resolvePin` 이 있는 세션(지금은 웹)만 싣는다. Android·iOS 는 #682 PR-2·PR-3
 
 ### 14.4 메시지
 
