@@ -14,7 +14,8 @@
 import { readFileSync } from 'node:fs';
 import { UsageError } from '../confirm.js';
 import { terminalSafe } from '../render.js';
-import { askControl } from './ask.js';
+import { askControl, askFeedback } from './ask.js';
+import { projectRoot } from './source-hints.js';
 import { CdpConnection, attachFirstPage } from './cdp.js';
 import { NO_CHROME_MESSAGE, findChrome, launchChrome } from './chrome.js';
 import { checkTunnelUrl, parseTargetUrl, parseTtl, parseViewport } from './policy.js';
@@ -56,6 +57,8 @@ export const defaultShareRuntime = {
   createSimctl: () => new Simctl(),
   createIosSession: (options) => new IosShareSession(options),
   askControl,
+  askFeedback,
+  cwd: () => process.cwd(),
   /** @returns {() => void} unsubscribe */
   onInterrupt(handler) {
     for (const signal of SIGNALS) process.on(signal, handler);
@@ -136,6 +139,8 @@ function webSource({ args, flags, rt, env }) {
   return {
     apiKind: 'WEB',
     targetLabel,
+    /** §14: answers pins (element, component, source candidates) */
+    pins: true,
     prepare() {
       // Before the link exists: a link nothing can serve would still take one of the five a user
       // may have open.
@@ -433,7 +438,7 @@ const SOURCES = { web: webSource, android: androidSource, ios: iosSource };
 
 export const shareCommand = {
   usage:
-    'qeploy share web <url> [--viewport 390x844] [--ttl 60] [--headed] [--json]\n' +
+    'qeploy share web <url> [--viewport 390x844] [--project <폴더>] [--ttl 60] [--headed] [--json]\n' +
     '  qeploy share android [--app <패키지>] [--any-app] [--serial emulator-5554] [--max-size 1280] [--bit-rate 2M] [--ttl 60] [--json]\n' +
     '  qeploy share ios [--app <번들 ID>] [--any-app] [--udid <UDID>] [--scale 0.5] [--fps 15] [--ttl 60] [--json]',
   summary:
@@ -453,6 +458,9 @@ export const shareCommand = {
     const log = (text) => err(terminalSafe(text));
 
     const source = makeSource({ args, flags, rt, env, log });
+    // §14.3: pinned elements' source candidates come from this folder. Only paths leave it.
+    const project = projectRoot({ flag: flags.project, cwd: rt.cwd() });
+    if (project.why === 'missing') throw new UsageError(`--project 폴더를 찾을 수 없습니다: ${flags.project}`);
     await source.prepare();
 
     const state = {};
@@ -490,6 +498,13 @@ export const shareCommand = {
 
       // --json is for scripts that read the links, so it goes out now, not when the share ends.
       out(flags.json ? JSON.stringify(share, null, 2) : linksText(share, ttlMinutes ?? DEFAULT_TTL_MINUTES));
+      if (source.pins) {
+        log(
+          project.dir
+            ? `짚기: 보는 사람이 짚은 요소의 소스 후보를 ${project.dir} 에서 찾습니다 (경로와 줄 번호만 보냅니다).`
+            : '짚기: 지금 폴더가 프로젝트가 아니어서 소스 후보는 찾지 않습니다. --project <폴더> 로 정할 수 있습니다.'
+        );
+      }
 
       if (stopReason) {
         result = { reason: stopReason };
@@ -501,6 +516,8 @@ export const shareCommand = {
             token: client.token,
             cliVersion: CLI_VERSION,
             askControl: (question) => rt.askControl(question, { onInterrupt: interrupt }),
+            askFeedback: (question) => rt.askFeedback(question, { onInterrupt: interrupt }),
+            project: project.dir,
             log,
           },
         });

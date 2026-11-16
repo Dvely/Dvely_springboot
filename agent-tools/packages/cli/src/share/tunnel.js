@@ -11,10 +11,17 @@
  *   handleInput(input)   one §4.3 input from the viewer holding control
  *   onKeyframeRequest()  the server needs a fresh key frame (H.264 only, §12.3)
  *   onFinished()         the share is over: stop timers, release the device
+ *   resolvePin(probe)    optional: read what is at a viewer's point (§14.3). A session that has it
+ *                        announces `features: ["pin"]` in HELLO, and only then does the server
+ *                        offer pinning to viewers
  */
 import WebSocket from 'ws';
-import { KIND, HEADER_BYTES, MAX_PAYLOAD_BYTES, decodeFrame, encodeJsonFrame, parseJsonPayload } from './protocol.js';
+import { KIND, HEADER_BYTES, MAX_PAYLOAD_BYTES, decodeFrame, encodeFrame, encodeJsonFrame, parseJsonPayload } from './protocol.js';
 import { backoffDelay } from './policy.js';
+import { PIN_DEADLINE_MS, encodePinResult, noticeLine, parseNotice, parseProbe, unresolved, withDeadline } from './pin.js';
+
+/** A probe that waited this long behind others is past the server's 5 s; answering it is wasted work. */
+const PIN_STALE_MS = 4500;
 
 /** §5: a granted control lasts ten minutes. */
 export const CONTROL_TTL_SECONDS = 600;
@@ -40,6 +47,8 @@ export class TunnelSession {
    * @param {string} o.token the PAT
    * @param {string} o.cliVersion
    * @param {(question: string) => Promise<boolean>} o.askControl
+   * @param {(question: string) => Promise<boolean|null>} [o.askFeedback] whether to take a guest's
+   *   feedback; null leaves it waiting (§14.4). Without it nothing is asked
    * @param {(text: string) => void} [o.log] one line of status for the owner
    */
   constructor({
@@ -47,13 +56,15 @@ export class TunnelSession {
     token,
     cliVersion,
     askControl,
+    askFeedback = async () => null,
     log = noop,
     WebSocketImpl = WebSocket,
     backoff = backoffDelay,
     pingIntervalMs = PING_INTERVAL_MS,
+    pinDeadlineMs = PIN_DEADLINE_MS,
     now = Date.now,
   }) {
-    Object.assign(this, { tunnelUrl, token, cliVersion, askControl, log, WebSocketImpl, backoff, pingIntervalMs, now });
+    Object.assign(this, { tunnelUrl, token, cliVersion, askControl, askFeedback, log, WebSocketImpl, backoff, pingIntervalMs, pinDeadlineMs, now });
 
     this.socket = null;
     this.ready = false; // WELCOME received on the current socket
@@ -65,6 +76,7 @@ export class TunnelSession {
 
     this.controlQueue = Promise.resolve();
     this.presenceLine = null;
+    this.pinQueue = Promise.resolve();
 
     this.closed = false;
     this.done = new Promise((resolve) => {
@@ -116,7 +128,9 @@ export class TunnelSession {
     });
     socket.on('open', () => {
       if (socket !== this.socket) return;
-      this.sendRaw(encodeJsonFrame(KIND.HELLO, this.helloPayload()));
+      const hello = this.helloPayload();
+      if (this.canPin()) hello.features = ['pin'];
+      this.sendRaw(encodeJsonFrame(KIND.HELLO, hello));
       this.startPing(socket);
     });
     socket.on('message', (data, isBinary) => {
@@ -151,6 +165,10 @@ export class TunnelSession {
         return this.onPresence(body());
       case KIND.KEYFRAME_REQUEST:
         return this.onKeyframeRequest();
+      case KIND.PIN_PROBE:
+        return this.onPinProbe(body());
+      case KIND.FEEDBACK_NOTICE:
+        return this.onFeedbackNotice(body());
       default:
         // A kind this CLI does not know yet (§10 relaying, say) is not an error.
         return undefined;
@@ -197,6 +215,69 @@ export class TunnelSession {
       if (this.closed) return;
       this.sendRaw(encodeJsonFrame(KIND.CONTROL_DECISION, { viewerId, granted, ttlSeconds: CONTROL_TTL_SECONDS }));
       this.log(granted ? `'${who}' 님에게 10분 동안 조작권을 줬습니다.` : `'${who}' 님의 조작 요청을 거절했습니다.`);
+    });
+  }
+
+  canPin() {
+    return typeof this.resolvePin === 'function';
+  }
+
+  /**
+   * One probe at a time, in order. Reading a point never touches the device's input; a probe that
+   * fails or runs out of time still answers, with the point and whatever screen there is.
+   */
+  onPinProbe(payload) {
+    const probe = parseProbe(payload);
+    if (!probe || this.closed || !this.canPin()) return;
+    const arrived = this.now();
+    this.pinQueue = this.pinQueue.then(() => this.answerPin(probe, arrived)).catch(noop);
+  }
+
+  async answerPin(probe, arrived) {
+    if (this.closed || this.now() - arrived > PIN_STALE_MS) return;
+    let answer = null;
+    try {
+      answer = await withDeadline(Promise.resolve(this.resolvePin(probe)), this.pinDeadlineMs);
+    } catch {
+      answer = null;
+    }
+    if (this.closed) return;
+    if (!answer?.result) {
+      answer = { result: unresolved(probe, 'TIMEOUT'), crop: null, screen: this.pinScreen?.() ?? null };
+    }
+    // The server matches the answer to its question by this id alone.
+    const result = { ...answer.result, probeId: probe.probeId };
+    this.sendRaw(encodeFrame(KIND.PIN_RESULT, encodePinResult(result, answer.crop, answer.screen)));
+  }
+
+  /**
+   * Someone left feedback (§14.4). A guest's waits for the owner: the terminal asks, and only a
+   * human answer here or on the web lets the coding agent read it.
+   */
+  onFeedbackNotice(payload) {
+    const notice = parseNotice(payload);
+    if (!notice || this.closed) return;
+    this.log(noticeLine(notice));
+    if (notice.state !== 'NEW') {
+      if (!notice.guest) this.log('  → 받은 상태로 저장했습니다. 코딩 에이전트가 읽을 수 있습니다.');
+      return;
+    }
+    // Shares the control queue: two prompts racing for the same terminal would garble both.
+    this.controlQueue = this.controlQueue.then(async () => {
+      if (this.closed) return;
+      let accepted = null;
+      try {
+        accepted = await this.askFeedback(`피드백 #${notice.feedbackId} 을 받아 코딩 에이전트에게 넘길까요?`);
+      } catch {
+        accepted = null;
+      }
+      if (this.closed) return;
+      if (accepted === null) {
+        this.log(`  → 피드백 #${notice.feedbackId} 은 받기 전으로 둡니다. 웹에서 받거나 무시할 수 있습니다.`);
+        return;
+      }
+      this.sendRaw(encodeJsonFrame(KIND.FEEDBACK_DECISION, { feedbackId: notice.feedbackId, accepted: accepted === true }));
+      this.log(accepted ? `  → 피드백 #${notice.feedbackId} 을 받았습니다.` : `  → 피드백 #${notice.feedbackId} 을 받지 않았습니다.`);
     });
   }
 

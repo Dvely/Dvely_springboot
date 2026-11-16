@@ -27,6 +27,7 @@ const VALUED = new Set([
   'udid',
   'scale',
   'fps',
+  'project',
 ]);
 
 const camel = (name) => name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());

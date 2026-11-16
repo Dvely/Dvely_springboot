@@ -22,6 +22,14 @@ export const KIND = Object.freeze({
   PRESENCE: 0x64,
   /** Server → device: send a fresh key frame (H.264, §12.2). */
   KEYFRAME_REQUEST: 0x65,
+  /** Server → device: a viewer pointed at {x, y}; read what is there (§14.4). */
+  PIN_PROBE: 0x66,
+  /** Device → server: `[json length u32][json][crop length u32][crop JPEG][screen JPEG]` (§14.3). */
+  PIN_RESULT: 0x67,
+  /** Server → device: someone left feedback on this share. */
+  FEEDBACK_NOTICE: 0x68,
+  /** Device → server: the owner took ({accepted: true}) or turned down a guest's feedback. */
+  FEEDBACK_DECISION: 0x69,
 });
 
 /** The version the tunnel URL announces with `?v=1` (§4.1). */

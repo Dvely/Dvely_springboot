@@ -23,7 +23,7 @@ import {
   parseViewport,
 } from '../src/share/policy.js';
 import { chromeArgs, chromeCandidates, findChrome, parseDevToolsUrl } from '../src/share/chrome.js';
-import { askControl } from '../src/share/ask.js';
+import { askControl, askFeedback } from '../src/share/ask.js';
 import { UsageError } from '../src/confirm.js';
 
 describe('tunnel frame codec (§4.1)', () => {
@@ -442,6 +442,39 @@ describe('asking the owner for control (§5)', () => {
       input.isTTY = true;
       setTimeout(() => input.write(`${answer}\n`), 5);
       assert.equal(await askControl('허용할까요?', { input, output: sink(), timeoutMs: 2000 }), expected, answer);
+    }
+  });
+});
+
+describe('asking the owner about a guest feedback (§14.4)', () => {
+  const sink = () => {
+    const output = new PassThrough();
+    let text = '';
+    output.on('data', (d) => (text += d));
+    output.text = () => text;
+    return output;
+  };
+
+  it('leaves it waiting, without asking, when nobody is at a terminal', async () => {
+    const output = sink();
+    assert.equal(await askFeedback('받을까요?', { input: { isTTY: false }, output }), null);
+    assert.equal(output.text(), '');
+  });
+
+  it('leaves it waiting when the time runs out, and says the web can still take it', async () => {
+    const input = new PassThrough();
+    input.isTTY = true;
+    const output = sink();
+    assert.equal(await askFeedback('받을까요?', { input, output, timeoutMs: 30 }), null);
+    assert.match(output.text(), /그대로 둡니다/);
+  });
+
+  it('takes it on y and turns it down on anything else typed', async () => {
+    for (const [answer, expected] of [['y', true], ['yes', true], ['n', false], ['', false]]) {
+      const input = new PassThrough();
+      input.isTTY = true;
+      setTimeout(() => input.write(`${answer}\n`), 5);
+      assert.equal(await askFeedback('받을까요?', { input, output: sink(), timeoutMs: 2000 }), expected, answer);
     }
   });
 });
