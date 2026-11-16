@@ -1,5 +1,8 @@
 package com.example.dvely.project.presentation;
 
+import com.example.dvely.cloudresource.presentation.dto.LiveResourceResponse;
+import com.example.dvely.common.response.ApiResponse;
+import com.example.dvely.common.response.ErrorCode;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
 import com.example.dvely.project.application.command.dto.ConnectProjectRepositoryCommand;
 import com.example.dvely.project.application.command.dto.UpdateProjectCommand;
@@ -12,6 +15,7 @@ import com.example.dvely.project.application.result.ProjectInfrastructureChangeR
 import com.example.dvely.project.application.result.ProjectInfrastructureConfigurationResult;
 import com.example.dvely.project.application.result.ProjectInfrastructureSettingsResult;
 import com.example.dvely.project.application.service.ProjectCostBudgetService;
+import com.example.dvely.project.application.service.ProjectDeletionBlockedException;
 import com.example.dvely.project.application.service.ProjectInfrastructureConfigurationService;
 import com.example.dvely.project.application.service.ProjectInfrastructureSettingsService;
 import com.example.dvely.project.infrastructure.mapper.ProjectMapper;
@@ -27,6 +31,7 @@ import com.example.dvely.project.presentation.dto.response.ProjectActivityLogRes
 import com.example.dvely.project.presentation.dto.response.ProjectCommitResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCostBudgetResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectCreateResponse;
+import com.example.dvely.project.presentation.dto.response.ProjectDeletionCheckResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectDetailResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectInfrastructureChangeResponse;
 import com.example.dvely.project.presentation.dto.response.ProjectInfrastructureConfigurationResponse;
@@ -44,8 +49,10 @@ import jakarta.validation.Valid;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -178,7 +185,9 @@ public class ProjectController {
     @Operation(
             summary = "프로젝트 삭제",
             description = "프로젝트를 삭제합니다. deleteMode가 없으면 PROJECT_ONLY로 처리되어 프로젝트를 soft delete하고 대화는 휴지통으로 이동합니다. " +
-                          "PROJECT_AND_REPOSITORY를 지정하면 연결된 GitHub 저장소 삭제를 시도하고 관련 대화를 함께 제거합니다."
+                          "PROJECT_AND_REPOSITORY를 지정하면 연결된 GitHub 저장소 삭제를 시도하고 관련 대화를 함께 제거합니다. " +
+                          "이 프로젝트로 만든 서버·DB 가 사용자 AWS 계정에 살아 있거나 배포가 대기·진행 중이면 아무것도 지우지 않고(GitHub 저장소도 그대로) " +
+                          "409(PROJECT_DELETION_BLOCKED)와 함께 그 목록을 돌려줍니다. 미리 보려면 GET /deletion 을 부릅니다."
     )
     @DeleteMapping("/{projectId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -187,6 +196,28 @@ public class ProjectController {
                               @Parameter(description = "삭제 범위. PROJECT_ONLY(기본값) | PROJECT_AND_REPOSITORY")
                               @RequestParam(name = "deleteMode", required = false) String deleteMode) {
         projectFacade.deleteProject(ownerUserId, projectId, ProjectDeleteMode.from(deleteMode));
+    }
+
+    @Operation(
+            summary = "프로젝트 삭제 가능 여부 조회",
+            description = "프로젝트 삭제를 막는 자원(이 프로젝트로 만들어 사용자 AWS 계정에 아직 살아 있는 서버·DB, 대기·진행 중인 배포)이 " +
+                          "있는지 돌려줍니다. 삭제 확인 화면을 열 때 호출해, 먼저 정리할 것을 보여 줍니다. 프론트 S3 도메인의 CloudFront 는 " +
+                          "삭제가 함께 정리하므로 여기에 나오지 않습니다."
+    )
+    @GetMapping("/{projectId}/deletion")
+    public ProjectDeletionCheckResponse getDeletionCheck(@Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,
+                                                         @Parameter(description = "삭제하려는 프로젝트 ID") @PathVariable Long projectId) {
+        return ProjectDeletionCheckResponse.of(
+                LiveResourceResponse.from(projectFacade.getDeletionBlockers(ownerUserId, projectId)));
+    }
+
+    /** 409 에 남은 자원 목록을 싣는다(#595). 이 컨트롤러에서 던진 것만 받는다. */
+    @ExceptionHandler(ProjectDeletionBlockedException.class)
+    public ResponseEntity<ApiResponse<ProjectDeletionCheckResponse>> handleDeletionBlocked(ProjectDeletionBlockedException e) {
+        ErrorCode code = ErrorCode.PROJECT_DELETION_BLOCKED;
+        return ResponseEntity.status(code.getStatus())
+                .body(ApiResponse.error(code, e.getMessage(),
+                        ProjectDeletionCheckResponse.of(LiveResourceResponse.from(e.liveResources()))));
     }
 
     @Operation(

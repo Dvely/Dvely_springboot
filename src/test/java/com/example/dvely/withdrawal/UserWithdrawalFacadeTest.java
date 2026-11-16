@@ -23,7 +23,7 @@ import com.example.dvely.audit.domain.value.AuditCategory;
 import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
 import com.example.dvely.auth.application.port.out.TokenClaims;
-import com.example.dvely.withdrawal.application.LiveResource;
+import com.example.dvely.cloudresource.application.LiveResource;
 import com.example.dvely.withdrawal.application.UserWithdrawalFacade;
 import com.example.dvely.withdrawal.application.UserWithdrawalService;
 import com.example.dvely.withdrawal.application.WithdrawalBlockedException;

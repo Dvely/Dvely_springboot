@@ -71,7 +71,11 @@ public enum ErrorCode {
 
     // 프리뷰 닫기(#650). 진행 중이거나 결정을 기다리는 작업이 쓰는 프리뷰라 닫지 않았다(아무것도 닫지 않았다). 응답
     // data.blocked 에 막은 세션과 작업 상태가 실린다. 메시지에 다음 행동(결과 승인 결정, 작업 취소)이 들어 있다.
-    PREVIEW_IN_USE(409, "PREVIEW_IN_USE", "진행 중이거나 결정을 기다리는 작업이 쓰는 프리뷰라 닫을 수 없습니다");
+    PREVIEW_IN_USE(409, "PREVIEW_IN_USE", "진행 중이거나 결정을 기다리는 작업이 쓰는 프리뷰라 닫을 수 없습니다"),
+
+    // 프로젝트 삭제(#595). 이 프로젝트로 만든 서버·DB 가 사용자 AWS 에 살아 있거나 배포가 진행 중이라 지우지 않았다(GitHub
+    // 저장소도 그대로다). 응답 data 에 남은 자원 목록이 실린다 — 탈퇴(WITHDRAWAL_BLOCKED)와 같은 모양이다.
+    PROJECT_DELETION_BLOCKED(409, "PROJECT_DELETION_BLOCKED", "정리하지 않은 AWS 자원이 남아 있어 프로젝트를 삭제할 수 없습니다");
 
     private final int status;
     private final String code;

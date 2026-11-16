@@ -294,7 +294,7 @@ redirect 대상은 `{프론트 redirect URL}/auth/app-callback`이며 `error` �
 
 남은 것:
 
-- **삭제한 프로젝트에 CloudFront 도메인(`CDN`)이 남으면 사용자가 풀 길이 없다.** 프로젝트 삭제는 도메인을 정리하지 않고(#595), 도메인 해제(`DELETE /domains/{id}`)는 삭제한 프로젝트면 404 다. AWS 콘솔에서 CloudFront 를 지워도 도메인 행이 남아 계속 막는다. 지금은 운영자가 처리한다. 근본 해결은 #595(프로젝트 삭제가 과금 자원을 먼저 정리)
+- **삭제한 프로젝트에 CloudFront 도메인(`CDN`)이 남으면 사용자가 풀 길이 없다.** 프로젝트 삭제가 이 도메인을 정리하지 못한 경우이고(#595 는 서버·DB·배포만 막는다), 도메인 해제(`DELETE /domains/{id}`)는 삭제한 프로젝트면 404 다. AWS 콘솔에서 CloudFront 를 지워도 도메인 행이 남아 계속 막는다. 지금은 운영자가 처리한다. 남은 과제다
 - S3 정적 사이트 버킷은 세지 않는다. DB 에 버킷 기록이 없고, 사용자 소유이며 과금이 작다
 
 ---
@@ -449,6 +449,10 @@ Query `deleteMode`:
 - `PROJECT_AND_REPOSITORY`: GitHub 저장소 삭제 후 대화와 프로젝트 데이터 제거
 - 별칭: `PROJECT`(=`PROJECT_ONLY`), `PROJECT_WITH_REPOSITORY`(=`PROJECT_AND_REPOSITORY`). 그 외 값은 `400`. 저장소가 연결되지 않은 프로젝트에 `PROJECT_AND_REPOSITORY`를 쓰면 `409`.
 - 삭제가 커밋된 뒤 트랜잭션 밖에서 best-effort로 정리한다: 선택된 클라우드 연결이 있으면 프론트 S3 정적 사이트 버킷을 지우고, 프론트 S3 HTTPS 도메인(CloudFront+ACM, Cloudflare 레코드)의 정리를 큐에 넣는다. 정리가 실패해도 삭제는 되돌리지 않는다.
+- **사용자 AWS 에 살아 있는 자원이 있으면 지우지 않는다(#595).** 이 프로젝트의 서버(진행 중이거나, 종료되지 않았는데 인스턴스·EIP 가 기록됨) · RDS/Docker DB(생성 대기·생성 중·사용 중) · 대기·진행 중 배포가 하나라도 있으면 `409 PROJECT_DELETION_BLOCKED` 와 함께 `data` 에 `{ deletable: false, liveResources: [{ type, id, projectId, label, status }] }` 를 돌려준다. 판정은 회원 탈퇴(§4.2 `WITHDRAWAL_BLOCKED`)와 같은 조건(`LiveResourceQuery`)이고, CDN 은 위 정리가 맡으므로 보지 않는다. 함께 종료하지 않는다(되돌릴 수 없는 삭제를 한 번에 묶지 않는다)
+  - `PROJECT_AND_REPOSITORY` 도 GitHub 저장소를 지우기 **전에** 본다 — 막히면 저장소도 그대로다. 로컬 정리 트랜잭션에서 한 번 더 본다(확인 창을 띄운 사이 배포가 시작된 경우)
+  - 미리 보기: `GET /api/v1/projects/{projectId}/deletion` → `{ deletable, liveResources }`(같은 모양, DB 만 읽는다). 내 프로젝트가 아니거나 이미 삭제했으면 404
+  - 판정과 소프트 삭제 사이를 잠그지는 않는다. 그 사이 승인된 서버는 탈퇴 조회(`GET /users/me/withdrawal`)에 나오고 id 로 끌 수 있다
 
 ### 6.5 Overview 통합 데이터
 
@@ -1336,6 +1340,20 @@ DELETE /users/me              → 200. 로컬 토큰을 지운다(logout 은 부
 ```
 
 §4.2 참고.
+
+### 13.13 프로젝트 삭제 (Issue #595)
+
+```text
+GET    /projects/{id}/deletion   → deletable=false 면 liveResources 를 먼저 정리
+  POST   /servers/{id}/terminate   (SERVER)
+  DELETE /databases/{id}           (DATABASE)
+  배포가 끝나기를 기다림           (DEPLOYMENT)
+GET    /projects/{id}/deletion   → deletable=true
+DELETE /projects/{id}?deleteMode=…  → 204
+                                409 PROJECT_DELETION_BLOCKED 면 data.liveResources 로 다시 안내(저장소도 지우지 않았다)
+```
+
+§6.4 참고.
 
 ---
 

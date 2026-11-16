@@ -2,12 +2,12 @@ package com.example.dvely.withdrawal.presentation;
 
 import com.example.dvely.apitoken.domain.service.ApiTokenGenerator;
 import com.example.dvely.auth.application.port.out.TokenPort;
+import com.example.dvely.cloudresource.presentation.dto.LiveResourceResponse;
 import com.example.dvely.common.exception.ForbiddenException;
 import com.example.dvely.common.response.ApiResponse;
 import com.example.dvely.common.response.ErrorCode;
 import com.example.dvely.withdrawal.application.UserWithdrawalFacade;
 import com.example.dvely.withdrawal.application.WithdrawalBlockedException;
-import com.example.dvely.withdrawal.presentation.dto.LiveResourceResponse;
 import com.example.dvely.withdrawal.presentation.dto.WithdrawalCheckResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;

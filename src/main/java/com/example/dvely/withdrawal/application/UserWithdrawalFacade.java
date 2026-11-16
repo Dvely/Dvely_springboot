@@ -9,6 +9,7 @@ import com.example.dvely.audit.domain.value.AuditActorType;
 import com.example.dvely.audit.domain.value.AuditOutcome;
 import com.example.dvely.auth.application.port.out.TokenBlacklistPort;
 import com.example.dvely.auth.application.port.out.TokenClaims;
+import com.example.dvely.cloudresource.application.LiveResource;
 import java.util.List;
 import java.util.function.Consumer;
 import lombok.extern.slf4j.Slf4j;

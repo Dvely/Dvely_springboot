@@ -1,5 +1,6 @@
 package com.example.dvely.project.application.facade;
 
+import com.example.dvely.cloudresource.application.LiveResource;
 import com.example.dvely.project.application.command.ProjectCommandService;
 import com.example.dvely.project.application.command.dto.ConnectProjectRepositoryCommand;
 import com.example.dvely.project.application.command.dto.CreateProjectCommand;
@@ -17,6 +18,7 @@ import com.example.dvely.project.application.result.ProjectRepositorySettingsRes
 import com.example.dvely.project.application.result.ProjectSummaryResult;
 import com.example.dvely.project.application.result.RepositoryHealthResult;
 import com.example.dvely.project.application.service.ProjectCreationService;
+import com.example.dvely.project.application.service.ProjectDeletionService;
 import com.example.dvely.project.application.service.ProjectRepositorySettingsService;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -30,6 +32,7 @@ public class ProjectFacade {
     private final ProjectQueryService projectQueryService;
     private final ProjectCreationService projectCreationService;
     private final ProjectRepositorySettingsService projectRepositorySettingsService;
+    private final ProjectDeletionService projectDeletionService;
     // 프로젝트 삭제 후 남는 클라우드 자원(프론트 S3 사이트 버킷) 정리. best-effort — 절대 던지지 않는다.
     private final com.example.dvely.project.application.port.out.ProjectCloudCleanupPort projectCloudCleanupPort;
     // 프론트 S3 HTTPS(CloudFront+ACM) 도메인 정리. 도메인 행은 삭제 트랜잭션이 안 지우므로 별도로 정리.
@@ -47,6 +50,11 @@ public class ProjectFacade {
 
     public ProjectDetailResult updateProject(Long ownerUserId, Long projectId, UpdateProjectCommand command) {
         return projectCommandService.updateProject(ownerUserId, projectId, command);
+    }
+
+    /** 지금 지우면 주인을 잃을, 사용자 AWS 에 살아 있는 자원(#595). 비어 있으면 지울 수 있다. */
+    public List<LiveResource> getDeletionBlockers(Long ownerUserId, Long projectId) {
+        return projectDeletionService.findLiveResources(ownerUserId, projectId);
     }
 
     public void deleteProject(Long ownerUserId, Long projectId, ProjectDeleteMode deleteMode) {

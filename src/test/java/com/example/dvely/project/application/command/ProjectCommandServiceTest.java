@@ -436,6 +436,26 @@ class ProjectCommandServiceTest {
         verifyNoInteractions(auditRecorder);
     }
 
+    /**
+     * 사용자 AWS 에 서버가 살아 있으면 아무것도 지우지 않는다(#595). 막힐 삭제 때문에 되돌릴 수 없는 GitHub 저장소부터 사라지면
+     * 안 되므로, 저장소 삭제보다 먼저 막혀야 한다.
+     */
+    @Test
+    void deleteProject_withLiveAwsResources_deletesNothingNotEvenTheGithubRepository() {
+        com.example.dvely.cloudresource.application.LiveResource server = new com.example.dvely.cloudresource.application.LiveResource(
+                com.example.dvely.cloudresource.application.LiveResource.Type.SERVER, 7L, 11L, "i-0abc", "RUNNING");
+        when(projectDeletionService.findLiveResources(1L, 11L)).thenReturn(List.of(server));
+
+        assertThatThrownBy(() -> projectCommandService.deleteProject(
+                1L, 11L, com.example.dvely.project.application.command.dto.ProjectDeleteMode.PROJECT_AND_REPOSITORY))
+                .isInstanceOfSatisfying(com.example.dvely.project.application.service.ProjectDeletionBlockedException.class,
+                        e -> assertThat(e.liveResources()).containsExactly(server));
+
+        verifyNoInteractions(githubRepositoryPort);
+        verify(projectDeletionService, never()).purge(any(), any(), any());
+        verifyNoInteractions(auditRecorder);
+    }
+
     private Project emptyProject() {
         return project(null, null, RepositoryVisibility.PRIVATE, RepositoryBindingStatus.NOT_BOUND);
     }
