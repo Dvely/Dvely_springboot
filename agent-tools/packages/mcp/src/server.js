@@ -42,6 +42,8 @@ export function createServer(client, options = {}) {
     }
     try {
       const result = await tool.run(request.params.arguments ?? {});
+      // A tool that answers with an image (pin feedback) builds its own content parts.
+      if (tool.content) return { content: result };
       return {
         content: [{ type: 'text', text: JSON.stringify(result ?? null, null, 2) }],
       };

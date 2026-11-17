@@ -421,3 +421,95 @@ describe('terminal output (server text is not trusted)', () => {
     assert.equal(terminalSafe('a\tb\nc'), 'a\tb\nc');
   });
 });
+
+describe('feedback (#683)', () => {
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0xff, 0xd9]);
+  const summary = {
+    feedbackId: 21,
+    status: 'ACCEPTED',
+    authorRole: 'GUEST',
+    authorName: '민지',
+    screenLabel: '/settings',
+    label: '<button> "저장"',
+    component: 'SaveButton',
+    body: '저장 버튼이 너무 작아요. 더 크게, 오른쪽 끝에 맞춰 주세요 그리고 색도 파란색으로',
+  };
+
+  async function inFolder(argv, client, { confirmAnswer = true } = {}) {
+    const { mkdtempSync, realpathSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'qeploy-feedback-')));
+    const out = [];
+    const err = [];
+    const code = await run(argv, {
+      createClient: () => client,
+      confirm: async () => confirmAnswer,
+      out: (t) => out.push(t),
+      err: (t) => err.push(t),
+      cwd: () => cwd,
+    });
+    return { code, out: out.join('\n'), err: err.join('\n'), cwd };
+  }
+
+  it('lists taken feedback, and refuses a status an agent token cannot see', async () => {
+    let asked = null;
+    const client = { listShareFeedback: async (o) => { asked = o; return [summary]; } };
+    const { code, out } = await cli(['feedback'], { client });
+    assert.equal(code, EXIT.OK);
+    assert.deepEqual(asked, { status: 'ACCEPTED', limit: undefined });
+    assert.match(out, /21 +받음 +\/settings +<button> "저장" +SaveButton +손님 민지/);
+    assert.match(out, /qeploy feedback show <ID>/);
+    assert.equal((await cli(['feedback', 'list', '--status', 'NEW'], { client })).code, EXIT.USAGE);
+    assert.equal((await cli(['feedback', 'list', '--limit', '0'], { client })).code, EXIT.USAGE);
+    assert.equal((await cli(['feedback', 'later'], { client })).code, EXIT.USAGE);
+  });
+
+  it('prints the prompt and saves it with the crop under .qeploy/feedback, kept out of git', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const client = {
+      getShareFeedback: async () => ({ feedback: summary, hasCrop: true, hasScreen: true }),
+      getShareFeedbackPrompt: async () => ({ markdown: '# Qeploy 짚기 피드백 #21\n\n```text\n더 크게\n```\n' }),
+      getShareFeedbackImage: async (id, kind) => (kind === 'crop' ? JPEG : Buffer.concat([JPEG, JPEG])),
+    };
+    const { code, out, cwd } = await inFolder(['feedback', 'show', '21'], client);
+    assert.equal(code, EXIT.OK);
+    const md = readFileSync(join(cwd, '.qeploy/feedback/21.md'), 'utf8');
+    assert.match(md, /^# Qeploy 짚기 피드백 #21/);
+    assert.match(md, /## 이미지\n\n- 짚은 요소: \.qeploy\/feedback\/21\.jpg\n$/);
+    assert.deepEqual(readFileSync(join(cwd, '.qeploy/feedback/21.jpg')), JPEG);
+    assert.equal(readFileSync(join(cwd, '.qeploy/.gitignore'), 'utf8').trim().split('\n').at(-1), '*');
+    assert.match(out, /저장했습니다: \.qeploy\/feedback\/21\.md, \.qeploy\/feedback\/21\.jpg/);
+    assert.match(out, /qeploy feedback fixed 21/);
+
+    const withScreen = await inFolder(['feedback', 'show', '21', '--screen', '--out', 'notes'], client);
+    assert.deepEqual(readFileSync(join(withScreen.cwd, 'notes/21-screen.jpg')), Buffer.concat([JPEG, JPEG]));
+    assert.throws(() => readFileSync(join(withScreen.cwd, '.qeploy/.gitignore')));
+  });
+
+  it('marks fixed after naming the feedback, with a note of at most 300 characters', async () => {
+    let seen = null;
+    let prompt = null;
+    const client = {
+      getShareFeedback: async () => ({ feedback: summary }),
+      markShareFeedbackFixed: async (id, o) => { seen = { id, o }; return { feedback: { status: 'FIXED' } }; },
+    };
+    const out = [];
+    const code = await run(['feedback', 'fixed', '21', '--note', '패딩을 16px 로 늘렸습니다'], {
+      createClient: () => client,
+      confirm: async (q) => { prompt = q; return true; },
+      out: (t) => out.push(t),
+      err: () => {},
+    });
+    assert.equal(code, EXIT.OK);
+    assert.match(prompt, /피드백 #21 \(<button> "저장"\)/);
+    assert.deepEqual(seen, { id: 21, o: { note: '패딩을 16px 로 늘렸습니다' } });
+    assert.match(out.join('\n'), /고침으로 표시했습니다/);
+
+    assert.equal((await cli(['feedback', 'fixed', '21', '--note', '가'.repeat(301)], { client })).code, EXIT.USAGE);
+    assert.equal((await cli(['feedback', 'fixed', 'x'], { client })).code, EXIT.USAGE);
+    const cancelled = await cli(['feedback', 'fixed', '21'], { client, confirmAnswer: false });
+    assert.equal(cancelled.code, EXIT.ERROR);
+  });
+});

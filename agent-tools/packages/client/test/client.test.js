@@ -367,3 +367,79 @@ describe('the API address', () => {
     }
   });
 });
+
+describe('pin feedback (#683)', () => {
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0xff, 0xd9]);
+  /** A fetch that answers a file the way the server does: raw bytes with a content type. */
+  const fileStub = (status, bytes, contentType, capture = {}) => async (url, init) => {
+    capture.url = url;
+    capture.init = init;
+    return {
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (name) => (name.toLowerCase() === 'content-type' ? contentType : null) },
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    };
+  };
+
+  it('asks for what an agent may see, with a status and a limit', async () => {
+    const capture = {};
+    const c = new QeployClient(opts(stub(200, { data: [] }, { capture })));
+    await c.listShareFeedback();
+    assert.equal(capture.url, 'https://q.test/api/v1/device-share-feedback');
+    await c.listShareFeedback({ status: 'FIXED', limit: 5 });
+    assert.equal(capture.url, 'https://q.test/api/v1/device-share-feedback?status=FIXED&limit=5');
+    assert.throws(() => c.listShareFeedback({ status: 'ANY' }), TypeError);
+    assert.throws(() => c.listShareFeedback({ limit: 51 }), TypeError);
+  });
+
+  it('reads one feedback, its prompt, and the feedback of one share', async () => {
+    const capture = {};
+    const c = new QeployClient(opts(stub(200, { data: { markdown: '# x' } }, { capture })));
+    assert.deepEqual(await c.getShareFeedbackPrompt(12), { markdown: '# x' });
+    assert.equal(capture.url, 'https://q.test/api/v1/device-share-feedback/12/prompt');
+    await c.getShareFeedback(12);
+    assert.equal(capture.url, 'https://q.test/api/v1/device-share-feedback/12');
+    await c.listShareFeedbackForShare(7);
+    assert.equal(capture.url, 'https://q.test/api/v1/device-shares/7/feedback');
+  });
+
+  it('marks fixed with a POST and the note, and nothing else', async () => {
+    const capture = {};
+    const c = new QeployClient(opts(stub(200, { data: { feedback: { status: 'FIXED' } } }, { capture })));
+    await c.markShareFeedbackFixed(12, { note: '패딩을 늘렸습니다' });
+    assert.equal(capture.init.method, 'POST');
+    assert.equal(capture.url, 'https://q.test/api/v1/device-share-feedback/12/fixed');
+    assert.deepEqual(JSON.parse(capture.init.body), { note: '패딩을 늘렸습니다' });
+    await c.markShareFeedbackFixed(12);
+    assert.deepEqual(JSON.parse(capture.init.body), {});
+  });
+
+  it('downloads an image as bytes, and only a JPEG', async () => {
+    const capture = {};
+    let c = new QeployClient(opts(fileStub(200, JPEG, 'image/jpeg', capture)));
+    assert.deepEqual(await c.getShareFeedbackImage(12, 'crop'), JPEG);
+    assert.equal(capture.url, 'https://q.test/api/v1/device-share-feedback/12/image?kind=crop');
+    assert.equal(capture.init.headers.Authorization, 'Bearer qp_x');
+    await assert.rejects(() => c.getShareFeedbackImage(12, '../x'), TypeError);
+
+    c = new QeployClient(opts(fileStub(200, Buffer.from('<html>'), 'text/html')));
+    await assert.rejects(() => c.getShareFeedbackImage(12), (e) => e.code === 'BAD_RESPONSE');
+  });
+
+  it('reads an error answered for an image as the usual envelope', async () => {
+    const body = Buffer.from(JSON.stringify({ status: 404, code: 'NOT_FOUND', message: '피드백을 찾을 수 없습니다.' }));
+    const c = new QeployClient(opts(fileStub(404, body, 'application/json')));
+    await assert.rejects(
+      () => c.getShareFeedbackImage(12),
+      (e) => e instanceof QeployApiError && e.status === 404 && e.code === 'NOT_FOUND'
+    );
+  });
+
+  it('refuses an id that would rewrite the path', async () => {
+    const c = new QeployClient(opts(stub(200, { data: {} })));
+    for (const call of [() => c.getShareFeedback('../api-tokens'), () => c.markShareFeedbackFixed('1/../../x'), () => c.getShareFeedbackImage('x')]) {
+      await assert.rejects(call, /양의 정수/);
+    }
+  });
+});
