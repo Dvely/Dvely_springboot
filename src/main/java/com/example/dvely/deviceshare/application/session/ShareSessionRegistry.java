@@ -126,9 +126,10 @@ public class ShareSessionRegistry {
     // ------------------------------------------------------------------ 짚기 (설계 §14)
 
     /** 보는 사람이 글을 붙여 보내려고 짚기 결과를 가져간다. */
-    public Optional<ClaimedPin> claimPin(long shareId, String viewerId, String probeId) {
+    /** 여러 곳의 짚기 결과를 한꺼번에(§15.9). 하나라도 없으면 아무것도 가져가지 않는다 */
+    public PinClaim claimPins(long shareId, String viewerId, java.util.List<String> probeIds) {
         ShareSession session = sessions.get(shareId);
-        return session == null ? Optional.empty() : session.claimPin(viewerId, probeId);
+        return session == null ? PinClaim.missing(probeIds) : session.claimPins(viewerId, probeIds);
     }
 
     public Optional<ShareSession.ViewerIdentity> viewer(long shareId, String viewerId) {

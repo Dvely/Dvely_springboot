@@ -464,15 +464,22 @@ export class QeployClient {
   }
 
   /**
-   * The crop around the pinned element, or the whole screen at that moment. JPEG.
+   * The crop of what was picked, the whole screen at that moment, or (when several places were
+   * pinned) the screen with each place outlined and numbered. JPEG.
    *
-   * @param {'crop'|'screen'} kind
+   * @param {'crop'|'screen'|'annotated'} kind
+   * @param {{mark?: number}} [options] which place's crop, 1-5 (1 by default); crop only
    * @returns {Promise<Buffer>}
    */
-  async getShareFeedbackImage(feedbackId, kind = 'crop') {
-    if (kind !== 'crop' && kind !== 'screen') throw new TypeError(`kind 는 crop 또는 screen 입니다: ${kind}`);
+  async getShareFeedbackImage(feedbackId, kind = 'crop', { mark } = {}) {
+    if (kind !== 'crop' && kind !== 'screen' && kind !== 'annotated') {
+      throw new TypeError(`kind 는 crop · screen · annotated 중 하나입니다: ${kind}`);
+    }
+    if (mark !== undefined && (!Number.isInteger(mark) || mark < 1 || mark > 5 || (mark > 1 && kind !== 'crop'))) {
+      throw new TypeError(`mark 는 1~5 이고 crop 에만 씁니다: ${mark}`);
+    }
     const { bytes, contentType } = await this.getBytes(
-      `/api/v1/device-share-feedback/${pathId('feedbackId', feedbackId)}/image?kind=${kind}`,
+      `/api/v1/device-share-feedback/${pathId('feedbackId', feedbackId)}/image?kind=${kind}${mark > 1 ? `&mark=${mark}` : ''}`,
       { maxBytes: 2 * 1024 * 1024 }
     );
     if (!contentType.startsWith('image/jpeg') || bytes[0] !== 0xff || bytes[1] !== 0xd8) {

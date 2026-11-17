@@ -302,6 +302,25 @@ describe('pin feedback tools (#683)', () => {
     assert.equal(result.content.filter((c) => c.type === 'image').length, 2);
   });
 
+  it('gives the numbered screen and each place crop (three at most) for several places', async () => {
+    const asked = [];
+    const client = {
+      getShareFeedback: async () => ({
+        hasCrop: true, hasScreen: true, hasAnnotated: true,
+        marks: [1, 2, 3, 4, 5].map((n) => ({ n, label: `곳 ${n}`, hasCrop: n !== 3 })),
+      }),
+      getShareFeedbackPrompt: async () => ({ markdown: '# p' }),
+      getShareFeedbackImage: async (id, kind, o) => {
+        asked.push([kind, o?.mark ?? 1]);
+        return JPEG;
+      },
+    };
+    const result = await call(handlers(client), 'qeploy_share_feedback_get', { feedbackId: 21 });
+    assert.deepEqual(asked, [['crop', 1], ['annotated', 1], ['crop', 2], ['crop', 4], ['crop', 5]]);
+    assert.equal(result.content.filter((c) => c.type === 'image').length, 5);
+    assert.ok(result.content.some((c) => c.type === 'text' && /번호를 그린 화면/.test(c.text)));
+  });
+
   it('still gives the prompt when an image cannot be fetched', async () => {
     const h = handlers({
       getShareFeedback: async () => ({ hasCrop: true }),

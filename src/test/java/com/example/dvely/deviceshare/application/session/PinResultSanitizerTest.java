@@ -250,4 +250,21 @@ class PinResultSanitizerTest {
         assertThat(PinResultSanitizer.groupWord("fieldset")).isEqualTo("입력 묶음");
         assertThat(PinResultSanitizer.groupWord("")).isEqualTo("덩어리");
     }
+
+    @Test
+    void 여러_곳이면_첫_곳의_이름과_개수로_부르고_곳마다_고른_칸이_있다() throws Exception {
+        com.fasterxml.jackson.databind.JsonNode description = new ObjectMapper().readTree("""
+                {"element":{"type":"button","text":"저장"},"scope":0,
+                 "scopes":[{"kind":"element","type":"button","text":"저장","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}}],
+                 "marks":[{"n":2,"scope":1,"probe":{"element":{"type":"h2","text":"요금제"},
+                   "scopes":[{"kind":"element","type":"h2","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}},
+                             {"kind":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}]}},
+                  {"n":3,"probe":{"ok":false,"reason":"NO_ELEMENT"}}]}
+                """);
+
+        assertThat(PinResultSanitizer.selectedLabel(description)).isEqualTo("① <button> \"저장\" 외 2곳");
+        assertThat(PinResultSanitizer.places(description)).hasSize(3);
+        assertThat(PinResultSanitizer.placeLabel(PinResultSanitizer.places(description).get(1))).isEqualTo("화면 전체");
+        assertThat(PinResultSanitizer.placeLabel(PinResultSanitizer.places(description).get(2))).isNull();
+    }
 }

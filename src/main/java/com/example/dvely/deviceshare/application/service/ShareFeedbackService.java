@@ -2,11 +2,13 @@ package com.example.dvely.deviceshare.application.service;
 
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.deviceshare.application.session.ClaimedPin;
+import com.example.dvely.deviceshare.application.session.PinClaim;
 import com.example.dvely.deviceshare.application.session.PinResultSanitizer;
 import com.example.dvely.deviceshare.application.session.ShareFrames;
 import com.example.dvely.deviceshare.application.session.ShareSession;
 import com.example.dvely.deviceshare.application.session.ShareSessionRegistry;
 import com.example.dvely.deviceshare.domain.model.DeviceShareLink;
+import com.example.dvely.deviceshare.domain.model.FeedbackImagePresence;
 import com.example.dvely.deviceshare.domain.model.FeedbackImages;
 import com.example.dvely.deviceshare.domain.model.ShareFeedback;
 import com.example.dvely.deviceshare.domain.model.ShareFeedbackNote;
@@ -18,12 +20,16 @@ import com.example.dvely.deviceshare.domain.value.FeedbackNoteKind;
 import com.example.dvely.deviceshare.domain.value.FeedbackStatus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -51,6 +57,10 @@ public class ShareFeedbackService {
     static final int WATCH_LIMIT = 30;
     static final int NOTICE_PREVIEW = 200;
     static final int RETENTION_DAYS = 14;
+    /** §15.5: 한 피드백에 짚은 곳 다섯 개까지 */
+    static final int MAX_MARKS = 5;
+    /** 뷰어에 되돌려 줄 짚기 id 의 모양. 세션이 만드는 id 는 {@code p} + 숫자다 */
+    private static final java.util.regex.Pattern PROBE_ID = java.util.regex.Pattern.compile("[A-Za-z0-9]{1,16}");
     private static final Set<String> VIEWER_TYPES = Set.of("pin-submit", "feedback-watch", "feedback-confirm",
             "feedback-reopen");
     /** 주인이 웹에서 고를 수 있는 상태. 고침은 {@link #markFixed} 로만(메모를 남긴다). */
@@ -95,31 +105,92 @@ public class ShareFeedbackService {
             viewerError(link, viewerId, "이 공유에는 한 시간에 피드백을 " + MAX_PER_HOUR + "개까지 남길 수 있습니다.");
             return;
         }
-        Optional<ClaimedPin> claimed = sessions.claimPin(link.getId(), viewerId, message.path("probeId").asText(""));
-        if (claimed.isEmpty()) {
-            viewerError(link, viewerId, "짚은 결과가 없습니다. 5분이 지났거나 이미 보냈다면 다시 짚어 주세요.");
+        // §15.9: 여러 곳은 marks, 한 곳은 옛 모양 {probeId, scope}(배포 중 열려 있던 탭)
+        JsonNode marks = message.path("marks");
+        boolean multi = marks.isArray();
+        List<String> probeIds = new ArrayList<>();
+        List<JsonNode> scopeChoices = new ArrayList<>();
+        if (multi) {
+            if (marks.isEmpty() || marks.size() > MAX_MARKS) {
+                viewerError(link, viewerId, "짚은 곳은 1~" + MAX_MARKS + "개여야 합니다.");
+                return;
+            }
+            for (JsonNode mark : marks) {
+                probeIds.add(mark.path("probeId").asText(""));
+                scopeChoices.add(mark.path("scope"));
+            }
+        } else {
+            probeIds.add(message.path("probeId").asText(""));
+            scopeChoices.add(message.path("scope"));
+        }
+        PinClaim claim = sessions.claimPins(link.getId(), viewerId, probeIds);
+        if (claim.claimed().isEmpty()) {
+            if (multi) {
+                // 뷰어가 시간이 지난 곳만 다시 짚는다
+                ObjectNode missing = json.createObjectNode().put("type", "pin-missing");
+                ArrayNode ids = missing.putArray("probeIds");
+                claim.missing().stream().filter(id -> PROBE_ID.matcher(id).matches()).forEach(ids::add);
+                sessions.sendToViewer(link.getId(), viewerId, missing.toString());
+            } else {
+                viewerError(link, viewerId, "짚은 결과가 없습니다. 5분이 지났거나 이미 보냈다면 다시 짚어 주세요.");
+            }
             return;
         }
-        ClaimedPin pin = claimed.get();
-        ObjectNode description = pin.resolution().description().deepCopy();
-        byte[] crop = pin.crop();
-        JsonNode scopes = description.path("scopes");
-        if (scopes.isArray() && !scopes.isEmpty()) {
-            // §15.10: 사람이 고른 범위를 저장하고, 잘라 낸 그림도 그 범위로 만든다
-            int chosen = message.path("scope").isInt() ? message.path("scope").asInt() : description.path("defaultScope").asInt(0);
-            if (chosen < 0 || chosen >= scopes.size()) {
-                chosen = description.path("defaultScope").asInt(0);
+        ClaimedPin pin = claim.claimed().get();
+        ObjectNode description = null;
+        byte[] crop = null;
+        Map<Integer, byte[]> markCrops = new LinkedHashMap<>();
+        List<AnnotatedScreen.Mark> drawn = new ArrayList<>();
+        for (int i = 0; i < pin.marks().size(); i++) {
+            ClaimedPin.Mark mark = pin.marks().get(i);
+            ObjectNode place = mark.resolution().description().deepCopy();
+            byte[] placeCrop = mark.crop();
+            JsonNode scopes = place.path("scopes");
+            Integer chosen = null;
+            JsonNode outline = place.path("element").path("bounds");
+            if (scopes.isArray() && !scopes.isEmpty()) {
+                // §15.10: 사람이 고른 범위를 저장하고, 잘라 낸 그림도 그 범위로 만든다
+                int fallback = place.path("defaultScope").asInt(0);
+                chosen = scopeChoices.get(i).isInt() ? scopeChoices.get(i).asInt() : fallback;
+                if (chosen < 0 || chosen >= scopes.size()) {
+                    chosen = fallback;
+                }
+                placeCrop = selectedCrop(scopes.get(chosen), mark.crop(), mark.screen());
+                outline = scopes.get(chosen).path("bounds");
             }
-            description.put("v", 2).put("scope", chosen);
-            crop = selectedCrop(scopes.get(chosen), pin.crop(), pin.screen());
+            drawn.add(new AnnotatedScreen.Mark(i + 1, outline.isObject() ? outline : null,
+                    place.path("point").isObject() ? place.path("point") : null));
+            if (i == 0) {
+                description = place;
+                if (chosen != null) {
+                    description.put("v", 2).put("scope", chosen);
+                }
+                crop = placeCrop;
+                continue;
+            }
+            ObjectNode entry = (description.has("marks") ? (ArrayNode) description.get("marks") : description.putArray("marks"))
+                    .addObject().put("n", i + 1);
+            entry.set("probe", place);
+            if (chosen != null) {
+                entry.put("scope", chosen);
+            }
+            entry.put("peers", false);
+            if (placeCrop != null) {
+                markCrops.put(i + 1, placeCrop);
+            }
+        }
+        byte[] annotated = null;
+        if (pin.marks().size() > 1) {
+            description.put("v", 2);
+            annotated = AnnotatedScreen.draw(pin.screen(), drawn);
         }
         String key = ShareTokens.newViewToken();
         ShareFeedback saved = repository.save(ShareFeedback.newFeedback(link.getId(), pin.owner(), pin.viewerName(),
                         ShareTokens.sha256Hex(key), link.getKind(), pin.resolution().screenLabel(),
                         description.toString(), body),
-                new FeedbackImages(crop, pin.screen()));
-        log.info("[DeviceShare] 피드백 저장 share={} feedback={} owner={} resolved={}", link.getId(), saved.getId(),
-                pin.owner(), pin.resolution().resolved());
+                new FeedbackImages(crop, pin.screen(), annotated, markCrops));
+        log.info("[DeviceShare] 피드백 저장 share={} feedback={} owner={} resolved={} marks={}", link.getId(),
+                saved.getId(), pin.owner(), pin.resolution().resolved(), pin.marks().size());
         sessions.watch(link.getId(), viewerId, saved.getId());
         sessions.sendToViewer(link.getId(), viewerId,
                 stateMessage(saved.getId(), saved.getStatus(), null).put("key", key).toString());
@@ -291,9 +362,17 @@ public class ShareFeedbackService {
     public ShareFeedbackView get(Long userId, Long feedbackId, boolean agent) {
         ShareFeedback feedback = owned(userId, feedbackId, agent);
         ShareFeedbackView summary = summary(feedback);
-        boolean[] images = repository.imagePresence(feedback.getId());
+        FeedbackImagePresence images = repository.imagePresence(feedback.getId());
+        List<ShareFeedbackView.Mark> marks = new ArrayList<>();
+        List<JsonNode> places = PinResultSanitizer.places(summary.element());
+        for (int i = 0; i < places.size(); i++) {
+            int n = i + 1;
+            String label = PinResultSanitizer.placeLabel(places.get(i));
+            marks.add(new ShareFeedbackView.Mark(n, label == null ? "짚은 자리" : label,
+                    n == 1 ? images.crop() : images.marks().contains(n)));
+        }
         return new ShareFeedbackView(feedback, summary.element(), summary.label(), summary.component(),
-                repository.findNotes(feedback.getId()), images[0], images[1]);
+                repository.findNotes(feedback.getId()), images.crop(), images.screen(), images.annotated(), marks);
     }
 
     public String prompt(Long userId, Long feedbackId, boolean agent) {
@@ -302,11 +381,24 @@ public class ShareFeedbackService {
                 repository.findNotes(feedback.getId()));
     }
 
-    /** @param crop 참이면 잘라 낸 것, 거짓이면 화면 */
-    public byte[] image(Long userId, Long feedbackId, boolean crop, boolean agent) {
+    /** 피드백 이미지가 무엇인지(§15.10) */
+    public enum ImageKind { CROP, SCREEN, ANNOTATED }
+
+    /**
+     * @param mark 잘라 낸 것이면 짚은 곳 번호(1부터). ②부터는 그 곳에서 고른 범위다
+     */
+    public byte[] image(Long userId, Long feedbackId, ImageKind kind, int mark, boolean agent) {
         ShareFeedback feedback = owned(userId, feedbackId, agent);
+        if (kind == ImageKind.CROP && mark > 1) {
+            return repository.findMarkCrop(feedback.getId(), mark).filter(bytes -> bytes.length > 0)
+                    .orElseThrow(() -> new NotFoundException("이미지가 없습니다."));
+        }
         FeedbackImages images = repository.findImages(feedback.getId());
-        byte[] bytes = crop ? images.crop() : images.screen();
+        byte[] bytes = switch (kind) {
+            case CROP -> images.crop();
+            case SCREEN -> images.screen();
+            case ANNOTATED -> images.annotated();
+        };
         if (bytes == null || bytes.length == 0) {
             throw new NotFoundException("이미지가 없습니다.");
         }
@@ -373,7 +465,7 @@ public class ShareFeedbackService {
     private ShareFeedbackView summary(ShareFeedback feedback) {
         JsonNode element = parse(feedback.getElementJson());
         return new ShareFeedbackView(feedback, element, PinResultSanitizer.selectedLabel(element),
-                element.path("components").path(0).path("name").asText(null), List.of(), false, false);
+                element.path("components").path(0).path("name").asText(null), List.of(), false, false, false, List.of());
     }
 
     private boolean move(ShareFeedback feedback, FeedbackStatus next) {

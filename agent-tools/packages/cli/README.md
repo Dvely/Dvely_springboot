@@ -29,7 +29,7 @@ qeploy feedback fixed 12 --note "패딩을 16px 로"   # 고쳤다고 표시(WRI
 | 옵션 | 뜻 |
 |---|---|
 | `--status ACCEPTED\|FIXED\|CONFIRMED` · `--limit 20` | 목록의 상태·개수 |
-| `--out <폴더>` · `--screen` | 저장할 폴더(기본 `.qeploy/feedback`), 화면 전체 이미지도 저장 |
+| `--out <폴더>` · `--screen` | 저장할 폴더(기본 `.qeploy/feedback`), 화면 전체 이미지도 저장. 여러 곳(①②…)을 짚은 피드백은 곳마다 `12-2.jpg`… 와 번호를 그린 화면 `12-screen.jpg` 를 늘 저장한다 |
 | `--note` · `--yes` | 고친 내용 한 줄(300자, 짚은 사람에게 보인다), 확인 없이 진행 |
 
 - 저장한 `.md` 를 에이전트에게 붙이고, 이미지는 첨부한다. 기본 폴더에 저장하면 `.qeploy/.gitignore`(`*`)를 만들어 화면 이미지가 저장소에 올라가지 않게 한다

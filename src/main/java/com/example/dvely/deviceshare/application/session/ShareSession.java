@@ -1,5 +1,6 @@
 package com.example.dvely.deviceshare.application.session;
 
+import com.example.dvely.deviceshare.domain.service.ShareTokens;
 import com.example.dvely.deviceshare.domain.value.DeviceShareKind;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -9,6 +10,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -51,8 +53,18 @@ public class ShareSession {
     static final long PROBE_INTERVAL_NANOS = 1_000_000_000L;
     static final long PROBE_TIMEOUT_NANOS = 5_000_000_000L;
     static final long RESOLVED_TTL_NANOS = 5 * 60 * 1_000_000_000L;
+    /** §15.9: 다시 짚거나 pin-keep 을 보내면 결과 시간을 늘리되, 받은 때부터 이만큼까지다 */
+    static final long RESOLVED_MAX_NANOS = 15 * 60 * 1_000_000_000L;
     static final int MAX_PENDING_PROBES = 3;
-    static final int MAX_RESOLVED_PINS = 5;
+    /** §15.9: 보는 사람마다 결과 다섯 개(여러 곳 ①~⑤), 공유 하나에 스무 개 */
+    static final int MAX_RESOLVED_PER_VIEWER = 5;
+    static final int MAX_RESOLVED_PINS = 20;
+    /** 둔 결과의 잘라 낸 그림 상한. 넘으면 줄여 둔다 */
+    static final int MAX_KEPT_CROP_BYTES = 256 * 1024;
+    /** 화면 지문(dHash)이 이 비트 수까지 다르면 같은 화면이다(§15.5) */
+    static final int SAME_VIEW_BITS = 10;
+    /** 뷰어가 짚기마다 만드는 짝 이름(§15.5). 서버는 그 짚기의 모든 답에 그대로 돌려준다 */
+    private static final Pattern REF = Pattern.compile("[A-Za-z0-9]{1,8}");
     static final int MAX_WATCHED = 50;
     /**
      * 짚기 결과 JSON 상한. §14 는 16KiB 였고, 범위 사다리(§15.9)를 싣는 기기를 위해 48KiB 로 올렸다. 기기는 WELCOME 의
@@ -92,8 +104,8 @@ public class ShareSession {
     private final PinResultSanitizer pinSanitizer;
     private final Set<String> deviceFeatures = new HashSet<>();
     private final Map<String, PendingProbe> probes = new LinkedHashMap<>();
-    /** 보는 사람마다 마지막 짚기 결과 하나. 넣은 순서대로라 가장 오래된 것부터 버린다. */
-    private final Map<String, ResolvedPin> resolvedPins = new LinkedHashMap<>();
+    /** 보는 사람마다 짚기 결과(§15.9). 다른 사람이 짚어도 내 결과가 밀려나지 않는다 */
+    private final Map<String, ViewerPins> pins = new HashMap<>();
     private final Map<String, Long> lastProbeAt = new HashMap<>();
     private final Map<String, Set<Long>> watching = new HashMap<>();
     private int probeSeq;
@@ -101,10 +113,52 @@ public class ShareSession {
     private record Viewer(String id, String name, boolean owner, ViewerChannel channel) {
     }
 
-    private record PendingProbe(String probeId, String viewerId, long sentAt) {
+    private record PendingProbe(String probeId, String viewerId, String ref, long sentAt) {
     }
 
-    private record ResolvedPin(PinResolution resolution, byte[] crop, byte[] screen, long resolvedAt) {
+    /** 한 보는 사람의 짚기 결과. 받은 순서다 */
+    private static final class ViewerPins {
+        final LinkedHashMap<String, ResolvedPin> results = new LinkedHashMap<>();
+        long activeAt;
+    }
+
+    /** 둔 짚기 결과. 화면은 같은 화면의 더 나중 결과가 오면 그쪽에만 둔다(보는 사람마다 화면 하나, §15.9) */
+    private static final class ResolvedPin {
+        final PinResolution resolution;
+        final String ref;
+        final byte[] crop;
+        final PinView view;
+        final long resolvedAt;
+        byte[] screen;
+        long expiresAt;
+
+        ResolvedPin(PinResolution resolution, String ref, byte[] crop, byte[] screen, PinView view, long resolvedAt) {
+            this.resolution = resolution;
+            this.ref = ref;
+            this.crop = crop;
+            this.screen = screen;
+            this.view = view;
+            this.resolvedAt = resolvedAt;
+            this.expiresAt = resolvedAt + RESOLVED_TTL_NANOS;
+        }
+    }
+
+    /**
+     * 짚은 화면의 지문(§15.5). 화면 종류(경로·Activity·번들 ID·방향)의 해시와 화면 픽셀의 dHash. 뷰어는 여러 곳을 짚는 동안 화면이
+     * 바뀌었는지 이것으로 안다. 화면 이름 대신 해시를 보내 손님에게 경로가 가지 않는다.
+     *
+     * @param dhash 화면 JPEG 를 읽지 못했으면 null
+     */
+    record PinView(String screen, Long dhash) {
+
+        boolean sameAs(PinView other) {
+            return other != null && screen.equals(other.screen) && dhash != null && other.dhash != null
+                    && Long.bitCount(dhash ^ other.dhash) <= SAME_VIEW_BITS;
+        }
+    }
+
+    /** 잠그기 전에 만든 짚기 결과. 이미지 읽기·줄이기는 세션을 잠그지 않고 한다 */
+    private record PreparedPin(PinResolution resolution, byte[] crop, byte[] screen, PinView view) {
     }
 
     /** 뷰어 디코더 설정을 바꾸는 값. 이 중 하나라도 바뀌면 앞 GOP 는 새 설정으로 풀 수 없다. */
@@ -189,7 +243,19 @@ public class ShareSession {
         broadcast(object("type", "device").put("state", "offline").toString());
     }
 
-    synchronized void onDeviceFrame(DeviceChannel channel, ShareFrames.Frame frame) {
+    void onDeviceFrame(DeviceChannel channel, ShareFrames.Frame frame) {
+        if (frame.kind() == ShareFrames.PIN_RESULT) {
+            // 화면 JPEG 를 읽어 지문을 만들고 큰 그림을 줄인다. 그동안 화면 프레임이 막히지 않게 잠그지 않고 한다
+            PreparedPin prepared = preparePinResult(frame);
+            if (prepared != null) {
+                applyPinResult(channel, prepared);
+            }
+            return;
+        }
+        onDeviceFrameLocked(channel, frame);
+    }
+
+    private synchronized void onDeviceFrameLocked(DeviceChannel channel, ShareFrames.Frame frame) {
         if (device != channel || ended) {
             return;
         }
@@ -206,7 +272,6 @@ public class ShareSession {
             case ShareFrames.SCREEN_CONFIG -> onScreenConfig(frame);
             case ShareFrames.SCREEN_FRAME -> onScreenFrame(frame);
             case ShareFrames.CONTROL_DECISION -> onControlDecision(frame);
-            case ShareFrames.PIN_RESULT -> onPinResult(frame);
             default -> log.debug("[DeviceShare] 모르는 기기 프레임 share={} kind=0x{}", shareId,
                     Integer.toHexString(frame.kind()));
         }
@@ -396,7 +461,7 @@ public class ShareSession {
             controlUntil = null;
         }
         probes.values().removeIf(probe -> probe.viewerId().equals(viewerId));
-        resolvedPins.remove(viewerId);
+        pins.remove(viewerId);
         lastProbeAt.remove(viewerId);
         watching.remove(viewerId);
         broadcastPresence();
@@ -411,6 +476,7 @@ public class ShareSession {
             case "input" -> onInput(viewer, message.path("input"), now);
             case "request-control" -> onRequestControl(viewer);
             case "pin-probe" -> onPinProbe(viewer, message);
+            case "pin-keep" -> keepPins(viewer.id());
             case "release-control" -> {
                 if (viewerId.equals(controllerId)) {
                     controllerId = null;
@@ -531,6 +597,8 @@ public class ShareSession {
      * 않는다(§15.9). 옛 CLI 는 모르는 모양을 말없이 버려, 5초 timeout 까지 대기 자리를 잡아먹는다.</p>
      */
     private void onPinProbe(Viewer viewer, JsonNode message) {
+        String ref = message.path("ref").isTextual() && REF.matcher(message.path("ref").asText()).matches()
+                ? message.path("ref").asText() : null;
         boolean wholeScreen = message.path("screen").asBoolean(false);
         boolean region = message.has("rect");
         ObjectNode rect = region ? probeRect(message.path("rect")) : null;
@@ -542,23 +610,24 @@ public class ShareSession {
             return;
         }
         if (device == null || !deviceReady) {
-            viewer.channel().sendText(pinFailed(null, "offline"));
+            viewer.channel().sendText(pinFailed(null, "offline", ref));
             return;
         }
         if (!pinSupported() || (region && !deviceFeatures.contains("pin-region"))
                 || (wholeScreen && !deviceFeatures.contains("pin-screen"))) {
-            viewer.channel().sendText(pinFailed(null, "unsupported"));
+            viewer.channel().sendText(pinFailed(null, "unsupported", ref));
             return;
         }
         long now = nanoClock.getAsLong();
         Long last = lastProbeAt.get(viewer.id());
         if ((last != null && now - last < PROBE_INTERVAL_NANOS) || probes.size() >= MAX_PENDING_PROBES) {
-            viewer.channel().sendText(pinFailed(null, "busy"));
+            viewer.channel().sendText(pinFailed(null, "busy", ref));
             return;
         }
         lastProbeAt.put(viewer.id(), now);
+        keepPins(viewer.id()); // 다시 짚는 사람은 아직 글을 쓰는 중이다(§15.9)
         String probeId = "p" + (++probeSeq);
-        probes.put(probeId, new PendingProbe(probeId, viewer.id(), now));
+        probes.put(probeId, new PendingProbe(probeId, viewer.id(), ref, now));
         ObjectNode probe = object("probeId", probeId);
         if (wholeScreen) {
             probe.put("screen", true);
@@ -568,7 +637,26 @@ public class ShareSession {
             probe.put("x", x.asDouble()).put("y", y.asDouble());
         }
         device.sendBinary(ShareFrames.encode(ShareFrames.PIN_PROBE, probe.toString()));
-        viewer.channel().sendText(object("type", "pin").put("probeId", probeId).put("state", "pending").toString());
+        ObjectNode pending = object("type", "pin").put("probeId", probeId).put("state", "pending");
+        if (ref != null) {
+            pending.put("ref", ref);
+        }
+        viewer.channel().sendText(pending.toString());
+    }
+
+    /**
+     * 이 사람의 결과 시간을 늘린다(§15.9). 다시 짚거나 시트에 글을 쓰는 동안({@code pin-keep}) 5분씩, 받은 때부터 15분까지.
+     */
+    private void keepPins(String viewerId) {
+        ViewerPins mine = pins.get(viewerId);
+        if (mine == null) {
+            return;
+        }
+        long now = nanoClock.getAsLong();
+        mine.activeAt = now;
+        for (ResolvedPin pin : mine.results.values()) {
+            pin.expiresAt = Math.max(pin.expiresAt, Math.min(pin.resolvedAt + RESOLVED_MAX_NANOS, now + RESOLVED_TTL_NANOS));
+        }
     }
 
     /**
@@ -591,16 +679,20 @@ public class ShareSession {
         return json.createObjectNode().put("x", x).put("y", y).put("w", Math.min(w, 1 - x)).put("h", Math.min(h, 1 - y));
     }
 
-    /** {@code [JSON 길이 u32][JSON][잘라 낸 이미지 길이 u32][잘라 낸 JPEG][화면 JPEG]} (§14.3). */
-    private void onPinResult(ShareFrames.Frame frame) {
+    /**
+     * {@code [JSON 길이 u32][JSON][잘라 낸 이미지 길이 u32][잘라 낸 JPEG][화면 JPEG]} (§14.3). 세션을 잠그지 않고 읽는다.
+     *
+     * @return 버릴 결과면 null
+     */
+    private PreparedPin preparePinResult(ShareFrames.Frame frame) {
         ByteBuffer buffer = ByteBuffer.wrap(frame.payload());
         if (buffer.remaining() < 4) {
-            return;
+            return null;
         }
         long jsonLength = Integer.toUnsignedLong(buffer.getInt());
         if (jsonLength > MAX_RESULT_JSON_BYTES || jsonLength > buffer.remaining()) {
             log.debug("[DeviceShare] 짚기 결과 JSON 이 너무 크거나 잘림 share={}", shareId);
-            return;
+            return null;
         }
         byte[] jsonBytes = new byte[(int) jsonLength];
         buffer.get(jsonBytes);
@@ -617,9 +709,42 @@ public class ShareSession {
         }
         Optional<PinResolution> resolution = pinSanitizer.sanitize(parse(new String(jsonBytes, java.nio.charset.StandardCharsets.UTF_8)));
         if (resolution.isEmpty()) {
+            return null;
+        }
+        byte[] screenJpeg = jpegOrNull(screenImage, MAX_SCREEN_BYTES);
+        // 다섯 곳을 짚어 두는 동안 메모리를 덜 쓰게, 큰 그림은 줄여 둔다
+        byte[] keptCrop = PinImages.shrink(jpegOrNull(crop, MAX_CROP_BYTES), MAX_KEPT_CROP_BYTES);
+        return new PreparedPin(resolution.get(), keptCrop, screenJpeg, view(resolution.get(), screenJpeg));
+    }
+
+    /** 화면 지문. 화면 이름도 화면 그림도 없으면 null */
+    private PinView view(PinResolution resolution, byte[] screenJpeg) {
+        java.awt.image.BufferedImage image = PinImages.read(screenJpeg);
+        JsonNode screenNode = resolution.description().path("screen");
+        if (image == null && screenNode.isEmpty()) {
+            return null;
+        }
+        StringBuilder key = new StringBuilder(kind.name());
+        for (String field : new String[] {"label", "url", "package", "activity", "bundleId"}) {
+            key.append('|').append(screenNode.path(field).asText(""));
+        }
+        if (kind == DeviceShareKind.IOS) {
+            key.append('|').append(screenNode.path("title").asText("")); // iOS 는 번들 ID 만으로는 화면을 가르지 못한다
+        }
+        if (image != null) {
+            key.append('|').append(image.getWidth() > image.getHeight() ? "landscape" : "portrait");
+        }
+        String screenKey = ShareTokens.sha256Hex(key.toString()).substring(0, 12);
+        java.util.OptionalLong hash = PinImages.dhash(image);
+        return new PinView(screenKey, hash.isPresent() ? hash.getAsLong() : null);
+    }
+
+    private synchronized void applyPinResult(DeviceChannel channel, PreparedPin prepared) {
+        if (device != channel || ended) {
             return;
         }
-        PendingProbe probe = probes.remove(resolution.get().probeId());
+        PinResolution r = prepared.resolution();
+        PendingProbe probe = probes.remove(r.probeId());
         if (probe == null) {
             return; // 시간이 지나 이미 실패로 알렸거나 모르는 짚기다
         }
@@ -627,16 +752,31 @@ public class ShareSession {
         if (viewer == null) {
             return;
         }
-        resolvedPins.remove(viewer.id());
-        resolvedPins.put(viewer.id(), new ResolvedPin(resolution.get(), jpegOrNull(crop, MAX_CROP_BYTES),
-                jpegOrNull(screenImage, MAX_SCREEN_BYTES), nanoClock.getAsLong()));
-        while (resolvedPins.size() > MAX_RESOLVED_PINS) {
-            Iterator<String> oldest = resolvedPins.keySet().iterator();
-            oldest.next();
-            oldest.remove();
+        long now = nanoClock.getAsLong();
+        ViewerPins mine = pins.computeIfAbsent(viewer.id(), id -> new ViewerPins());
+        if (probe.ref() != null) {
+            // 같은 곳을 다시 짚었다. 옛 결과는 이 결과가 대신한다
+            mine.results.values().removeIf(old -> probe.ref().equals(old.ref));
         }
-        PinResolution r = resolution.get();
+        if (prepared.screen() != null) {
+            // 같은 화면이면 화면 그림은 이 결과에만 둔다. 앞 결과는 보낼 때 이것을 함께 쓴다
+            for (ResolvedPin old : mine.results.values()) {
+                if (old.screen != null && prepared.view() != null && prepared.view().sameAs(old.view)) {
+                    old.screen = null;
+                }
+            }
+        }
+        mine.results.put(r.probeId(), new ResolvedPin(r, probe.ref(), prepared.crop(), prepared.screen(), prepared.view(), now));
+        mine.activeAt = now;
+        while (mine.results.size() > MAX_RESOLVED_PER_VIEWER) {
+            removeOldest(mine);
+        }
+        trimShare(viewer.id());
+
         ObjectNode message = object("type", "pin").put("probeId", r.probeId()).put("state", "resolved");
+        if (probe.ref() != null) {
+            message.put("ref", probe.ref());
+        }
         if (r.bounds() == null) {
             message.putNull("bounds");
         } else {
@@ -674,7 +814,44 @@ public class ShareSession {
                 out.addObject().put("dir", item.path("dir").asText()).put("label", PinResultSanitizer.nearLabel(item));
             }
         }
+        // §15.5: 여러 곳을 짚는 동안 화면이 바뀌었는지 뷰어가 안다
+        PinView view = prepared.view();
+        if (view != null) {
+            ObjectNode v = message.putObject("view").put("screen", view.screen());
+            if (view.dhash() != null) {
+                v.put("dhash", String.format("%016x", view.dhash()));
+            }
+        }
         viewer.channel().sendText(message.toString());
+    }
+
+    private static void removeOldest(ViewerPins mine) {
+        Iterator<String> oldest = mine.results.keySet().iterator();
+        oldest.next();
+        oldest.remove();
+    }
+
+    /** 공유 전체 상한. 넘으면 가장 오래 쉬고 있는 사람의 가장 오래된 결과부터 버린다(방금 짚은 사람은 마지막에) */
+    private void trimShare(String currentViewerId) {
+        int total = pins.values().stream().mapToInt(mine -> mine.results.size()).sum();
+        ViewerPins current = pins.get(currentViewerId);
+        while (total > MAX_RESOLVED_PINS) {
+            ViewerPins victim = null;
+            for (ViewerPins mine : pins.values()) {
+                if (mine != current && !mine.results.isEmpty() && (victim == null || mine.activeAt < victim.activeAt)) {
+                    victim = mine;
+                }
+            }
+            if (victim == null) {
+                victim = current;
+            }
+            if (victim == null || victim.results.isEmpty()) {
+                return;
+            }
+            removeOldest(victim);
+            total--;
+        }
+        pins.values().removeIf(mine -> mine.results.isEmpty());
     }
 
     /** JPEG 시작 표시(FF D8 FF)가 있고 상한 안이어야 둔다. 이미지로 내보낼 바이트라서다. */
@@ -685,16 +862,67 @@ public class ShareSession {
         return (bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xd8 && (bytes[2] & 0xff) == 0xff ? bytes : null;
     }
 
-    /** 보는 사람이 글을 붙여 보내려고 짚기 결과를 가져간다. 그 사람의 것이고 5분 안이어야 한다. */
+    /** 보는 사람이 글을 붙여 보내려고 짚기 결과 하나를 가져간다(§14). */
     synchronized Optional<ClaimedPin> claimPin(String viewerId, String probeId) {
-        Viewer viewer = viewers.get(viewerId);
-        ResolvedPin pin = resolvedPins.get(viewerId);
-        if (viewer == null || pin == null || !pin.resolution().probeId().equals(probeId)
-                || nanoClock.getAsLong() - pin.resolvedAt() > RESOLVED_TTL_NANOS) {
-            return Optional.empty();
+        return claimPins(viewerId, List.of(probeId)).claimed();
+    }
+
+    /**
+     * 여러 곳의 짚기 결과를 한꺼번에 가져간다(§15.9). 그 사람의 것이고 시간 안이어야 한다. 하나라도 없으면 아무것도 가져가지 않는다.
+     *
+     * @param probeIds ①②… 순서
+     */
+    synchronized PinClaim claimPins(String viewerId, List<String> probeIds) {
+        if (probeIds.isEmpty()) {
+            return PinClaim.missing(List.of());
         }
-        resolvedPins.remove(viewerId);
-        return Optional.of(new ClaimedPin(viewer.name(), viewer.owner(), pin.resolution(), pin.crop(), pin.screen()));
+        Viewer viewer = viewers.get(viewerId);
+        ViewerPins mine = pins.get(viewerId);
+        long now = nanoClock.getAsLong();
+        List<String> missing = new ArrayList<>();
+        List<ResolvedPin> found = new ArrayList<>();
+        for (String probeId : probeIds) {
+            ResolvedPin pin = mine == null ? null : mine.results.get(probeId);
+            if (viewer == null || pin == null || now > pin.expiresAt || found.contains(pin)) {
+                missing.add(probeId);
+            } else {
+                found.add(pin);
+            }
+        }
+        if (!missing.isEmpty()) {
+            return PinClaim.missing(missing);
+        }
+        List<ClaimedPin.Mark> marks = new ArrayList<>();
+        ResolvedPin newest = null;
+        for (ResolvedPin pin : found) {
+            marks.add(new ClaimedPin.Mark(pin.resolution, pin.crop, screenOf(mine, pin)));
+            if (newest == null || pin.resolvedAt > newest.resolvedAt) {
+                newest = pin;
+            }
+        }
+        byte[] screen = newest == null ? null : screenOf(mine, newest);
+        for (String probeId : probeIds) {
+            mine.results.remove(probeId);
+        }
+        if (mine.results.isEmpty()) {
+            pins.remove(viewerId);
+        }
+        return PinClaim.of(new ClaimedPin(viewer.name(), viewer.owner(), marks, screen));
+    }
+
+    /** 이 결과의 화면 그림. 같은 화면의 더 나중 결과에 넘겼으면 그것을 쓴다 */
+    private static byte[] screenOf(ViewerPins mine, ResolvedPin pin) {
+        if (pin.screen != null) {
+            return pin.screen;
+        }
+        List<ResolvedPin> all = new ArrayList<>(mine.results.values());
+        for (int i = all.size() - 1; i >= 0; i--) {
+            ResolvedPin other = all.get(i);
+            if (other.screen != null && other.view != null && other.view.sameAs(pin.view)) {
+                return other.screen;
+            }
+        }
+        return null;
     }
 
     /** @return 보는 사람이 있으면 {@code [이름, 주인 여부]} */
@@ -746,25 +974,31 @@ public class ShareSession {
             PendingProbe probe = pending.next();
             if (now - probe.sentAt() > PROBE_TIMEOUT_NANOS) {
                 pending.remove();
-                sendToViewer(probe.viewerId(), pinFailed(probe.probeId(), "timeout"));
+                sendToViewer(probe.viewerId(), pinFailed(probe.probeId(), "timeout", probe.ref()));
             }
         }
-        resolvedPins.values().removeIf(pin -> now - pin.resolvedAt() > RESOLVED_TTL_NANOS);
+        for (ViewerPins mine : pins.values()) {
+            mine.results.values().removeIf(pin -> now > pin.expiresAt);
+        }
+        pins.values().removeIf(mine -> mine.results.isEmpty());
     }
 
     private void failPendingProbes(String reason) {
         for (PendingProbe probe : probes.values()) {
-            sendToViewer(probe.viewerId(), pinFailed(probe.probeId(), reason));
+            sendToViewer(probe.viewerId(), pinFailed(probe.probeId(), reason, probe.ref()));
         }
         probes.clear();
     }
 
-    private String pinFailed(String probeId, String reason) {
+    private String pinFailed(String probeId, String reason, String ref) {
         ObjectNode failed = json.createObjectNode().put("type", "pin");
         if (probeId == null) {
             failed.putNull("probeId");
         } else {
             failed.put("probeId", probeId);
+        }
+        if (ref != null) {
+            failed.put("ref", ref);
         }
         return failed.put("state", "failed").put("reason", reason).toString();
     }
@@ -787,7 +1021,7 @@ public class ShareSession {
         }
         viewers.clear();
         probes.clear();
-        resolvedPins.clear();
+        pins.clear();
         lastProbeAt.clear();
         watching.clear();
         if (device != null) {

@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -245,6 +247,40 @@ public final class PinResultSanitizer {
      * 지금처럼 요소 이름이다.
      */
     public static String selectedLabel(JsonNode description) {
+        List<JsonNode> places = places(description);
+        String first = placeLabel(description);
+        if (places.size() < 2) {
+            return first;
+        }
+        // §15.8: 여러 곳이면 첫 곳과 개수로("① 폼 ProfileForm 외 1곳")
+        return "① " + (first == null ? "짚은 자리" : first) + " 외 " + (places.size() - 1) + "곳";
+    }
+
+    /**
+     * 짚은 곳들(§15.5·§15.10). ①은 맨 위 필드이고, ②부터는 {@code marks[].probe} 에 그 곳에서 고른 칸({@code scope})을 넣은 것이다.
+     * {@code marks} 가 없는 행(§14, PR-4 까지)은 한 곳이다.
+     */
+    public static List<JsonNode> places(JsonNode description) {
+        List<JsonNode> out = new ArrayList<>();
+        out.add(description);
+        JsonNode marks = description.path("marks");
+        if (marks.isArray()) {
+            for (JsonNode mark : marks) {
+                if (!mark.path("probe").isObject()) {
+                    continue;
+                }
+                ObjectNode place = mark.path("probe").deepCopy();
+                if (mark.path("scope").isInt()) {
+                    place.put("scope", mark.path("scope").asInt());
+                }
+                out.add(place);
+            }
+        }
+        return out;
+    }
+
+    /** 짚은 곳 하나에서 사람이 고른 범위의 이름 */
+    public static String placeLabel(JsonNode description) {
         JsonNode scopes = description.path("scopes");
         if (scopes.isArray() && !scopes.isEmpty()) {
             int chosen = description.path("scope").asInt(description.path("defaultScope").asInt(0));

@@ -488,6 +488,30 @@ describe('feedback (#683)', () => {
     assert.throws(() => readFileSync(join(withScreen.cwd, '.qeploy/.gitignore')));
   });
 
+  it('saves each place of a several-place feedback and the numbered screen next to the prompt', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const asked = [];
+    const client = {
+      getShareFeedback: async () => ({
+        feedback: summary, hasCrop: true, hasScreen: true, hasAnnotated: true,
+        marks: [{ n: 1, label: '폼', hasCrop: true }, { n: 2, label: '영역', hasCrop: true }, { n: 3, label: '빈 곳', hasCrop: false }],
+      }),
+      getShareFeedbackPrompt: async () => ({ markdown: '# Qeploy 짚기 피드백 #21\n' }),
+      getShareFeedbackImage: async (id, kind, o) => {
+        asked.push([kind, o?.mark ?? 1]);
+        return kind === 'annotated' ? Buffer.concat([JPEG, JPEG, JPEG]) : JPEG;
+      },
+    };
+    const { code, out, cwd } = await inFolder(['feedback', 'show', '21'], client);
+    assert.equal(code, EXIT.OK);
+    assert.deepEqual(asked, [['crop', 1], ['crop', 2], ['annotated', 1]]);
+    const md = readFileSync(join(cwd, '.qeploy/feedback/21.md'), 'utf8');
+    assert.match(md, /- ① 고른 범위: \.qeploy\/feedback\/21\.jpg\n- ② 고른 범위: \.qeploy\/feedback\/21-2\.jpg\n- 짚은 곳에 번호를 그린 화면: \.qeploy\/feedback\/21-screen\.jpg\n$/);
+    assert.deepEqual(readFileSync(join(cwd, '.qeploy/feedback/21-screen.jpg')), Buffer.concat([JPEG, JPEG, JPEG]));
+    assert.match(out, /21-2\.jpg, \.qeploy\/feedback\/21-screen\.jpg/);
+  });
+
   it('marks fixed after naming the feedback, with a note of at most 300 characters', async () => {
     let seen = null;
     let prompt = null;
