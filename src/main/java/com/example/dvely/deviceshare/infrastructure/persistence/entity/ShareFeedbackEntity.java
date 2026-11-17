@@ -45,7 +45,7 @@ public class ShareFeedbackEntity {
     @Column(name = "screen_label", nullable = false, length = 512)
     private String screenLabel;
 
-    @Column(name = "element_json", nullable = false, columnDefinition = "TEXT")
+    @Column(name = "element_json", nullable = false, columnDefinition = "MEDIUMTEXT")
     private String elementJson;
 
     @Column(name = "body", nullable = false, length = 1000)

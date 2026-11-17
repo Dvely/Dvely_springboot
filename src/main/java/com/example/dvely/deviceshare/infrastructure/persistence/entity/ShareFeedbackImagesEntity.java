@@ -28,9 +28,15 @@ public class ShareFeedbackImagesEntity {
     @Column(name = "screen", columnDefinition = "MEDIUMBLOB")
     private byte[] screen;
 
-    public ShareFeedbackImagesEntity(Long feedbackId, byte[] crop, byte[] screen) {
+    /** 짚은 곳마다 테두리와 번호를 그린 화면(여러 곳일 때, 설계 §15.10) */
+    @Lob
+    @Column(name = "annotated", columnDefinition = "MEDIUMBLOB")
+    private byte[] annotated;
+
+    public ShareFeedbackImagesEntity(Long feedbackId, byte[] crop, byte[] screen, byte[] annotated) {
         this.feedbackId = feedbackId;
         this.crop = crop;
         this.screen = screen;
+        this.annotated = annotated;
     }
 }

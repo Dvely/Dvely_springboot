@@ -325,6 +325,80 @@ class ShareFeedbackIntegrationTest {
         device.tunnel.abort();
     }
 
+    @Test
+    void 여러_곳을_짚어_보내면_곳마다_범위와_그림이_저장되고_번호_그린_화면과_프롬프트가_같은_번호다() throws Exception {
+        JsonNode share = createShare();
+        String viewHost = URI.create(share.path("viewUrl").asText()).getHost() + ":8080";
+        Device device = connectDevice(share);
+        sendConfig(device);
+        byte[] screen = screenJpeg();
+
+        try (RawViewerSocket socket = new RawViewerSocket(port, viewHost, "/__qeploy/ws")) {
+            Viewer guest = new Viewer(socket);
+            socket.sendText("{\"type\":\"join\",\"name\":\"민지\"}");
+            guest.nextOfType("welcome");
+            // ① 버튼(넓혀서 폼), ② 같은 화면의 다른 버튼. 뷰어는 짚기마다 ref 를 붙이고 같은 ref 로 답을 받는다
+            socket.sendText("{\"type\":\"pin-probe\",\"ref\":\"r1\",\"x\":0.2,\"y\":0.52}");
+            String first = json.readTree(device.device.nextOfKind(ShareFrames.PIN_PROBE).payloadText()).path("probeId").asText();
+            device.tunnel.sendBinary(scopedResult(first, screen), true).join();
+            JsonNode one = guest.nextOfType("pin", "resolved");
+            assertThat(one.path("ref").asText()).isEqualTo("r1");
+            Thread.sleep(1_100);
+            socket.sendText("{\"type\":\"pin-probe\",\"ref\":\"r2\",\"x\":0.42,\"y\":0.17}");
+            String second = json.readTree(device.device.nextOfKind(ShareFrames.PIN_PROBE).payloadText()).path("probeId").asText();
+            device.tunnel.sendBinary(result(second, screen), true).join();
+            JsonNode two = guest.nextOfType("pin", "resolved");
+            assertThat(two.path("ref").asText()).isEqualTo("r2");
+            assertThat(two.path("view")).as("같은 화면이라 지문이 같다").isEqualTo(one.path("view"));
+
+            // 하나라도 없으면 아무것도 저장하지 않고 없는 곳만 알린다
+            socket.sendText("{\"type\":\"pin-submit\",\"marks\":[{\"probeId\":\"" + first + "\",\"scope\":1},"
+                    + "{\"probeId\":\"p999\"}],\"comment\":\"x\"}");
+            assertThat(guest.nextOfType("pin-missing").path("probeIds").get(0).asText()).isEqualTo("p999");
+
+            socket.sendText("{\"type\":\"pin-submit\",\"marks\":[{\"probeId\":\"" + first + "\",\"scope\":1},"
+                    + "{\"probeId\":\"" + second + "\"}],\"comment\":\"①의 여백을 ②처럼\"}");
+            long id = guest.nextOfType("feedback", "NEW").path("id").asLong();
+
+            JsonNode notice = json.readTree(device.device.nextOfKind(ShareFrames.FEEDBACK_NOTICE).payloadText());
+            assertThat(notice.path("label").asText()).isEqualTo("① 컴포넌트 ProfileForm 외 1곳");
+            JsonNode detail = data(get("/api/v1/device-share-feedback/" + id, bearer));
+            assertThat(detail.path("feedback").path("label").asText()).isEqualTo("① 컴포넌트 ProfileForm 외 1곳");
+            assertThat(detail.path("hasAnnotated").asBoolean()).isTrue();
+            assertThat(detail.path("marks")).hasSize(2);
+            assertThat(detail.path("marks").get(1).path("n").asInt()).isEqualTo(2);
+            assertThat(detail.path("marks").get(1).path("label").asText()).isEqualTo("<button> \"저장\"");
+            assertThat(detail.path("marks").get(1).path("hasCrop").asBoolean()).isTrue();
+            assertThat(detail.path("element").path("marks").get(0).path("probe").path("element").path("type").asText())
+                    .isEqualTo("button");
+
+            HttpResponse<byte[]> second2 = http.send(request("/api/v1/device-share-feedback/" + id + "/image?kind=crop&mark=2", bearer)
+                    .GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+            assertThat(second2.statusCode()).isEqualTo(200);
+            assertThat(second2.body()).as("②는 요소를 골랐으니 기기가 잘라 보낸 그대로").isEqualTo(JPEG);
+            HttpResponse<byte[]> annotated = http.send(request("/api/v1/device-share-feedback/" + id + "/image?kind=annotated", bearer)
+                    .GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+            assertThat(annotated.statusCode()).isEqualTo(200);
+            java.awt.image.BufferedImage drawn = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(annotated.body()));
+            assertThat(drawn.getWidth()).isEqualTo(390);
+            HttpResponse<String> noThird = http.send(request("/api/v1/device-share-feedback/" + id + "/image?kind=crop&mark=3", bearer)
+                    .GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertThat(noThird.statusCode()).isEqualTo(404);
+            HttpResponse<String> badMark = http.send(request("/api/v1/device-share-feedback/" + id + "/image?kind=screen&mark=2", bearer)
+                    .GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertThat(badMark.statusCode()).isEqualTo(400);
+
+            String md = data(get("/api/v1/device-share-feedback/" + id + "/prompt", bearer)).path("markdown").asText();
+            assertThat(md).contains("- 짚은 곳 2개(번호를 그린 화면 이미지와 같은 번호)");
+            assertThat(md).contains("  - ① 폼 `form#profile` · 컴포넌트 `ProfileForm`");
+            assertThat(md).contains("  - ② 요소 `<button>`");
+            Integer v = jdbc.queryForObject("select count(*) from device_share_feedback_mark_images where feedback_id = ?",
+                    Integer.class, id);
+            assertThat(v).isEqualTo(1);
+        }
+        device.tunnel.abort();
+    }
+
     /** 390×844 화면. 폼 자리(y 30~70%)만 파랗다 */
     private static byte[] screenJpeg() throws Exception {
         java.awt.image.BufferedImage image = new java.awt.image.BufferedImage(390, 844, java.awt.image.BufferedImage.TYPE_INT_RGB);
@@ -361,6 +435,10 @@ class ShareFeedbackIntegrationTest {
     }
 
     private static ByteBuffer result(String probeId) {
+        return result(probeId, JPEG);
+    }
+
+    private static ByteBuffer result(String probeId, byte[] screen) {
         byte[] body = ("""
                 {"probeId":"%s","ok":true,"screen":{"label":"/settings"},"point":{"x":0.42,"y":0.17},
                  "element":{"type":"button","text":"저장","bounds":{"x":0.38,"y":0.15,"w":0.12,"h":0.04}},
@@ -372,7 +450,7 @@ class ShareFeedbackIntegrationTest {
         out.writeBytes(body);
         out.writeBytes(ByteBuffer.allocate(4).putInt(JPEG.length).array());
         out.writeBytes(JPEG);
-        out.writeBytes(JPEG);
+        out.writeBytes(screen);
         return ShareFrames.encode(ShareFrames.PIN_RESULT, out.toByteArray());
     }
 

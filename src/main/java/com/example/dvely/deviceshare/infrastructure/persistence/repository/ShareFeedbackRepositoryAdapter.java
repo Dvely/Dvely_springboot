@@ -1,5 +1,6 @@
 package com.example.dvely.deviceshare.infrastructure.persistence.repository;
 
+import com.example.dvely.deviceshare.domain.model.FeedbackImagePresence;
 import com.example.dvely.deviceshare.domain.model.FeedbackImages;
 import com.example.dvely.deviceshare.domain.model.ShareFeedback;
 import com.example.dvely.deviceshare.domain.model.ShareFeedbackNote;
@@ -7,11 +8,13 @@ import com.example.dvely.deviceshare.domain.repository.ShareFeedbackRepository;
 import com.example.dvely.deviceshare.domain.value.FeedbackStatus;
 import com.example.dvely.deviceshare.infrastructure.persistence.entity.ShareFeedbackEntity;
 import com.example.dvely.deviceshare.infrastructure.persistence.entity.ShareFeedbackImagesEntity;
+import com.example.dvely.deviceshare.infrastructure.persistence.entity.ShareFeedbackMarkImageEntity;
 import com.example.dvely.deviceshare.infrastructure.persistence.entity.ShareFeedbackNoteEntity;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
@@ -25,15 +28,22 @@ public class ShareFeedbackRepositoryAdapter implements ShareFeedbackRepository {
     private final SpringDataShareFeedbackRepository feedback;
     private final SpringDataShareFeedbackImagesRepository images;
     private final SpringDataShareFeedbackNoteRepository notes;
+    private final SpringDataShareFeedbackMarkImageRepository markImages;
 
     @Override
     @Transactional
     public ShareFeedback save(ShareFeedback item, FeedbackImages pictures) {
         ShareFeedbackEntity saved = feedback.save(ShareFeedbackEntity.from(item, now()));
-        if (pictures.hasCrop() || pictures.hasScreen()) {
+        if (pictures.hasCrop() || pictures.hasScreen() || pictures.hasAnnotated()) {
             images.save(new ShareFeedbackImagesEntity(saved.getId(),
-                    pictures.hasCrop() ? pictures.crop() : null, pictures.hasScreen() ? pictures.screen() : null));
+                    pictures.hasCrop() ? pictures.crop() : null, pictures.hasScreen() ? pictures.screen() : null,
+                    pictures.hasAnnotated() ? pictures.annotated() : null));
         }
+        pictures.markCrops().forEach((markNo, crop) -> {
+            if (crop != null && crop.length > 0) {
+                markImages.save(new ShareFeedbackMarkImageEntity(saved.getId(), markNo, crop));
+            }
+        });
         return saved.toDomain();
     }
 
@@ -94,19 +104,27 @@ public class ShareFeedbackRepositoryAdapter implements ShareFeedbackRepository {
     @Transactional(readOnly = true)
     public FeedbackImages findImages(Long feedbackId) {
         return images.findById(feedbackId)
-                .map(row -> new FeedbackImages(row.getCrop(), row.getScreen()))
+                .map(row -> new FeedbackImages(row.getCrop(), row.getScreen(), row.getAnnotated(), Map.of()))
                 .orElse(FeedbackImages.NONE);
     }
 
     @Override
     @Transactional(readOnly = true)
-    public boolean[] imagePresence(Long feedbackId) {
+    public FeedbackImagePresence imagePresence(Long feedbackId) {
         List<Object[]> rows = feedback.imagePresence(feedbackId);
+        List<Integer> marks = markImages.markNumbers(feedbackId);
         if (rows.isEmpty()) {
-            return new boolean[] {false, false};
+            return new FeedbackImagePresence(false, false, false, marks);
         }
         Object[] row = rows.getFirst();
-        return new boolean[] {truthy(row[0]), truthy(row[1])};
+        return new FeedbackImagePresence(truthy(row[0]), truthy(row[1]), truthy(row[2]), marks);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<byte[]> findMarkCrop(Long feedbackId, int markNo) {
+        return markImages.findById(new ShareFeedbackMarkImageEntity.Key(feedbackId, markNo))
+                .map(ShareFeedbackMarkImageEntity::getCrop);
     }
 
     @Override

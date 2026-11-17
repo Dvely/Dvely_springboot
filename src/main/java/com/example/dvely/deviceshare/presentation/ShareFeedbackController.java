@@ -85,16 +85,26 @@ public class ShareFeedbackController {
         return new ShareFeedbackPromptResponse(service.prompt(userId, feedbackId, isAgent(auth)));
     }
 
-    @Operation(summary = "피드백 이미지", description = "kind=crop(짚은 요소를 잘라 낸 것, 기본) | screen(그 순간의 화면). image/jpeg. 없으면 404.")
+    @Operation(summary = "피드백 이미지", description = """
+            kind=crop(고른 범위를 잘라 낸 것, 기본) | screen(그 순간의 화면) | annotated(짚은 곳마다 테두리와 번호를 그린 화면, 여러 곳일 때).
+            mark 는 짚은 곳 번호(1~5, 기본 1)로 kind=crop 에만 쓴다. image/jpeg. 없으면 404.
+            """)
     @RawApiResponse
     @GetMapping("/api/v1/device-share-feedback/{feedbackId}/image")
     public ResponseEntity<byte[]> image(@AuthenticationPrincipal Long userId, @PathVariable Long feedbackId,
                                         @RequestParam(name = "kind", required = false, defaultValue = "crop") String kind,
+                                        @RequestParam(name = "mark", required = false, defaultValue = "1") int mark,
                                         Authentication auth) {
-        if (!"crop".equals(kind) && !"screen".equals(kind)) {
-            throw new IllegalArgumentException("kind 는 crop 또는 screen 이어야 합니다.");
+        ShareFeedbackService.ImageKind imageKind = switch (kind) {
+            case "crop" -> ShareFeedbackService.ImageKind.CROP;
+            case "screen" -> ShareFeedbackService.ImageKind.SCREEN;
+            case "annotated" -> ShareFeedbackService.ImageKind.ANNOTATED;
+            default -> throw new IllegalArgumentException("kind 는 crop · screen · annotated 중 하나여야 합니다.");
+        };
+        if (mark < 1 || mark > 5 || (mark > 1 && imageKind != ShareFeedbackService.ImageKind.CROP)) {
+            throw new IllegalArgumentException("mark 는 1~5 이고 kind=crop 에만 쓸 수 있습니다.");
         }
-        byte[] bytes = service.image(userId, feedbackId, "crop".equals(kind), isAgent(auth));
+        byte[] bytes = service.image(userId, feedbackId, imageKind, mark, isAgent(auth));
         return ResponseEntity.ok()
                 .contentType(MediaType.IMAGE_JPEG)
                 .cacheControl(CacheControl.noStore().cachePrivate())

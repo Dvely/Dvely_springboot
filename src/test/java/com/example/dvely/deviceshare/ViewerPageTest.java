@@ -49,10 +49,12 @@ class ViewerPageTest {
     void 짚기_범위_필드_이름이_서버와_같다() throws IOException {
         // §15.9: 뷰어는 config.pinCaps 로 켤 것을 고르고, 결과의 scopes·defaultScope 를 읽고, 고른 칸을 scope 로 보낸다
         String page = viewer();
-        assertThat(page).contains("m.pinCaps", "m.scopes", "m.defaultScope", "msg.scope = P.scope", "screen: true");
+        assertThat(page).contains("m.pinCaps", "m.scopes", "m.defaultScope", "one.scope = mk.scope", "screen: true");
         assertThat(page).contains("hasCap('pin-screen')");
         // §15.4: 끌기는 pin-region 을 알린 기기에만, 사각형은 rect 로 간다
-        assertThat(page).contains("hasCap('pin-region')", "rect: P.point.rect", "m.empty", "m.near");
+        assertThat(page).contains("hasCap('pin-region')", "rect: mk.point.rect", "m.empty", "m.near");
+        // §15.5·§15.9: 여러 곳은 짚기마다 ref, 보낼 때 marks, 시간이 지난 곳은 pin-missing, 글을 쓰는 동안 pin-keep
+        assertThat(page).contains("ref: mk.ref", "marks: marks.map(", "case 'pin-missing':", "type: 'pin-keep'", "m.view");
         // 범위를 바꿔도 기기에 다시 묻지 않는다(소켓으로 보내는 것은 짚기·보내기뿐)
         assertThat(page).doesNotContain("type: 'pin-scope'");
     }

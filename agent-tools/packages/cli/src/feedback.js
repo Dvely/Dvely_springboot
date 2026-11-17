@@ -81,25 +81,35 @@ async function show({ client, args, flags, deps }) {
   const files = {};
   const lines = [];
   const pictures = [];
-  if (detail?.hasCrop) pictures.push(['crop', `${id}.jpg`, '짚은 요소']);
-  if (flags.screen && detail?.hasScreen) pictures.push(['screen', `${id}-screen.jpg`, '짚은 순간의 화면']);
-  for (const [kind, name, what] of pictures) {
+  // Several places (§15.5): the prompt numbers them, and so does the screen saved next to it.
+  const marks = Array.isArray(detail?.marks) ? detail.marks.filter((m) => Number.isInteger(m?.n)) : [];
+  const many = marks.length > 1;
+  if (detail?.hasCrop) pictures.push(['crop', `${id}.jpg`, many ? '① 고른 범위' : '짚은 요소', 1]);
+  for (const m of marks) {
+    if (m.n > 1 && m.n <= 5 && m.hasCrop) pictures.push([`crop${m.n}`, `${id}-${m.n}.jpg`, `${circled(m.n)} 고른 범위`, m.n]);
+  }
+  if (many && detail?.hasAnnotated) pictures.push(['annotated', `${id}-screen.jpg`, '짚은 곳에 번호를 그린 화면']);
+  else if (flags.screen && detail?.hasScreen) pictures.push(['screen', `${id}-screen.jpg`, '짚은 순간의 화면']);
+  for (const [key, name, what, mark] of pictures) {
     const path = join(dir, name);
-    await writeFile(path, await client.getShareFeedbackImage(id, kind));
-    files[kind] = shown(path);
-    lines.push(`- ${what}: ${files[kind]}`);
+    const kind = key.startsWith('crop') ? 'crop' : key;
+    await writeFile(path, await client.getShareFeedbackImage(id, kind, mark > 1 ? { mark } : undefined));
+    files[key] = shown(path);
+    lines.push(`- ${what}: ${files[key]}`);
   }
   const markdown = String(prompt?.markdown ?? '').trimEnd() + (lines.length ? `\n\n## 이미지\n\n${lines.join('\n')}\n` : '\n');
   const mdPath = join(dir, `${id}.md`);
   await writeFile(mdPath, markdown);
   files.markdown = shown(mdPath);
 
-  const saved = [files.markdown, files.crop, files.screen].filter(Boolean).join(', ');
+  const saved = [files.markdown, ...pictures.map(([key]) => files[key])].filter(Boolean).join(', ');
   return {
     data: { feedback: detail?.feedback ?? null, markdown, files },
     text: `${markdown}\n저장했습니다: ${saved}\n고친 뒤 qeploy feedback fixed ${id} --note "무엇을 바꿨는지" 로 표시하면 짚은 사람에게 알림이 갑니다.`,
   };
 }
+
+const circled = (n) => '①②③④⑤'[n - 1] ?? `(${n})`;
 
 async function ignoreFolder(dir) {
   const path = join(dir, '.gitignore');

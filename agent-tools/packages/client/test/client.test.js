@@ -422,6 +422,12 @@ describe('pin feedback (#683)', () => {
     assert.equal(capture.url, 'https://q.test/api/v1/device-share-feedback/12/image?kind=crop');
     assert.equal(capture.init.headers.Authorization, 'Bearer qp_x');
     await assert.rejects(() => c.getShareFeedbackImage(12, '../x'), TypeError);
+    await c.getShareFeedbackImage(12, 'crop', { mark: 2 });
+    assert.equal(capture.url, 'https://q.test/api/v1/device-share-feedback/12/image?kind=crop&mark=2');
+    await c.getShareFeedbackImage(12, 'annotated');
+    assert.equal(capture.url, 'https://q.test/api/v1/device-share-feedback/12/image?kind=annotated');
+    await assert.rejects(() => c.getShareFeedbackImage(12, 'screen', { mark: 2 }), TypeError);
+    await assert.rejects(() => c.getShareFeedbackImage(12, 'crop', { mark: 6 }), TypeError);
 
     c = new QeployClient(opts(fileStub(200, Buffer.from('<html>'), 'text/html')));
     await assert.rejects(() => c.getShareFeedbackImage(12), (e) => e.code === 'BAD_RESPONSE');

@@ -341,6 +341,179 @@ class ShareSessionPinTest {
         session.onDeviceFrame(device, frame(ShareFrames.SCREEN_CONFIG, "{\"format\":\"jpeg\",\"width\":390,\"height\":844,\"url\":\"/x\"}"));
     }
 
+    @Test
+    void 짚기마다의_ref_를_그_짚기의_모든_답에_돌려준다() {
+        // §15.5: 여러 곳을 짚는 뷰어는 답의 개수가 아니라 ref 로 어느 곳의 답인지 안다
+        ref(guestId, "a1", 0.4, 0.4);
+        assertThat(guest.last("pin").path("state").asText()).isEqualTo("pending");
+        assertThat(guest.last("pin").path("ref").asText()).isEqualTo("a1");
+        session.onDeviceFrame(device, result(ELEMENT.formatted("p1"), JPEG, JPEG));
+        assertThat(guest.last("pin").path("state").asText()).isEqualTo("resolved");
+        assertThat(guest.last("pin").path("ref").asText()).isEqualTo("a1");
+
+        ref(guestId, "b2", 0.5, 0.5); // 1초 안
+        assertThat(guest.last("pin").path("reason").asText()).isEqualTo("busy");
+        assertThat(guest.last("pin").path("ref").asText()).isEqualTo("b2");
+
+        nanos += SECOND;
+        ref(guestId, "b2", 0.5, 0.5);
+        nanos += ShareSession.PROBE_TIMEOUT_NANOS + 1;
+        session.expirePins();
+        assertThat(guest.last("pin").path("reason").asText()).isEqualTo("timeout");
+        assertThat(guest.last("pin").path("ref").asText()).isEqualTo("b2");
+
+        nanos += SECOND;
+        ref(guestId, "x-1!", 0.5, 0.5);
+        assertThat(guest.last("pin").has("ref")).as("모양이 틀린 ref 는 돌려주지 않는다").isFalse();
+    }
+
+    @Test
+    void 결과는_보는_사람마다_다섯_개까지_두고_다른_사람이_짚어도_내_결과는_남는다() {
+        String mine = pinned(guestId, "m1", JPEG);
+        List<String> others = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            String other = session.join(new FakeViewer(), "v" + i, false);
+            for (int k = 0; k < 5; k++) {
+                others.add(pinned(other, "o" + k, JPEG));
+            }
+        }
+        // 공유 하나에 16개. 지금까지는 공유 전체에 다섯 개라, 남이 짚으면 내 결과가 밀려났다
+        assertThat(session.claimPins(guestId, List.of(mine)).claimed()).isPresent();
+
+        List<String> five = new ArrayList<>();
+        for (int k = 0; k < 6; k++) {
+            five.add(pinned(guestId, "g" + k, JPEG));
+        }
+        assertThat(session.claimPins(guestId, List.of(five.getFirst())).missing())
+                .as("여섯 번째가 가장 오래된 것을 밀어낸다").containsExactly(five.getFirst());
+        assertThat(session.claimPins(guestId, five.subList(1, 6)).claimed()).isPresent();
+    }
+
+    @Test
+    void 공유_전체가_스무_개를_넘으면_가장_오래_쉬고_있는_사람의_것부터_버린다() {
+        String idle = session.join(new FakeViewer(), "쉬는 사람", false);
+        String idleFirst = pinned(idle, "i0", JPEG);
+        String idleSecond = pinned(idle, "i1", JPEG);
+        List<String> busy = new ArrayList<>();
+        for (int i = 0; i < 3; i++) { // 세션의 보는 사람 상한이 다섯 명이다
+            String viewer = session.join(new FakeViewer(), "v" + i, false);
+            for (int k = 0; k < 5; k++) {
+                busy.add(pinned(viewer, "b" + k, JPEG));
+            }
+        }
+        for (int k = 0; k < 5; k++) {
+            busy.add(pinned(guestId, "g" + k, JPEG));
+        }
+        // 22개 → 가장 오래 쉬고 있는 사람의 두 개가 빠진다. 방금 짚은 사람들의 것은 남는다
+        assertThat(session.claimPins(idle, List.of(idleFirst)).missing()).containsExactly(idleFirst);
+        assertThat(session.claimPins(idle, List.of(idleSecond)).missing()).containsExactly(idleSecond);
+        assertThat(session.claimPins(guestId, busy.subList(15, 20)).claimed()).isPresent();
+    }
+
+    @Test
+    void 같은_곳을_다시_짚으면_새_결과가_옛_결과를_대신한다() {
+        String first = pinned(guestId, "a", JPEG);
+        String again = pinned(guestId, "a", JPEG);
+
+        assertThat(session.claimPins(guestId, List.of(first)).missing()).containsExactly(first);
+        assertThat(session.claimPins(guestId, List.of(again)).claimed()).isPresent();
+    }
+
+    @Test
+    void 다시_짚거나_pin_keep_을_보내면_시간이_늘지만_받은_때부터_15분까지다() {
+        String kept = pinned(guestId, "a", JPEG);
+        nanos += 4 * 60 * SECOND;
+        session.onViewerMessage(guestId, msg("{\"type\":\"pin-keep\"}"), Instant.now());
+        nanos += 4 * 60 * SECOND; // 받은 지 8분
+        session.expirePins();
+        assertThat(guest.types()).doesNotContain("error");
+        assertThat(session.claimPins(guestId, List.of(kept)).claimed()).as("8분이어도 남는다").isPresent();
+
+        String capped = pinned(guestId, "b", JPEG);
+        for (int minute = 4; minute <= 16; minute += 4) {
+            nanos += 4 * 60 * SECOND;
+            session.onViewerMessage(guestId, msg("{\"type\":\"pin-keep\"}"), Instant.now());
+        }
+        session.expirePins();
+        assertThat(session.claimPins(guestId, List.of(capped)).missing()).as("16분이면 없다").containsExactly(capped);
+    }
+
+    @Test
+    void 여러_곳은_모두_있을_때만_가져가고_없는_곳을_알려_준다() {
+        String a = pinned(guestId, "a", JPEG);
+        String b = pinned(guestId, "b", JPEG);
+
+        PinClaim partial = session.claimPins(guestId, List.of(a, "p99"));
+        assertThat(partial.claimed()).isEmpty();
+        assertThat(partial.missing()).containsExactly("p99");
+
+        PinClaim both = session.claimPins(guestId, List.of(b, a));
+        assertThat(both.claimed()).isPresent();
+        assertThat(both.claimed().get().marks()).extracting(m -> m.resolution().probeId()).containsExactly(b, a);
+        assertThat(session.claimPins(guestId, List.of(a)).missing()).as("가져가면 끝").containsExactly(a);
+    }
+
+    @Test
+    void 화면_지문은_화면_종류의_해시와_픽셀_dHash_이고_같은_화면이면_화면_그림을_하나만_둔다() {
+        byte[] top = com.example.dvely.deviceshare.support.PinTestImages.screen(0, 7);
+        byte[] sameAgain = com.example.dvely.deviceshare.support.PinTestImages.screen(0, 7);
+        byte[] scrolled = com.example.dvely.deviceshare.support.PinTestImages.screen(300, 7);
+
+        String a = pinned(guestId, "a", top);
+        JsonNode first = guest.last("pin").path("view");
+        assertThat(first.path("screen").asText()).matches("[0-9a-f]{12}");
+        assertThat(first.path("dhash").asText()).matches("[0-9a-f]{16}");
+        assertThat(guest.last("pin").toString()).as("화면 이름은 손님에게 가지 않는다").doesNotContain("/settings");
+
+        String b = pinned(guestId, "b", sameAgain);
+        assertThat(guest.last("pin").path("view")).isEqualTo(first);
+        String c = pinned(guestId, "c", scrolled);
+        JsonNode moved = guest.last("pin").path("view");
+        assertThat(moved.path("screen")).isEqualTo(first.path("screen"));
+        assertThat(Long.bitCount(Long.parseUnsignedLong(moved.path("dhash").asText(), 16)
+                ^ Long.parseUnsignedLong(first.path("dhash").asText(), 16))).isGreaterThan(ShareSession.SAME_VIEW_BITS);
+
+        ClaimedPin claimed = session.claimPins(guestId, List.of(a, b)).claimed().orElseThrow();
+        assertThat(claimed.marks().get(0).screen()).as("같은 화면이라 b 의 화면을 함께 쓴다").isEqualTo(sameAgain);
+        assertThat(claimed.screen()).isEqualTo(sameAgain);
+        assertThat(session.claimPins(guestId, List.of(c)).claimed().orElseThrow().screen()).isEqualTo(scrolled);
+    }
+
+    @Test
+    void 큰_잘라_낸_그림은_256KiB_안으로_줄여_둔다() {
+        byte[] big = com.example.dvely.deviceshare.support.PinTestImages.noise(700, 700, 3);
+        assertThat(big.length).isBetween(ShareSession.MAX_KEPT_CROP_BYTES + 1, ShareSession.MAX_CROP_BYTES);
+
+        String a = pinned(guestId, "a", JPEG, big);
+        byte[] kept = session.claimPins(guestId, List.of(a)).claimed().orElseThrow().crop();
+        assertThat(kept.length).isLessThanOrEqualTo(ShareSession.MAX_KEPT_CROP_BYTES);
+        assertThat(kept[0] & 0xff).isEqualTo(0xff);
+    }
+
+    private static final String ELEMENT = """
+            {"probeId":"%s","ok":true,"screen":{"label":"/settings"},
+             "element":{"type":"button","text":"저장","bounds":{"x":0.1,"y":0.2,"w":0.3,"h":0.1}}}
+            """;
+
+    private void ref(String viewerId, String ref, double x, double y) {
+        session.onViewerMessage(viewerId, msg("{\"type\":\"pin-probe\",\"ref\":\"" + ref + "\",\"x\":" + x + ",\"y\":" + y + "}"),
+                Instant.now());
+        nanos += 10;
+    }
+
+    /** 1초 뒤 짚고 바로 답을 받는다. @return 짚기 id */
+    private String pinned(String viewerId, String ref, byte[] screen) {
+        return pinned(viewerId, ref, screen, JPEG);
+    }
+
+    private String pinned(String viewerId, String ref, byte[] screen, byte[] crop) {
+        nanos += SECOND;
+        ref(viewerId, ref, 0.5, 0.5);
+        String probeId = device.lastJson(ShareFrames.PIN_PROBE).path("probeId").asText();
+        session.onDeviceFrame(device, result(ELEMENT.formatted(probeId), crop, screen));
+        return probeId;
+    }
+
     private void probe(String viewerId, double x, double y) {
         session.onViewerMessage(viewerId, msg("{\"type\":\"pin-probe\",\"x\":" + x + ",\"y\":" + y + "}"), Instant.now());
         nanos += 10; // 같은 사람의 다음 짚기는 1초 안이다

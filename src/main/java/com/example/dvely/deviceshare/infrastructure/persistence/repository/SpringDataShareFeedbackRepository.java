@@ -35,7 +35,8 @@ public interface SpringDataShareFeedbackRepository extends JpaRepository<ShareFe
     int moveStatus(@Param("id") Long id, @Param("from") Collection<String> from, @Param("to") String to,
                    @Param("now") LocalDateTime now);
 
-    @Query(value = "select crop is not null and length(crop) > 0, screen is not null and length(screen) > 0 "
+    @Query(value = "select crop is not null and length(crop) > 0, screen is not null and length(screen) > 0, "
+            + "annotated is not null and length(annotated) > 0 "
             + "from device_share_feedback_images where feedback_id = :id", nativeQuery = true)
     List<Object[]> imagePresence(@Param("id") Long feedbackId);
 

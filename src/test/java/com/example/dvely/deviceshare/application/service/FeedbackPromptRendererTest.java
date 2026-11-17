@@ -196,6 +196,48 @@ class FeedbackPromptRendererTest {
         assertThat(md).contains("## 이어진 대화\n\n- 고침(에이전트): 패딩을 늘렸습니다\n- 다시 열기(손님):\n\n  ```text\n  아직 작아요\n  ```\n");
     }
 
+    @Test
+    void 여러_곳은_번호마다_고른_범위를_한_줄로_적고_글자와_소스_후보에도_번호를_단다() throws Exception {
+        String md = FeedbackPromptRenderer.render(feedback("①의 여백을 ②처럼 넓혀 주세요", FeedbackAuthorRole.GUEST), json.readTree("""
+                {"screen":{"label":"/settings","title":"Vite App"},"point":{"x":0.42,"y":0.17},"ok":true,"v":2,"scope":1,
+                 "element":{"type":"button","text":"저장","selector":"button.save"},
+                 "scopes":[{"kind":"element","type":"button","bounds":{"x":0.1,"y":0.1,"w":0.2,"h":0.05}},
+                           {"kind":"component","type":"form","id":"profile","component":"ProfileForm","text":"이름 저장",
+                            "bounds":{"x":0,"y":0,"w":1,"h":0.4}},
+                           {"kind":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}],
+                 "components":[{"name":"SaveButton","file":"src/SaveButton.jsx","line":2},{"name":"ProfileForm","file":"src/ProfileForm.jsx","line":4}],
+                 "sourceHints":[{"file":"src/SaveButton.jsx","line":2,"reason":"COMPONENT"},
+                                {"file":"src/ProfileForm.jsx","line":4,"reason":"COMPONENT"},
+                                {"file":"src/pages/Settings.jsx","line":9,"reason":"TEXT"}],
+                 "marks":[{"n":2,"scope":0,"peers":false,"probe":{"ok":true,"point":{"x":0.5,"y":0.6},
+                   "element":{"type":"h2","text":"요금제"},
+                   "scopes":[{"kind":"region","members":2,"bounds":{"x":0.05,"y":0.5,"w":0.9,"h":0.2}},
+                             {"kind":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}],
+                   "members":[{"type":"h2","text":"요금제"},{"type":"p","text":"지금은 무료"}],"empty":false,
+                   "sourceHints":[{"file":"src/PlanCard.jsx","line":3,"reason":"TEXT"}]}},
+                  {"n":3,"peers":false,"probe":{"ok":false,"reason":"NO_ELEMENT","point":{"x":0.5,"y":0.9},
+                   "near":[{"dir":"up","type":"footer","text":"© Acme","distance":0.02}]}}]}
+                """), List.of());
+
+        assertThat(md).contains("- 짚은 곳 3개(번호를 그린 화면 이미지와 같은 번호)\n");
+        assertThat(md).contains("  - ① 폼 `form#profile` · 컴포넌트 `ProfileForm` — 짚은 요소를 품은 범위를 골랐다\n");
+        assertThat(md).contains("    - 처음 짚은 것: `<button>` · `button.save`\n");
+        assertThat(md).contains("  - ② 영역 · 안의 요소 2개: `h2` · `p`");
+        assertThat(md).contains("  - ③ 빈 곳(가로 50% · 세로 90%) · 둘레: 위 `footer`\n");
+        assertThat(md).doesNotContain("- 짚은 요소:").doesNotContain("- 고른 범위:");
+        // 글자는 번호를 달아 펜스 안에만
+        assertThat(md).contains("```text\n화면 제목: Vite App\n① 짚은 요소: 저장\n");
+        assertThat(md).contains("    - 영역 가운데 요소: `<h2>`\n");
+        assertThat(md).contains("② 영역 가운데 요소: 요금제\n② 영역 안 1: 요금제\n② 영역 안 2: 지금은 무료\n③ 둘레 위: © Acme\n");
+        assertThat(md.indexOf("요금제")).isGreaterThan(md.indexOf("## 화면에서 읽은 글"));
+        // 소스 후보: 곳마다 두 개까지, 고른 칸(컴포넌트 ProfileForm)의 파일이 앞
+        assertThat(md).contains("  1. ① src/ProfileForm.jsx:4 — 컴포넌트 이름\n  2. ① src/SaveButton.jsx:2 — 컴포넌트 이름\n"
+                + "  3. ② src/PlanCard.jsx:3 — 보이는 텍스트\n");
+        assertThat(md).doesNotContain("Settings.jsx");
+        assertThat(md).contains("글의 ①②… 는 위 짚은 곳의 번호다");
+        assertThat(md).contains("```text\n①의 여백을 ②처럼 넓혀 주세요\n```\n");
+    }
+
     private static ShareFeedback feedback(String body, FeedbackAuthorRole role) {
         LocalDateTime at = LocalDateTime.of(2026, 11, 18, 14, 2, 30);
         return new ShareFeedback(12L, 7L, role, "민지", "h".repeat(64), DeviceShareKind.WEB, "/settings", "{}", body,

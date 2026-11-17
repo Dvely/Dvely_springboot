@@ -1,18 +1,10 @@
 package com.example.dvely.deviceshare.application.service;
 
+import com.example.dvely.deviceshare.application.session.PinImages;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.util.Iterator;
-import javax.imageio.IIOImage;
-import javax.imageio.ImageIO;
-import javax.imageio.ImageWriteParam;
-import javax.imageio.ImageWriter;
-import javax.imageio.stream.ImageOutputStream;
 
 /**
  * 사람이 고른 범위(§15.10)를 화면 JPEG 에서 잘라 낸다.
@@ -35,12 +27,7 @@ final class ScopeCrop {
         if (screenJpeg == null || bounds == null || !bounds.isObject()) {
             return null;
         }
-        BufferedImage screen;
-        try {
-            screen = ImageIO.read(new ByteArrayInputStream(screenJpeg));
-        } catch (IOException | RuntimeException e) {
-            return null;
-        }
+        BufferedImage screen = PinImages.read(screenJpeg);
         if (screen == null) {
             return null;
         }
@@ -65,33 +52,12 @@ final class ScopeCrop {
             g.dispose();
         }
         for (float quality : new float[] {0.8f, 0.65f, 0.5f}) {
-            byte[] jpeg = encode(out, quality);
+            byte[] jpeg = PinImages.encode(out, quality);
             if (jpeg != null && jpeg.length <= MAX_BYTES) {
                 return jpeg;
             }
         }
         return null;
-    }
-
-    private static byte[] encode(BufferedImage image, float quality) {
-        Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpeg");
-        if (!writers.hasNext()) {
-            return null;
-        }
-        ImageWriter writer = writers.next();
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        try (ImageOutputStream stream = ImageIO.createImageOutputStream(bytes)) {
-            writer.setOutput(stream);
-            ImageWriteParam param = writer.getDefaultWriteParam();
-            param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
-            param.setCompressionQuality(quality);
-            writer.write(null, new IIOImage(image, null, null), param);
-        } catch (IOException | RuntimeException e) {
-            return null;
-        } finally {
-            writer.dispose();
-        }
-        return bytes.toByteArray();
     }
 
     private static int clamp(int value, int min, int max) {
