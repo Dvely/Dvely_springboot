@@ -547,7 +547,7 @@ describe('android pinning over a real tunnel socket (§14, #682)', () => {
     session.run();
     const conn = await server.nextConnection();
     const hello = await conn.next();
-    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'ANDROID', target: 'qeploy_test · com.example.app', features: ['pin'] });
+    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'ANDROID', target: 'qeploy_test · com.example.app', features: ['pin', 'pin-screen'] });
     conn.send(KIND.WELCOME, { shareId: 7 });
     await until(() => device.resets === 1);
     const controlsBefore = device.controls.length;
@@ -568,6 +568,39 @@ describe('android pinning over a real tunnel socket (§14, #682)', () => {
     assert.deepEqual([crop[0], crop[1], crop[2]], [0xff, 0xd8, 0xff]);
     assert.deepEqual([screen[0], screen[1], screen[2]], [0xff, 0xd8, 0xff]);
     assert.equal(device.controls.length, controlsBefore, 'a probe sends the emulator nothing');
+  });
+
+  it('answers a whole-screen probe: the Activity and the screen, no element, no crop (§15.6)', { timeout: 10000 }, async () => {
+    const server = await tunnelServer();
+    const adb = fakeAdb();
+    let dumps = 0;
+    adb.uiDump = async () => (dumps++, DUMP);
+    const { session, device } = newAndroidSession({ tunnelUrl: server.url, adb });
+    session.run();
+    const conn = await server.nextConnection();
+    assert.deepEqual((await conn.next()).json.features, ['pin', 'pin-screen']);
+    conn.send(KIND.WELCOME, { shareId: 7, pinResultMax: 49152 });
+    await until(() => device.resets === 1);
+    const controlsBefore = device.controls.length;
+
+    conn.send(KIND.PIN_PROBE, { probeId: 'p2', screen: true });
+    const answer = await conn.next();
+    assert.equal(answer.kind, KIND.PIN_RESULT);
+    const n = answer.payload.readUInt32BE(0);
+    const json = JSON.parse(answer.payload.subarray(4, 4 + n).toString('utf8'));
+    const cropLength = answer.payload.readUInt32BE(4 + n);
+    const screen = answer.payload.subarray(8 + n + cropLength);
+    assert.deepEqual(json, {
+      probeId: 'p2',
+      ok: true,
+      screen: { label: 'com.example.app/.MainActivity', package: 'com.example.app', activity: '.MainActivity' },
+      scopes: [{ kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } }],
+      defaultScope: 0,
+    });
+    assert.equal(cropLength, 0);
+    assert.deepEqual([screen[0], screen[1], screen[2]], [0xff, 0xd8, 0xff]);
+    assert.equal(dumps, 0, 'no tree for the whole screen');
+    assert.equal(device.controls.length, controlsBefore);
   });
 });
 

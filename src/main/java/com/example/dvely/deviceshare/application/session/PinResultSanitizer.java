@@ -27,11 +27,16 @@ public final class PinResultSanitizer {
     static final int MAX_COMPONENTS = 8;
     static final int MAX_HINTS = 5;
     static final int MAX_VIEWER_LABEL = 80;
+    /** §15.3: 범위 사다리는 6칸까지, 칸의 글은 60자까지 */
+    static final int MAX_SCOPES = 6;
+    static final int MAX_SCOPE_TEXT = 60;
 
     private static final Pattern PROBE_ID = Pattern.compile("p[0-9]{1,9}");
     private static final Set<String> REASONS = Set.of("NO_ELEMENT", "UNSUPPORTED", "TIMEOUT");
     private static final Set<String> HINT_REASONS = Set.of("COMPONENT", "ID", "TEXT");
     private static final String[] SCREEN_FIELDS = {"label", "url", "title", "package", "activity", "bundleId", "appName"};
+    /** §15.3·§15.4·§15.7 의 칸 종류. 모르는 종류의 칸은 버린다 */
+    private static final Set<String> SCOPE_KINDS = Set.of("element", "group", "component", "screen", "region", "text");
 
     private final ObjectMapper json;
 
@@ -66,11 +71,18 @@ public final class PinResultSanitizer {
             out.set("point", point);
         }
 
-        boolean resolved = raw.path("ok").asBoolean(false);
-        ObjectNode element = resolved ? element(raw.path("element")) : null;
-        if (element == null) {
-            resolved = false;
-        } else {
+        boolean ok = raw.path("ok").asBoolean(false);
+        ObjectNode element = ok ? element(raw.path("element")) : null;
+        ArrayNode scopes = ok ? list(raw.path("scopes"), MAX_SCOPES, this::scope) : json.createArrayNode();
+        // §15.6: 화면 전체를 짚으면 요소 없이 화면 칸 하나만 온다. 그것도 찾은 것이다
+        boolean screenOnly = element == null && scopes.size() == 1 && "screen".equals(scopes.get(0).path("kind").asText());
+        boolean resolved = element != null || screenOnly;
+        if (resolved && !scopes.isEmpty()) {
+            out.set("scopes", scopes);
+            int defaultScope = raw.path("defaultScope").asInt(0);
+            out.put("defaultScope", defaultScope >= 0 && defaultScope < scopes.size() ? defaultScope : 0);
+        }
+        if (element != null) {
             out.set("element", element);
             ArrayNode ancestors = list(raw.path("ancestors"), MAX_ANCESTORS, this::ancestor);
             if (!ancestors.isEmpty()) {
@@ -96,8 +108,124 @@ public final class PinResultSanitizer {
         String screenLabel = screen.path("label").asText("");
         ObjectNode bounds = element == null ? null : (ObjectNode) element.get("bounds");
         String component = out.path("components").path(0).path("name").asText(null);
-        return Optional.of(new PinResolution(probeId, resolved, reason, out, screenLabel, bounds,
-                element == null ? null : viewerLabel(element), component));
+        String label = element != null ? viewerLabel(element) : screenOnly ? SCREEN_LABEL : null;
+        return Optional.of(new PinResolution(probeId, resolved, reason, out, screenLabel, bounds, label, component));
+    }
+
+    // ------------------------------------------------------------------ 범위 사다리 (§15.3)
+
+    static final String SCREEN_LABEL = "화면 전체";
+
+    private ObjectNode scope(JsonNode node) {
+        if (!node.isObject()) {
+            return null;
+        }
+        String kind = node.path("kind").asText("");
+        ObjectNode bounds = "screen".equals(kind) ? fullScreen() : ratioRect(node.path("bounds"));
+        if (!SCOPE_KINDS.contains(kind) || bounds == null || bounds.path("w").asDouble() <= 0 || bounds.path("h").asDouble() <= 0) {
+            return null;
+        }
+        ObjectNode out = json.createObjectNode().put("kind", kind);
+        putText(out, "type", node.path("type"), MAX_TYPE);
+        putText(out, "text", node.path("text"), MAX_SCOPE_TEXT);
+        putText(out, "id", node.path("id"), MAX_NAME);
+        putText(out, "selector", node.path("selector"), MAX_SELECTOR);
+        putText(out, "component", node.path("component"), MAX_NAME);
+        out.set("bounds", bounds);
+        return out;
+    }
+
+    private ObjectNode fullScreen() {
+        return json.createObjectNode().put("x", 0.0).put("y", 0.0).put("w", 1.0).put("h", 1.0);
+    }
+
+    /**
+     * 칸 하나의 짧은 이름. 종류 + 이름(id 또는 글). 예: {@code 폼 #profile}, {@code 컴포넌트 ProfileForm}, {@code 화면 전체}.
+     *
+     * @param withComponent 컴포넌트 이름을 넣을지. 손님 뷰어에는 바깥 칸의 컴포넌트 이름을 보내지 않는다(§15.2)
+     */
+    public static String scopeLabel(JsonNode scope, boolean withComponent) {
+        String kind = scope.path("kind").asText("");
+        String component = scope.path("component").asText("");
+        String label = switch (kind) {
+            case "screen" -> SCREEN_LABEL;
+            case "region" -> "영역";
+            case "text" -> {
+                String text = scope.path("text").asText("");
+                yield text.isEmpty() ? "글자" : "글자 \"" + text + '"';
+            }
+            case "element" -> {
+                String element = viewerLabel(scope);
+                yield element == null ? "요소" : element;
+            }
+            case "component" -> withComponent && !component.isEmpty()
+                    ? "컴포넌트 " + component
+                    : named(groupWord(scope.path("type").asText("")), scope);
+            default -> named(groupWord(scope.path("type").asText("")), scope);
+        };
+        if (withComponent && !component.isEmpty() && !"component".equals(kind) && !"screen".equals(kind)) {
+            label = label + " · " + component;
+        }
+        return cut(label, MAX_VIEWER_LABEL);
+    }
+
+    /**
+     * 사람이 고른 범위의 이름(§15.10). 기기 알림·목록·상세·뷰어의 내 피드백이 같이 쓴다. 범위 사다리가 없는 결과(§14, 옛 CLI)는
+     * 지금처럼 요소 이름이다.
+     */
+    public static String selectedLabel(JsonNode description) {
+        JsonNode scopes = description.path("scopes");
+        if (scopes.isArray() && !scopes.isEmpty()) {
+            int chosen = description.path("scope").asInt(description.path("defaultScope").asInt(0));
+            JsonNode scope = scopes.path(chosen >= 0 && chosen < scopes.size() ? chosen : 0);
+            if (!"element".equals(scope.path("kind").asText())) {
+                return scopeLabel(scope, true);
+            }
+        }
+        JsonNode element = description.path("element");
+        return element.isObject() ? viewerLabel(element) : null;
+    }
+
+    /** 사람이 고른 칸. 사다리가 없으면 빈 값 */
+    public static Optional<JsonNode> selectedScope(JsonNode description) {
+        JsonNode scopes = description.path("scopes");
+        if (!scopes.isArray() || scopes.isEmpty()) {
+            return Optional.empty();
+        }
+        int chosen = description.path("scope").asInt(description.path("defaultScope").asInt(0));
+        return Optional.of(scopes.path(chosen >= 0 && chosen < scopes.size() ? chosen : 0));
+    }
+
+    private static String named(String word, JsonNode scope) {
+        String id = scope.path("id").asText("");
+        String text = scope.path("text").asText("");
+        if (!id.isEmpty()) {
+            return word + " #" + id;
+        }
+        if (!text.isEmpty()) {
+            return word + " \"" + cut(text, 20) + '"';
+        }
+        return word;
+    }
+
+    /** 덩어리 칸의 종류 이름. 태그·역할을 사람이 부르는 말로 옮기고, 모르는 것은 태그 그대로 둔다 */
+    public static String groupWord(String type) {
+        return switch (type.toLowerCase(java.util.Locale.ROOT)) {
+            case "form" -> "폼";
+            case "nav", "navigation", "menu", "menubar" -> "메뉴";
+            case "header", "banner" -> "머리글";
+            case "footer", "contentinfo" -> "바닥글";
+            case "main" -> "본문";
+            case "section", "region" -> "구역";
+            case "article" -> "글 묶음";
+            case "aside", "complementary" -> "곁 내용";
+            case "dialog", "alertdialog" -> "대화 상자";
+            case "ul", "ol", "list", "table", "tablist", "grid" -> "목록";
+            case "li", "listitem", "row", "cell" -> "항목";
+            case "fieldset", "group" -> "입력 묶음";
+            case "" -> "덩어리";
+            default -> "<" + type + ">";
+        };
     }
 
     // ------------------------------------------------------------------ 부분

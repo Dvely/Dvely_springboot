@@ -3,6 +3,7 @@ package com.example.dvely.deviceshare.application.session;
 import com.example.dvely.deviceshare.domain.value.DeviceShareKind;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -14,6 +15,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -44,13 +46,19 @@ public class ShareSession {
     static final long KEYFRAME_REQUEST_INTERVAL_NANOS = 1_000_000_000L;
     /** 짚기(설계 §14). 기기가 HELLO {@code features} 에 이 값을 실어야 뷰어에 짚기 버튼이 나온다. */
     static final String PIN_FEATURE = "pin";
+    /** §15.9: 기기가 알리는 짚기 기능. 이 순서로 {@code config.pinCaps} 에 싣는다 */
+    static final List<String> PIN_CAPS = List.of(PIN_FEATURE, "pin-scope", "pin-screen", "pin-region");
     static final long PROBE_INTERVAL_NANOS = 1_000_000_000L;
     static final long PROBE_TIMEOUT_NANOS = 5_000_000_000L;
     static final long RESOLVED_TTL_NANOS = 5 * 60 * 1_000_000_000L;
     static final int MAX_PENDING_PROBES = 3;
     static final int MAX_RESOLVED_PINS = 5;
     static final int MAX_WATCHED = 50;
-    static final int MAX_RESULT_JSON_BYTES = 16 * 1024;
+    /**
+     * 짚기 결과 JSON 상한. §14 는 16KiB 였고, 범위 사다리(§15.9)를 싣는 기기를 위해 48KiB 로 올렸다. 기기는 WELCOME 의
+     * {@code pinResultMax} 를 보고 그만큼만 쓴다. 이 값을 모르는 옛 서버에는 16KiB 로 맞춘다.
+     */
+    static final int MAX_RESULT_JSON_BYTES = 48 * 1024;
     static final int MAX_CROP_BYTES = 512 * 1024;
     static final int MAX_SCREEN_BYTES = 1024 * 1024;
 
@@ -189,7 +197,8 @@ public class ShareSession {
             case ShareFrames.HELLO -> {
                 deviceReady = true;
                 readFeatures(frame);
-                ObjectNode welcome = object("shareId", shareId).put("expiresAt", expiresAt.toString());
+                ObjectNode welcome = object("shareId", shareId).put("expiresAt", expiresAt.toString())
+                        .put("pinResultMax", MAX_RESULT_JSON_BYTES);
                 channel.sendBinary(ShareFrames.encode(ShareFrames.WELCOME, welcome.toString()));
                 broadcast(object("type", "device").put("state", "online").toString());
                 sendPresenceToDevice();
@@ -237,6 +246,10 @@ public class ShareSession {
         }
         config.put("kind", kind.name());
         config.put("pin", pinSupported());
+        ArrayNode caps = config.putArray("pinCaps");
+        if (pinSupported()) {
+            PIN_CAPS.stream().filter(deviceFeatures::contains).forEach(caps::add);
+        }
         configMessage = config.toString();
         broadcast(configMessage);
     }
@@ -511,11 +524,19 @@ public class ShareSession {
         return deviceFeatures.contains(PIN_FEATURE);
     }
 
-    /** 짚기는 입력이 아니다. 조작권 없이도 되고, 기기는 읽기만 한다. */
+    /**
+     * 짚기는 입력이 아니다. 조작권 없이도 되고, 기기는 읽기만 한다.
+     *
+     * <p>짚기 모양은 점({@code x}·{@code y})과 화면 전체({@code screen: true}, §15.6)다. 기기가 알리지 않은 모양은 기기로 보내지
+     * 않는다(§15.9). 옛 CLI 는 모르는 모양을 말없이 버려, 5초 timeout 까지 대기 자리를 잡아먹는다.</p>
+     */
     private void onPinProbe(Viewer viewer, JsonNode message) {
+        boolean wholeScreen = message.path("screen").asBoolean(false);
+        boolean region = message.has("rect");
         JsonNode x = message.path("x");
         JsonNode y = message.path("y");
-        if (!x.isNumber() || !y.isNumber() || x.asDouble() < 0 || x.asDouble() > 1 || y.asDouble() < 0 || y.asDouble() > 1) {
+        if (!wholeScreen && !region
+                && (!x.isNumber() || !y.isNumber() || x.asDouble() < 0 || x.asDouble() > 1 || y.asDouble() < 0 || y.asDouble() > 1)) {
             viewer.channel().sendText(object("type", "error").put("message", "짚은 위치가 화면 밖입니다.").toString());
             return;
         }
@@ -523,7 +544,8 @@ public class ShareSession {
             viewer.channel().sendText(pinFailed(null, "offline"));
             return;
         }
-        if (!pinSupported()) {
+        if (!pinSupported() || region || (wholeScreen && !deviceFeatures.contains("pin-screen"))) {
+            // 끌기(영역)는 §15.13 PR-4 에서 연다
             viewer.channel().sendText(pinFailed(null, "unsupported"));
             return;
         }
@@ -536,8 +558,13 @@ public class ShareSession {
         lastProbeAt.put(viewer.id(), now);
         String probeId = "p" + (++probeSeq);
         probes.put(probeId, new PendingProbe(probeId, viewer.id(), now));
-        device.sendBinary(ShareFrames.encode(ShareFrames.PIN_PROBE,
-                object("probeId", probeId).put("x", x.asDouble()).put("y", y.asDouble()).toString()));
+        ObjectNode probe = object("probeId", probeId);
+        if (wholeScreen) {
+            probe.put("screen", true);
+        } else {
+            probe.put("x", x.asDouble()).put("y", y.asDouble());
+        }
+        device.sendBinary(ShareFrames.encode(ShareFrames.PIN_PROBE, probe.toString()));
         viewer.channel().sendText(object("type", "pin").put("probeId", probeId).put("state", "pending").toString());
     }
 
@@ -596,6 +623,19 @@ public class ShareSession {
         message.put("component", r.component());
         if (r.reason() != null) {
             message.put("reason", r.reason());
+        }
+        // §15.9: 범위 사다리. 칸 이름은 서버가 만들고, 손님에게는 바깥 칸의 컴포넌트 이름을 넣지 않는다(§15.2)
+        JsonNode scopes = r.description().path("scopes");
+        if (scopes.isArray() && !scopes.isEmpty()) {
+            ArrayNode out = message.putArray("scopes");
+            for (JsonNode scope : scopes) {
+                boolean element = "element".equals(scope.path("kind").asText());
+                out.addObject()
+                        .put("kind", scope.path("kind").asText())
+                        .put("label", PinResultSanitizer.scopeLabel(scope, viewer.owner() || element))
+                        .set("bounds", scope.path("bounds"));
+            }
+            message.put("defaultScope", r.description().path("defaultScope").asInt(0));
         }
         viewer.channel().sendText(message.toString());
     }

@@ -192,6 +192,30 @@ describe('pinning a view on the emulator (resolveAndroidPin)', () => {
     assert.ok(crop.length < screen.length);
   });
 
+  it('answers the whole screen with the Activity and a screenshot, without reading the tree (§15.6)', async () => {
+    let dumps = 0;
+    const adb = fakeAdb({ uiDump: async () => (dumps++, UI_DUMP) });
+    const { result, crop, screen } = await resolveAndroidPin({ adb, probe: { probeId: 'p10', screen: true }, project });
+    assert.deepEqual(result, {
+      probeId: 'p10',
+      ok: true,
+      screen: { label: 'com.example.pin/.MainActivity', package: 'com.example.pin', activity: '.MainActivity' },
+      scopes: [{ kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } }],
+      defaultScope: 0,
+    });
+    assert.equal(crop, null);
+    assert.ok(isJpeg(screen));
+    assert.equal(dumps, 0);
+
+    const blind = await resolveAndroidPin({
+      adb: fakeAdb({ foregroundActivity: async () => { throw new Error('x'); }, screencapRaw: async () => { throw new Error('x'); } }),
+      probe: { probeId: 'p11', screen: true },
+      project,
+    });
+    assert.deepEqual(blind.result, { probeId: 'p11', ok: true, scopes: [{ kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } }], defaultScope: 0 });
+    assert.equal(blind.screen, null);
+  });
+
   it('still sends the point and the picture when the tree is empty or the dump fails', async () => {
     let out = await resolveAndroidPin({ adb: fakeAdb({ uiDump: async () => '<hierarchy rotation="0"></hierarchy>' }), probe: { probeId: 'p8', x: 0.5, y: 0.5 }, project });
     assert.deepEqual(out.result, {

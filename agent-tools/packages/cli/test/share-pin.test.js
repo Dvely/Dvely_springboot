@@ -8,12 +8,16 @@ import { join } from 'node:path';
 import {
   MAX_CROP_BYTES,
   MAX_RESULT_JSON_BYTES,
+  MAX_RESULT_JSON_BYTES_SCOPED,
   MAX_SCREEN_BYTES,
   encodePinResult,
   fitResult,
   noticeLine,
   parseNotice,
   parseProbe,
+  pinResultLimit,
+  screenResult,
+  unresolved,
 } from '../src/share/pin.js';
 import { clearListings, definitionLine, findSourceHints, listSourceFiles, projectRoot, searchableText, toProjectPath } from '../src/share/source-hints.js';
 import { inspectPoint, padded, spotAround } from '../src/share/pin-web.js';
@@ -45,6 +49,36 @@ describe('pin probe and result (§14.3)', () => {
     ]) {
       assert.equal(parseProbe(bad), null, JSON.stringify(bad));
     }
+  });
+
+  it('takes a whole-screen probe, and drops shapes it does not read yet (§15.6, §15.9)', () => {
+    assert.deepEqual(parseProbe({ probeId: 'p8', screen: true }), { probeId: 'p8', screen: true });
+    for (const bad of [
+      { probeId: 'p8', screen: true, x: 0.5, y: 0.5 },
+      { probeId: 'p8', screen: true, x: 0.5 },
+      { probeId: 'p8', screen: 'yes' },
+      { probeId: 'x8', screen: true },
+      { probeId: 'p8', rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } },
+      { probeId: 'p8', x: 0.5, y: 0.5, rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } },
+    ]) {
+      assert.equal(parseProbe(bad), null, JSON.stringify(bad));
+    }
+    // An answer to a probe without a point says no point.
+    assert.deepEqual(unresolved({ probeId: 'p8', screen: true }, 'TIMEOUT'), { probeId: 'p8', ok: false, reason: 'TIMEOUT' });
+    assert.deepEqual(screenResult({ probeId: 'p8', screen: true }, { label: '/' }), {
+      probeId: 'p8',
+      ok: true,
+      screen: { label: '/' },
+      scopes: [{ kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } }],
+      defaultScope: 0,
+    });
+  });
+
+  it('takes the result limit from WELCOME only when it is a whole number from 16 to 48 KiB', () => {
+    assert.equal(MAX_RESULT_JSON_BYTES, 16384);
+    assert.equal(MAX_RESULT_JSON_BYTES_SCOPED, 49152);
+    for (const ok of [16384, 32768, 49152]) assert.equal(pinResultLimit(ok), ok);
+    for (const bad of [undefined, null, 16383, 49153, 1e9, 32768.5, '49152', NaN, -1]) assert.equal(pinResultLimit(bad), 16384, String(bad));
   });
 
   it('lays out [json length][json][crop length][crop][screen]', () => {
@@ -87,6 +121,54 @@ describe('pin probe and result (§14.3)', () => {
     assert.equal(fitted.element.text, '저장');
     assert.equal(fitted.components[0].name, 'SaveButton');
     assert.equal(fitted.sourceHints[0].reason, 'COMPONENT');
+  });
+
+  const SCREEN_STEP = { kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } };
+  const BUTTON_BOUNDS = { x: 0.1, y: 0.25, w: 0.12, h: 0.055 };
+  /** A result with a five-step ladder whose outer steps are fat enough to break 16 KiB. */
+  function scopedResult({ stepBytes = 4500, components = [{ name: 'SaveButton' }] } = {}) {
+    const wide = (n) => ({ kind: 'group', type: 'section', id: `s${n}`, selector: `#s${n} ` + 'y'.repeat(stepBytes), bounds: { x: 0, y: 0, w: 0.2 * n, h: 0.2 * n } });
+    return {
+      probeId: 'p4',
+      ok: true,
+      point: { x: 0.13, y: 0.27 },
+      screen: { label: '/settings' },
+      element: { type: 'button', text: '저장', selector: 'form > button.save', bounds: BUTTON_BOUNDS },
+      ancestors: [{ type: 'form' }],
+      components,
+      sourceHints: [{ file: 'src/SaveButton.tsx', reason: 'COMPONENT' }],
+      scopes: [{ kind: 'element', type: 'button', text: '저장', selector: 'form > button.save', component: 'SaveButton', bounds: BUTTON_BOUNDS }, wide(1), wide(2), wide(3), wide(4), SCREEN_STEP],
+      defaultScope: 0,
+    };
+  }
+
+  it('lets go of the widest scope steps first, keeping the element step, the screen and everything else (§15.9)', () => {
+    const result = scopedResult();
+    const fitted = JSON.parse(fitResult(result));
+    assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= MAX_RESULT_JSON_BYTES);
+    assert.deepEqual(fitted.scopes.map((s) => s.id ?? s.kind), ['element', 's1', 's2', 's3', 'screen'], 'the widest step went, nothing else');
+    assert.deepEqual(fitted.scopes[0], result.scopes[0]);
+    assert.deepEqual(fitted.element, result.element);
+    assert.deepEqual(fitted.ancestors, [{ type: 'form' }]);
+    assert.equal(fitted.defaultScope, 0);
+    // The same result where the server takes 48 KiB goes as it is.
+    assert.deepEqual(JSON.parse(fitResult(result, MAX_RESULT_JSON_BYTES_SCOPED)), result);
+    const { json } = decodePinResult(encodePinResult(result, null, null, MAX_RESULT_JSON_BYTES_SCOPED));
+    assert.equal(json.scopes.length, 6);
+    assert.equal(decodePinResult(encodePinResult(result, null, null)).json.scopes.length, 5);
+  });
+
+  it('keeps the element step and `element` through every step but the last resort', () => {
+    // Fat steps and fat components: the ladder empties to the element and the screen, then the
+    // §14 order runs down to the slim element.
+    const components = Array.from({ length: 8 }, (_, i) => ({ name: `C${i}`, file: 'z'.repeat(6000) }));
+    const fitted = JSON.parse(fitResult(scopedResult({ components })));
+    assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= MAX_RESULT_JSON_BYTES);
+    assert.deepEqual(fitted.scopes, [{ kind: 'element', type: 'button', bounds: BUTTON_BOUNDS }, SCREEN_STEP]);
+    assert.deepEqual(fitted.element, { type: 'button', bounds: BUTTON_BOUNDS });
+    assert.equal(fitted.ok, true);
+    assert.equal(fitted.components, undefined);
+    assert.equal(fitted.ancestors, undefined);
   });
 });
 
@@ -222,7 +304,7 @@ describe('source candidates in the project folder (§14.3, #682)', () => {
 describe('reading the page at a point (inspectPoint, §14.3)', () => {
   const saved = {};
   afterEach(() => {
-    for (const k of ['window', 'document', 'location']) {
+    for (const k of ['window', 'document', 'location', 'performance']) {
       if (saved[k] === undefined) delete globalThis[k];
       else globalThis[k] = saved[k];
     }
@@ -248,7 +330,7 @@ describe('reading the page at a point (inspectPoint, §14.3)', () => {
   }
 
   function page(hit, { width = 1000, height = 800 } = {}) {
-    for (const k of ['window', 'document', 'location']) saved[k] = globalThis[k];
+    for (const k of ['window', 'document', 'location', 'performance']) saved[k] = globalThis[k];
     const body = el('body');
     globalThis.document = { body, documentElement: el('html'), title: 'Vite App', elementFromPoint: () => hit };
     globalThis.window = { innerWidth: width, innerHeight: height, devicePixelRatio: 2, scrollX: 0, scrollY: 120 };
@@ -344,6 +426,125 @@ describe('reading the page at a point (inspectPoint, §14.3)', () => {
     const body = page(null);
     globalThis.document.elementFromPoint = () => body;
     assert.equal(inspectPoint({ x: 0.5, y: 0.5, limit: LIMIT }).reason, 'NO_ELEMENT');
+  });
+
+  const box = (left, top, right, bottom) => ({ left, top, right, bottom });
+  const SCREEN_STEP = { kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } };
+
+  /**
+   * A React page (1000×800): main (full screen) > section#page (85 %) > section "프로필 설정" >
+   * ProfileForm's root div > form#profile (as big as that div) > div.row > SaveButton's root span (as
+   * big as the button) > button "저장". Fibers as React builds them: each DOM node's host fiber, the
+   * components between them.
+   */
+  function profilePage() {
+    function ProfileForm() {}
+    function SaveButton() {}
+    const fiber = (type, parent, tag = typeof type === 'string' ? 5 : 0) => ({ tag, type, return: parent });
+    const root = fiber(null, null, 3);
+    const sectionF = fiber('section', root);
+    const profileF = fiber(ProfileForm, sectionF);
+    const cardF = fiber('div', profileF);
+    const formF = fiber('form', cardF);
+    const rowF = fiber('div', formF);
+    const saveF = fiber(SaveButton, rowF);
+    const wrapF = fiber('span', saveF);
+    const buttonF = fiber('button', wrapF);
+    const f = (fib) => ({ __reactFiber$k1: fib });
+
+    const main = el('main', { rect: box(0, 0, 1000, 800) });
+    const outer = el('section', { id: 'page', rect: box(0, 0, 1000, 680), parent: main });
+    const section = el('section', { attrs: { 'aria-label': '프로필 설정' }, rect: box(0, 100, 1000, 500), parent: outer, extra: f(sectionF) });
+    const card = el('div', { classes: ['card'], rect: box(50, 120, 550, 420), parent: section, extra: f(cardF) });
+    const form = el('form', { id: 'profile', rect: box(50, 120, 550, 410), parent: card, extra: { ...f(formF), childNodes: [{ nodeType: 3, nodeValue: ' 프로필 ' }, { nodeType: 1 }] } });
+    const row = el('div', { classes: ['row'], rect: box(50, 190, 550, 260), parent: form, extra: f(rowF) });
+    const wrap = el('span', { classes: ['save-wrap'], rect: box(100, 200, 222, 244), parent: row, extra: f(wrapF) });
+    const button = el('button', { classes: ['save'], text: '저장', rect: box(100, 200, 220, 244), parent: wrap, extra: f(buttonF) });
+    const body = page(button);
+    main.parentElement = body;
+    return { button, form };
+  }
+
+  const ELEMENT_STEP = {
+    kind: 'element',
+    type: 'button',
+    text: '저장',
+    selector: '#profile > div.row > span.save-wrap > button.save',
+    bounds: { x: 0.1, y: 0.25, w: 0.12, h: 0.055 },
+  };
+
+  it('offers a ladder from the element to the screen: same-size boxes merged, components named, near-full-screen ones left to the screen step (§15.3)', () => {
+    profilePage();
+    const out = inspectPoint({ x: 0.13, y: 0.27, limit: LIMIT });
+    assert.equal(out.ok, true);
+    assert.equal(out.defaultScope, 0);
+    assert.deepEqual(out.scopes, [
+      // SaveButton's root is a span as big as the button: one step, the button's, with its name.
+      { ...ELEMENT_STEP, component: 'SaveButton' },
+      // ProfileForm's root div and the form inside it: one step, called by the form and the component.
+      { kind: 'component', type: 'form', text: '프로필', id: 'profile', selector: '#profile', component: 'ProfileForm', bounds: { x: 0.05, y: 0.15, w: 0.5, h: 0.3625 } },
+      { kind: 'group', type: 'section', text: '프로필 설정', selector: '#page > section', bounds: { x: 0, y: 0.125, w: 1, h: 0.5 } },
+      // section#page (85 % of the viewport) and main (all of it) are as good as the screen.
+      SCREEN_STEP,
+    ]);
+    // What older servers read is as before.
+    assert.deepEqual(out.element, { type: 'button', text: '저장', id: null, selector: ELEMENT_STEP.selector, bounds: ELEMENT_STEP.bounds });
+    assert.deepEqual(out.components.map((c) => c.name), ['SaveButton', 'ProfileForm']);
+  });
+
+  it('stops the ladder when its 400 ms are up, and still answers with the element', () => {
+    profilePage();
+    let reads = 0;
+    globalThis.performance = { now: () => (reads++ === 0 ? 1000 : 1401) };
+    const out = inspectPoint({ x: 0.13, y: 0.27, limit: LIMIT });
+    assert.equal(out.ok, true);
+    assert.deepEqual(out.scopes, [ELEMENT_STEP, SCREEN_STEP]);
+    assert.equal(out.element.text, '저장');
+    assert.ok(reads >= 2);
+  });
+
+  it('answers with the element when working out the ladder fails', () => {
+    const { form } = profilePage();
+    form.getBoundingClientRect = () => {
+      throw new Error('detached');
+    };
+    const out = inspectPoint({ x: 0.13, y: 0.27, limit: LIMIT });
+    assert.equal(out.ok, true);
+    assert.equal(out.element.type, 'button');
+    assert.equal(out.scopes, undefined, 'the device side falls back to the element and the screen');
+  });
+
+  it('keeps at most six steps, narrowest first, the screen last', () => {
+    // Each box 1.2 times wider and taller than the one inside it: no two merge, none near full screen.
+    const kinds = [['li'], ['ul'], ['nav'], ['div', { attrs: { role: 'region' } }], ['div', { id: 'filters' }], ['article'], ['aside'], ['footer']];
+    let parent = null;
+    const chain = [];
+    for (let k = kinds.length; k >= 1; k--) {
+      const s = 1.2 ** k;
+      const [tag, opts = {}] = kinds[k - 1];
+      const node = el(tag, { ...opts, rect: box(0, 0, 100 * s, 80 * s), parent });
+      chain.push(node);
+      parent = node;
+    }
+    const button = el('button', { text: '필터', rect: box(0, 0, 100, 80), parent });
+    chain[0].parentElement = page(button);
+    const out = inspectPoint({ x: 0.01, y: 0.01, limit: LIMIT });
+    assert.equal(out.scopes.length, 6);
+    assert.deepEqual(out.scopes.map((s) => s.type), ['button', 'li', 'ul', 'nav', 'region', 'screen']);
+    assert.deepEqual(out.scopes.map((s) => s.kind), ['element', 'group', 'group', 'group', 'group', 'screen']);
+  });
+
+  it('names a Vue 3 component step by the component whose rendered tree starts at that node', () => {
+    const instance = { type: { __name: 'PlanCard', __file: '/proj/src/components/PlanCard.vue' }, subTree: {}, parent: null };
+    const card = el('div', { classes: ['plan'], rect: box(0, 0, 400, 300), extra: { __vueParentComponent: instance } });
+    instance.subTree.el = card;
+    const button = el('button', { text: '바꾸기', rect: box(20, 240, 120, 280), parent: card, extra: { __vueParentComponent: instance } });
+    page(button);
+    card.parentElement = globalThis.document.body;
+    const out = inspectPoint({ x: 0.05, y: 0.32, limit: LIMIT });
+    assert.equal(out.scopes[0].component, undefined, 'the button is not the root of PlanCard, and much smaller than it');
+    assert.deepEqual(out.scopes[1], { kind: 'component', type: 'div', selector: 'div.plan', component: 'PlanCard', bounds: { x: 0, y: 0, w: 0.4, h: 0.375 } });
+    assert.deepEqual(out.scopes.at(-1), SCREEN_STEP);
   });
 
   it('crops the element with a margin, or a fixed spot, and stays on screen', () => {

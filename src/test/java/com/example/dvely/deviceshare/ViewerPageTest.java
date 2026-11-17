@@ -46,6 +46,16 @@ class ViewerPageTest {
     }
 
     @Test
+    void 짚기_범위_필드_이름이_서버와_같다() throws IOException {
+        // §15.9: 뷰어는 config.pinCaps 로 켤 것을 고르고, 결과의 scopes·defaultScope 를 읽고, 고른 칸을 scope 로 보낸다
+        String page = viewer();
+        assertThat(page).contains("m.pinCaps", "m.scopes", "m.defaultScope", "msg.scope = P.scope", "screen: true");
+        assertThat(page).contains("hasCap('pin-screen')");
+        // 범위를 바꿔도 기기에 다시 묻지 않는다(소켓으로 보내는 것은 짚기·보내기뿐)
+        assertThat(page).doesNotContain("type: 'pin-scope'");
+    }
+
+    @Test
     void 외부_자원을_불러오지_않는다() throws IOException {
         // CSP(default-src 'none', connect-src 'self')가 막지만, 막힌 자원은 조용히 깨진다
         String page = viewer();

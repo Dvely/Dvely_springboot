@@ -272,6 +272,94 @@ class ShareFeedbackIntegrationTest {
                 """, shareId, "0".repeat(64), status);
     }
 
+    @Test
+    void 넓힌_범위를_골라_보내면_주인_알림_목록_그림_프롬프트가_모두_그_범위다() throws Exception {
+        JsonNode share = createShare();
+        String viewHost = URI.create(share.path("viewUrl").asText()).getHost() + ":8080";
+        Device device = connectDevice(share);
+        sendConfig(device);
+        byte[] screen = screenJpeg();
+
+        try (RawViewerSocket socket = new RawViewerSocket(port, viewHost, "/__qeploy/ws")) {
+            Viewer guest = new Viewer(socket);
+            socket.sendText("{\"type\":\"join\",\"name\":\"민지\"}");
+            guest.nextOfType("welcome");
+            socket.sendText("{\"type\":\"pin-probe\",\"x\":0.2,\"y\":0.52}");
+            String probeId = json.readTree(device.device.nextOfKind(ShareFrames.PIN_PROBE).payloadText()).path("probeId").asText();
+            device.tunnel.sendBinary(scopedResult(probeId, screen), true).join();
+            JsonNode pin = guest.nextOfType("pin", "resolved");
+            assertThat(pin.path("scopes").findValuesAsText("label"))
+                    .containsExactly("<button> \"저장\" · SaveButton", "폼 #profile", "화면 전체");
+            socket.sendText("{\"type\":\"pin-submit\",\"probeId\":\"" + probeId + "\",\"scope\":1,\"comment\":\"폼 여백을 넓혀 주세요\"}");
+            long id = guest.nextOfType("feedback", "NEW").path("id").asLong();
+
+            // 주인이 터미널에서 받을지 고르는 근거가 손님이 고른 범위다
+            JsonNode notice = json.readTree(device.device.nextOfKind(ShareFrames.FEEDBACK_NOTICE).payloadText());
+            assertThat(notice.path("label").asText()).isEqualTo("컴포넌트 ProfileForm");
+            assertThat(data(get("/api/v1/device-shares/" + share.path("shareId").asLong() + "/feedback", bearer))
+                    .get(0).path("label").asText()).isEqualTo("컴포넌트 ProfileForm");
+
+            // 잘라 낸 그림은 서버가 화면에서 그 범위로 자른 것이다(기기는 버튼만 잘라 보냈다)
+            HttpResponse<byte[]> crop = http.send(request("/api/v1/device-share-feedback/" + id + "/image?kind=crop", bearer)
+                    .GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+            assertThat(crop.statusCode()).isEqualTo(200);
+            java.awt.image.BufferedImage cut = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(crop.body()));
+            assertThat(cut.getWidth()).as("폼 테두리(화면 폭 90%%) + 여백").isBetween(350, 390);
+            assertThat(cut.getHeight()).isBetween(330, 360);
+
+            String md = data(get("/api/v1/device-share-feedback/" + id + "/prompt", bearer)).path("markdown").asText();
+            assertThat(md).contains("- 고른 범위: 폼 `form#profile` · 컴포넌트 `ProfileForm` — 짚은 요소를 품은 범위를 골랐다");
+
+            // 화면 전체를 고르면 그림은 화면 그대로다. 같은 사람의 짚기는 초당 한 번이다
+            Thread.sleep(1_100);
+            socket.sendText("{\"type\":\"pin-probe\",\"x\":0.2,\"y\":0.52}");
+            probeId = json.readTree(device.device.nextOfKind(ShareFrames.PIN_PROBE).payloadText()).path("probeId").asText();
+            device.tunnel.sendBinary(scopedResult(probeId, screen), true).join();
+            guest.nextOfType("pin", "resolved");
+            socket.sendText("{\"type\":\"pin-submit\",\"probeId\":\"" + probeId + "\",\"scope\":2,\"comment\":\"전체가 어두워요\"}");
+            long whole = guest.nextOfType("feedback", "NEW").path("id").asLong();
+            HttpResponse<byte[]> wholeCrop = http.send(request("/api/v1/device-share-feedback/" + whole + "/image?kind=crop", bearer)
+                    .GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+            assertThat(wholeCrop.body()).isEqualTo(screen);
+        }
+        device.tunnel.abort();
+    }
+
+    /** 390×844 화면. 폼 자리(y 30~70%)만 파랗다 */
+    private static byte[] screenJpeg() throws Exception {
+        java.awt.image.BufferedImage image = new java.awt.image.BufferedImage(390, 844, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        java.awt.Graphics2D g = image.createGraphics();
+        g.setColor(java.awt.Color.WHITE);
+        g.fillRect(0, 0, 390, 844);
+        g.setColor(new java.awt.Color(37, 99, 235));
+        g.fillRect(20, 253, 351, 338);
+        g.dispose();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(image, "jpeg", out);
+        return out.toByteArray();
+    }
+
+    private static ByteBuffer scopedResult(String probeId, byte[] screen) {
+        byte[] body = ("""
+                {"probeId":"%s","ok":true,"screen":{"label":"/settings"},"point":{"x":0.2,"y":0.52},
+                 "element":{"type":"button","text":"저장","bounds":{"x":0.1,"y":0.5,"w":0.2,"h":0.05}},
+                 "components":[{"name":"SaveButton","file":"src/components/SaveButton.tsx","line":3}],
+                 "scopes":[{"kind":"element","type":"button","text":"저장","component":"SaveButton",
+                             "bounds":{"x":0.1,"y":0.5,"w":0.2,"h":0.05}},
+                           {"kind":"component","type":"form","id":"profile","component":"ProfileForm","selector":"form#profile",
+                             "bounds":{"x":0.05,"y":0.3,"w":0.9,"h":0.4}},
+                           {"kind":"screen","type":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}],
+                 "defaultScope":0}
+                """.formatted(probeId)).getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.writeBytes(ByteBuffer.allocate(4).putInt(body.length).array());
+        out.writeBytes(body);
+        out.writeBytes(ByteBuffer.allocate(4).putInt(JPEG.length).array());
+        out.writeBytes(JPEG);
+        out.writeBytes(screen);
+        return ShareFrames.encode(ShareFrames.PIN_RESULT, out.toByteArray());
+    }
+
     private static ByteBuffer result(String probeId) {
         byte[] body = ("""
                 {"probeId":"%s","ok":true,"screen":{"label":"/settings"},"point":{"x":0.42,"y":0.17},

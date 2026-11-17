@@ -6,12 +6,14 @@
  * framework's dev-mode bookkeeping (React fibers, Vue instances, Svelte metadata); it changes
  * nothing and calls nothing of the page's own.
  */
-import { LIMIT, clip, r4, unresolved } from './pin.js';
+import { LIMIT, clip, r4, screenResult, screenScope, unresolved, withDeadline } from './pin.js';
 import { jpegUnder } from './jpeg.js';
 import { parsePng } from './png.js';
 import { definitionLine, findSourceHints, toProjectPath } from './source-hints.js';
 
 const EVALUATE_TIMEOUT_MS = 1500;
+/** A whole-screen probe only asks the page where it is; past this the answer goes without it. */
+const SCREEN_READ_MS = 1000;
 const CROP_MARGIN = 16;
 const CROP_MAX_PIXELS = 800;
 const CROP_MAX_BYTES = 480 * 1024;
@@ -89,12 +91,15 @@ export function inspectPoint(args) {
     if (e.id && /^[A-Za-z][\w-]{0,60}$/.test(e.id)) return '#' + e.id;
     return e.localName + Array.from(e.classList || []).filter(stableClass).slice(0, 2).map((c) => '.' + c).join('');
   };
-  const parts = [];
-  for (let e = el, i = 0; e && e.nodeType === 1 && e !== document.body && e !== document.documentElement && i < 4; e = e.parentElement, i++) {
-    const p = part(e);
-    parts.unshift(p);
-    if (p[0] === '#') break;
-  }
+  const selectorOf = (node) => {
+    const parts = [];
+    for (let e = node, i = 0; e && e.nodeType === 1 && e !== document.body && e !== document.documentElement && i < 4; e = e.parentElement, i++) {
+      const p = part(e);
+      parts.unshift(p);
+      if (p[0] === '#') break;
+    }
+    return parts.join(' > ');
+  };
 
   const rect = el.getBoundingClientRect();
   const left = Math.max(0, rect.left);
@@ -106,7 +111,7 @@ export function inspectPoint(args) {
     type: typeOf(el),
     text: textOf(el),
     id: fold(el.id, 100),
-    selector: fold(parts.join(' > '), L.selector),
+    selector: fold(selectorOf(el), L.selector),
   };
   if (visible) element.bounds = { x: left / W, y: top / H, w: (right - left) / W, h: (bottom - top) / H };
 
@@ -121,20 +126,23 @@ export function inspectPoint(args) {
   const clean = (n) => (typeof n === 'string' && /^[+A-Za-z_$][\w$.+-]{0,80}$/.test(n) && !/^(Anonymous|_c\d*)$/.test(n) ? n : null);
   const baseName = (p) => String(p).split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
 
+  const fiberKey = (node) => Object.keys(node).find((k) => k.indexOf('__reactFiber$') === 0 || k.indexOf('__reactInternalInstance$') === 0);
+  // A component's name from a fiber's type: a function or class, forwardRef (`render`), memo (`type`).
+  const nameOf = (t, depth) => {
+    if (!t || depth > 3) return null;
+    if (typeof t === 'function') return clean(t.displayName || t.name);
+    if (typeof t === 'object') {
+      if (t._context || t._payload) return null; // context providers, lazy wrappers
+      return clean(t.displayName) || nameOf(t.render, depth + 1) || nameOf(t.type, depth + 1);
+    }
+    return null;
+  };
+
   // React: walk the fiber chain up from the element. A component's own file is where the JSX it
   // rendered was written — the source of a fiber it owns — not where it was used.
   const react = (node) => {
-    const key = Object.keys(node).find((k) => k.indexOf('__reactFiber$') === 0 || k.indexOf('__reactInternalInstance$') === 0);
+    const key = fiberKey(node);
     if (!key) return null;
-    const nameOf = (t, depth) => {
-      if (!t || depth > 3) return null;
-      if (typeof t === 'function') return clean(t.displayName || t.name);
-      if (typeof t === 'object') {
-        if (t._context || t._payload) return null; // context providers, lazy wrappers
-        return clean(t.displayName) || nameOf(t.render, depth + 1) || nameOf(t.type, depth + 1);
-      }
-      return null;
-    };
     const sourceOf = (f) => {
       const s = f._debugSource;
       if (s && typeof s.fileName === 'string') return { path: s.fileName, line: s.lineNumber | 0 };
@@ -214,7 +222,7 @@ export function inspectPoint(args) {
     }
   }
 
-  return {
+  const out = {
     ok: true,
     screen,
     view,
@@ -224,18 +232,152 @@ export function inspectPoint(args) {
     components: components || [],
     framework,
   };
+
+  // ── scope ladder (§15.3) ─────────────────────────────────────────────────
+  // Worked out only now that the element is settled, and on a budget: a huge tree must not push the
+  // whole evaluate past its timeout and lose the element with it (§15.12). Whatever happens here,
+  // the answer above stands.
+  const clock = typeof performance === 'object' && performance && typeof performance.now === 'function' ? () => performance.now() : () => Date.now();
+  const BUDGET_MS = 400;
+  const GROUP = /^(form|nav|header|footer|main|section|article|aside|dialog|ul|ol|li|table|fieldset)$/;
+  // Generated ids (React's `:r1:`, `ember1234`) change between builds and name nothing.
+  const stableId = (id) => typeof id === 'string' && /^[A-Za-z][\w-]{0,60}$/.test(id) && !/\d{3,}/.test(id);
+  const boxOf = (node) => {
+    const r = node.getBoundingClientRect();
+    const l = Math.max(0, r.left);
+    const t = Math.max(0, r.top);
+    const rr = Math.min(W, r.right);
+    const b = Math.min(H, r.bottom);
+    return rr > l && b > t ? { x: l / W, y: t / H, w: (rr - l) / W, h: (b - t) / H } : null;
+  };
+  const areaOf = (b) => b.w * b.h; // of the viewport, which is 1
+  const near = (a, b) => Math.abs(a - b) <= 0.1 * Math.max(a, b);
+  // A step's own words: its aria-label, or text written directly in it — not everything inside it,
+  // which for a form or a section is the whole page. Never what someone typed into an editable area.
+  const ownText = (e) => {
+    if (e.isContentEditable) return null;
+    const aria = e.getAttribute('aria-label');
+    if (aria) return fold(aria, L.scopeText);
+    let t = '';
+    const kids = e.childNodes || [];
+    for (let i = 0; i < kids.length && i < 50; i++) if (kids[i] && kids[i].nodeType === 3) t += ' ' + kids[i].nodeValue;
+    return fold(t, L.scopeText);
+  };
+  // A node is a component's root when going up from its own fiber, components come before the next
+  // host node: the innermost of them drew it. The step's bounds are this node's alone, so a
+  // component that renders several roots side by side (a fragment) is approximated by its first.
+  const reactRoot = (node) => {
+    const key = fiberKey(node);
+    const own = key ? node[key] : null;
+    for (let f = own && own.return, i = 0; f && i < 50; f = f.return, i++) {
+      if (typeof f.type === 'string' || f.tag === 3 || f.tag === 4) return null; // a host node, the root, a portal
+      const t = f.type;
+      if (t && (typeof t === 'function' || typeof t === 'object')) {
+        const name = nameOf(t, 0);
+        if (name) return name;
+      }
+    }
+    return null;
+  };
+  // Vue 3: every element knows the component that rendered it; the node is that component's root
+  // when its rendered tree starts here. (Svelte keeps no such link; it gets no component steps.)
+  const vueRoot = (node) => {
+    const c = node.__vueParentComponent;
+    if (!c || !c.subTree || c.subTree.el !== node) return null;
+    const t = c.type || {};
+    const file = typeof t.__file === 'string' ? t.__file : null;
+    return clean(t.name || t.__name) || (file ? clean(baseName(file)) : null);
+  };
+  const componentAt = (node) => {
+    try {
+      return reactRoot(node) || vueRoot(node);
+    } catch (e) {
+      return null;
+    }
+  };
+  // Two nodes with nearly the same box are one step, named by the most telling of them: a
+  // component name over a stable id over a bare tag. The step keeps the inner node's type, so a
+  // `<form id="profile">` that `ProfileForm` draws reads "form · ProfileForm". The innermost
+  // component wins when several draw the same box.
+  const merge = (kept, s) => {
+    if (s.component && !kept.component) {
+      kept.component = s.component;
+      if (kept.kind === 'group') kept.kind = 'component';
+    }
+    // The element step says what `element` says; only a component name is added to it.
+    if (kept.kind === 'element') return;
+    if (stableId(s.id) && !stableId(kept.id)) {
+      kept.id = s.id;
+      if (s.selector) kept.selector = s.selector;
+    }
+    if (s.text && !kept.text) kept.text = s.text;
+  };
+
+  try {
+    const start = clock();
+    const first = { kind: 'element', type: element.type };
+    const said = fold(element.text, L.scopeText);
+    if (said) first.text = said;
+    if (element.id) first.id = element.id;
+    if (element.selector) first.selector = element.selector;
+    const own = componentAt(el);
+    if (own) first.component = own;
+    if (element.bounds) first.bounds = element.bounds;
+    const steps = [first];
+    for (let a = up(el), i = 0; a && a.nodeType === 1 && a !== document.body && a !== document.documentElement && i < 40; a = up(a), i++) {
+      if (clock() - start > BUDGET_MS) break;
+      const name = componentAt(a);
+      if (!name && !GROUP.test(a.localName) && !a.getAttribute('role') && !stableId(a.id)) continue;
+      const bounds = boxOf(a);
+      if (!bounds) continue;
+      const area = areaOf(bounds);
+      // Most of the screen already: the screen step says the same.
+      if (area >= 0.8) continue;
+      const step = { kind: name ? 'component' : 'group', type: typeOf(a) };
+      const text = ownText(a);
+      if (text) step.text = text;
+      const id = fold(a.id, 100);
+      if (id) step.id = id;
+      const selector = fold(selectorOf(a), L.selector);
+      if (selector) step.selector = selector;
+      if (name) step.component = name;
+      step.bounds = bounds;
+      // Nearly the same box as the step below it: one step, so widening never stops twice in place.
+      const last = steps[steps.length - 1];
+      if (last.bounds && near(area, areaOf(last.bounds))) {
+        merge(last, step);
+        continue;
+      }
+      if (steps.length >= L.scopes - 1) break;
+      steps.push(step);
+    }
+    steps.push({ kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } });
+    out.scopes = steps;
+    out.defaultScope = 0;
+  } catch (e) {
+    // The device side falls back to the element and the screen.
+  }
+  return out;
+}
+
+/** Runs inside the page for a whole-screen probe (§15.6): where the page is, nothing else. */
+export function readScreen() {
+  const title = String(document.title == null ? '' : document.title).replace(/\s+/g, ' ').trim();
+  return { label: location.pathname || '/', url: location.href.split('#')[0], title: title ? Array.from(title).slice(0, 200).join('') : null };
 }
 
 /**
  * @param {object} o
  * @param {{send: Function}} o.page
- * @param {{probeId: string, x: number, y: number}} o.probe
+ * @param {{probeId: string, x: number, y: number}|{probeId: string, screen: true}} o.probe a point, or
+ *   the whole screen (resolveWebScreen)
  * @param {string|null} o.project the folder to look in for source candidates; null looks nowhere
  * @param {string|null} o.origin the shared origin
  * @param {Buffer|null} o.screen the latest screencast frame (what the viewer saw)
  * @returns {Promise<{result: object, crop: Buffer|null, screen: Buffer|null}>}
  */
 export async function resolveWebPin({ page, probe, project, origin, screen = null, findHints = findSourceHints }) {
+  if (probe.screen) return resolveWebScreen({ page, probe, screen });
   let raw = null;
   try {
     const args = JSON.stringify({ x: probe.x, y: probe.y, limit: LIMIT });
@@ -281,12 +423,88 @@ export async function resolveWebPin({ page, probe, project, origin, screen = nul
     ancestors: (Array.isArray(raw.ancestors) ? raw.ancestors : []).slice(0, LIMIT.ancestors).map(cleanAncestor).filter(Boolean),
     components,
     sourceHints,
+    scopes: cleanScopes(raw.scopes, element),
+    defaultScope: 0,
   };
   const area = rect && view ? padded(rect, view) : view ? spotAround(probe, view) : null;
   return { result, crop: area ? await crop(page, area, view) : null, screen };
 }
 
+/**
+ * The whole screen (§15.6): the frame the viewer saw and where the page is. No element and no crop.
+ * The page is asked with a short evaluate of its own; a page too busy to say goes without `screen`.
+ *
+ * @returns {Promise<{result: object, crop: null, screen: Buffer|null}>}
+ */
+export async function resolveWebScreen({ page, probe, screen = null }) {
+  let raw = null;
+  try {
+    const reply = await withDeadline(
+      page.send('Runtime.evaluate', {
+        expression: `(${readScreen.toString()})()`,
+        returnByValue: true,
+        silent: true,
+        timeout: SCREEN_READ_MS,
+      }),
+      SCREEN_READ_MS
+    );
+    raw = reply?.exceptionDetails ? null : reply?.result?.value;
+  } catch {
+    raw = null;
+  }
+  return { result: screenResult(probe, cleanScreen(raw)), crop: null, screen };
+}
+
 const str = (v, max) => (typeof v === 'string' ? clip(v, max) : null);
+
+const STEP_KINDS = new Set(['group', 'component']);
+
+/**
+ * The ladder as the page reported it, checked like everything else from the page: known kinds
+ * only, words and names cut to size, bounds in 0..1 with something visible. The element step is
+ * rebuilt from the cleaned `element` so the two always agree; only the component name comes from
+ * the page's step. Whatever the page sent, the ladder starts at the element and ends at the screen.
+ */
+function cleanScopes(raw, element) {
+  const list = Array.isArray(raw) ? raw : [];
+  const head = list[0] && typeof list[0] === 'object' && list[0].kind === 'element' ? list[0] : {};
+  const first = { kind: 'element' };
+  if (element.type) first.type = element.type;
+  const said = clip(element.text, LIMIT.scopeText);
+  if (said) first.text = said;
+  if (element.id) first.id = element.id;
+  if (element.selector) first.selector = element.selector;
+  const component = str(head.component, 100);
+  if (component) first.component = component;
+  if (element.bounds) first.bounds = element.bounds;
+  const steps = [first];
+  for (const s of list.slice(1)) {
+    if (steps.length >= LIMIT.scopes - 1) break;
+    if (!s || typeof s !== 'object' || !STEP_KINDS.has(s.kind)) continue;
+    const bounds = cleanBounds(s.bounds);
+    if (!bounds) continue;
+    const step = { kind: s.kind, type: str(s.type, 40) ?? 'element' };
+    const text = str(s.text, LIMIT.scopeText);
+    const id = str(s.id, 100);
+    const selector = str(s.selector, LIMIT.selector);
+    const name = str(s.component, 100);
+    if (text) step.text = text;
+    if (id) step.id = id;
+    if (selector) step.selector = selector;
+    if (name) step.component = name;
+    else if (s.kind === 'component') continue; // a component step without its name says nothing
+    step.bounds = bounds;
+    steps.push(step);
+  }
+  steps.push(screenScope());
+  return steps;
+}
+
+function cleanBounds(b) {
+  if (!b || typeof b !== 'object' || ![b.x, b.y, b.w, b.h].every((v) => typeof v === 'number' && Number.isFinite(v))) return null;
+  const out = { x: r4(b.x), y: r4(b.y), w: r4(b.w), h: r4(b.h) };
+  return out.w > 0 && out.h > 0 ? out : null;
+}
 
 function cleanScreen(s) {
   if (!s || typeof s !== 'object') return undefined;

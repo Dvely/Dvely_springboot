@@ -268,6 +268,38 @@ describe('ios pin on the simulator (§14.3, #682 iOS)', () => {
     assert.equal(crop, null);
   });
 
+  const SCREEN_STEP = { kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } };
+
+  it('answers the whole screen from one tree read and the frame the viewer saw, with no screenshot (§15.6)', async () => {
+    const commands = fakeCommands();
+    const { result, crop, screen } = await resolveIosPin({ commands, probe: { probeId: 'p2', screen: true }, project, bundleId: 'dev.qeploy.acme', appPid: APP_PID, frame: FRAME });
+    assert.deepEqual(result, {
+      probeId: 'p2',
+      ok: true,
+      screen: { label: 'dev.qeploy.acme', bundleId: 'dev.qeploy.acme', appName: 'Acme', title: '프로필' },
+      scopes: [SCREEN_STEP],
+      defaultScope: 0,
+    });
+    assert.equal(crop, null);
+    assert.equal(screen, FRAME);
+    assert.deepEqual(commands.sent, ['describe-ui']);
+    assert.equal(commands.shots, 0, 'the frame is the screen');
+  });
+
+  it('makes the whole screen from a screenshot without a frame, and answers without `screen` when the tree cannot be read', async () => {
+    let commands = fakeCommands();
+    let out = await resolveIosPin({ commands, probe: { probeId: 'p3', screen: true }, project: null });
+    assert.equal(commands.shots, 1);
+    assert.ok(isJpeg(out.screen));
+    assert.equal(out.result.screen.appName, 'Acme');
+    assert.equal(out.crop, null);
+
+    commands = fakeCommands({ failTree: true });
+    out = await resolveIosPin({ commands, probe: { probeId: 'p4', screen: true }, project: null, bundleId: 'dev.qeploy.acme', points: POINTS, frame: FRAME });
+    assert.deepEqual(out.result, { probeId: 'p4', ok: true, scopes: [SCREEN_STEP], defaultScope: 0 });
+    assert.equal(out.screen, FRAME);
+  });
+
   it('works without a screenshot: no crop, the frame as the screen', async () => {
     const { result, crop, screen } = await resolveIosPin({ commands: fakeCommands({ png: null }), probe: at(200, 484), project: null, frame: FRAME });
     assert.equal(result.element.id, 'saveButton');

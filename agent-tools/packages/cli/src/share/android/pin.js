@@ -8,7 +8,7 @@
  *
  * All of it is read-only: an accessibility snapshot, `dumpsys`, a screenshot. Nothing is tapped.
  */
-import { MAX_CROP_BYTES, MAX_SCREEN_BYTES, LIMIT, clip, r4, unresolved } from '../pin.js';
+import { MAX_CROP_BYTES, MAX_SCREEN_BYTES, LIMIT, clip, r4, screenResult, unresolved } from '../pin.js';
 import { jpegUnder, parseScreencap } from '../jpeg.js';
 import { findSourceHints } from '../source-hints.js';
 
@@ -178,11 +178,13 @@ export function describeAndroidPoint(nodes, probe, size, top) {
  *
  * @param {object} o
  * @param {{uiDump: Function, screencapRaw: Function, foregroundActivity: Function}} o.adb
- * @param {{probeId: string, x: number, y: number}} o.probe
+ * @param {{probeId: string, x: number, y: number}|{probeId: string, screen: true}} o.probe a point, or
+ *   the whole screen (resolveAndroidScreen)
  * @param {string|null} o.project
  * @returns {Promise<{result: object, crop: Buffer|null, screen: Buffer|null}>}
  */
 export async function resolveAndroidPin({ adb, probe, project, findHints = findSourceHints }) {
+  if (probe.screen) return resolveAndroidScreen({ adb, probe });
   const [xml, raw, top] = await Promise.all([
     adb.uiDump().catch(() => null),
     adb.screencapRaw().catch(() => null),
@@ -191,7 +193,7 @@ export async function resolveAndroidPin({ adb, probe, project, findHints = findS
   const shot = raw ? parseScreencap(raw) : null;
   const nodes = xml ? parseUiDump(xml) : [];
   const size = shot ? { width: shot.width, height: shot.height } : rootSize(nodes);
-  const screen = shot ? jpegUnder(shot, { x: 0, y: 0, width: shot.width, height: shot.height }, { maxSide: SCREEN_MAX_SIDE, maxBytes: MAX_SCREEN_BYTES, quality: 70 }) : null;
+  const screen = shot ? screenJpeg(shot) : null;
   if (!size) return { result: unresolved(probe, xml ? 'NO_ELEMENT' : 'UNSUPPORTED'), crop: null, screen };
   if (!nodes.length) {
     // An app the accessibility tree does not see into (games, Flutter without semantics): the point
@@ -222,7 +224,22 @@ export async function resolveAndroidPin({ adb, probe, project, findHints = findS
   return { result, crop, screen };
 }
 
+/**
+ * The whole screen (§15.6): the Activity in front and a screenshot. No dump — there is no element to
+ * find — so it costs a screencap, not the ~2 s of a point.
+ *
+ * @returns {Promise<{result: object, crop: null, screen: Buffer|null}>}
+ */
+export async function resolveAndroidScreen({ adb, probe }) {
+  const [raw, top] = await Promise.all([adb.screencapRaw().catch(() => null), adb.foregroundActivity().catch(() => null)]);
+  const shot = raw ? parseScreencap(raw) : null;
+  return { result: screenResult(probe, top ? screenOf(top) : undefined), crop: null, screen: shot ? screenJpeg(shot) : null };
+}
+
 const screenOf = (top) => ({ label: `${top.package}/${top.activity}`, package: top.package, activity: top.activity });
+
+const screenJpeg = (shot) =>
+  jpegUnder(shot, { x: 0, y: 0, width: shot.width, height: shot.height }, { maxSide: SCREEN_MAX_SIDE, maxBytes: MAX_SCREEN_BYTES, quality: 70 });
 
 function spot(shot, probe) {
   const width = Math.min(SPOT.width, shot.width);

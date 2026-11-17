@@ -11,14 +11,25 @@
  *   handleInput(input)   one §4.3 input from the viewer holding control
  *   onKeyframeRequest()  the server needs a fresh key frame (H.264 only, §12.3)
  *   onFinished()         the share is over: stop timers, release the device
- *   resolvePin(probe)    optional: read what is at a viewer's point (§14.3). A session that has it
- *                        announces `features: ["pin"]` in HELLO, and only then does the server
- *                        offer pinning to viewers
+ *   resolvePin(probe)    optional: read what is at a viewer's point (§14.3), or the whole screen
+ *                        (`probe.screen`, §15.6). A session that has it announces pinFeatures() in
+ *                        HELLO, and only then does the server offer pinning to viewers
+ *   pinFeatures()        which kinds of pinning it answers (§15.9): `pin` alone by default
  */
 import WebSocket from 'ws';
 import { KIND, HEADER_BYTES, MAX_PAYLOAD_BYTES, decodeFrame, encodeFrame, encodeJsonFrame, parseJsonPayload } from './protocol.js';
 import { backoffDelay } from './policy.js';
-import { PIN_DEADLINE_MS, encodePinResult, noticeLine, parseNotice, parseProbe, unresolved, withDeadline } from './pin.js';
+import {
+  MAX_RESULT_JSON_BYTES,
+  PIN_DEADLINE_MS,
+  encodePinResult,
+  noticeLine,
+  parseNotice,
+  parseProbe,
+  pinResultLimit,
+  unresolved,
+  withDeadline,
+} from './pin.js';
 
 /** A probe that waited this long behind others is past the server's 5 s; answering it is wasted work. */
 const PIN_STALE_MS = 4500;
@@ -77,6 +88,7 @@ export class TunnelSession {
     this.controlQueue = Promise.resolve();
     this.presenceLine = null;
     this.pinQueue = Promise.resolve();
+    this.pinResultMax = MAX_RESULT_JSON_BYTES; // what the current server takes (§15.9); WELCOME says
 
     this.closed = false;
     this.done = new Promise((resolve) => {
@@ -129,7 +141,7 @@ export class TunnelSession {
     socket.on('open', () => {
       if (socket !== this.socket) return;
       const hello = this.helloPayload();
-      if (this.canPin()) hello.features = ['pin'];
+      if (this.canPin()) hello.features = [...this.pinFeatures()];
       this.sendRaw(encodeJsonFrame(KIND.HELLO, hello));
       this.startPing(socket);
     });
@@ -175,7 +187,9 @@ export class TunnelSession {
     }
   }
 
-  onWelcome() {
+  onWelcome({ pinResultMax } = {}) {
+    // Read on every WELCOME: a reconnect can land on an older server that takes only 16 KiB.
+    this.pinResultMax = pinResultLimit(pinResultMax);
     this.ready = true;
     this.attempt = 0;
     this.log(this.everConnected ? '다시 연결했습니다.' : '연결했습니다. 화면을 보내는 중입니다.');
@@ -223,12 +237,23 @@ export class TunnelSession {
   }
 
   /**
+   * §15.9: one feature per kind of pinning, so a viewer never offers what this device cannot answer
+   * — the server answers `unsupported` itself for anything not listed.
+   *
+   * @returns {string[]}
+   */
+  pinFeatures() {
+    return ['pin'];
+  }
+
+  /**
    * One probe at a time, in order. Reading a point never touches the device's input; a probe that
    * fails or runs out of time still answers, with the point and whatever screen there is.
    */
   onPinProbe(payload) {
     const probe = parseProbe(payload);
     if (!probe || this.closed || !this.canPin()) return;
+    if (probe.screen && !this.pinFeatures().includes('pin-screen')) return;
     const arrived = this.now();
     this.pinQueue = this.pinQueue.then(() => this.answerPin(probe, arrived)).catch(noop);
   }
@@ -247,7 +272,7 @@ export class TunnelSession {
     }
     // The server matches the answer to its question by this id alone.
     const result = { ...answer.result, probeId: probe.probeId };
-    this.sendRaw(encodeFrame(KIND.PIN_RESULT, encodePinResult(result, answer.crop, answer.screen)));
+    this.sendRaw(encodeFrame(KIND.PIN_RESULT, encodePinResult(result, answer.crop, answer.screen, this.pinResultMax)));
   }
 
   /**
