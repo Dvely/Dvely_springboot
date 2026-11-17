@@ -1921,7 +1921,7 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - **피드백 알림**: 터미널에 `피드백 #N · 손님 '이름' · <요소> · "글 앞부분"`(제어 문자·이스케이프 제거). 손님 것은 받을지 묻는다(`askFeedback` — `y` 받기, 다른 답 받지 않기, 60초 무응답·터미널 아님은 **받기 전으로 둠**). 조작권 질문과 같은 줄에 서서 섞이지 않는다
 - **테스트**: CLI 304건(새 28 — 프로브 검증·결과 배치·이미지 상한·16KiB 덜어 내기, 알림 한 줄, 프로젝트 판정·경로 바꾸기(밖·링크·`node_modules`·다른 오리진 거절)·소스 후보 순서·시간 상한, `inspectPoint` 가짜 DOM(React 소유 파일·입력값 비공개·Vue·Svelte·배경), 실 터널 소켓으로 짚기 → 결과·`TIMEOUT`·`NO_ELEMENT`·잘못된 프로브·입력 0건, 받기 질문 세 갈래, `--project` 없는 폴더 거절, `askFeedback`)
 - **실측**: 로컬 서버 + 실제 CLI + Vite·React 19 예제(`App` ‹ `ProfileForm` ‹ `SaveButton`)에서 보기 링크로 `저장` 을 짚음 → 뷰어 `<button> "저장"`·`SaveButton` → 보냄 → 주인 프롬프트에 선택자 `main > form.profile > div.actions > button.save`, 컴포넌트 세 개와 각 파일·정의 줄(`SaveButton.jsx:1`·`ProfileForm.jsx:4`·`App.jsx:3`), 보이는 텍스트 후보 `SaveButton.jsx:4`, 잘라 낸 이미지(버튼+여백)·화면. 터미널은 알림 뒤 "받기 전으로 둡니다"(TTY 아님). 처음 실측에서 React 19 줄이 변환된 모듈 기준(18줄)으로 나와 정의 줄 찾기로 고쳤다
-- **남은 것**: iOS(PR-3, 여유분), MCP·CLI 내보내기(#683). Android 는 §4.71
+- **남은 것**: iOS(PR-3, 여유분 → §4.74), MCP·CLI 내보내기(#683). Android 는 §4.71
 
 ## 4.71 짚기 피드백 — CLI Android 요소 풀기 (Issue #682 PR-2, 2026-11-17)
 
@@ -1934,7 +1934,7 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - **이미지**(`jpeg.js`): CLI 의존성을 늘리지 않으려고 날 픽셀을 잘라 줄이고 기본 JPEG(표준 표, 4:4:4)으로 직접 만든다. macOS `sips` 로 읽히는 것을 확인했다
 - **테스트**: CLI 315건(새 11 — 덤프 읽기·엔티티·부모, 뷰 고르기(커스텀 버튼·Compose 글자·비밀번호·바깥), 기술(Activity·플랫폼 틀 제외), 배경 `NO_ELEMENT`, Activity 읽기, screencap 머리 12·16·RGB565·잘못된 길이, JPEG SOF 크기, 자르기·상한, 예제 Android 프로젝트에서 소스 후보 다섯 개의 순서, 빈 트리·덤프 실패에도 점·이미지, 실 터널 소켓으로 HELLO `pin`·짚기 결과·**에뮬레이터 입력 0건**)
 - **실측**(로컬 서버 + 실제 CLI + API 35 에뮬레이터 + SDK 도구로 손수 빌드한 예제 APK `com.example.pin`): 보기 링크로 `저장` 을 짚음 → 뷰어 테두리가 버튼에 맞음·`<Button> "저장"`·`MainActivity` → 보냄 → 터미널 알림 → 주인 프롬프트에 `Android · com.example.pin/.MainActivity`, `<Button>` "저장" · id `save`, 바깥 `#form`, 소스 후보 `MainActivity.java:6`·`activity_main.xml:15`(id)·`:19`(문자열 사용)·`strings.xml:4`, 잘라 낸 이미지 3.5KB·화면 24KB. 짚기 한 번 약 2.1초(`screencap` 1.1초·덤프 2.2초를 함께)
-- **남은 것**: iOS(PR-3, 여유분). MCP·CLI 내보내기는 §4.72
+- **남은 것**: iOS(PR-3, 여유분 → §4.74). MCP·CLI 내보내기는 §4.72
 
 ## 4.72 짚기 피드백 — 에이전트가 읽는 길 (Issue #683, 2026-11-17)
 
@@ -1958,6 +1958,21 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
   - Vite 가 바로 다시 그려 손님의 공유 화면에서도 버튼이 바뀌었고, 손님 뷰어의 내 피드백에 `고침`·고친 내용이 떴다. 손님이 `확인` → `확인함`
 - **잘라 내기 수정**(#690): 위 실측 중 짚은 직후 손님 화면이 크게 확대된 장으로 멈췄다. 잘라 낸 이미지를 CDP `clip` 으로 찍은 탓이다(캡처하는 동안 화면 크기가 바뀌고 screencast 가 그 장을 보냄). clip 없이 뷰포트 PNG 한 장을 찍어 CLI 가 풀고(`png.js` — 8비트 RGB·RGBA, 다섯 행 필터) 잘라 JPEG 으로 만든다. 고친 뒤 같은 화면에서 두 번 짚어도 화면이 그대로였다. CLI 333건 통과(PNG 필터 다섯 가지 왕복·거절, 실 터널에서 clip 없는 캡처와 잘라 낸 크기)
 - **FE**(Dvely_FE #212, main): 설정 > 기기 화면 공유에 짚기 피드백 절(상태 탭·카드·자세히·프롬프트 복사·받기/받지 않기/고침 표시/확인/다시 열기), 링크의 "새 피드백 N", 살아 있는 링크가 있으면 10초 폴링. 로컬 BE 로 받기 → 복사 → 고침 → 손님 뷰어 알림 → 새 피드백 10초 안 반영까지 실측
+
+## 4.74 짚기 피드백 — CLI iOS 요소 풀기 (Issue #682 PR-3, 2026-11-17)
+
+- **무엇이 되나**: `qeploy share ios` 도 짚기에 답한다(HELLO `features: ["pin"]`). 웹·Android 와 같은 모양의 기술 — 화면(번들 ID·앱 이름·내비게이션 제목), 요소(AX 종류·레이블·`accessibilityIdentifier`·테두리), 이름 있는 바깥 요소, 소스 후보, 잘라 낸 이미지, 화면. 서버·뷰어 코드 변경 없음(서버는 `bundleId`·`appName` 을 이미 받는다)
+- **구현**(`agent-tools/packages/cli/src/share/ios/pin.js`, `ios/axe.js` `screenshot()`, `ios/session.js` `resolvePin`)
+  - AXe `describe-ui`(입력과 같은 줄) + `axe screenshot`(옆에서, 임시 파일은 지움). 요소 고르기는 Android 규칙에 iOS 를 더했다 — 이름 없는 컨트롤(스위치 손잡이)·글자는 이름 있는 컨트롤로 올리고, 앱 루트·스크롤 막대는 고르지 않는다
+  - **입력란의 값은 보내지 않는다**(보안 입력란의 점도). 보안 입력란은 `SecureTextField` 로 표시
+  - 컴포넌트 이름은 없다. 접근성 트리에는 역할만 있다(SwiftUI `struct SaveButton` → `Button`, 실측)
+  - 소스 후보 id 패턴에 SwiftUI `.accessibilityIdentifier("…")`·UIKit `= "…"`·스토리보드/xib `identifier="…"`·React Native `testID` 를 더하고, `.storyboard`·`.xib` 를 찾는 파일에 넣었다(웹·Android 에도 그대로 적용된다)
+- **실측**(로컬 서버 + 실제 `qeploy share ios` + Xcode 프로젝트 없이 `swiftc` 로 빌드한 SwiftUI 예제 앱, 전용 시뮬레이터 iPhone 17 Pro·iOS 26.5, AXe 2.0.4)
+  - 폰 크기 손님 뷰어(390×844)에서 저장 버튼을 짚음 → `<Button> "저장"` 테두리 → 글을 써 보냄(#39) → 기기 터미널에 알림 → 주인이 받음 → `qeploy feedback show 39`: `화면: iOS · dev.qeploy.acme (프로필)`, `id saveButton`, 소스 후보 `Acme/SaveButton.swift:7`(id)·`:5`(텍스트), 잘라 낸 버튼 이미지
+  - 비밀번호 칸을 짚으면 `SecureTextField` + `id passwordField` 만 나오고 점은 나오지 않음. 스위치 글자·손잡이 → `CheckBox "알림 받기"`. 아래 빈 곳 → `NO_ELEMENT`
+  - 짚기 하나에 약 0.4~0.7초(트리 0.2~0.45초와 스크린샷 0.25초를 함께)
+- **테스트**: CLI 348건 통과(새 15 — 트리 읽기·고르기·제목·기술·입력값 비노출·번들 ID 조건·소스 후보 패턴·스크린샷 배율·돌아간 화면·트리 실패 시 그림만·스크린샷 임시 파일 정리, 실 터널에서 탭 뒤에 트리를 읽고 시뮬레이터에 입력을 보내지 않음)
+- **남은 것**: 실제 iPhone(제외 범위), Flutter·게임처럼 접근성 트리가 비는 화면은 그림만 간다
 
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
