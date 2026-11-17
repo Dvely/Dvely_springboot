@@ -60,6 +60,14 @@ button[aria-pressed="true"]:hover:not(:disabled){background:var(--pin)}
 #pin-box{position:absolute;border:2px solid var(--pin);border-radius:3px;background:var(--pin-bg);box-shadow:0 0 0 1px rgba(255,255,255,.8);pointer-events:none}
 #pin-dot{position:absolute;width:18px;height:18px;margin:-9px 0 0 -9px;border:2px solid var(--pin);border-radius:50%;background:var(--pin-bg);box-shadow:0 0 0 1px rgba(255,255,255,.8);pointer-events:none}
 #pin-dot.wait{animation:pinwait 1s ease-in-out infinite}
+#pinhint button{pointer-events:auto;margin-left:6px;padding:1px 8px;font-size:12px}
+#pin-orig{position:absolute;border:1px solid var(--pin);border-radius:3px;opacity:.6;pointer-events:none}
+#pin-prev{position:absolute;border:2px dashed var(--pin);border-radius:3px;pointer-events:none}
+#pin-scope{position:absolute;z-index:3;display:flex;gap:4px;max-width:calc(100% - 16px);overflow-x:auto;padding:4px;border:1px solid var(--line);border-radius:8px;background:var(--bar);box-shadow:0 2px 10px rgba(0,0,0,.18)}
+#pin-scope button{flex:none;white-space:nowrap;padding:2px 8px;font-size:12px}
+#pin-scope button[aria-checked="true"]{background:var(--pin);border-color:var(--pin);color:#fff}
+#sheet #pin-scope{position:static;max-width:none;padding:0 0 2px;border:0;background:none;box-shadow:none}
+#sh-w{align-self:flex-start;font-size:12px;padding:2px 8px}
 @keyframes pinwait{50%{transform:scale(1.6);opacity:.55}}
 .card{position:absolute;z-index:5;background:var(--bar);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}
 #sheet{left:12px;right:12px;bottom:12px;max-width:24rem;margin-left:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
@@ -108,12 +116,16 @@ button[aria-pressed="true"]:hover:not(:disabled){background:var(--pin)}
   <canvas id="screen" role="img" aria-label="공유된 앱 화면"></canvas>
   <div id="ov" class="ov" role="status" hidden><div><p id="ov-t" class="t"></p><p id="ov-s" class="s"></p></div></div>
   <div id="typing" hidden>키보드 입력을 기기로 보냅니다 · Esc 두 번: 나가기</div>
-  <div id="pinhint" hidden>짚기 — 고칠 곳을 누르세요. 기기는 조작되지 않습니다<span class="kb"> · Esc: 끝내기</span></div>
+  <div id="pinhint" hidden>짚기 — 고칠 곳을 누르세요. 기기는 조작되지 않습니다<span class="kb"> · Esc: 끝내기</span><button type="button" id="b-whole" hidden>화면 전체</button></div>
+  <div id="pin-orig" hidden></div>
   <div id="pin-box" hidden></div>
+  <div id="pin-prev" hidden></div>
   <div id="pin-dot" hidden></div>
+  <div id="pin-scope" role="radiogroup" aria-label="범위 — 넓히기·좁히기는 Alt+위·아래" hidden></div>
   <section id="sheet" class="card" aria-label="짚은 곳에 글 남기기" hidden>
     <p id="sh-t" aria-live="polite"></p>
     <p id="sh-s"></p>
+    <button type="button" id="sh-w" hidden>화면 전체로 바꾸기</button>
     <label for="sh-c" class="sr">글</label>
     <textarea id="sh-c" maxlength="1000" rows="3" enterkeyhint="enter" placeholder="무엇을 어떻게 바꾸면 좋을지 적어 주세요. 다른 곳을 짚으면 대상만 바뀌고 글은 남습니다."></textarea>
     <div class="row"><span id="sh-n">0/1000</span><button type="button" id="sh-x">취소</button><button type="button" id="sh-ok" class="pri" disabled>보내기</button></div>
@@ -159,12 +171,13 @@ const S = {
   myId: null, myName: '', hasControl: false, pending: false, online: null,
   viewers: 0, controller: null, url: '', title: '', cfgW: 0, cfgH: 0,
   kind: 'WEB', format: 'jpeg', codec: '', noVideo: false, owner: false, toldOther: false,
-  retry: 0, timer: 0, ttlEnd: 0, lastError: '', warned: false, pinOk: false
+  retry: 0, timer: 0, ttlEnd: 0, lastError: '', warned: false, pinOk: false, pinCaps: []
 };
 // 짚기(설계 §14). point 가 있으면 글 쓰는 창이 열려 있다. sent·acked 는 이 소켓에서 보낸 짚기와 바로 온 답(pending·번호 없는 failed)의 수다.
+// scope 는 범위 사다리(§15.3)에서 고른 칸, preview 는 마우스·포커스가 올라간 칸이다. 칸을 바꿔도 기기에 다시 묻지 않는다.
 const P = {
   mode: false, point: null, waiting: false, result: null, probeId: null, resolvedAt: 0,
-  sent: 0, acked: 0, lastSent: 0, queued: 0, stale: false, submitting: false
+  sent: 0, acked: 0, lastSent: 0, queued: 0, stale: false, submitting: false, scope: 0, preview: -1
 };
 
 // 내 제어 링크(#c=…): 비밀은 메모리(+이 탭의 sessionStorage, 새로고침 대비)에만 두고 주소창에서 바로 지운다.
@@ -280,6 +293,7 @@ function onText(data) {
       if (S.format === 'h264') video.configure(); else video.close();
       S.online = true; // config 는 기기가 붙어 있을 때만 온다
       S.pinOk = m.pin === true; // 짚기를 아는 기기(HELLO features 에 "pin")일 때만
+      S.pinCaps = Array.isArray(m.pinCaps) ? m.pinCaps.filter((c) => typeof c === 'string') : S.pinOk ? ['pin'] : [];
       if (!S.pinOk) setPinMode(false);
       else if (P.stale && P.mode && P.point) probePin(P.point); // 다시 연결됐다. 서버는 끊긴 사람의 결과를 버렸다
       draw();
@@ -707,7 +721,7 @@ function setPinMode(on) {
 }
 function closeSheet(clear) {
   clearTimeout(P.queued);
-  Object.assign(P, { point: null, waiting: false, result: null, probeId: null, resolvedAt: 0, queued: 0, stale: false, submitting: false });
+  Object.assign(P, { point: null, waiting: false, result: null, probeId: null, resolvedAt: 0, queued: 0, stale: false, submitting: false, scope: 0, preview: -1 });
   if (clear) comment.value = '';
   if (document.activeElement === comment) comment.blur();
   renderPin();
@@ -716,7 +730,7 @@ function closeSheet(clear) {
 function probePin(p) {
   if (!pinAvailable()) { notify(PIN_FAIL.offline); return; }
   clearTimeout(P.queued);
-  Object.assign(P, { point: p, waiting: true, result: null, probeId: null, resolvedAt: 0, stale: false, queued: 0 });
+  Object.assign(P, { point: p, waiting: true, result: null, probeId: null, resolvedAt: 0, stale: false, queued: 0, scope: 0, preview: -1 });
   const wait = P.lastSent + PROBE_GAP - Date.now();
   if (wait > 0) P.queued = setTimeout(sendProbe, wait); else sendProbe();
   renderPin();
@@ -724,7 +738,8 @@ function probePin(p) {
 function sendProbe() {
   P.queued = 0;
   if (!P.point || !P.waiting) return;
-  if (send({ type: 'pin-probe', x: P.point.x, y: P.point.y })) { P.sent++; P.lastSent = Date.now(); }
+  const probe = P.point.screen ? { type: 'pin-probe', screen: true } : { type: 'pin-probe', x: P.point.x, y: P.point.y };
+  if (send(probe)) { P.sent++; P.lastSent = Date.now(); }
   else { P.stale = true; P.waiting = false; renderPin(); } // 소켓이 다시 이어지면 같은 자리를 다시 짚는다
 }
 function pinSocketLost() {
@@ -751,11 +766,40 @@ function onPin(m) {
   if (m.state === 'failed') { pinFailed(m.reason); return; }
   if (m.state !== 'resolved') return;
   P.waiting = false; P.resolvedAt = Date.now();
-  P.result = { bounds: bounds(m.bounds), label: str(m.label), component: str(m.component), reason: str(m.reason) };
+  P.result = { bounds: bounds(m.bounds), label: str(m.label), component: str(m.component), reason: str(m.reason), scopes: scopes(m.scopes) };
+  const d = m.defaultScope | 0;
+  P.scope = d >= 0 && d < P.result.scopes.length ? d : 0;
   renderPin();
   if (!comment.value && matchMedia('(pointer:fine)').matches) comment.focus({ preventScroll: true });
 }
 const str = (v) => (typeof v === 'string' && v ? v : null);
+// 범위 사다리(§15.3). 서버가 만든 이름과 테두리만 쓴다. 테두리가 없는 칸은 버린다
+function scopes(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const sc of list.slice(0, 6)) {
+    const b = sc && typeof sc === 'object' ? bounds(sc.bounds) : null;
+    if (b && str(sc.label)) out.push({ kind: str(sc.kind) || 'group', label: sc.label.slice(0, 80), bounds: b });
+  }
+  return out;
+}
+const hasCap = (c) => S.pinCaps.indexOf(c) >= 0;
+const chosen = () => (P.result && P.result.scopes.length ? P.result.scopes[P.scope] || null : null);
+// 고른 범위의 이름. 내 피드백 목록·시트 제목이 같이 쓴다(서버의 selectedLabel 과 같은 뜻)
+function chosenLabel() {
+  const c = chosen();
+  if (c && c.kind !== 'element') return c.label;
+  return (P.result && P.result.label) || '짚은 자리';
+}
+function setScope(i, focus) {
+  const list = P.result ? P.result.scopes : [];
+  if (!list.length) return;
+  const next = Math.max(0, Math.min(list.length - 1, i));
+  if (next === P.scope) return;
+  P.scope = next; P.preview = -1;
+  renderPin();
+  if (focus) { const b = $('pin-scope').children[next]; if (b) b.focus({ preventScroll: true }); }
+}
 function bounds(b) {
   if (!b || typeof b !== 'object') return null;
   const n = (v) => (typeof v === 'number' && isFinite(v) ? Math.min(1, Math.max(0, v)) : NaN);
@@ -766,6 +810,7 @@ function renderPin() {
   const open = P.mode && !!P.point, sheet = $('sheet');
   stage.classList.toggle('pin', P.mode);
   $('pinhint').hidden = !P.mode || open;
+  $('b-whole').hidden = !hasCap('pin-screen');
   sheet.hidden = !open;
   placePin();
   if (!open) return;
@@ -775,29 +820,85 @@ function renderPin() {
   const r = P.result;
   let t, s = '';
   if (P.stale) t = '연결이 다시 이어지면 같은 자리를 다시 짚습니다';
-  else if (P.waiting) t = '짚은 곳의 요소를 찾는 중입니다…';
+  else if (P.waiting) t = P.point.screen ? '화면을 담는 중입니다…' : '짚은 곳의 요소를 찾는 중입니다…';
   else if (!r) t = '짚지 못했습니다. 다시 짚어 주세요.';
   else if (r.reason) { t = '짚은 자리'; s = PIN_MISS[r.reason] || PIN_MISS.NO_ELEMENT; }
-  else { t = r.label || '짚은 요소'; s = r.component ? '컴포넌트 ' + r.component : ''; }
+  else {
+    const c = chosen();
+    t = chosenLabel();
+    // 범위를 넓혔으면 처음 짚은 것을 함께 보인다. 에이전트도 둘 다 받는다
+    if (c && c.kind !== 'element' && c.kind !== 'screen' && r.label) s = '처음 짚은 것: ' + r.label;
+    else if (!c || c.kind === 'element') s = r.component ? '컴포넌트 ' + r.component : '';
+  }
   text('sh-t', t); text('sh-s', s);
   $('sh-s').hidden = !s;
+  // 사다리가 없는 결과(Android·iOS)에서도 화면 전체로 바꿀 수 있게. 같은 자리 다시 짚기처럼 글은 남는다
+  $('sh-w').hidden = !hasCap('pin-screen') || !!P.point.screen || P.waiting || !!(r && r.scopes.length);
   text('sh-h', S.owner
     ? '받은 상태로 저장되어 코딩 에이전트(MCP)가 바로 읽을 수 있습니다.'
     : '글과 짚은 순간의 화면 한 장이 공유한 사람에게 갑니다. 공유한 사람이 받으면 코딩 에이전트가 읽습니다.');
   updateSend();
 }
+const FULL = { x: 0, y: 0, w: 1, h: 1 };
+function frame(el, b) {
+  el.hidden = !b;
+  if (!b) return;
+  el.style.left = view.x + b.x * view.w + 'px'; el.style.top = view.y + b.y * view.h + 'px';
+  el.style.width = b.w * view.w + 'px'; el.style.height = b.h * view.h + 'px';
+}
 function placePin() {
   const dot = $('pin-dot'), box = $('pin-box');
-  const p = P.mode && view.w ? P.point : null, b = p && P.result ? P.result.bounds : null;
-  dot.hidden = !p || !!b;
-  box.hidden = !b;
+  const p = P.mode && view.w ? P.point : null, r = p ? P.result : null, c = r ? chosen() : null;
+  // 고른 칸의 테두리. 사다리가 없으면 요소, 화면을 짚었으면 화면 전체
+  const b = c ? c.bounds : r && r.bounds ? r.bounds : r && p.screen && !r.reason ? FULL : null;
+  dot.hidden = !p || !!b || !!p.screen;
+  frame(box, b);
+  frame($('pin-orig'), c && c.kind !== 'element' && r.bounds ? r.bounds : null);
+  const prev = r && P.preview >= 0 && P.preview !== P.scope ? r.scopes[P.preview] : null;
+  frame($('pin-prev'), prev ? prev.bounds : null);
   dot.classList.toggle('wait', !!(p && P.waiting));
-  if (b) {
-    box.style.left = view.x + b.x * view.w + 'px'; box.style.top = view.y + b.y * view.h + 'px';
-    box.style.width = b.w * view.w + 'px'; box.style.height = b.h * view.h + 'px';
-  } else if (p) {
+  if (!b && p && !p.screen) {
     dot.style.left = view.x + p.x * view.w + 'px'; dot.style.top = view.y + p.y * view.h + 'px';
   }
+  placeScope(b);
+}
+// 범위 막대: 데스크톱은 고른 테두리 바로 위(자리가 없으면 아래), 폰은 시트 맨 위(§15.8)
+const narrow = matchMedia('(max-width: 600px), (pointer: coarse)');
+function placeScope(b) {
+  const bar = $('pin-scope'), r = P.mode && P.point ? P.result : null, list = r ? r.scopes : [];
+  if (list.length < 2 || !b) { bar.hidden = true; return; }
+  if (bar.dataset.for !== P.probeId + ':' + list.length) {
+    bar.textContent = '';
+    list.forEach((sc, i) => {
+      const btn = el('button', '', sc.label);
+      btn.type = 'button';
+      btn.setAttribute('role', 'radio');
+      btn.addEventListener('click', () => setScope(i, false));
+      const on = () => { if (P.preview !== i) { P.preview = i; placePin(); } };
+      const off = () => { if (P.preview === i) { P.preview = -1; placePin(); } };
+      btn.addEventListener('pointerenter', on); btn.addEventListener('focus', on);
+      btn.addEventListener('pointerleave', off); btn.addEventListener('blur', off);
+      bar.append(btn);
+    });
+    bar.dataset.for = P.probeId + ':' + list.length;
+  }
+  Array.from(bar.children).forEach((btn, i) => {
+    btn.setAttribute('aria-checked', String(i === P.scope));
+    btn.tabIndex = i === P.scope ? 0 : -1;
+  });
+  bar.hidden = false;
+  const sheet = $('sheet');
+  if (narrow.matches) {
+    if (bar.parentNode !== sheet) sheet.insertBefore(bar, sheet.firstChild);
+    bar.style.left = bar.style.top = '';
+    return;
+  }
+  if (bar.parentNode !== stage) stage.append(bar);
+  const top = view.y + b.y * view.h, bottom = top + b.h * view.h;
+  const h = bar.offsetHeight, w = bar.offsetWidth, sw = stage.clientWidth, sh = stage.clientHeight;
+  const y = top - h - 6 >= 4 ? top - h - 6 : Math.min(bottom + 6, sh - h - 4);
+  bar.style.top = Math.max(4, y) + 'px';
+  bar.style.left = Math.max(8, Math.min(view.x + b.x * view.w, sw - w - 8)) + 'px';
 }
 function updateSend() {
   const n = chars(comment.value);
@@ -813,7 +914,9 @@ function submitPin() {
     probePin(P.point);
     return;
   }
-  if (send({ type: 'pin-submit', probeId: P.probeId, comment: comment.value.trim() })) { P.submitting = true; updateSend(); }
+  const msg = { type: 'pin-submit', probeId: P.probeId, comment: comment.value.trim() };
+  if (P.result && P.result.scopes.length) msg.scope = P.scope;
+  if (send(msg)) { P.submitting = true; updateSend(); }
 }
 function onFeedback(m) {
   const id = Number(m.id), state = FB_STATE[m.state] ? m.state : null;
@@ -821,7 +924,7 @@ function onFeedback(m) {
   if (typeof m.key === 'string' && m.key && P.submitting) {
     // 방금 보낸 것. 확인 키는 이때 한 번만 온다
     mine = loadMine().filter((f) => f.id !== id); // 다른 탭이 저장한 것을 덮지 않게 다시 읽는다
-    mine.push({ id, key: m.key, state, label: (P.result && P.result.label) || '짚은 자리', comment: comment.value.trim().slice(0, 200), note: '' });
+    mine.push({ id, key: m.key, state, label: chosenLabel(), comment: comment.value.trim().slice(0, 200), note: '' });
     saveMine();
     closeSheet(true);
     notify(state === 'ACCEPTED' ? '보냈습니다. 코딩 에이전트가 바로 읽을 수 있습니다.' : '보냈습니다. 공유한 사람이 받으면 코딩 에이전트에게 갑니다.');
@@ -915,6 +1018,15 @@ comment.addEventListener('keydown', (e) => {
   }
 });
 $('sh-ok').addEventListener('click', submitPin);
+// 화면 전체(§15.6): 같은 자리를 다시 짚듯 대상만 화면으로 바뀌고 글은 남는다
+const pinWhole = () => { if (P.mode) probePin({ x: 0.5, y: 0.5, screen: true }); };
+$('b-whole').addEventListener('click', pinWhole);
+$('sh-w').addEventListener('click', pinWhole);
+$('pin-scope').addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); setScope(P.scope + 1, true); }
+  else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); setScope(P.scope - 1, true); }
+});
+narrow.addEventListener('change', () => placePin());
 $('sh-x').addEventListener('click', () => closeSheet(true));
 $('b-mine').addEventListener('click', () => {
   const panel = $('mine');
@@ -923,6 +1035,12 @@ $('b-mine').addEventListener('click', () => {
   render();
 });
 $('mine-x').addEventListener('click', () => { $('mine').hidden = true; render(); $('b-mine').focus(); });
+// 글을 쓰는 중에도 범위를 바꾼다. 맨 화살표는 글 칸의 커서 이동이라 Alt 와 함께만 받는다(§15.8)
+document.addEventListener('keydown', (e) => {
+  if (!e.altKey || e.isComposing || !P.mode || !P.result || !P.result.scopes.length) return;
+  if (e.key === 'ArrowUp') { e.preventDefault(); setScope(P.scope + 1, false); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); setScope(P.scope - 1, false); }
+});
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || e.target === kbd || e.isComposing) return;
   const panel = $('mine');

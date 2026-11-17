@@ -173,6 +173,107 @@ class ShareSessionPinTest {
 
     // ------------------------------------------------------------------ 도우미
 
+    // ------------------------------------------------------------------ 짚기 범위 (§15, #694)
+
+    @Test
+    void 기기가_알린_짚기_기능만_config_pinCaps_에_싣고_WELCOME_에_결과_상한을_보낸다() {
+        assertThat(guest.last("config").path("pinCaps").toString()).isEqualTo("[\"pin\"]");
+        assertThat(device.lastJson(ShareFrames.WELCOME).path("pinResultMax").asInt()).isEqualTo(48 * 1024);
+
+        announce("\"pin\",\"pin-scope\",\"pin-screen\",\"pin-telepathy\"");
+
+        assertThat(guest.last("config").path("pinCaps").toString()).isEqualTo("[\"pin\",\"pin-scope\",\"pin-screen\"]");
+    }
+
+    @Test
+    void 화면_전체_짚기는_기기가_pin_screen_을_알릴_때만_기기로_간다() {
+        session.onViewerMessage(guestId, msg("{\"type\":\"pin-probe\",\"screen\":true}"), Instant.now());
+        assertThat(guest.last("pin").path("reason").asText()).isEqualTo("unsupported");
+        assertThat(device.count(ShareFrames.PIN_PROBE)).as("옛 CLI 는 모르는 짚기를 말없이 버려 timeout 까지 자리를 잡는다").isZero();
+
+        announce("\"pin\",\"pin-screen\"");
+        nanos += 2 * SECOND;
+        session.onViewerMessage(guestId, msg("{\"type\":\"pin-probe\",\"screen\":true}"), Instant.now());
+
+        JsonNode sent = device.lastJson(ShareFrames.PIN_PROBE);
+        assertThat(sent.path("screen").asBoolean()).isTrue();
+        assertThat(sent.has("x")).isFalse();
+        session.onDeviceFrame(device, result("""
+                {"probeId":"p1","ok":true,"screen":{"label":"/settings"},
+                 "scopes":[{"kind":"screen","type":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}],"defaultScope":0}
+                """, new byte[0], JPEG));
+        JsonNode pin = guest.last("pin");
+        assertThat(pin.path("state").asText()).isEqualTo("resolved");
+        assertThat(pin.path("label").asText()).isEqualTo("화면 전체");
+        assertThat(pin.path("scopes").get(0).path("label").asText()).isEqualTo("화면 전체");
+        assertThat(session.claimPin(guestId, "p1").orElseThrow().resolution().resolved()).isTrue();
+    }
+
+    @Test
+    void 끌기_짚기는_아직_기기로_보내지_않는다() {
+        announce("\"pin\",\"pin-scope\",\"pin-screen\"");
+        session.onViewerMessage(guestId, msg("{\"type\":\"pin-probe\",\"rect\":{\"x\":0.1,\"y\":0.1,\"w\":0.3,\"h\":0.2}}"),
+                Instant.now());
+
+        assertThat(guest.last("pin").path("reason").asText()).isEqualTo("unsupported");
+        assertThat(device.count(ShareFrames.PIN_PROBE)).isZero();
+    }
+
+    @Test
+    void 범위_사다리는_칸_이름과_테두리만_가고_손님에게는_바깥_칸의_컴포넌트_이름을_넣지_않는다() {
+        announce("\"pin\",\"pin-scope\",\"pin-screen\"");
+        FakeViewer owner = new FakeViewer();
+        String ownerId = session.join(owner, "주인", true);
+        String ladder = """
+                "ok":true,"element":{"type":"button","text":"저장","bounds":{"x":0.1,"y":0.5,"w":0.2,"h":0.05}},
+                "scopes":[{"kind":"element","type":"button","text":"저장","component":"SaveButton",
+                            "bounds":{"x":0.1,"y":0.5,"w":0.2,"h":0.05}},
+                          {"kind":"component","type":"form","id":"profile","component":"ProfileForm",
+                            "selector":"form#profile","bounds":{"x":0.05,"y":0.3,"w":0.9,"h":0.4}},
+                          {"kind":"group","type":"section","text":"요금제 안내","bounds":{"x":0,"y":0.25,"w":1,"h":0.6}},
+                          {"kind":"telepathy","type":"x","bounds":{"x":0,"y":0,"w":1,"h":1}},
+                          {"kind":"group","type":"div","bounds":{"x":0.1,"y":0.1,"w":0,"h":0.2}},
+                          {"kind":"screen","type":"screen"}],
+                "defaultScope":0""";
+
+        probe(guestId, 0.2, 0.52);
+        session.onDeviceFrame(device, result("{\"probeId\":\"p1\"," + ladder + "}", JPEG, JPEG));
+        probe(ownerId, 0.2, 0.52);
+        session.onDeviceFrame(device, result("{\"probeId\":\"p2\"," + ladder + "}", JPEG, JPEG));
+
+        JsonNode toGuest = guest.last("pin");
+        assertThat(toGuest.path("scopes").findValuesAsText("label"))
+                .as("모르는 종류·넓이 0 인 칸은 버리고, 손님에게는 가장 안쪽 컴포넌트 이름까지만(§15.2)")
+                .containsExactly("<button> \"저장\" · SaveButton", "폼 #profile", "구역 \"요금제 안내\"", "화면 전체");
+        assertThat(toGuest.path("scopes").get(3).path("bounds").path("w").asDouble()).isEqualTo(1.0);
+        assertThat(toGuest.path("defaultScope").asInt()).isZero();
+        assertThat(toGuest.path("label").asText()).as("옛 탭이 읽는 요소 이름은 그대로").isEqualTo("<button> \"저장\"");
+        assertThat(toGuest.toString()).doesNotContain("ProfileForm").doesNotContain("selector");
+        assertThat(owner.last("pin").path("scopes").get(1).path("label").asText()).isEqualTo("컴포넌트 ProfileForm");
+    }
+
+    @Test
+    void 결과는_48KiB_까지_받는다() {
+        probe(guestId, 0.5, 0.5);
+        String padding = "x".repeat(40 * 1024); // 모르는 필드는 정리하며 버린다
+        session.onDeviceFrame(device, result("{\"probeId\":\"p1\",\"ok\":true,\"pad\":\"" + padding
+                + "\",\"element\":{\"type\":\"button\"}}", JPEG, JPEG));
+        assertThat(guest.last("pin").path("state").asText()).isEqualTo("resolved");
+
+        nanos += 2 * SECOND;
+        probe(guestId, 0.5, 0.5);
+        session.onDeviceFrame(device, result("{\"probeId\":\"p2\",\"ok\":true,\"pad\":\"" + "x".repeat(49 * 1024)
+                + "\",\"element\":{\"type\":\"button\"}}", JPEG, JPEG));
+        assertThat(guest.last("pin").path("probeId").asText()).as("넘으면 버린다").isEqualTo("p2");
+        assertThat(guest.last("pin").path("state").asText()).isEqualTo("pending");
+    }
+
+    /** 기기가 다시 HELLO 를 보내 기능을 알리고, 화면 설정을 다시 보내 config 가 새로 나가게 한다 */
+    private void announce(String features) {
+        session.onDeviceFrame(device, frame(ShareFrames.HELLO, "{\"cliVersion\":\"0.3.0\",\"kind\":\"WEB\",\"features\":[" + features + "]}"));
+        session.onDeviceFrame(device, frame(ShareFrames.SCREEN_CONFIG, "{\"format\":\"jpeg\",\"width\":390,\"height\":844,\"url\":\"/x\"}"));
+    }
+
     private void probe(String viewerId, double x, double y) {
         session.onViewerMessage(viewerId, msg("{\"type\":\"pin-probe\",\"x\":" + x + ",\"y\":" + y + "}"), Instant.now());
         nanos += 10; // 같은 사람의 다음 짚기는 1초 안이다

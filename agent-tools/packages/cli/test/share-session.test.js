@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { KIND, MAX_PAYLOAD_BYTES, decodeFrame, encodeJsonFrame, parseJsonPayload } from '../src/share/protocol.js';
 import { ShareSession } from '../src/share/session.js';
+import { TunnelSession } from '../src/share/tunnel.js';
 import { CdpConnection, attachFirstPage } from '../src/share/cdp.js';
 import { run, EXIT } from '../src/index.js';
 
@@ -171,8 +172,8 @@ describe('share session over a real tunnel socket', () => {
     assert.equal(hello.kind, KIND.HELLO);
     assert.equal(hello.streamId, 0);
     assert.equal(hello.binary, true);
-    // §14: a web share answers pins, so it says so; Android and iOS do not yet (their tests check)
-    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'WEB', target: 'http://localhost:5173', features: ['pin'] });
+    // §15.9: a web share answers points with their scope ladder, and the whole screen
+    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'WEB', target: 'http://localhost:5173', features: ['pin', 'pin-scope', 'pin-screen'] });
     assert.ok(!cdp.calls.some((c) => c.method === 'Page.screencastFrameAck'), 'no ack before WELCOME');
 
     conn.send(KIND.WELCOME, { shareId: 7, expiresAt: '2026-11-12T13:00:00Z' });
@@ -405,8 +406,10 @@ const SAVE_BUTTON = {
   framework: 'react',
 };
 
+const SCREEN_STEP = { kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } };
+
 describe('pinning over a real tunnel socket (§14, #682)', () => {
-  async function connected(results, overrides = {}) {
+  async function connected(results, overrides = {}, welcome = {}) {
     const server = await tunnelServer();
     const cdp = fakeCdp(results);
     const made = newSession(cdp, { tunnelUrl: server.url, ...overrides });
@@ -414,8 +417,8 @@ describe('pinning over a real tunnel socket (§14, #682)', () => {
     const conn = await server.nextConnection();
     cdp.emit('page', 'Page.screencastFrame', frameEvent(JPEG, 1));
     const hello = await conn.next();
-    assert.deepEqual(hello.json.features, ['pin']);
-    conn.send(KIND.WELCOME, { shareId: 7 });
+    assert.deepEqual(hello.json.features, ['pin', 'pin-scope', 'pin-screen']);
+    conn.send(KIND.WELCOME, { shareId: 7, ...welcome });
     assert.equal((await conn.next()).kind, KIND.SCREEN_CONFIG);
     assert.equal((await conn.next()).kind, KIND.SCREEN_FRAME);
     return { ...made, cdp, conn };
@@ -444,6 +447,12 @@ describe('pinning over a real tunnel socket (§14, #682)', () => {
     assert.deepEqual(json.screen, { label: '/settings', url: 'http://localhost:5173/settings', title: 'Vite App' });
     assert.deepEqual(json.element, SAVE_BUTTON.element);
     assert.deepEqual(json.ancestors, [{ type: 'form' }]);
+    // A page that sent no ladder still gets the shortest one: the element, then the screen (§15.3).
+    assert.deepEqual(json.scopes, [
+      { kind: 'element', type: 'button', text: '저장', id: 'save', selector: 'form > button#save', bounds: SAVE_BUTTON.element.bounds },
+      SCREEN_STEP,
+    ]);
+    assert.equal(json.defaultScope, 0);
     // The dev server's own module URL becomes a project path; one from another origin does not. A
     // stack line is a line of the served module, so the definition's line on disk is used instead.
     assert.deepEqual(json.components, [{ name: 'SaveButton', file: 'src/components/SaveButton.tsx', line: 1 }, { name: 'Settings' }]);
@@ -493,10 +502,66 @@ describe('pinning over a real tunnel socket (§14, #682)', () => {
     assert.equal(cdp.calls.find((c) => c.method === 'Page.captureScreenshot').params.clip, undefined);
   });
 
+  it('passes the page’s ladder on, checked: the element step from `element`, known kinds, short words, the screen last (§15.3)', { timeout: 10000 }, async () => {
+    const raw = structuredClone(SAVE_BUTTON);
+    raw.scopes = [
+      { kind: 'element', type: 'a', text: '다른 글', id: 'other', component: 'SaveButton', bounds: { x: 0, y: 0, w: 1, h: 1 } },
+      { kind: 'component', type: 'form', text: '가'.repeat(100), id: 'profile', selector: '#profile', component: 'ProfileForm', bounds: { x: 0.05, y: 0.15, w: 0.5, h: 0.36251 } },
+      { kind: 'region', type: 'div', bounds: { x: 0, y: 0, w: 0.5, h: 0.5 } },
+      { kind: 'group', type: 'section', bounds: { x: 0, y: 0.5, w: 0, h: 0.1 } },
+      { kind: 'component', type: 'div', bounds: { x: 0, y: 0, w: 0.6, h: 0.6 } },
+      { kind: 'group', type: 'section', bounds: { x: 0, y: 0.125, w: 1, h: 0.5 } },
+      { kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } },
+    ];
+    const { conn } = await connected({ 'Runtime.evaluate': () => ({ result: { value: raw } }) });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p7', x: 0.2, y: 0.22 });
+    const { json } = readPinResult((await conn.next()).payload);
+    assert.deepEqual(json.element, SAVE_BUTTON.element);
+    assert.deepEqual(json.scopes, [
+      // The element step says what `element` says; only the component name comes from the page.
+      { kind: 'element', type: 'button', text: '저장', id: 'save', selector: 'form > button#save', component: 'SaveButton', bounds: SAVE_BUTTON.element.bounds },
+      { kind: 'component', type: 'form', text: '가'.repeat(60), id: 'profile', selector: '#profile', component: 'ProfileForm', bounds: { x: 0.05, y: 0.15, w: 0.5, h: 0.3625 } },
+      // An unknown kind, a box with nothing visible and a component without a name are left out.
+      { kind: 'group', type: 'section', bounds: { x: 0, y: 0.125, w: 1, h: 0.5 } },
+      SCREEN_STEP,
+    ]);
+    assert.equal(json.defaultScope, 0);
+  });
+
+  it('answers a whole-screen probe with where the page is and the frame the viewer saw — no element, no crop (§15.6)', { timeout: 10000 }, async () => {
+    const { conn, cdp } = await connected({
+      'Runtime.evaluate': () => ({ result: { value: { label: '/settings', url: 'http://localhost:5173/settings', title: 'Vite App' } } }),
+    });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p8', screen: true });
+    const { json, crop, screen } = readPinResult((await conn.next()).payload);
+    assert.deepEqual(json, {
+      probeId: 'p8',
+      ok: true,
+      screen: { label: '/settings', url: 'http://localhost:5173/settings', title: 'Vite App' },
+      scopes: [SCREEN_STEP],
+      defaultScope: 0,
+    });
+    assert.equal(crop.length, 0);
+    assert.deepEqual(screen, JPEG);
+    const evaluate = cdp.calls.find((c) => c.method === 'Runtime.evaluate');
+    assert.match(evaluate.params.expression, /^\(function readScreen\(\)/);
+    assert.equal(evaluate.params.returnByValue, true);
+    assert.ok(!cdp.calls.some((c) => c.method === 'Page.captureScreenshot'), 'no screenshot: the frame is the screen');
+  });
+
+  it('still answers the whole screen when the page cannot say where it is', { timeout: 10000 }, async () => {
+    const { conn } = await connected({ 'Runtime.evaluate': () => ({ exceptionDetails: { text: 'Uncaught' } }) });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p9', screen: true });
+    const { json, screen } = readPinResult((await conn.next()).payload);
+    assert.deepEqual(json, { probeId: 'p9', ok: true, scopes: [SCREEN_STEP], defaultScope: 0 });
+    assert.deepEqual(screen, JPEG);
+  });
+
   it('ignores a malformed probe', { timeout: 10000 }, async () => {
     const { conn, cdp } = await connected({ 'Runtime.evaluate': () => ({ result: { value: SAVE_BUTTON } }) });
     conn.send(KIND.PIN_PROBE, { probeId: 'x1', x: 0.5, y: 0.5 });
     conn.send(KIND.PIN_PROBE, { probeId: 'p4', x: 2, y: 0.5 });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p6', rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } }); // §15.4, not yet
     conn.send(KIND.PIN_PROBE, { probeId: 'p5', x: 0.5, y: 0.5 });
     const { json } = readPinResult((await conn.next()).payload);
     assert.equal(json.probeId, 'p5', 'only the well-formed probe was answered');
@@ -532,6 +597,70 @@ describe('pinning over a real tunnel socket (§14, #682)', () => {
     conn.send(KIND.FEEDBACK_NOTICE, notice(24, { author: { role: 'OWNER', name: '주인' }, state: 'ACCEPTED' }));
     await until(() => logs.some((l) => l.startsWith('피드백 #24 · 내가 남김')));
     assert.equal(asked.length, 3);
+  });
+});
+
+describe('pin limits and features over a real tunnel socket (§15.9)', () => {
+  /** A TunnelSession with nothing shared: only the pinning hooks, which each test fills in. */
+  async function bare(resolvePin, extra = {}) {
+    const server = await tunnelServer();
+    const session = new TunnelSession({ tunnelUrl: server.url, token: 'qp_test', cliVersion: '9.9.9', askControl: async () => false, pingIntervalMs: 0, ...extra });
+    session.resolvePin = resolvePin;
+    cleanups.push(async () => session.stop('test-cleanup'));
+    session.connect();
+    const conn = await server.nextConnection();
+    const hello = await conn.next();
+    return { session, conn, hello };
+  }
+
+  it('fits results to the pinResultMax of the latest WELCOME, and to 16 KiB without one or when it is out of range', { timeout: 10000 }, async () => {
+    const big = (probe) => ({
+      result: { probeId: probe.probeId, ok: true, point: { x: 0.5, y: 0.5 }, element: { type: 'button', text: '저장' }, ancestors: [{ type: 'div', text: 'x'.repeat(30000) }] },
+      crop: null,
+      screen: null,
+    });
+    const { conn, hello } = await bare(big);
+    assert.deepEqual(hello.json.features, ['pin'], 'a session that says nothing more answers points only');
+    const ask = async (welcome, probeId) => {
+      conn.send(KIND.WELCOME, welcome);
+      conn.send(KIND.PIN_PROBE, { probeId, x: 0.5, y: 0.5 });
+      const answer = await conn.next();
+      assert.equal(answer.kind, KIND.PIN_RESULT);
+      return { json: readPinResult(answer.payload).json, bytes: answer.payload.readUInt32BE(0) };
+    };
+    let { json, bytes } = await ask({ shareId: 7, pinResultMax: 49152 }, 'p1');
+    assert.equal(json.ancestors[0].text.length, 30000, 'under 48 KiB: sent whole');
+    assert.ok(bytes > 16384 && bytes <= 49152);
+    ({ json } = await ask({ shareId: 7, pinResultMax: 32768 }, 'p2'));
+    assert.equal(json.ancestors[0].text.length, 30000);
+    for (const [welcome, probeId] of [[{ shareId: 7, pinResultMax: 1e9 }, 'p3'], [{ shareId: 7, pinResultMax: '49152' }, 'p4'], [{ shareId: 7 }, 'p5']]) {
+      ({ json, bytes } = await ask(welcome, probeId));
+      assert.equal(json.ancestors, undefined, JSON.stringify(welcome));
+      assert.equal(json.element.text, '저장');
+      assert.ok(bytes <= 16384);
+    }
+  });
+
+  it('answers a whole-screen probe only after announcing pin-screen; one that runs out of time says no point', { timeout: 10000 }, async () => {
+    const asked = [];
+    const resolvePin = (probe) => {
+      asked.push(probe);
+      return probe.screen ? new Promise(() => {}) : { result: { probeId: probe.probeId, ok: true, element: { type: 'button' } }, crop: null, screen: null };
+    };
+    const { session, conn } = await bare(resolvePin, { pinDeadlineMs: 50 });
+    conn.send(KIND.WELCOME, { shareId: 7 });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p1', screen: true });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p2', x: 0.5, y: 0.5 });
+    let { json } = readPinResult((await conn.next()).payload);
+    assert.equal(json.probeId, 'p2');
+    assert.deepEqual(asked.map((p) => p.probeId), ['p2'], 'not announced, not read');
+
+    session.pinFeatures = () => ['pin', 'pin-screen'];
+    session.pinScreen = () => JPEG;
+    conn.send(KIND.PIN_PROBE, { probeId: 'p3', screen: true });
+    const answer = readPinResult((await conn.next()).payload);
+    assert.deepEqual(answer.json, { probeId: 'p3', ok: false, reason: 'TIMEOUT' });
+    assert.deepEqual(answer.screen, JPEG);
   });
 });
 

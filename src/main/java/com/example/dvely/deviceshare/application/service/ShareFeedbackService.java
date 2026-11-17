@@ -101,11 +101,23 @@ public class ShareFeedbackService {
             return;
         }
         ClaimedPin pin = claimed.get();
+        ObjectNode description = pin.resolution().description().deepCopy();
+        byte[] crop = pin.crop();
+        JsonNode scopes = description.path("scopes");
+        if (scopes.isArray() && !scopes.isEmpty()) {
+            // §15.10: 사람이 고른 범위를 저장하고, 잘라 낸 그림도 그 범위로 만든다
+            int chosen = message.path("scope").isInt() ? message.path("scope").asInt() : description.path("defaultScope").asInt(0);
+            if (chosen < 0 || chosen >= scopes.size()) {
+                chosen = description.path("defaultScope").asInt(0);
+            }
+            description.put("v", 2).put("scope", chosen);
+            crop = selectedCrop(scopes.get(chosen), pin.crop(), pin.screen());
+        }
         String key = ShareTokens.newViewToken();
         ShareFeedback saved = repository.save(ShareFeedback.newFeedback(link.getId(), pin.owner(), pin.viewerName(),
                         ShareTokens.sha256Hex(key), link.getKind(), pin.resolution().screenLabel(),
-                        pin.resolution().description().toString(), body),
-                new FeedbackImages(pin.crop(), pin.screen()));
+                        description.toString(), body),
+                new FeedbackImages(crop, pin.screen()));
         log.info("[DeviceShare] 피드백 저장 share={} feedback={} owner={} resolved={}", link.getId(), saved.getId(),
                 pin.owner(), pin.resolution().resolved());
         sessions.watch(link.getId(), viewerId, saved.getId());
@@ -213,11 +225,27 @@ public class ShareFeedbackService {
         }
     }
 
+    /**
+     * 고른 칸의 그림. 요소 칸이면 기기가 잘라 보낸 것, 화면 칸이면 화면 그대로, 그 밖(덩어리·컴포넌트·영역)이면 서버가 화면에서
+     * 자른 것이다. 화면을 읽지 못하면 기기가 잘라 보낸 것으로 둔다.
+     */
+    static byte[] selectedCrop(JsonNode scope, byte[] deviceCrop, byte[] screen) {
+        return switch (scope.path("kind").asText("")) {
+            case "element" -> deviceCrop;
+            case "screen" -> screen != null ? screen : deviceCrop;
+            default -> {
+                byte[] cut = ScopeCrop.cut(screen, scope.path("bounds"));
+                yield cut != null ? cut : deviceCrop;
+            }
+        };
+    }
+
     private void notifyDevice(ShareFeedback feedback) {
         JsonNode element = parse(feedback.getElementJson());
         ObjectNode notice = json.createObjectNode().put("feedbackId", feedback.getId());
         notice.putObject("author").put("role", feedback.getAuthorRole().name()).put("name", feedback.getAuthorName());
-        notice.put("label", PinResultSanitizer.viewerLabel(element.path("element")));
+        // 주인이 받을지 고르는 근거라, 손님이 고른 범위 그대로 보인다(§15.10)
+        notice.put("label", PinResultSanitizer.selectedLabel(element));
         notice.put("comment", preview(latestBody(feedback)));
         notice.put("state", feedback.getStatus().name());
         sessions.sendToPinDevice(feedback.getShareId(), ShareFrames.FEEDBACK_NOTICE, notice.toString());
@@ -343,7 +371,7 @@ public class ShareFeedbackService {
 
     private ShareFeedbackView summary(ShareFeedback feedback) {
         JsonNode element = parse(feedback.getElementJson());
-        return new ShareFeedbackView(feedback, element, PinResultSanitizer.viewerLabel(element.path("element")),
+        return new ShareFeedbackView(feedback, element, PinResultSanitizer.selectedLabel(element),
                 element.path("components").path(0).path("name").asText(null), List.of(), false, false);
     }
 

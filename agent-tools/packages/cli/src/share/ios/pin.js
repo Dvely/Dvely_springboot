@@ -9,7 +9,7 @@
  *
  * Read-only: one tree and one screenshot. Nothing is tapped.
  */
-import { LIMIT, MAX_CROP_BYTES, MAX_SCREEN_BYTES, clip, r4, unresolved } from '../pin.js';
+import { LIMIT, MAX_CROP_BYTES, MAX_SCREEN_BYTES, clip, r4, screenResult, unresolved } from '../pin.js';
 import { jpegUnder } from '../jpeg.js';
 import { parsePng } from '../png.js';
 import { findSourceHints } from '../source-hints.js';
@@ -141,6 +141,24 @@ export function screenTitle(nodes, points) {
 }
 
 /**
+ * Which screen this is: the shared app's bundle ID while it is in front, the app's name, the
+ * navigation title. Undefined when none of them is known.
+ *
+ * @param {{width: number, height: number}|null} points the screen in points; without it there is no title
+ */
+export function describeIosScreen(nodes, points, shared = {}) {
+  const app = nodes.find((n) => n.app) ?? null;
+  const screen = {};
+  const front = shared.bundleId && (shared.appPid == null || app?.pid == null || app.pid === shared.appPid);
+  if (front) screen.bundleId = shared.bundleId;
+  if (app?.label) screen.appName = clip(app.label, 100);
+  const title = points ? screenTitle(nodes, points) : null;
+  if (title) screen.title = title;
+  const label = screen.bundleId ?? screen.appName;
+  return label ? { label, ...screen } : Object.keys(screen).length ? screen : undefined;
+}
+
+/**
  * The description of the element at the point (§14.3), without images.
  *
  * @param {{width: number, height: number}} points the screen in points (the tree's coordinates)
@@ -148,16 +166,7 @@ export function screenTitle(nodes, points) {
  *   named only while that app is the one in front
  */
 export function describeIosPoint(nodes, probe, points, shared = {}) {
-  const app = nodes.find((n) => n.app) ?? null;
-  const screen = {};
-  const front = shared.bundleId && (shared.appPid == null || app?.pid == null || app.pid === shared.appPid);
-  if (front) screen.bundleId = shared.bundleId;
-  if (app?.label) screen.appName = clip(app.label, 100);
-  const title = screenTitle(nodes, points);
-  if (title) screen.title = title;
-  const label = screen.bundleId ?? screen.appName;
-  const where = label ? { label, ...screen } : Object.keys(screen).length ? screen : undefined;
-
+  const where = describeIosScreen(nodes, points, shared);
   const picked = pickElement(nodes, probe.x * points.width, probe.y * points.height);
   // Only a full-screen container that says nothing there: the background.
   if (!picked || (!named(picked.node) && area(picked.node) >= 0.8 * points.width * points.height)) {
@@ -204,7 +213,8 @@ export function describeIosPoint(nodes, probe, points, shared = {}) {
  *
  * @param {object} o
  * @param {{request: Function, screenshot?: Function}} o.commands AxeCommands
- * @param {{probeId: string, x: number, y: number}} o.probe
+ * @param {{probeId: string, x: number, y: number}|{probeId: string, screen: true}} o.probe a point, or
+ *   the whole screen (resolveIosScreen)
  * @param {string|null} o.project
  * @param {string|null} [o.bundleId] the shared app
  * @param {number|null} [o.appPid]
@@ -214,6 +224,7 @@ export function describeIosPoint(nodes, probe, points, shared = {}) {
  * @returns {Promise<{result: object, crop: Buffer|null, screen: Buffer|null}>}
  */
 export async function resolveIosPin({ commands, probe, project, bundleId = null, appPid = null, points = null, frame = null, findHints = findSourceHints }) {
+  if (probe.screen) return resolveIosScreen({ commands, probe, bundleId, appPid, points, frame });
   const [reply, png] = await Promise.all([
     commands.request(['describe-ui']).catch(() => null),
     typeof commands.screenshot === 'function' ? commands.screenshot().catch(() => null) : null,
@@ -222,12 +233,7 @@ export async function resolveIosPin({ commands, probe, project, bundleId = null,
   const nodes = reply && !reply.didError ? parseAxTree(reply) : [];
   const root = nodes.find((n) => n.app && n.frame && n.frame.w > 0 && n.frame.h > 0);
   const size = root ? { width: root.frame.w, height: root.frame.h } : points;
-  const screen =
-    frame && frame.length <= MAX_SCREEN_BYTES
-      ? frame
-      : shot
-        ? jpegUnder(shot, { x: 0, y: 0, width: shot.width, height: shot.height }, { maxSide: SCREEN_MAX_SIDE, maxBytes: MAX_SCREEN_BYTES, quality: 70 })
-        : null;
+  const screen = usable(frame) ? frame : shot ? screenJpeg(shot) : null;
   // The screenshot in pixels and the tree in points must be the same screen the same way round.
   const k = shot && size ? shot.width / size.width : 0;
   const fits = k > 0 && Math.abs(shot.height / k - size.height) <= 2;
@@ -248,6 +254,32 @@ export async function resolveIosPin({ commands, probe, project, bundleId = null,
     : cut(spot(probe, size));
   return { result, crop, screen };
 }
+
+/**
+ * The whole screen (§15.6): one tree read for which screen it is, and the frame the viewer saw. A
+ * screenshot is taken only when there is no frame to send. The tree goes through the same line as
+ * the inputs, like a point's, so it describes the screen after a tap that came before.
+ *
+ * @returns {Promise<{result: object, crop: null, screen: Buffer|null}>}
+ */
+export async function resolveIosScreen({ commands, probe, bundleId = null, appPid = null, points = null, frame = null }) {
+  const own = usable(frame);
+  const [reply, png] = await Promise.all([
+    commands.request(['describe-ui']).catch(() => null),
+    !own && typeof commands.screenshot === 'function' ? commands.screenshot().catch(() => null) : null,
+  ]);
+  const nodes = reply && !reply.didError ? parseAxTree(reply) : [];
+  const root = nodes.find((n) => n.app && n.frame && n.frame.w > 0 && n.frame.h > 0);
+  const size = root ? { width: root.frame.w, height: root.frame.h } : points;
+  const where = nodes.length ? describeIosScreen(nodes, size, { bundleId, appPid }) : undefined;
+  const shot = png ? parsePng(png) : null;
+  return { result: screenResult(probe, where), crop: null, screen: own ? frame : shot ? screenJpeg(shot) : null };
+}
+
+const usable = (frame) => Boolean(frame) && frame.length <= MAX_SCREEN_BYTES;
+
+const screenJpeg = (shot) =>
+  jpegUnder(shot, { x: 0, y: 0, width: shot.width, height: shot.height }, { maxSide: SCREEN_MAX_SIDE, maxBytes: MAX_SCREEN_BYTES, quality: 70 });
 
 const scaled = (r, k) => ({ x: r.x * k, y: r.y * k, width: r.width * k, height: r.height * k });
 

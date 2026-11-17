@@ -772,6 +772,7 @@ POST /api/v1/api-tokens
 - `status`: `NEW`(받기 전, 강조) · `ACCEPTED`(받음) · `DISMISSED`(무시함) · `FIXED`(고침) · `CONFIRMED`(확인됨). 버튼은 `NEW` → 받기·무시, `DISMISSED` → 받기, `ACCEPTED` → 고침 표시·무시, `FIXED` → 확인·다시 받기(`ACCEPTED`).
 - **받기 전 글은 에이전트에게 나가지 않는다.** 받기를 누르는 것이 "이 글을 에이전트에게 넘겨도 된다" 는 뜻이라고 화면에 적는다. `body` 는 손님이 쓴 글이라 텍스트로만 그린다.
 - `label`(`<button> "저장"`)이 `null` 이면 "요소를 찾지 못함 — 짚은 위치와 이미지만" 으로 보인다.
+- **`label` 은 손님이 고른 범위의 이름이다**(#694). 범위를 넓혀 골랐으면 `컴포넌트 ProfileForm`·`폼 #profile`, 화면 전체면 `화면 전체` 다. `image?kind=crop` 도 그 범위의 그림이다(화면 전체면 화면). 그대로 보이면 된다. 상세 `element` 의 `scopes`·`scope` 로 "처음 짚은 것" 을 함께 보일 수 있다(`scopes[0]` 이 처음 짚은 요소).
 - 409 `DEVICE_SHARE_FEEDBACK_INVALID_TRANSITION`: 그 사이 다른 곳(기기 터미널·에이전트)에서 상태가 바뀌었다. 목록을 다시 읽는다.
 - 살아 있는 공유가 있으면 지금처럼 10초마다 다시 읽으면 된다(새 피드백·에이전트의 고침 표시가 반영된다).
 

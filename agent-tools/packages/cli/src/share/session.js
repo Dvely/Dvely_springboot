@@ -320,7 +320,15 @@ export class ShareSession extends TunnelSession {
     if (nav) this.navigate(nav).catch(noop);
   }
 
-  /** §14.3: what is at the viewer's point. Reads the page only; the crop is a fresh screenshot. */
+  /** §15.9: the page is read in place, so the ladder and the whole screen come with the point. */
+  pinFeatures() {
+    return ['pin', 'pin-scope', 'pin-screen'];
+  }
+
+  /**
+   * §14.3: what is at the viewer's point, or the whole screen (§15.6). Reads the page only; the crop
+   * is a fresh screenshot.
+   */
   resolvePin(probe) {
     return resolveWebPin({ page: this.page, probe, project: this.project, origin: this.origin, screen: this.latestFrame });
   }

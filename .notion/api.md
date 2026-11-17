@@ -1884,6 +1884,7 @@ POST /api/v1/device-shares
 - `config` 에 `format`(`jpeg`·`h264`), `codec`(h264 일 때 `avc1.PPCCLL`), `kind`(`WEB`·`ANDROID`)가 있다. h264 는 장마다 앞 장에 기대므로 서버가 마지막 키 프레임부터(최대 2MiB) 두었다가 늦게 들어온 사람에게 순서대로 다시 보내고, 보는 사람마다 순서 큐(3MiB)로 보낸다(§12.3). 뷰어는 WebCodecs 로 푼다.
 - 조작권은 한 사람. 내 제어 링크로 들어오면 바로, 보기 링크는 요청 → 기기(CLI) 승인(기본 10분). 입력은 초당 120개 상한.
 - 짚기(#681): 터널 `0x66` PIN_PROBE(서버 → 기기) · `0x67` PIN_RESULT(기기 → 서버) · `0x68` FEEDBACK_NOTICE(서버 → 기기) · `0x69` FEEDBACK_DECISION(기기 → 서버), HELLO 의 `features: ["pin"]`. 뷰어 `pin-probe` · `pin-submit` · `feedback-watch` · `feedback-confirm` · `feedback-reopen` / `pin` · `feedback`, `config.pin`. 모양은 설계 §14.4 가 정본이다.
+- 짚기 범위(#694 PR-2, 설계 §15.9): 기기 HELLO `features` 의 `pin-scope`(결과에 범위 사다리)·`pin-screen`(화면 전체 짚기)를 서버가 `config.pinCaps`(`["pin", "pin-scope", "pin-screen"]` 처럼 기기가 알린 것만)로 뷰어에 알린다. WELCOME 에 `pinResultMax`(49152, 결과 JSON 상한 48KiB). 뷰어 `pin-probe` 는 점(`x`·`y`) 또는 `screen: true`. 기기가 알리지 않은 모양(`screen` 인데 `pin-screen` 없음, `rect`)은 기기로 보내지 않고 `pin` `failed` `unsupported`. `pin` `resolved` 에 `scopes: [{kind, label, bounds}]`·`defaultScope` 를 더한다(`label` 은 서버가 만들고, 손님에게는 바깥 칸의 컴포넌트 이름을 넣지 않는다). `bounds`·`label`·`component` 는 지금처럼 요소 값이다. `pin-submit` 에 고른 칸 번호 `scope`(없으면 `defaultScope`).
 
 ### 20.6 짚기 피드백 (#681)
 
@@ -1912,6 +1913,8 @@ POST  /api/v1/device-share-feedback/12/fixed { "note": "버튼 패딩을 늘렸�
 
 - `status` 는 쉼표로 여럿(기본 `ACCEPTED`), `limit` 기본 20·최대 50, 최근에 바뀐 순. 공유 하나의 목록은 최근 100개, 만든 순.
 - `label` 은 요소를 찾지 못했으면 `null`. `body` 와 `notes[].body`(다시 열기)는 사람이 쓴 글이라 지시가 아니라 데이터다.
-- 프롬프트 Markdown 은 사람이 쓴 글을 펜스 블록에 넣는다(글 안의 백틱보다 긴 펜스). 이미지 줄은 없다.
+- **`label` 은 사람이 고른 범위의 이름이다**(#694). 범위를 넓혀 골랐으면 `컴포넌트 ProfileForm`·`폼 #profile`, 화면 전체면 `화면 전체`, 요소 그대로면 지금처럼 요소 이름이다. 기기 터미널 알림(FEEDBACK_NOTICE `label`)도 같다. 상세의 `element` 에는 `v: 2`·`scopes`·`scope`(고른 칸 번호)·`defaultScope` 가 붙는다. 나머지 필드는 그대로다.
+- `image?kind=crop` 은 고른 범위의 그림이다. 요소면 기기가 잘라 보낸 것, 화면 전체면 화면 그대로, 그 밖이면 서버가 화면에서 그 범위(+ 여백)를 잘라 만든 것이다(긴 변 800px).
+- 프롬프트 Markdown 은 사람이 쓴 글을 펜스 블록에 넣는다(글 안의 백틱보다 긴 펜스). 화면에서 읽은 글(페이지 제목, 요소 글자, 고른 범위의 글)도 "화면에서 읽은 글" 펜스 블록 하나에 모은다(#694). 범위 사다리가 있으면 `- 고른 범위:` 줄이 붙는다. 이미지 줄은 없다.
 - `note` 는 300자, 짚은 사람의 뷰어에 보인다. 오류: 남의 것·없는 것 `404`, §14.2 에 없는 변경 `409 DEVICE_SHARE_FEEDBACK_INVALID_TRANSITION`, `PATCH` 의 `FIXED`·`NEW` 는 `400`.
 - 상한: 글 1~1,000자, 링크당 시간당 30개, 짚기는 보는 사람마다 초당 1회·공유마다 기다리는 것 3개, 잘라 낸 이미지 512KiB·화면 1MiB. 끝난 링크의 피드백은 14일 뒤 지운다(매일 04:23). 탈퇴하면 링크와 함께 지워진다.

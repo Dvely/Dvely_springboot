@@ -348,7 +348,12 @@ export class IosShareSession extends TunnelSession {
     return { cliVersion: this.cliVersion, kind: 'IOS', target: this.targetLabel };
   }
 
-  /** §14.3: what is at the viewer's point. Reads the tree and a screenshot; taps nothing. */
+  /** §15.9: the whole screen needs no tree walk; the ladder from the tree comes in a later step. */
+  pinFeatures() {
+    return ['pin', 'pin-screen'];
+  }
+
+  /** §14.3: what is at the viewer's point, or the whole screen (§15.6). Reads the tree and a screenshot; taps nothing. */
   resolvePin(probe) {
     return resolveIosPin({
       commands: this.commands,
