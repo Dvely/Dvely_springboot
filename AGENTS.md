@@ -42,6 +42,7 @@ Qeploy 백엔드. 사용자가 자연어로 웹 프로젝트를 만들고, Docke
 - GitHub App 권한 실측(`GithubAppPermissionProbeIntegrationTest`)은 `-Dgithubapp.it=true` 로만 켠다. 실제 App 비공개 키로 `GET /app`·`GET /app/installations` 를 읽는다(읽기 전용)
 - 테스트 JVM 의 커넥션 풀은 `build.gradle` 이 쉬는 만큼 줄인다(`minimum-idle=1`). 지우면 컨텍스트가 몇 개만 늘어도 MySQL 한도(151)에 닿아, 상관없는 테스트가 "Too many connections" 로 깨진다. 그래도 새 컨텍스트(`@MockitoBean`·`@TestPropertySource` 등)는 기동 비용이 크므로 공유 컨텍스트를 먼저 쓴다
 - 테스트가 SQL 로 행을 심고 키가 필요하면 `support/JdbcRows.insert` 를 쓴다. `select last_insert_id()` 를 따로 부르면 다른 커넥션의 값을 받을 수 있다(`LastInsertIdGuardTest` 가 막는다)
+- 로그를 검사할 때는 `support/CapturedLogs.of(클래스, 호출)` 로 **부른 스레드의 로그만** 본다. 캐시된 다른 컨텍스트의 스케줄 워커·`@Async` 실행기가 같은 로거에 쓴다 — 통합 테스트가 QUEUED 로 남긴 태스크를 `AgentRunWorker` 가 돌려 `AgentPlanExecutor` 로거에 ERROR 를 남겨, "ERROR 가 없다" 검사가 가끔 깨졌다
 
 ## 컨벤션 (자세한 건 `.notion/agent.md`)
 
