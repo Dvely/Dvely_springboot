@@ -83,6 +83,22 @@ class FeedbackPromptRendererTest {
     }
 
     @Test
+    void 넓은_칸의_id_로_찾은_후보는_그_칸을_고르면_앞에_오고_고른_범위라고_적는다() throws Exception {
+        String md = FeedbackPromptRenderer.render(feedback("카드 여백", FeedbackAuthorRole.GUEST), json.readTree("""
+                {"ok":true,"v":2,"scope":1,"element":{"type":"Button","id":"saveButton"},
+                 "sourceHints":[{"file":"Acme/SaveButton.swift","line":5,"reason":"ID"},
+                                {"file":"Acme/ProfileScreen.swift","line":34,"reason":"ID","scope":1},
+                                {"file":"Acme/SaveButton.swift","line":4,"reason":"TEXT"}],
+                 "scopes":[{"kind":"element","type":"Button","id":"saveButton","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}},
+                           {"kind":"group","type":"Group","id":"profileForm","bounds":{"x":0,"y":0,"w":0.9,"h":0.3}},
+                           {"kind":"screen","type":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}]}
+                """), List.of());
+
+        assertThat(md).contains("- 고른 범위: 묶음 `Group#profileForm` — 짚은 요소를 품은 범위를 골랐다\n");
+        assertThat(md).contains("  1. Acme/ProfileScreen.swift:34 — 요소 id(고른 범위)\n  2. Acme/SaveButton.swift:5 — 요소 id\n");
+    }
+
+    @Test
     void 컴포넌트를_고르면_그_파일의_소스_후보를_앞에_둔다() throws Exception {
         String md = FeedbackPromptRenderer.render(feedback("여백", FeedbackAuthorRole.GUEST), json.readTree("""
                 {"ok":true,"v":2,"scope":1,"element":{"type":"button"},

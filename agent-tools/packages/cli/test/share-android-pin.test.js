@@ -89,6 +89,13 @@ describe('uiautomator dump (§14.3, #682 Android)', () => {
       // android:id/content is the platform's, not the app's: left out.
       ancestors: [{ type: 'LinearLayout', id: 'form', text: '프로필 양식' }],
       components: [{ name: 'FancyButton' }, { name: 'MainActivity' }],
+      // §15.3: the view, the form around it, the screen. android:id/content and the decor are no steps.
+      scopes: [
+        { kind: 'element', type: 'FancyButton', text: '저장', id: 'save', component: 'FancyButton', bounds: { x: 0.0389, y: 0.5, w: 0.9222, h: 0.0525 } },
+        { kind: 'group', type: 'LinearLayout', text: '프로필 양식', id: 'form', bounds: { x: 0, y: 0.0833, w: 1, h: 0.5 } },
+        { kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } },
+      ],
+      defaultScope: 0,
     });
     assert.doesNotMatch(JSON.stringify(describeAndroidPoint(parseUiDump(UI_DUMP), { probeId: 'p2', x: 0.5, y: 0.19 }, SIZE, TOP)), /hunter2/);
   });
@@ -184,8 +191,9 @@ describe('pinning a view on the emulator (resolveAndroidPin)', () => {
       { file: 'app/src/main/java/com/example/pin/ui/FancyButton.kt', line: 3, reason: 'COMPONENT' },
       { file: 'app/src/main/java/com/example/pin/MainActivity.kt', line: 3, reason: 'COMPONENT' },
       { file: 'app/src/main/res/layout/activity_main.xml', line: 3, reason: 'ID' },
+      // §15.3: the form the person may widen to is looked for now, and says which step it is
+      { file: 'app/src/main/res/layout/activity_main.xml', line: 1, reason: 'ID', scope: 1 },
       { file: 'app/src/main/res/layout/activity_main.xml', line: 4, reason: 'TEXT' },
-      { file: 'app/src/main/res/values/strings.xml', line: 2, reason: 'TEXT' },
     ]);
     assert.ok(isJpeg(crop), 'crop is a JPEG');
     assert.ok(isJpeg(screen), 'screen is a JPEG');

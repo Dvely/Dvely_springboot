@@ -13,6 +13,7 @@ import { LIMIT, MAX_CROP_BYTES, MAX_SCREEN_BYTES, clip, r4, screenResult, unreso
 import { jpegUnder } from '../jpeg.js';
 import { parsePng } from '../png.js';
 import { findSourceHints } from '../source-hints.js';
+import { buildLadder, scopeIdsOf } from '../scope.js';
 
 /** Around the element, in points (×3 on a 3x screen: about the web's 16 CSS px at DPR 2). */
 const CROP_MARGIN_PT = 12;
@@ -204,7 +205,38 @@ export function describeIosPoint(nodes, probe, points, shared = {}) {
     element,
     ancestors,
     components: [],
+    scopes: iosLadder(node, element, points),
+    defaultScope: 0,
   };
+}
+
+const LIST_TYPE = /^(Table|CollectionView|List|Outline)$/;
+
+/**
+ * The scope ladder (§15.3) from the accessibility tree: the element, then the containers around it
+ * that have an accessibilityIdentifier or a label, cells and lists, then the screen. SwiftUI gives
+ * most wrapper groups neither, so its ladders are short until the app names a container
+ * (`.accessibilityElement(children: .contain)` with an identifier).
+ */
+function iosLadder(node, element, points) {
+  return buildLadder({
+    element,
+    node,
+    boundsOf: (n) => {
+      if (!n.frame) return null;
+      const x0 = Math.max(n.frame.x, 0);
+      const y0 = Math.max(n.frame.y, 0);
+      const x1 = Math.min(n.frame.x + n.frame.w, points.width);
+      const y1 = Math.min(n.frame.y + n.frame.h, points.height);
+      return x1 > x0 && y1 > y0 ? { x: x0 / points.width, y: y0 / points.height, w: (x1 - x0) / points.width, h: (y1 - y0) / points.height } : null;
+    },
+    describe: (n) => {
+      if (n.app || n.secure) return null;
+      const cell = n.type === 'Cell' || n.role === 'AXCell';
+      if (!n.id && !n.label && !cell && !LIST_TYPE.test(n.type)) return null;
+      return { kind: 'group', type: n.type || n.role.replace(/^AX/, '') || 'Group', text: n.label || null, id: n.id || null };
+    },
+  });
 }
 
 /**
@@ -246,7 +278,7 @@ export async function resolveIosPin({ commands, probe, project, bundleId = null,
   }
   const result = describeIosPoint(nodes, probe, size, { bundleId, appPid });
   if (result.ok) {
-    result.sourceHints = await findHints({ project, components: result.components, element: result.element }).catch(() => []);
+    result.sourceHints = await findHints({ project, components: result.components, element: result.element, scopeIds: scopeIdsOf(result.scopes) }).catch(() => []);
   }
   const b = result.element?.bounds;
   const crop = b

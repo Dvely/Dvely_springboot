@@ -208,21 +208,30 @@ public final class PinResultSanitizer {
         return word;
     }
 
-    /** 덩어리 칸의 종류 이름. 태그·역할을 사람이 부르는 말로 옮기고, 모르는 것은 태그 그대로 둔다 */
+    /**
+     * 덩어리 칸의 종류 이름. 웹 태그·역할, Android 뷰 클래스, iOS 접근성 종류를 사람이 부르는 말로 옮기고, 모르는 것은 그대로
+     * 둔다(§15.8).
+     */
     public static String groupWord(String type) {
         return switch (type.toLowerCase(java.util.Locale.ROOT)) {
             case "form" -> "폼";
             case "nav", "navigation", "menu", "menubar" -> "메뉴";
-            case "header", "banner" -> "머리글";
+            case "header", "banner", "toolbar", "appbarlayout", "navigationbar" -> "머리글";
             case "footer", "contentinfo" -> "바닥글";
             case "main" -> "본문";
             case "section", "region" -> "구역";
             case "article" -> "글 묶음";
             case "aside", "complementary" -> "곁 내용";
-            case "dialog", "alertdialog" -> "대화 상자";
-            case "ul", "ol", "list", "table", "tablist", "grid" -> "목록";
+            case "dialog", "alertdialog", "alert", "sheet" -> "대화 상자";
+            case "ul", "ol", "list", "table", "tablist", "grid", "recyclerview", "listview", "gridview",
+                 "collectionview", "outline" -> "목록";
             case "li", "listitem", "row", "cell" -> "항목";
-            case "fieldset", "group" -> "입력 묶음";
+            case "fieldset" -> "입력 묶음";
+            case "group", "linearlayout", "framelayout", "relativelayout", "constraintlayout", "coordinatorlayout",
+                 "viewgroup", "view" -> "묶음";
+            case "cardview", "materialcardview" -> "카드";
+            case "scrollview", "nestedscrollview", "horizontalscrollview" -> "스크롤 영역";
+            case "tabbar", "bottomnavigationview" -> "탭 막대";
             case "" -> "덩어리";
             default -> "<" + type + ">";
         };
@@ -294,6 +303,11 @@ public final class PinResultSanitizer {
         String reason = node.path("reason").asText("");
         if (HINT_REASONS.contains(reason)) {
             out.put("reason", reason);
+        }
+        // §15.3: 넓은 칸의 id 로 찾은 후보는 어느 칸인지 적혀 온다
+        int scope = node.path("scope").isInt() ? node.path("scope").asInt() : 0;
+        if (scope > 0 && scope < MAX_SCOPES) {
+            out.put("scope", scope);
         }
         return out;
     }

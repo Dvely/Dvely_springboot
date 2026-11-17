@@ -1998,6 +1998,22 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
   - "화면 전체" → 주인 터미널 `화면 전체`, 프롬프트 `- 짚은 요소: 없음 — 화면 전체를 짚었다`, 그림은 화면 그대로(390×844). iOS 시뮬레이터 공유에서도 0.6초
 - **테스트**: 서버 기기 공유 95건(새 19 — `pinCaps`·WELCOME 상한, 화면 전체·끌기 막기, 칸 이름·손님 컴포넌트 이름 없음, 48KiB 경계, 칸 정리·화면 칸만의 답·고른 범위 이름, 고른 범위 잘라 내기(실 소켓 통합 1 포함), 프롬프트 고른 범위·화면 전체·화면 글 펜스·후보 순서), CLI 367건(새 19 — 기능 알림, `pinResultMax`, 화면 전체 세 플랫폼, 사다리 합치기·80%·6칸·예산 초과에도 요소, 덜어 내기 순서). 서버 전체는 이 Mac 의 git 환경 때문에만 깨지는 `ContainerGitCredentialsHardeningTest` 4건 말고 통과
 - **남은 것**: Android·iOS 범위 사다리(PR-3), 끌기 영역·빈 자리(PR-4), 여러 곳 ①②·번호 그린 화면(PR-5), 같은 것 모두·글자 일부(PR-6), FE 의 "처음 짚은 것" 표시(Dvely_FE)
+## 4.76 짚기 범위 — Android·iOS 범위 사다리 (Issue #694 PR-3, 2026-11-17)
+
+웹에만 있던 범위 사다리(§4.75)를 Android·iOS 에도 넣었다. 두 플랫폼은 화면이 노드 트리로 오므로, 공통 순수 함수 `agent-tools/packages/cli/src/share/scope.js`(`buildLadder`)가 같은 규칙으로 칸을 만든다(설계 §15.3·§15.12).
+
+- **규칙**(웹과 같다): 요소 → 무언가를 말하는 바깥 노드 → 화면. 면적 차 10% 이내는 한 칸(더 많이 말하는 이름), 화면 80% 이상은 화면 칸, 6칸. 여기에 **앞 칸보다 작은 상자는 칸이 아니다**를 더했다 — SwiftUI 가 Section 의 id 를 줄마다 그 줄보다 작은 상자(338×28 < 스위치 줄 370×52)에 붙이는 것을 실측에서 봤다
+- **Android**: 앱 `resource-id`·content-desc 가 있거나 누를 수 있는 레이아웃, `RecyclerView`·`ListView`, 앱 자신의 클래스(컴포넌트 칸). `android:id/content` 같은 플랫폼 틀은 칸이 아니다
+- **iOS**: `AXUniqueId`·레이블이 있는 묶음, 셀·목록. 보안 입력란은 칸이 아니다. SwiftUI 는 바깥 묶음에 이름이 없어 사다리가 [요소, 화면] 뿐인 경우가 많고, `.accessibilityElement(children: .contain)` + `.accessibilityIdentifier` 를 붙이면 칸이 생긴다
+- 두 플랫폼 모두 HELLO `features` 에 `pin-scope`
+- **넓은 칸의 소스 후보**: iOS·Android 에는 컴포넌트 이름이 없어, 사람이 넓힌 칸이 코드 어디인지 알 길이 없었다. CLI 가 넓은 칸의 id 도 프로젝트에서 찾아 후보에 `scope`(칸 번호)를 달고(`findSourceHints` `scopeIds`, 칸마다 한 곳), 서버가 이를 남겨 프롬프트에서 고른 칸의 후보를 맨 앞에 "(고른 범위)" 로 둔다. 순서는 컴포넌트 → 요소 id → 넓은 칸 id → 보이는 텍스트(5개까지)
+- 서버 칸 이름 사전에 Android 뷰 클래스·iOS 종류를 더했다(`LinearLayout`·`Group` → 묶음, `RecyclerView`·`Table` → 목록, `CardView` → 카드, `Cell` → 항목 등). ARIA `role=group` 도 "입력 묶음" 이 아니라 "묶음"
+- **실측**(로컬 서버 + 실제 `share iOS` + 전용 시뮬레이터, 예제 Acme 를 카드형 VStack 에 id 를 붙여 다시 빌드 — `demo-apps/pin-ios`)
+  - 21×14pt 저장 버튼을 짚으면 0.53~0.63초에 `[<Button> "저장"] [묶음 #profileForm] [화면 전체]`. 묶음을 고르면 "처음 짚은 것: <Button> 저장"
+  - 보내면 주인 터미널 `묶음 #profileForm`, 받은 뒤 프롬프트 `- 고른 범위: 묶음 Group#profileForm`, 소스 후보 1번 `Acme/ProfileScreen.swift:28 — 요소 id(고른 범위)`(그 카드의 `accessibilityIdentifier("profileForm")` 줄), 그림은 서버가 화면에서 자른 카드(575×320)
+  - Android 는 디스크 여유(4.4GB) 때문에 에뮬레이터를 띄우지 않았다. 실측 덤프 모양의 픽스처(목록 · 앱 클래스 카드 · 버튼)로 검증
+- **테스트**: CLI 378건(새 11 — `buildLadder` 규칙·좁아지는 상자, Android 목록·카드·라벨 들어 올리기, iOS 이름 없는 SwiftUI·이름 있는 묶음·셀·목록·내비게이션 막대·보안 입력란, 넓은 칸 id 후보), 서버 기기 공유(후보 `scope` 정리, 고른 칸 후보 순서, 칸 이름 사전)
+- **남은 것**: 끌기 영역·빈 자리(PR-4), 여러 곳 ①②(PR-5), 같은 것 모두·글자 일부(PR-6)
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증
