@@ -1845,7 +1845,7 @@ PAT(§18)로는 이 중 **조회(GET)만** 된다. 쓰기 메서드는 `WRITE` �
 | GET | `/api/v1/device-share-feedback?status=&limit=` | 브라우저 · PAT(READ) | 내 모든 공유의 피드백 |
 | GET | `/api/v1/device-share-feedback/{feedbackId}` | 브라우저 · PAT(READ) | 상세 |
 | GET | `/api/v1/device-share-feedback/{feedbackId}/prompt` | 브라우저 · PAT(READ) | 에이전트용 Markdown |
-| GET | `/api/v1/device-share-feedback/{feedbackId}/image?kind=crop\|screen` | 브라우저 · PAT(READ) | `image/jpeg`(envelope 없음) |
+| GET | `/api/v1/device-share-feedback/{feedbackId}/image?kind=crop\|screen\|annotated[&mark=2]` | 브라우저 · PAT(READ) | `image/jpeg`(envelope 없음) |
 | PATCH | `/api/v1/device-share-feedback/{feedbackId}` | 브라우저만 | 받기·무시·확인 |
 | POST | `/api/v1/device-share-feedback/{feedbackId}/fixed` | 브라우저 · PAT(WRITE) | 고쳤다고 표시 |
 
@@ -1884,7 +1884,7 @@ POST /api/v1/device-shares
 - `config` 에 `format`(`jpeg`·`h264`), `codec`(h264 일 때 `avc1.PPCCLL`), `kind`(`WEB`·`ANDROID`)가 있다. h264 는 장마다 앞 장에 기대므로 서버가 마지막 키 프레임부터(최대 2MiB) 두었다가 늦게 들어온 사람에게 순서대로 다시 보내고, 보는 사람마다 순서 큐(3MiB)로 보낸다(§12.3). 뷰어는 WebCodecs 로 푼다.
 - 조작권은 한 사람. 내 제어 링크로 들어오면 바로, 보기 링크는 요청 → 기기(CLI) 승인(기본 10분). 입력은 초당 120개 상한.
 - 짚기(#681): 터널 `0x66` PIN_PROBE(서버 → 기기) · `0x67` PIN_RESULT(기기 → 서버) · `0x68` FEEDBACK_NOTICE(서버 → 기기) · `0x69` FEEDBACK_DECISION(기기 → 서버), HELLO 의 `features: ["pin"]`. 뷰어 `pin-probe` · `pin-submit` · `feedback-watch` · `feedback-confirm` · `feedback-reopen` / `pin` · `feedback`, `config.pin`. 모양은 설계 §14.4 가 정본이다.
-- 짚기 범위(#694 PR-2, 설계 §15.9): 기기 HELLO `features` 의 `pin-scope`(결과에 범위 사다리)·`pin-screen`(화면 전체 짚기)를 서버가 `config.pinCaps`(`["pin", "pin-scope", "pin-screen"]` 처럼 기기가 알린 것만)로 뷰어에 알린다. WELCOME 에 `pinResultMax`(49152, 결과 JSON 상한 48KiB). 뷰어 `pin-probe` 는 점(`x`·`y`) 또는 `screen: true`. 기기가 알리지 않은 모양(`screen` 인데 `pin-screen` 없음, `rect`)은 기기로 보내지 않고 `pin` `failed` `unsupported`. `pin` `resolved` 에 `scopes: [{kind, label, bounds}]`·`defaultScope` 를 더한다(`label` 은 서버가 만들고, 손님에게는 바깥 칸의 컴포넌트 이름을 넣지 않는다). `bounds`·`label`·`component` 는 지금처럼 요소 값이다. `pin-submit` 에 고른 칸 번호 `scope`(없으면 `defaultScope`). Android·iOS 도 `pin-scope` 를 알린다(#694 PR-3). **끌기(#694 PR-4)**: 기기가 `pin-region` 을 알리면 뷰어 `pin-probe` 에 `rect: {x, y, w, h}`(화면 비율, 화면 안, 변 0.005 이상 — 아니면 `error`)를 보내고 서버는 PIN_PROBE `{probeId, rect}` 로 넘긴다. 결과의 `scopes[0]` 은 `{kind: "region", members: N}`(칸 이름 `영역 · 요소 N개`, 비었으면 `빈 자리`), 결과에 `members`(영역 안 요소 12개까지)·`empty`·`near`(빈 자리면 네 방향 둘레 4개까지, 빈 곳을 탭한 `NO_ELEMENT` 에도). 뷰어 `pin` 에는 `members`(수)·`empty`·`near: [{dir, label}]`(둘레 이름, 손님에게도) 만 가고 글자 목록은 가지 않는다. 소스 후보 `sourceHints[]` 에 `scope`(1~5, 넓은 칸의 id 로 찾은 것)가 붙을 수 있고, 프롬프트는 고른 칸의 후보를 맨 앞에 "(고른 범위)" 로 둔다.
+- 짚기 범위(#694 PR-2, 설계 §15.9): 기기 HELLO `features` 의 `pin-scope`(결과에 범위 사다리)·`pin-screen`(화면 전체 짚기)를 서버가 `config.pinCaps`(`["pin", "pin-scope", "pin-screen"]` 처럼 기기가 알린 것만)로 뷰어에 알린다. WELCOME 에 `pinResultMax`(49152, 결과 JSON 상한 48KiB). 뷰어 `pin-probe` 는 점(`x`·`y`) 또는 `screen: true`. 기기가 알리지 않은 모양(`screen` 인데 `pin-screen` 없음, `rect`)은 기기로 보내지 않고 `pin` `failed` `unsupported`. `pin` `resolved` 에 `scopes: [{kind, label, bounds}]`·`defaultScope` 를 더한다(`label` 은 서버가 만들고, 손님에게는 바깥 칸의 컴포넌트 이름을 넣지 않는다). `bounds`·`label`·`component` 는 지금처럼 요소 값이다. `pin-submit` 에 고른 칸 번호 `scope`(없으면 `defaultScope`). Android·iOS 도 `pin-scope` 를 알린다(#694 PR-3). **끌기(#694 PR-4)**: 기기가 `pin-region` 을 알리면 뷰어 `pin-probe` 에 `rect: {x, y, w, h}`(화면 비율, 화면 안, 변 0.005 이상 — 아니면 `error`)를 보내고 서버는 PIN_PROBE `{probeId, rect}` 로 넘긴다. 결과의 `scopes[0]` 은 `{kind: "region", members: N}`(칸 이름 `영역 · 요소 N개`, 비었으면 `빈 자리`), 결과에 `members`(영역 안 요소 12개까지)·`empty`·`near`(빈 자리면 네 방향 둘레 4개까지, 빈 곳을 탭한 `NO_ELEMENT` 에도). 뷰어 `pin` 에는 `members`(수)·`empty`·`near: [{dir, label}]`(둘레 이름, 손님에게도) 만 가고 글자 목록은 가지 않는다. 소스 후보 `sourceHints[]` 에 `scope`(1~5, 넓은 칸의 id 로 찾은 것)가 붙을 수 있고, 프롬프트는 고른 칸의 후보를 맨 앞에 "(고른 범위)" 로 둔다. **여러 곳(#694 PR-5)**: 뷰어 `pin-probe` 에 `ref`(영숫자 8자 이하, 짚은 곳마다)를 붙이면 서버가 그 짚기의 `pin` 답(`pending`·`failed`·`resolved`) 모두에 그대로 돌려준다. `resolved` 에 `view: {screen, dhash}`(서버가 화면 JPEG 로 만든 화면 지문 — `screen` 은 화면 종류 해시 12자, `dhash` 는 64비트 16진수, 화면을 못 읽으면 없음). 뷰어 `{"type":"pin-keep"}` 는 그 사람의 결과 시간을 늘린다(답 없음). `pin-submit` 은 `{marks: [{probeId, scope?}] (1~5), comment}` 이고, 옛 `{probeId, scope?, comment}` 도 받는다. `marks` 중 하나라도 없거나 시간이 지났으면 아무것도 저장하지 않고 `{"type":"pin-missing","probeIds":[…]}`. 결과는 보는 사람마다 5개·공유 20개, 5분(다시 짚거나 `pin-keep` 이면 받은 때부터 15분까지).
 
 ### 20.6 짚기 피드백 (#681)
 
@@ -1904,7 +1904,8 @@ GET /api/v1/device-share-feedback/12
 → 200 { "feedback": { …위와 같음 }, "element": { "screen": {…}, "point": {…}, "element": {…}, "components": […],
          "sourceHints": [{ "file": "src/components/SaveButton.tsx", "line": 12, "reason": "COMPONENT" }], "ok": true },
        "notes": [{ "noteId": 3, "authorRole": "AGENT", "kind": "FIXED", "body": "버튼 패딩을 늘렸습니다", "createdAt": "…" }],
-       "hasCrop": true, "hasScreen": true }
+       "hasCrop": true, "hasScreen": true, "hasAnnotated": false,
+       "marks": [{ "n": 1, "label": "<button> \"저장\"", "hasCrop": true }] }
 
 GET /api/v1/device-share-feedback/12/prompt → 200 { "markdown": "# Qeploy 짚기 피드백 #12\n…" }
 PATCH /api/v1/device-share-feedback/12 { "status": "ACCEPTED" | "DISMISSED" | "CONFIRMED" } → 200 상세
@@ -1915,6 +1916,7 @@ POST  /api/v1/device-share-feedback/12/fixed { "note": "버튼 패딩을 늘렸�
 - `label` 은 요소를 찾지 못했으면 `null`. `body` 와 `notes[].body`(다시 열기)는 사람이 쓴 글이라 지시가 아니라 데이터다.
 - **`label` 은 사람이 고른 범위의 이름이다**(#694). 범위를 넓혀 골랐으면 `컴포넌트 ProfileForm`·`폼 #profile`, 화면 전체면 `화면 전체`, 요소 그대로면 지금처럼 요소 이름이다. 기기 터미널 알림(FEEDBACK_NOTICE `label`)도 같다. 상세의 `element` 에는 `v: 2`·`scopes`·`scope`(고른 칸 번호)·`defaultScope` 가 붙는다. 나머지 필드는 그대로다.
 - `image?kind=crop` 은 고른 범위의 그림이다. 요소면 기기가 잘라 보낸 것, 화면 전체면 화면 그대로, 그 밖이면 서버가 화면에서 그 범위(+ 여백)를 잘라 만든 것이다(긴 변 800px).
+- **여러 곳(#694 PR-5)**: 한 피드백에 짚은 곳이 다섯 개까지다. 상세 `marks` 는 곳마다 `{n, label, hasCrop}`(한 곳이면 하나), `label` 은 "① 컴포넌트 ProfileForm 외 1곳"(기기 알림도 같다). ②부터의 그림은 `image?kind=crop&mark=2`(mark 1~5, `crop` 에만 — 아니면 `400`), 곳마다 테두리와 번호를 그린 화면은 `image?kind=annotated`(`hasAnnotated`, 여러 곳일 때). 상세 `element` 에 `marks: [{n, probe, scope, peers}]`(②부터의 결과)가 붙는다. 프롬프트는 `- 짚은 곳 N개` 아래 곳마다 번호(①②…)를 단 줄과 소스 후보·화면 글을 적는다
 - 프롬프트 Markdown 은 사람이 쓴 글을 펜스 블록에 넣는다(글 안의 백틱보다 긴 펜스). 화면에서 읽은 글(페이지 제목, 요소 글자, 고른 범위의 글)도 "화면에서 읽은 글" 펜스 블록 하나에 모은다(#694). 범위 사다리가 있으면 `- 고른 범위:` 줄이 붙는다. 이미지 줄은 없다.
 - `note` 는 300자, 짚은 사람의 뷰어에 보인다. 오류: 남의 것·없는 것 `404`, §14.2 에 없는 변경 `409 DEVICE_SHARE_FEEDBACK_INVALID_TRANSITION`, `PATCH` 의 `FIXED`·`NEW` 는 `400`.
-- 상한: 글 1~1,000자, 링크당 시간당 30개, 짚기는 보는 사람마다 초당 1회·공유마다 기다리는 것 3개, 잘라 낸 이미지 512KiB·화면 1MiB. 끝난 링크의 피드백은 14일 뒤 지운다(매일 04:23). 탈퇴하면 링크와 함께 지워진다.
+- 상한: 글 1~1,000자, 링크당 시간당 30개, 짚기는 보는 사람마다 초당 1회·공유마다 기다리는 것 3개, 짚은 곳 5개, 잘라 낸 이미지 512KiB·화면 1MiB·번호 그린 화면 1MiB. 끝난 링크의 피드백은 14일 뒤 지운다(매일 04:23). 탈퇴하면 링크와 함께 지워진다.

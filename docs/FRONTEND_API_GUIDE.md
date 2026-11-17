@@ -773,6 +773,7 @@ POST /api/v1/api-tokens
 - **받기 전 글은 에이전트에게 나가지 않는다.** 받기를 누르는 것이 "이 글을 에이전트에게 넘겨도 된다" 는 뜻이라고 화면에 적는다. `body` 는 손님이 쓴 글이라 텍스트로만 그린다.
 - `label`(`<button> "저장"`)이 `null` 이면 "요소를 찾지 못함 — 짚은 위치와 이미지만" 으로 보인다.
 - **`label` 은 손님이 고른 범위의 이름이다**(#694). 범위를 넓혀 골랐으면 `컴포넌트 ProfileForm`·`폼 #profile`, 화면 전체면 `화면 전체` 다. `image?kind=crop` 도 그 범위의 그림이다(화면 전체면 화면). 그대로 보이면 된다. 상세 `element` 의 `scopes`·`scope` 로 "처음 짚은 것" 을 함께 보일 수 있다(`scopes[0]` 이 처음 짚은 요소). 끌어서 고른 영역이면 `label` 이 `영역 · 요소 3개`·`빈 자리` 이고 `scopes[0].kind` 가 `region`, 상세 `element.members`(영역 안 요소)·`element.near`(빈 자리 둘레)가 있다.
+- **여러 곳(#694 PR-5)**: 손님이 ①②… 여러 곳을 짚어 보낼 수 있다. 목록·상세의 `label` 은 "① 컴포넌트 ProfileForm 외 1곳" 이다. 상세 `marks: [{n, label, hasCrop}]` 로 곳마다 이름을 보이고, 그림은 `image?kind=crop&mark=n`(n=1 은 지금 `crop` 과 같다). `hasAnnotated` 면 `image?kind=annotated` 가 곳마다 테두리와 번호를 그린 화면이다 — 자세히 화면에서 이것을 먼저 보이면 번호와 위치가 한눈에 맞는다. 한 곳이면 `marks` 가 하나라 지금 화면 그대로 두면 된다.
 - 409 `DEVICE_SHARE_FEEDBACK_INVALID_TRANSITION`: 그 사이 다른 곳(기기 터미널·에이전트)에서 상태가 바뀌었다. 목록을 다시 읽는다.
 - 살아 있는 공유가 있으면 지금처럼 10초마다 다시 읽으면 된다(새 피드백·에이전트의 고침 표시가 반영된다).
 
