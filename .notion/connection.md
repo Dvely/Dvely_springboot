@@ -1211,5 +1211,6 @@ ShareSession(링크 하나): 기기 SCREEN_FRAME → jpeg: 보는 사람마다 "
   - `share web`: 임시 프로필 Chrome ── CDP(screencast, Input.*) ── `ShareSession`(session.js)
   - `share android`: 에뮬레이터 ── adb forward(영상·제어 소켓) ── 사용자 scrcpy 서버 ── `AndroidShareSession`(android/session.js). 1초마다 `dumpsys activity` 로 맨 앞 앱을 보고 앱 밖이면 `am start` 로 되돌린다
   - `share ios`: 시뮬레이터 ── 사용자 AXe(`stream-video` JPEG, 명령마다 `tap`·`draw`·`type`·`key`) ── `IosShareSession`(ios/session.js). 2초마다 `describe-ui` 루트 pid 를 보고 다르면 `simctl launch` 로 되돌린다. 화면은 1단계 JPEG 경로
+- 짚기(PIN_PROBE)에 답하는 쪽은 세 세션의 `resolvePin` 이다. 웹 `pin-web.js`(CDP `Runtime.evaluate`·뷰포트 PNG), Android `android/pin.js`(`uiautomator dump`·`screencap`·`dumpsys`), iOS `ios/pin.js`(`describe-ui` 는 입력과 같은 줄, `axe screenshot` 은 그 옆). 소스 후보는 셋 다 `source-hints.js` 가 기기의 프로젝트 폴더에서 찾는다
 - 세션은 메모리에만 있다. 서버를 여러 대로 늘리면 링크 → 서버 위치가 필요하다.
 - 기존 서버 프리뷰(`preview` 패키지, Docker 컨테이너)와는 코드·경로를 공유하지 않는다. 화면·문서에서 "서버 프리뷰 / 내 기기 프리뷰" 로 나눠 부른다.

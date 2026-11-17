@@ -5,6 +5,7 @@
  *
  *   screen  `axe stream-video --format raw`   one long-running process, JPEGs on stdout  (AxeVideo)
  *   input   `axe --output json <command>`     one process per command, strictly in turn   (AxeCommands)
+ *   pin     `axe screenshot --output <png>`   beside the commands, for a pinned crop      (AxeCommands)
  *
  * AXe 2.0.4 has no long-lived command server, so each tap or key is its own process: about 0.3 s
  * each once warm, 1.9 s for the very first (measured). Commands are run one after another, never
@@ -12,7 +13,8 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { RawJpegDemuxer, isSupportedAxeVersion, parseAxeJson, parseAxeVersion } from './axe-protocol.js';
 import { runTool } from './simctl.js';
@@ -28,6 +30,8 @@ const HOMEBREW_BIN_DIRS = ['/opt/homebrew/bin', '/usr/local/bin'];
 export const JPEG_QUALITY = 70;
 /** The longest input is a 5 s hold or draw, after a cold start of about 2 s. */
 export const COMMAND_TIMEOUT_MS = 20000;
+/** A pin gives up at 4 s anyway (§14.3); a screenshot takes about 0.25 s once warm (measured). */
+export const SCREENSHOT_TIMEOUT_MS = 5000;
 
 function defaultVersionOf(executable) {
   try {
@@ -135,6 +139,27 @@ export class AxeCommands {
     const reply = parseAxeJson(stdout);
     if (!reply) throw new Error(`AXe ${command} 의 출력을 읽지 못했습니다.`);
     return reply;
+  }
+
+  /**
+   * The screen as a PNG, in pixels (§14.3). Run beside the queue, not in it: it changes nothing on
+   * the simulator, so it cannot put an input out of order, and a pin waits for one AXe call instead
+   * of two (describe-ui and screenshot side by side: 0.47 s, measured). AXe writes the file; it is
+   * read and deleted here.
+   *
+   * @returns {Promise<Buffer>}
+   */
+  async screenshot() {
+    if (this.stopped) throw new Error('AXe 입력을 끝냈습니다.');
+    const dir = await mkdtemp(join(tmpdir(), 'qeploy-pin-'));
+    const file = join(dir, 'screen.png');
+    try {
+      // `--output` before the command is the result format; after `screenshot`, the file.
+      await this.run(this.axePath, ['--output', 'json', 'screenshot', '--udid', this.udid, '--output', file], { timeout: SCREENSHOT_TIMEOUT_MS });
+      return await readFile(file);
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 
   /** Later requests are refused; one already running finishes (5 s at most). */

@@ -30,7 +30,8 @@
   - 웹 PR #687 병합(fb2ab8a1). **#682 PR-2(Android)**: `share android` 가 짚기에 답한다(`uiautomator`·Activity·`screencap` → CLI 가 직접 JPEG). 소스 후보는 Activity·id·`strings.xml` 이름을 쓰는 레이아웃까지. 실제 에뮬레이터 + 손수 빌드한 예제 APK 로 실측. 상세 `state.md` §4.71
   - Android PR #688 병합(bbe59c8f). **#683(MCP·CLI)**: MCP 도구 `qeploy_share_feedback_list`·`_get`(프롬프트+잘라 낸 이미지)·`_fixed`(쓰기), CLI `qeploy feedback list·show·fixed`. 받기·무시는 사람만(도구 없음). 실제 MCP 서버를 SDK 클라이언트로·CLI 로 실측. 상세 `state.md` §4.72
   - MCP PR #689 병합(e8ee1849, 첫 CI 는 무관한 `AgentPlanExecutorTest` 로그 검사가 한 번 깨지고 재실행 통과). FE #210 → Dvely_FE #212 병합(68cf392). **Claude Code 실측 완료**: "받은 피드백 반영해 줘" 한 줄로 목록 → 열기 → 이 프로젝트 것만 골라 `SaveButton.jsx` 수정 → 고침 표시 → 손님 뷰어 알림 → 확인. 그 실측에서 찾은 잘라 내기 버그(CDP clip 이 공유 화면을 확대된 장으로 멈춤)를 #690 으로 고침. 상세 `state.md` §4.73
-  - **다음**: #690 병합(사용자 승인) → 대회 시연 대본·포스터에 짚기 흐름 반영. iOS(#682 PR-3)는 여유가 있으면. `AgentPlanExecutorTest` 의 로그 검사 불안정은 따로 본다. A1 자리(재시도 계속). 시연 서버가 20일까지 없으면 발표 노트북 + 터널
+  - #690 병합(d3916b77). 대회 시연 대본(Claude Docs)·포스터 1117 판(Fig3c 짚기 캡처)에 짚기 흐름 반영. **#682 PR-3(iOS)**: `share ios` 가 짚기에 답한다(AXe `describe-ui`·`screenshot`, `accessibilityIdentifier`·레이블·번들 ID·내비게이션 제목, 입력란 값은 안 보냄). 소스 후보에 SwiftUI·UIKit·스토리보드·React Native id 패턴. 서버 변경 없음. 실제 CLI + `swiftc` 로 빌드한 SwiftUI 예제·전용 시뮬레이터로 손님 짚기 → 받기 → 프롬프트까지 실측(짚기 하나 0.4~0.7초). 상세 `state.md` §4.74
+  - **다음**: iOS PR 병합(사용자 승인). `AgentPlanExecutorTest` 의 로그 검사 불안정은 따로 본다. A1 자리(재시도 계속). 시연 서버가 20일까지 없으면 발표 노트북 + 터널
 
 - 2026-11-16: **#595 사용자 AWS 에 서버·DB 가 남은 프로젝트는 지우지 않는다(PR-1).** 서비스를 다시 열기 전에 고칠 버그로 골랐다. 마이그레이션 없음(develop 최신 **V75**)
   - 정책은 이슈 권장 (a): 막고 `409 PROJECT_DELETION_BLOCKED` 에 남은 자원 목록. 미리 보기 `GET /projects/{id}/deletion`. GitHub 저장소 삭제보다 먼저 본다

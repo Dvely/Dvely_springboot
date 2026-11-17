@@ -23,10 +23,10 @@ const SKIP_DIRS = new Set([
 ]);
 const SOURCE_EXT = new Set([
   '.tsx', '.jsx', '.vue', '.svelte', '.astro', '.ts', '.js', '.mjs', '.cjs', '.html', '.htm', '.json', '.xml',
-  '.kt', '.java', '.swift', '.dart',
+  '.kt', '.java', '.swift', '.dart', '.storyboard', '.xib',
 ]);
 /** UI files first: a hit there is more likely the element than one in a helper or a fixture. */
-const EXT_RANK = { '.tsx': 0, '.jsx': 0, '.vue': 0, '.svelte': 0, '.astro': 0, '.xml': 1, '.kt': 1, '.swift': 1, '.dart': 1, '.java': 2, '.html': 2, '.htm': 2, '.ts': 3, '.js': 3, '.mjs': 3, '.cjs': 3, '.json': 4 };
+const EXT_RANK = { '.tsx': 0, '.jsx': 0, '.vue': 0, '.svelte': 0, '.astro': 0, '.xml': 1, '.kt': 1, '.swift': 1, '.dart': 1, '.storyboard': 1, '.xib': 1, '.java': 2, '.html': 2, '.htm': 2, '.ts': 3, '.js': 3, '.mjs': 3, '.cjs': 3, '.json': 4 };
 const SKIP_FILES = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|composer\.lock|[^/]*\.min\.js|[^/]*\.map)$/;
 
 /** Files that say "this folder is a project". Without one, the current folder is not searched. */
@@ -248,7 +248,7 @@ export async function findSourceHints({ project, components = [], element = {}, 
   const names = [...new Set(components.filter((c) => !c.file).map((c) => c.name))]
     .filter((n) => /^[A-Z][A-Za-z0-9_$]{1,60}$/.test(n))
     .slice(0, 4);
-  const id = typeof element.id === 'string' && /^[A-Za-z0-9_-]{2,80}$/.test(element.id) ? element.id : null;
+  const id = typeof element.id === 'string' && /^[A-Za-z0-9_.-]{2,80}$/.test(element.id) ? element.id : null;
   const text = searchableText(element.text);
   if (!names.length && !id && !text) return hints;
 
@@ -257,7 +257,14 @@ export async function findSourceHints({ project, components = [], element = {}, 
   // 2. Components known only by name, the id and the visible text, in one pass over the files.
   const alternatives = names.map(escape).join('|');
   const defRe = names.length ? definitionPattern(alternatives) : null;
-  const idRe = id ? new RegExp(`\\bid\\s*=\\s*\\{?\\s*["'\`]${escape(id)}["'\`]|@\\+?id/${escape(id)}\\b|\\bR\\.id\\.${escape(id)}\\b`) : null;
+  // Web `id="…"`, Android `@+id/…`·`R.id.…`, iOS `accessibilityIdentifier("…")` (SwiftUI) or `= "…"`
+  // (UIKit), a storyboard's `identifier="…"`, React Native's `testID` (which iOS reports as the id).
+  const idRe = id
+    ? new RegExp(
+        `\\b(?:id|testID)\\s*=\\s*\\{?\\s*["'\`]${escape(id)}["'\`]|@\\+?id/${escape(id)}\\b|\\bR\\.id\\.${escape(id)}\\b` +
+          `|\\baccessibilityIdentifier\\s*(?:\\(\\s*|=\\s*)"${escape(id)}"|\\bidentifier="${escape(id)}"`
+      )
+    : null;
   const found = { def: [], id: [], text: [], textRef: [] };
   const stringNames = [];
   const want = max;

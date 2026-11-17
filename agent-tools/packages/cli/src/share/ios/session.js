@@ -15,11 +15,15 @@
  *
  * `video` and `commands` are AxeVideo and AxeCommands in production and fakes in tests; `simctl` is
  * only used by the app guard (§13.3). The tunnel, reconnects and control prompts are TunnelSession's.
+ *
+ * Pins (§14.3) read the tree through the same line as the inputs, so a pin made right after a tap
+ * sees the screen after it; the screenshot for the crop is taken beside it (ios/pin.js).
  */
 import { KIND, MAX_PAYLOAD_BYTES, encodeFrame } from '../protocol.js';
 import { TunnelSession } from '../tunnel.js';
 import { activeScreenSize, foregroundApp, jpegSize, keyboardMode } from './axe-protocol.js';
 import { HID, axeCommands, createGestureState, mapIosInput, mergeItem } from './input.js';
+import { resolveIosPin } from './pin.js';
 import { hasKoreanKeyboard } from './simctl.js';
 
 /** Above this much unsent on the tunnel, frames are skipped; the next one replaces them anyway. */
@@ -72,6 +76,7 @@ export class IosShareSession extends TunnelSession {
    * @param {number|null} [o.appPid] its process id; the guard compares the app in front with it
    * @param {boolean} [o.guard] keep the share inside the app (§13.3)
    * @param {string|null} [o.language] the simulator's first language, for its keyboard
+   * @param {string|null} [o.project] where pinned elements' source candidates are looked for (§14.3)
    * @param {string} o.targetLabel what HELLO announces
    * @param {string} o.deviceName the config's title
    */
@@ -84,6 +89,7 @@ export class IosShareSession extends TunnelSession {
     appPid = null,
     guard = true,
     language = null,
+    project = null,
     targetLabel,
     deviceName,
     guardIntervalMs = GUARD_INTERVAL_MS,
@@ -92,7 +98,7 @@ export class IosShareSession extends TunnelSession {
     ...tunnel
   }) {
     super(tunnel);
-    Object.assign(this, { video, commands, simctl, udid, bundleId, appPid, targetLabel, deviceName, guardIntervalMs, inputSourceSettleMs, keyboardReadRetryMs });
+    Object.assign(this, { video, commands, simctl, udid, bundleId, appPid, project, targetLabel, deviceName, guardIntervalMs, inputSourceSettleMs, keyboardReadRetryMs });
     this.guard = guard && Boolean(bundleId) && Boolean(simctl);
     // Korean and English to switch between, or English only and never a switch.
     this.hangul = hasKoreanKeyboard(language);
@@ -340,6 +346,24 @@ export class IosShareSession extends TunnelSession {
 
   helloPayload() {
     return { cliVersion: this.cliVersion, kind: 'IOS', target: this.targetLabel };
+  }
+
+  /** §14.3: what is at the viewer's point. Reads the tree and a screenshot; taps nothing. */
+  resolvePin(probe) {
+    return resolveIosPin({
+      commands: this.commands,
+      probe,
+      project: this.project,
+      bundleId: this.bundleId,
+      appPid: this.appPid,
+      points: this.points,
+      frame: this.latestFrame,
+    });
+  }
+
+  /** The screen as the viewer last saw it, for a probe that ran out of time. */
+  pinScreen() {
+    return this.latestFrame;
   }
 
   onReady() {

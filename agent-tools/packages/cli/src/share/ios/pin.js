@@ -1,0 +1,270 @@
+/**
+ * Pinning on a shared iOS simulator (§14.3, #682 PR-3): which element is at the viewer's point,
+ * from AXe `describe-ui` (the accessibility tree, in points); a crop from `axe screenshot` (a PNG in
+ * pixels); the screen as the viewer last saw it (the latest stream-video frame).
+ *
+ * The tree has accessibility roles, not view types: a SwiftUI `SaveButton` view comes out as a
+ * `Button` (measured, AXe 2.0.4, iOS 26.5), a UIKit subclass likewise. So the app's own names come
+ * from accessibilityIdentifier (AXUniqueId) and labels, and `components` stays empty (§14.3 table).
+ *
+ * Read-only: one tree and one screenshot. Nothing is tapped.
+ */
+import { LIMIT, MAX_CROP_BYTES, MAX_SCREEN_BYTES, clip, r4, unresolved } from '../pin.js';
+import { jpegUnder } from '../jpeg.js';
+import { parsePng } from '../png.js';
+import { findSourceHints } from '../source-hints.js';
+
+/** Around the element, in points (×3 on a 3x screen: about the web's 16 CSS px at DPR 2). */
+const CROP_MARGIN_PT = 12;
+const CROP_MAX_SIDE = 800;
+const SCREEN_MAX_SIDE = 1280;
+/** Around a point with no element: enough to recognise the place, in points. */
+const SPOT_PT = { width: 240, height: 160 };
+const MAX_TREE_NODES = 20000;
+
+/** What a person presses, switches or types into, by AXe's `type` or the AX role. */
+const INTERACTIVE_TYPES = new Set([
+  'Button', 'Link', 'TextField', 'SecureTextField', 'TextArea', 'TextView', 'SearchField', 'CheckBox', 'Switch',
+  'RadioButton', 'PopUpButton', 'MenuButton', 'MenuItem', 'Cell', 'Tab', 'Slider', 'Stepper', 'Incrementor',
+  'ComboBox', 'SegmentedControl',
+]);
+const INTERACTIVE_ROLES = new Set([
+  'AXButton', 'AXLink', 'AXTextField', 'AXTextArea', 'AXSearchField', 'AXCheckBox', 'AXSwitch', 'AXRadioButton',
+  'AXPopUpButton', 'AXMenuButton', 'AXMenuItem', 'AXCell', 'AXSlider', 'AXIncrementor', 'AXComboBox',
+  'AXSegmentedControl',
+]);
+
+const text = (v) => (typeof v === 'string' && v.trim() ? v.trim() : '');
+
+/** `frame` {x, y, width, height}, or the `AXFrame` string `{{x, y}, {w, h}}` when that is all there is. */
+function frameOf(node) {
+  const f = node.frame;
+  if (f && typeof f === 'object') {
+    const box = { x: Number(f.x), y: Number(f.y), w: Number(f.width), h: Number(f.height) };
+    if (Object.values(box).every(Number.isFinite)) return box;
+  }
+  const m = /^\{\{(-?[\d.]+),\s*(-?[\d.]+)\},\s*\{(-?[\d.]+),\s*(-?[\d.]+)\}\}$/.exec(text(node.AXFrame));
+  return m ? { x: +m[1], y: +m[2], w: +m[3], h: +m[4] } : null;
+}
+
+/**
+ * `describe-ui` (the envelope, or the bare array) → elements in tree order, each with its parent.
+ * In AXe 2.0.4 the result is an array of roots; the app's root is
+ * `{type: "Application", AXLabel: "Acme", pid, frame, children: […]}`.
+ *
+ * @returns {{type: string, role: string, subrole: string, label: string, id: string, title: string,
+ *   secure: boolean, app: boolean, pid: number|null, frame: {x: number, y: number, w: number, h: number}|null,
+ *   parent: object|null}[]}
+ */
+export function parseAxTree(reply) {
+  const root = reply && typeof reply === 'object' && !Array.isArray(reply) && 'data' in reply ? reply.data?.result : reply;
+  const nodes = [];
+  const stack = [];
+  // Pushed in reverse so the first child is read first: tree order, as describe-ui prints it.
+  const push = (list, parent) => {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const raw = list[i];
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) stack.push([raw, parent]);
+    }
+  };
+  push(Array.isArray(root) ? root : [root], null);
+  while (stack.length && nodes.length < MAX_TREE_NODES) {
+    const [raw, parent] = stack.pop();
+    const type = text(raw.type);
+    const role = text(raw.role);
+    const subrole = text(raw.subrole);
+    const node = {
+      type,
+      role,
+      subrole,
+      label: text(raw.AXLabel),
+      id: text(raw.AXUniqueId),
+      title: text(raw.title),
+      // Its value is the typed password (shown as dots); it is never read, nor is any field's.
+      secure: subrole === 'AXSecureTextField' || role === 'AXSecureTextField' || type === 'SecureTextField',
+      app: type === 'Application' || role === 'AXApplication',
+      pid: Number.isInteger(raw.pid) && raw.pid > 0 ? raw.pid : null,
+      frame: frameOf(raw),
+      parent,
+    };
+    nodes.push(node);
+    if (Array.isArray(raw.children)) push(raw.children, node);
+  }
+  return nodes;
+}
+
+const area = (n) => n.frame.w * n.frame.h;
+const interactive = (n) => INTERACTIVE_TYPES.has(n.type) || INTERACTIVE_ROLES.has(n.role) || n.subrole === 'AXSwitch';
+/** The system scroll indicator, an AXSlider over the right edge of every list (measured). */
+const scrollBar = (n) => (n.type === 'Slider' || n.role === 'AXSlider') && /scroll ?bar|스크롤/i.test(n.label);
+const named = (n) => Boolean(n.label || n.id || interactive(n));
+/** What the element says: its label. A field's value (what was typed) is never sent, as on the web. */
+const labelOf = (n) => n.label || n.title || '';
+
+/**
+ * The element a person meant by pressing (px, py), in points: the smallest one there that can be
+ * pressed or says something. A label inside a control (a switch row's text, a cell's text), or a
+ * control with no name of its own (a switch's knob), means the named control around it.
+ *
+ * @returns {{node: object, text: string}|null}
+ */
+export function pickElement(nodes, px, py) {
+  const hits = nodes.filter(
+    (n) => n.frame && !n.app && !scrollBar(n) && n.frame.w > 0 && n.frame.h > 0 &&
+      px >= n.frame.x && px < n.frame.x + n.frame.w && py >= n.frame.y && py < n.frame.y + n.frame.h
+  );
+  if (!hits.length) return null;
+  const smallest = (list) => list.reduce((best, n) => (!best || area(n) <= area(best) ? n : best), null);
+  let node = smallest(hits.filter(named)) ?? smallest(hits);
+  let label = labelOf(node);
+  if (!interactive(node) || (!node.label && !node.id)) {
+    for (let a = node.parent, i = 0; a && i < 3; a = a.parent, i++) {
+      if (interactive(a) && hits.includes(a) && (a.label || a.id || !interactive(node))) {
+        label = labelOf(a) || label;
+        node = a;
+        break;
+      }
+    }
+  }
+  return { node, text: label };
+}
+
+/**
+ * The screen's title: a heading in the top fifth (a navigation bar's title, large or inline). A
+ * section header lower down is not one.
+ */
+export function screenTitle(nodes, points) {
+  const heading = nodes.find(
+    (n) => (n.type === 'Heading' || n.role === 'AXHeading') && n.label && n.frame && n.frame.y + n.frame.h / 2 < points.height * 0.2
+  );
+  return heading ? clip(heading.label, 100) : null;
+}
+
+/**
+ * The description of the element at the point (§14.3), without images.
+ *
+ * @param {{width: number, height: number}} points the screen in points (the tree's coordinates)
+ * @param {{bundleId?: string|null, appPid?: number|null}} [shared] the shared app; its bundle ID is
+ *   named only while that app is the one in front
+ */
+export function describeIosPoint(nodes, probe, points, shared = {}) {
+  const app = nodes.find((n) => n.app) ?? null;
+  const screen = {};
+  const front = shared.bundleId && (shared.appPid == null || app?.pid == null || app.pid === shared.appPid);
+  if (front) screen.bundleId = shared.bundleId;
+  if (app?.label) screen.appName = clip(app.label, 100);
+  const title = screenTitle(nodes, points);
+  if (title) screen.title = title;
+  const label = screen.bundleId ?? screen.appName;
+  const where = label ? { label, ...screen } : Object.keys(screen).length ? screen : undefined;
+
+  const picked = pickElement(nodes, probe.x * points.width, probe.y * points.height);
+  // Only a full-screen container that says nothing there: the background.
+  if (!picked || (!named(picked.node) && area(picked.node) >= 0.8 * points.width * points.height)) {
+    return unresolved(probe, 'NO_ELEMENT', where);
+  }
+  const { node, text: said } = picked;
+  const f = node.frame;
+  const element = { type: clip(node.secure ? 'SecureTextField' : node.type || node.role.replace(/^AX/, ''), 40) ?? 'Element' };
+  const shown = clip(said, LIMIT.text);
+  if (shown) element.text = shown;
+  const id = clip(node.id, 100);
+  if (id) element.id = id;
+  const x0 = Math.max(f.x, 0);
+  const y0 = Math.max(f.y, 0);
+  element.bounds = {
+    x: r4(x0 / points.width),
+    y: r4(y0 / points.height),
+    w: r4((Math.min(f.x + f.w, points.width) - x0) / points.width),
+    h: r4((Math.min(f.y + f.h, points.height) - y0) / points.height),
+  };
+
+  const ancestors = [];
+  for (let a = node.parent; a && ancestors.length < LIMIT.ancestors; a = a.parent) {
+    if (a.app || !(a.id || a.label)) continue;
+    const entry = { type: clip(a.type || a.role.replace(/^AX/, ''), 40) ?? 'Element' };
+    if (a.id) entry.id = clip(a.id, 100);
+    if (a.label) entry.text = clip(a.label, 80);
+    ancestors.push(entry);
+  }
+  return {
+    probeId: probe.probeId,
+    ok: true,
+    ...(where ? { screen: where } : {}),
+    point: { x: r4(probe.x), y: r4(probe.y) },
+    element,
+    ancestors,
+    components: [],
+  };
+}
+
+/**
+ * Reads the point on the simulator: the tree and a screenshot side by side (0.47 s together,
+ * measured on an iPhone 17 Pro simulator).
+ *
+ * @param {object} o
+ * @param {{request: Function, screenshot?: Function}} o.commands AxeCommands
+ * @param {{probeId: string, x: number, y: number}} o.probe
+ * @param {string|null} o.project
+ * @param {string|null} [o.bundleId] the shared app
+ * @param {number|null} [o.appPid]
+ * @param {{width: number, height: number}|null} [o.points] the screen in points from `displays`, used
+ *   when the tree has no app root to tell it
+ * @param {Buffer|null} [o.frame] the latest stream-video JPEG: the screen as the viewer saw it
+ * @returns {Promise<{result: object, crop: Buffer|null, screen: Buffer|null}>}
+ */
+export async function resolveIosPin({ commands, probe, project, bundleId = null, appPid = null, points = null, frame = null, findHints = findSourceHints }) {
+  const [reply, png] = await Promise.all([
+    commands.request(['describe-ui']).catch(() => null),
+    typeof commands.screenshot === 'function' ? commands.screenshot().catch(() => null) : null,
+  ]);
+  const shot = png ? parsePng(png) : null;
+  const nodes = reply && !reply.didError ? parseAxTree(reply) : [];
+  const root = nodes.find((n) => n.app && n.frame && n.frame.w > 0 && n.frame.h > 0);
+  const size = root ? { width: root.frame.w, height: root.frame.h } : points;
+  const screen =
+    frame && frame.length <= MAX_SCREEN_BYTES
+      ? frame
+      : shot
+        ? jpegUnder(shot, { x: 0, y: 0, width: shot.width, height: shot.height }, { maxSide: SCREEN_MAX_SIDE, maxBytes: MAX_SCREEN_BYTES, quality: 70 })
+        : null;
+  // The screenshot in pixels and the tree in points must be the same screen the same way round.
+  const k = shot && size ? shot.width / size.width : 0;
+  const fits = k > 0 && Math.abs(shot.height / k - size.height) <= 2;
+  const cut = (rect) => (fits ? jpegUnder(shot, scaled(rect, k), { maxSide: CROP_MAX_SIDE, maxBytes: MAX_CROP_BYTES, quality: 80 }) : null);
+
+  if (!size || !nodes.length) {
+    // No tree to read (AXe failed, or an app with nothing in its accessibility tree): the point and
+    // the picture still go (§14.1).
+    return { result: unresolved(probe, 'UNSUPPORTED'), crop: size ? cut(spot(probe, size)) : null, screen };
+  }
+  const result = describeIosPoint(nodes, probe, size, { bundleId, appPid });
+  if (result.ok) {
+    result.sourceHints = await findHints({ project, components: result.components, element: result.element }).catch(() => []);
+  }
+  const b = result.element?.bounds;
+  const crop = b
+    ? cut(padded({ x: b.x * size.width, y: b.y * size.height, width: b.w * size.width, height: b.h * size.height }, size))
+    : cut(spot(probe, size));
+  return { result, crop, screen };
+}
+
+const scaled = (r, k) => ({ x: r.x * k, y: r.y * k, width: r.width * k, height: r.height * k });
+
+/** The element with a margin, kept on screen. Points. */
+function padded(rect, size) {
+  const x = Math.max(0, rect.x - CROP_MARGIN_PT);
+  const y = Math.max(0, rect.y - CROP_MARGIN_PT);
+  const right = Math.min(size.width, rect.x + rect.width + CROP_MARGIN_PT);
+  const bottom = Math.min(size.height, rect.y + rect.height + CROP_MARGIN_PT);
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+/** A fixed-size area centred on the point, kept on screen. Points. */
+function spot(probe, size) {
+  const width = Math.min(SPOT_PT.width, size.width);
+  const height = Math.min(SPOT_PT.height, size.height);
+  const x = Math.min(Math.max(probe.x * size.width - width / 2, 0), size.width - width);
+  const y = Math.min(Math.max(probe.y * size.height - height / 2, 0), size.height - height);
+  return { x, y, width, height };
+}

@@ -125,7 +125,7 @@ qeploy share ios --udid <UDID> --app com.apple.mobilesafari
 | `--udid <UDID>` | 시뮬레이터가 여러 대 켜져 있을 때 고른다(`xcrun simctl list devices booted`) |
 | `--scale 0.5` | 화면 배율 0.1~1. 기본 0.5 |
 | `--fps 15` | 초당 장 수 상한 1~30. 기본 15 |
-| `--ttl 60` · `--json` | `share web` 과 같다 |
+| `--project <폴더>` · `--ttl 60` · `--json` | `share web` 과 같다 |
 
 - **준비물**
   - Xcode 와 iOS 시뮬레이터(`xcrun simctl`)
@@ -133,6 +133,7 @@ qeploy share ios --udid <UDID> --app com.apple.mobilesafari
 - **시뮬레이터만** 받는다. AXe 는 실제 iPhone 도 다루지만, `simctl` 이 켜진 시뮬레이터로 보여 주는 UDID 만 쓴다.
 - **클립보드 경고**: Simulator 는 기본으로 Mac 클립보드와 자동 동기화한다. 켜져 있으면 조작권을 받은 사람이 앱의 붙여넣기로 지금 Mac 에 복사해 둔 내용을 볼 수 있어서, 시작할 때 크게 경고한다. 끄려면 Simulator 메뉴 Edit > Automatically Sync Pasteboard 의 체크를 해제한다(CLI 는 설정을 바꾸지 않는다). Cmd+V 는 보내지 않는다.
 - **글자 입력**: 보는 사람이 친 글자를 시뮬레이터의 하드웨어 키보드 키로 친다. 클립보드는 쓰지 않는다.
+- **짚기**(`share web` 의 "짚기 피드백"과 같다): AXe `describe-ui` 로 그 점의 요소를 읽고(누르거나 입력하는 것, 이름이 있는 가장 작은 것. 스위치 줄의 글자·손잡이는 그 스위치로), 앱 이름·번들 ID·내비게이션 제목과 함께 보낸다. 접근성 트리에는 뷰 타입 이름이 없어서(SwiftUI `SaveButton` 도 `Button`) 컴포넌트 이름은 보내지 않고, 소스 후보는 `accessibilityIdentifier`(SwiftUI `.accessibilityIdentifier("…")`·UIKit `= "…"`·스토리보드 `identifier="…"`·React Native `testID`)와 보이는 텍스트로 찾는다. 이미지는 `axe screenshot` PNG 를 CLI 가 잘라 JPEG 으로 만든다. 입력란에 친 값(비밀번호 포함)은 보내지 않는다. 짚기 하나에 약 0.4~0.7초(실측, iPhone 17 Pro 시뮬레이터)
   - 영문·숫자·기호, Enter·Tab·화살표 같은 키가 들어간다.
   - **한글은 시뮬레이터 언어가 한국어일 때만 들어간다**(시뮬레이터는 만들 때 Mac 의 언어를 따른다). 한글은 두벌식 자판의 키로 바꿔 치고, 시뮬레이터가 글자로 조합한다. 언어가 한국어가 아니면 한글은 넣지 않고 한 번 알린다.
   - 한글 시뮬레이터의 키보드는 한글·영문 두 상태가 있어서, 영문 글자는 영문 상태에서, 한글은 한글 상태에서 쳐야 한다. CLI 가 필요한 상태를 화면의 키보드에서 읽어 확인하고, 다르면 Caps Lock 으로 바꾼 뒤 다시 읽어 확인한다. 이모지 키보드에 있으면 Ctrl+Space 로 먼저 빠져나온다. 숫자·공백·기호는 어느 상태에서나 같아서 바꾸지 않는다.
