@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { deflateSync } from 'node:zlib';
+import { parsePng } from '../src/share/png.js';
 import { join } from 'node:path';
 import {
   MAX_CROP_BYTES,
@@ -348,5 +350,67 @@ describe('reading the page at a point (inspectPoint, §14.3)', () => {
     const view = { width: 1000, height: 800 };
     assert.deepEqual(padded({ x: 5, y: 100, width: 120, height: 44 }, view), { x: 0, y: 84, width: 141, height: 76 });
     assert.deepEqual(spotAround({ x: 0.99, y: 0.01 }, view), { x: 760, y: 0, width: 240, height: 160 });
+  });
+});
+
+describe('PNG for web crops (no CDP clip)', () => {
+  /** A PNG whose rows use every filter, encoded the way the spec defines them. */
+  function pngWithFilters(width, height, channels, pixel) {
+    const stride = width * channels;
+    const plain = Buffer.alloc(height * stride);
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) pixel(x, y).slice(0, channels).forEach((v, c) => (plain[y * stride + x * channels + c] = v));
+    const rows = [];
+    for (let y = 0; y < height; y++) {
+      const filter = y % 5;
+      const row = Buffer.alloc(stride + 1);
+      row[0] = filter;
+      for (let i = 0; i < stride; i++) {
+        const v = plain[y * stride + i];
+        const a = i >= channels ? plain[y * stride + i - channels] : 0;
+        const b = y > 0 ? plain[(y - 1) * stride + i] : 0;
+        const c = y > 0 && i >= channels ? plain[(y - 1) * stride + i - channels] : 0;
+        const p = a + b - c;
+        const paeth = Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c) ? a : Math.abs(p - b) <= Math.abs(p - c) ? b : c;
+        const predicted = [0, a, b, (a + b) >> 1, paeth][filter];
+        row[i + 1] = (v - predicted) & 0xff;
+      }
+      rows.push(row);
+    }
+    const chunk = (type, data) => {
+      const len = Buffer.alloc(4);
+      len.writeUInt32BE(data.length);
+      return Buffer.concat([len, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]);
+    };
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(width, 0);
+    ihdr.writeUInt32BE(height, 4);
+    ihdr[8] = 8;
+    ihdr[9] = channels === 4 ? 6 : 2;
+    return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.concat(rows))), chunk('IEND', Buffer.alloc(0))]);
+  }
+
+  it('undoes every row filter, RGB and RGBA', () => {
+    const colour = (x, y) => [(x * 37 + y * 11) & 255, (x * 5 + y * 53) & 255, (x * y) & 255, 255];
+    for (const channels of [3, 4]) {
+      const png = parsePng(pngWithFilters(13, 10, channels, colour));
+      assert.equal(png.width, 13);
+      assert.equal(png.height, 10);
+      const px = [0, 0, 0];
+      for (let y = 0; y < 10; y++) {
+        for (let x = 0; x < 13; x++) {
+          png.pixel(x, y, px);
+          assert.deepEqual(px, colour(x, y).slice(0, 3), `${channels} (${x},${y})`);
+        }
+      }
+    }
+  });
+
+  it('refuses what Chrome does not produce', () => {
+    assert.equal(parsePng(Buffer.from('not a png')), null);
+    assert.equal(parsePng(null), null);
+    const ok = pngWithFilters(2, 2, 3, () => [0, 0, 0]);
+    const sixteenBit = Buffer.from(ok);
+    sixteenBit[24] = 16; // IHDR bit depth
+    assert.equal(parsePng(sixteenBit), null);
   });
 });

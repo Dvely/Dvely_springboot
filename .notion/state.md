@@ -1947,7 +1947,17 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - **서버 테스트**: `JwtAuthenticationFilterTest` 가 client 의 쓰기 호출을 읽어 PAT 허용 목록을 확인한다 — 고침 표시가 더해져 8건
 - **테스트**: agent-tools 331건(client 6 — 목록 질의·검사, 프롬프트·상세 경로, 고침 POST, 이미지 바이트·JPEG 아님 거절·오류 봉투, 경로 바꾸는 id. MCP 7 — 받은 것만·`notice`, NEW·DISMISSED 요청 거절, 프롬프트+이미지(화면은 요청할 때만), 이미지 실패, 고침은 쓰기 플래그와 note 자르기, 받기·무시 도구 없음, 경로 바꾸는 id. 읽기 도구가 부르는 client 메서드가 모두 get·list 인지 보도록 기존 테스트를 바꿨다. CLI 3 — 목록·상태 검사, 저장 파일·`.gitignore`·`--out`·`--screen`, 고침 확인·note 상한·취소)
 - **실측**(로컬 서버 + 실제 MCP 서버 stdio 를 MCP SDK 클라이언트로): 도구 세 개 노출 → 목록에 받은 것만(받기 전 #35 없음, 열면 404) → #34(웹·React) 열기에 프롬프트(컴포넌트·소스 후보)와 잘라 낸 이미지 1.4KB → 고침 → `FIXED`, 다시 고침은 409 안내. CLI 로 #35(Android) `feedback`·`feedback show 35`(`.qeploy/feedback/35.md`·`35.jpg`·`.gitignore`)·`feedback fixed 35 --note … --yes` → `FIXED` 목록
-- **남은 것**: Claude Code 에 붙여 "받은 피드백 반영해 줘" 로 실제 고치는 실측(ROADMAP), FE #210(웹 받기·무시·프롬프트 복사)
+- **남은 것**: 없음 — FE #210 은 Dvely_FE #212, Claude Code 실측은 §4.73
+
+## 4.73 짚기 피드백 — 끝까지 실측과 잘라 내기 수정 (Issue #682·#683, 2026-11-17)
+
+- **Claude Code 실측**(로컬 서버 + 실제 `qeploy share web` + Vite·React 19 예제, Claude Code 2.1.325 `-p`, 모델 claude-fable-5-2)
+  - 손님이 보기 링크로 `저장` 을 짚어 "너무 작고 눈에 안 띄어요. 파란 배경에 흰 글씨로, 크기도 키워 주세요"(#38) → 주인이 받음
+  - 예제 폴더에서 `claude -p "받은 피드백 반영해 줘"`(Qeploy MCP 하나만 `--strict-mcp-config`, 쓰기 켬. 허용 도구는 MCP 셋·Read·Edit·Glob·Grep, Bash·Write·웹 막음, 20턴)
+  - 에이전트가 `qeploy_share_feedback_list` → 7건을 `get` 으로 열어 보고, 소스 후보 파일이 이 저장소에 있는 #38 만 이 프로젝트 것이라 판단(나머지 6건은 다른 코드베이스 것으로 두고 표로 보고) → `src/components/SaveButton.jsx` 를 파란 배경·흰 글씨·16px·여백 12×24·최소 높이 44px 로 고침 → `qeploy_share_feedback_fixed`(note 한 줄) — 21턴, 약 55초, 약 $0.89
+  - Vite 가 바로 다시 그려 손님의 공유 화면에서도 버튼이 바뀌었고, 손님 뷰어의 내 피드백에 `고침`·고친 내용이 떴다. 손님이 `확인` → `확인함`
+- **잘라 내기 수정**(#690): 위 실측 중 짚은 직후 손님 화면이 크게 확대된 장으로 멈췄다. 잘라 낸 이미지를 CDP `clip` 으로 찍은 탓이다(캡처하는 동안 화면 크기가 바뀌고 screencast 가 그 장을 보냄). clip 없이 뷰포트 PNG 한 장을 찍어 CLI 가 풀고(`png.js` — 8비트 RGB·RGBA, 다섯 행 필터) 잘라 JPEG 으로 만든다. 고친 뒤 같은 화면에서 두 번 짚어도 화면이 그대로였다. CLI 333건 통과(PNG 필터 다섯 가지 왕복·거절, 실 터널에서 clip 없는 캡처와 잘라 낸 크기)
+- **FE**(Dvely_FE #212, main): 설정 > 기기 화면 공유에 짚기 피드백 절(상태 탭·카드·자세히·프롬프트 복사·받기/받지 않기/고침 표시/확인/다시 열기), 링크의 "새 피드백 N", 살아 있는 링크가 있으면 10초 폴링. 로컬 BE 로 받기 → 복사 → 고침 → 손님 뷰어 알림 → 새 피드백 10초 안 반영까지 실측
 
 
 ## Phase 1. 안전한 핵심 흐름 (완료)

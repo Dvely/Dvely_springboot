@@ -510,7 +510,7 @@ PIN_RESULT payload 는 `[JSON 길이 u32 BE][JSON][잘라 낸 이미지 길이 u
   - 경로: 절대 경로·개발 서버 모듈 URL(같은 오리진만, Vite `/@fs/`)을 프로젝트 상대 경로로 바꾼다. 실제 경로(`realpath`)가 프로젝트 밖·숨은 폴더·`node_modules` 면 버린다
   - 소스 후보 순서: 개발 서버가 알려 준 컴포넌트 파일 → 이름만 아는 컴포넌트의 정의(없으면 같은 이름의 파일) → id(`id="…"`, `@+id/…`, `R.id.…`) → 보이는 텍스트(2~80자). 약 1초·5개, 파일 4,000개·256KiB 까지. 파일 목록은 30초 캐시
   - 프로젝트 폴더: `--project`, 없으면 지금 폴더가 프로젝트(`package.json`·`.git`·`build.gradle` 등)일 때만. 홈 폴더에서 띄워도 홈을 뒤지지 않는다
-  - 이미지: 잘라 낸 것은 요소 + 16px(요소가 없으면 짚은 점 둘레 240×160)를 `Page.captureScreenshot`(clip, 페이지 좌표, 긴 변 800px 이하), 화면은 마지막 screencast 프레임(보는 사람이 본 그 장)
+  - 이미지: 잘라 낸 것은 요소 + 16px(요소가 없으면 짚은 점 둘레 240×160). **clip 없는** `Page.captureScreenshot`(PNG, 뷰포트 전체)을 CLI 가 풀어(`png.js`) 잘라 줄이고 JPEG 으로 만든다(긴 변 800px). clip 을 주면 캡처하는 동안 페이지 화면 크기가 바뀌고, 돌고 있는 screencast 가 그 확대된 장을 보는 사람 모두에게 보내 멈춘 화면에서는 다음 그리기까지 남았다(실측, #690). 화면은 마지막 screencast 프레임(보는 사람이 본 그 장)
   - 짚기는 한 번에 하나씩 처리한다. 4초 안에 못 끝내면 `TIMEOUT` 과 마지막 화면을 보낸다(서버는 5초에 뷰어에 알린다)
   - HELLO 의 `features: ["pin"]` 은 `resolvePin` 이 있는 세션만 싣는다(웹, adb 가 있는 Android). iOS 는 #682 PR-3
 - **Android 구현**(#682 PR-2, `agent-tools/packages/cli/src/share/android/pin.js`·`src/share/jpeg.js`)
