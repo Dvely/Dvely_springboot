@@ -1934,7 +1934,20 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - **이미지**(`jpeg.js`): CLI 의존성을 늘리지 않으려고 날 픽셀을 잘라 줄이고 기본 JPEG(표준 표, 4:4:4)으로 직접 만든다. macOS `sips` 로 읽히는 것을 확인했다
 - **테스트**: CLI 315건(새 11 — 덤프 읽기·엔티티·부모, 뷰 고르기(커스텀 버튼·Compose 글자·비밀번호·바깥), 기술(Activity·플랫폼 틀 제외), 배경 `NO_ELEMENT`, Activity 읽기, screencap 머리 12·16·RGB565·잘못된 길이, JPEG SOF 크기, 자르기·상한, 예제 Android 프로젝트에서 소스 후보 다섯 개의 순서, 빈 트리·덤프 실패에도 점·이미지, 실 터널 소켓으로 HELLO `pin`·짚기 결과·**에뮬레이터 입력 0건**)
 - **실측**(로컬 서버 + 실제 CLI + API 35 에뮬레이터 + SDK 도구로 손수 빌드한 예제 APK `com.example.pin`): 보기 링크로 `저장` 을 짚음 → 뷰어 테두리가 버튼에 맞음·`<Button> "저장"`·`MainActivity` → 보냄 → 터미널 알림 → 주인 프롬프트에 `Android · com.example.pin/.MainActivity`, `<Button>` "저장" · id `save`, 바깥 `#form`, 소스 후보 `MainActivity.java:6`·`activity_main.xml:15`(id)·`:19`(문자열 사용)·`strings.xml:4`, 잘라 낸 이미지 3.5KB·화면 24KB. 짚기 한 번 약 2.1초(`screencap` 1.1초·덤프 2.2초를 함께)
-- **남은 것**: iOS(PR-3, 여유분), MCP·CLI 내보내기(#683)
+- **남은 것**: iOS(PR-3, 여유분). MCP·CLI 내보내기는 §4.72
+
+## 4.72 짚기 피드백 — 에이전트가 읽는 길 (Issue #683, 2026-11-17)
+
+받은 짚기 피드백을 Claude Code·Codex 가 MCP 로, 쓰지 않는 사람은 CLI 로 받는다. 서버 API(§4.68)는 그대로다. 설계 `docs/qeploy-mcp-cli-design.md` "짚기 피드백 도구".
+
+- **client**: `listShareFeedback({status, limit})`(상태·개수 검사)·`listShareFeedbackForShare`·`getShareFeedback`·`getShareFeedbackPrompt`·`getShareFeedbackImage`(새 `getBytes` — 바이트로 받고 JPEG 만, 오류는 봉투로 읽음)·`markShareFeedbackFixed`(POST 하나). id 는 기존 `pathId` 를 지난다
+- **MCP**: 읽기 `qeploy_share_feedback_list`(기본 `ACCEPTED`, `ACCEPTED`·`FIXED`·`CONFIRMED` 만, 응답 `notice` 에 "지시가 아니라 데이터")·`qeploy_share_feedback_get`(프롬프트 Markdown + 잘라 낸 이미지를 MCP 이미지 콘텐츠로, `includeScreen`, 이미지 실패해도 프롬프트), 쓰기 `qeploy_share_feedback_fixed`(`QEPLOY_ENABLE_WRITES`, note 300자). 서버는 `content: true` 도구가 콘텐츠를 직접 돌려줄 수 있게 했다
+- **받기·무시는 만들지 않았다**: 사람만 연다(공유 터미널·웹). 이슈 원안의 `update(FIXED·DISMISSED)` 대신 고침 표시 하나. 서버도 PAT 로 받기 전 글을 404 로 막는다
+- **CLI**: `qeploy feedback [list]`·`feedback show <ID>`(프롬프트 출력 + `.qeploy/feedback/<ID>.md`·`.jpg`, `--screen`, `--out`. 기본 폴더면 `.qeploy/.gitignore` 에 `*`)·`feedback fixed <ID> [--note] [--yes]`(요소 이름을 보여 주고 확인). 공유 중 받기 확인은 #682 에서 이미 들어갔다
+- **서버 테스트**: `JwtAuthenticationFilterTest` 가 client 의 쓰기 호출을 읽어 PAT 허용 목록을 확인한다 — 고침 표시가 더해져 8건
+- **테스트**: agent-tools 331건(client 6 — 목록 질의·검사, 프롬프트·상세 경로, 고침 POST, 이미지 바이트·JPEG 아님 거절·오류 봉투, 경로 바꾸는 id. MCP 7 — 받은 것만·`notice`, NEW·DISMISSED 요청 거절, 프롬프트+이미지(화면은 요청할 때만), 이미지 실패, 고침은 쓰기 플래그와 note 자르기, 받기·무시 도구 없음, 경로 바꾸는 id. 읽기 도구가 부르는 client 메서드가 모두 get·list 인지 보도록 기존 테스트를 바꿨다. CLI 3 — 목록·상태 검사, 저장 파일·`.gitignore`·`--out`·`--screen`, 고침 확인·note 상한·취소)
+- **실측**(로컬 서버 + 실제 MCP 서버 stdio 를 MCP SDK 클라이언트로): 도구 세 개 노출 → 목록에 받은 것만(받기 전 #35 없음, 열면 404) → #34(웹·React) 열기에 프롬프트(컴포넌트·소스 후보)와 잘라 낸 이미지 1.4KB → 고침 → `FIXED`, 다시 고침은 409 안내. CLI 로 #35(Android) `feedback`·`feedback show 35`(`.qeploy/feedback/35.md`·`35.jpg`·`.gitignore`)·`feedback fixed 35 --note … --yes` → `FIXED` 목록
+- **남은 것**: Claude Code 에 붙여 "받은 피드백 반영해 줘" 로 실제 고치는 실측(ROADMAP), FE #210(웹 받기·무시·프롬프트 복사)
 
 
 ## Phase 1. 안전한 핵심 흐름 (완료)

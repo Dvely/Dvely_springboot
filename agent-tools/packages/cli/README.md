@@ -16,6 +16,25 @@ npx @qeploy/cli deploy <projectId> --yes
 
 **0.2.0 부터 API 주소는 `https://api.qeploy.com` 이다.** `qeploy.com` 은 웹만 서빙한다. 예전 기본값 `https://qeploy.com`(0.1.x 의 `qeploy login` 이 저장한 주소, `QEPLOY_API_URL`)은 새 주소로 읽으므로 다시 설정할 필요가 없다.
 
+## 짚기 피드백 — `feedback`
+
+`qeploy share` 로 공유한 화면에서 사람이 짚어 남기고 내가 받은 피드백을, MCP 없이 같은 프롬프트로 받는다.
+
+```bash
+qeploy feedback                              # 받은 것(ACCEPTED) 목록
+qeploy feedback show 12                      # 에이전트용 프롬프트 출력 + .qeploy/feedback/12.md·12.jpg 저장
+qeploy feedback fixed 12 --note "패딩을 16px 로"   # 고쳤다고 표시(WRITE). 짚은 사람에게 알림이 간다
+```
+
+| 옵션 | 뜻 |
+|---|---|
+| `--status ACCEPTED\|FIXED\|CONFIRMED` · `--limit 20` | 목록의 상태·개수 |
+| `--out <폴더>` · `--screen` | 저장할 폴더(기본 `.qeploy/feedback`), 화면 전체 이미지도 저장 |
+| `--note` · `--yes` | 고친 내용 한 줄(300자, 짚은 사람에게 보인다), 확인 없이 진행 |
+
+- 저장한 `.md` 를 에이전트에게 붙이고, 이미지는 첨부한다. 기본 폴더에 저장하면 `.qeploy/.gitignore`(`*`)를 만들어 화면 이미지가 저장소에 올라가지 않게 한다
+- 받기 전·받지 않은 피드백은 토큰으로 볼 수 없다. 받기·무시는 `qeploy share` 터미널이나 웹에서 한다
+
 ## 내 기기 프리뷰 공유 — `share web`
 
 내 컴퓨터에서 도는 웹 앱 화면을 링크로 공유한다. 받은 사람은 설치 없이 브라우저에서 같은 화면을 보고,

@@ -4,6 +4,7 @@ import { UsageError } from './confirm.js';
 import { clearConfig, configPath, readConfig, resolveApiUrl, writeConfig } from '@qeploy/client/config';
 import { readSecret } from './prompt.js';
 import { shareCommand } from './share/command.js';
+import { feedbackCommand } from './feedback.js';
 
 /**
  * The command table.
@@ -432,6 +433,9 @@ export const commands = {
 
   // Long-running and big enough to live in its own module (src/share/).
   share: shareCommand,
+
+  // Pin feedback left on a share (#683): list, the agent prompt as files, mark fixed.
+  feedback: feedbackCommand,
 };
 
 /**

@@ -217,6 +217,48 @@ export class QeployClient {
     return this.request('GET', path);
   }
 
+  /**
+   * A GET whose answer is a file, not the JSON envelope (an image). Errors still come back as the
+   * envelope and are reported the same way as request()'s.
+   *
+   * @returns {Promise<{bytes: Buffer, contentType: string}>}
+   */
+  async getBytes(path, { maxBytes = 4 * 1024 * 1024 } = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response;
+    let bytes;
+    try {
+      response = await this.fetchImpl(this.baseUrl + path, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${this.token}` },
+        signal: controller.signal,
+      });
+      bytes = Buffer.from(await response.arrayBuffer());
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        throw new QeployApiError(0, 'TIMEOUT', `요청이 ${this.timeoutMs}ms 안에 끝나지 않았습니다.`, path);
+      }
+      throw await this.orSuspended(new QeployApiError(0, 'NETWORK', `Qeploy 에 연결할 수 없습니다: ${e.message}`, path));
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!response.ok) {
+      let payload = null;
+      try {
+        payload = JSON.parse(bytes.toString('utf8'));
+      } catch {
+        // not the envelope
+      }
+      const error = new QeployApiError(response.status, payload?.code ?? null, payload?.message ?? `HTTP ${response.status}`, path);
+      throw payload && typeof payload === 'object' ? error : await this.orSuspended(error);
+    }
+    if (bytes.length > maxBytes) {
+      throw new QeployApiError(response.status, 'TOO_LARGE', `응답이 ${maxBytes} 바이트를 넘습니다.`, path);
+    }
+    return { bytes, contentType: String(response.headers?.get?.('content-type') ?? '') };
+  }
+
   post(path, body) {
     return this.request('POST', path, body ?? {});
   }
@@ -378,4 +420,76 @@ export class QeployClient {
   async revokeDeviceShare(shareId) {
     return this.request('DELETE', `/api/v1/device-shares/${pathId('shareId', shareId)}`);
   }
+
+  // ── Pin feedback (짚기 피드백, #681·#683) ──────────────────────────────────
+  /**
+   * Feedback left on any of my shares, most recently changed first.
+   *
+   * With a PAT the server leaves out what the owner has not taken yet (NEW) or turned down
+   * (DISMISSED): a guest's words reach an agent only after a person accepted them (§14.7).
+   *
+   * @param {{status?: 'ACCEPTED'|'FIXED'|'CONFIRMED'|'NEW'|'DISMISSED', limit?: number}} [options]
+   */
+  listShareFeedback({ status, limit } = {}) {
+    const query = new URLSearchParams();
+    if (status !== undefined) {
+      if (!FEEDBACK_STATUSES.has(status)) throw new TypeError(`status 는 ${[...FEEDBACK_STATUSES].join('·')} 중 하나입니다: ${status}`);
+      query.set('status', status);
+    }
+    if (limit !== undefined) {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new TypeError(`limit 는 1~50 입니다: ${limit}`);
+      query.set('limit', String(limit));
+    }
+    const qs = query.toString();
+    return this.get(`/api/v1/device-share-feedback${qs ? `?${qs}` : ''}`);
+  }
+
+  async listShareFeedbackForShare(shareId) {
+    return this.get(`/api/v1/device-shares/${pathId('shareId', shareId)}/feedback`);
+  }
+
+  /** The feedback with its element description, notes and whether images exist. */
+  async getShareFeedback(feedbackId) {
+    return this.get(`/api/v1/device-share-feedback/${pathId('feedbackId', feedbackId)}`);
+  }
+
+  /**
+   * The prompt the server builds for agents (§14.5): screen, element, components, source
+   * candidates, and the person's words fenced as data.
+   *
+   * @returns {Promise<{markdown: string}>}
+   */
+  async getShareFeedbackPrompt(feedbackId) {
+    return this.get(`/api/v1/device-share-feedback/${pathId('feedbackId', feedbackId)}/prompt`);
+  }
+
+  /**
+   * The crop around the pinned element, or the whole screen at that moment. JPEG.
+   *
+   * @param {'crop'|'screen'} kind
+   * @returns {Promise<Buffer>}
+   */
+  async getShareFeedbackImage(feedbackId, kind = 'crop') {
+    if (kind !== 'crop' && kind !== 'screen') throw new TypeError(`kind 는 crop 또는 screen 입니다: ${kind}`);
+    const { bytes, contentType } = await this.getBytes(
+      `/api/v1/device-share-feedback/${pathId('feedbackId', feedbackId)}/image?kind=${kind}`,
+      { maxBytes: 2 * 1024 * 1024 }
+    );
+    if (!contentType.startsWith('image/jpeg') || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+      throw new QeployApiError(200, 'BAD_RESPONSE', 'JPEG 이 아닌 응답을 받았습니다.', `/api/v1/device-share-feedback/${feedbackId}/image`);
+    }
+    return bytes;
+  }
+
+  /**
+   * Marks taken feedback fixed. The person who pinned it is told on their viewer and can confirm or
+   * reopen it. Only feedback in ACCEPTED can be marked (409 otherwise).
+   *
+   * @param {{note?: string}} [options] up to 300 characters, shown to that person
+   */
+  async markShareFeedbackFixed(feedbackId, { note } = {}) {
+    return this.post(`/api/v1/device-share-feedback/${pathId('feedbackId', feedbackId)}/fixed`, note ? { note } : {});
+  }
 }
+
+const FEEDBACK_STATUSES = new Set(['ACCEPTED', 'FIXED', 'CONFIRMED', 'NEW', 'DISMISSED']);
