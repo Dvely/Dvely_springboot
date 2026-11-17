@@ -231,7 +231,8 @@ public class ShareFeedbackService {
      */
     static byte[] selectedCrop(JsonNode scope, byte[] deviceCrop, byte[] screen) {
         return switch (scope.path("kind").asText("")) {
-            case "element" -> deviceCrop;
+            // 끈 영역은 기기가 그 사각형으로 잘라 보낸다(§15.4)
+            case "element", "region" -> deviceCrop != null ? deviceCrop : ScopeCrop.cut(screen, scope.path("bounds"));
             case "screen" -> screen != null ? screen : deviceCrop;
             default -> {
                 byte[] cut = ScopeCrop.cut(screen, scope.path("bounds"));

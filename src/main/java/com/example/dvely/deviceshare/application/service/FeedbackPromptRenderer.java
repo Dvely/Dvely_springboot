@@ -46,6 +46,9 @@ public final class FeedbackPromptRenderer {
         JsonNode node = element.path("element");
         java.util.Optional<JsonNode> chosen = com.example.dvely.deviceshare.application.session.PinResultSanitizer.selectedScope(element);
         boolean wholeScreen = chosen.map(scope -> "screen".equals(scope.path("kind").asText())).orElse(false);
+        // §15.4: 끌어서 고른 영역. 요소는 그 가운데에 있던 것이다
+        boolean region = "region".equals(element.path("scopes").path(0).path("kind").asText());
+        String elementWord = region ? "- 영역 가운데 요소: " : "- 짚은 요소: ";
         if (node.isObject()) {
             List<String> parts = new ArrayList<>();
             String type = code(node.path("type").asText(""));
@@ -54,7 +57,7 @@ public final class FeedbackPromptRenderer {
                 parts.add("`<" + type + ">`");
             }
             if (!text.isEmpty()) {
-                screenText.add("짚은 요소: " + text);
+                screenText.add((region ? "영역 가운데 요소: " : "짚은 요소: ") + text);
             }
             String id = code(node.path("id").asText(""));
             if (!id.isEmpty()) {
@@ -64,13 +67,38 @@ public final class FeedbackPromptRenderer {
             if (!selector.isEmpty()) {
                 parts.add("`" + selector + "`");
             }
-            out.append("- 짚은 요소: ").append(parts.isEmpty() ? "이름 없는 요소" : String.join(" · ", parts)).append('\n');
+            out.append(elementWord).append(parts.isEmpty() ? "이름 없는 요소" : String.join(" · ", parts)).append('\n');
         } else if (wholeScreen) {
             out.append("- 짚은 요소: 없음 — 화면 전체를 짚었다\n");
-        } else {
+        } else if (!region) {
             out.append("- 짚은 요소: 찾지 못함(").append(reason(element.path("reason").asText(""))).append(")\n");
         }
         chosen.ifPresent(scope -> out.append("- 고른 범위: ").append(scopeLine(scope, element)).append('\n'));
+        // 영역 안 요소들과 빈 자리 둘레의 글은 "화면에서 읽은 글" 에(§15.11)
+        JsonNode members = element.path("members");
+        int memberNo = 0;
+        for (JsonNode m : members) {
+            String text = inline(m.path("text").asText(""));
+            memberNo++;
+            if (!text.isEmpty()) {
+                screenText.add("영역 안 " + memberNo + ": " + text);
+            }
+        }
+        JsonNode near = element.path("near");
+        if (near.isArray() && !near.isEmpty()) {
+            List<String> around = new ArrayList<>();
+            for (JsonNode item : near) {
+                String dir = dirWord(item.path("dir").asText(""));
+                around.add(dir + " " + elementCode(item));
+                String text = inline(item.path("text").asText(""));
+                if (!text.isEmpty()) {
+                    screenText.add("둘레 " + dir + ": " + text);
+                }
+            }
+            if (!region) {
+                out.append("- 둘레: ").append(String.join(" · ", around)).append(" — 빈 곳을 짚었다. 이 자리에 무언가를 넣거나 옮겨 달라는 글일 수 있다\n");
+            }
+        }
         chosen.map(scope -> inline(scope.path("text").asText("")))
                 .filter(text -> !text.isEmpty() && !"element".equals(chosen.get().path("kind").asText()))
                 .ifPresent(text -> screenText.add("고른 범위: " + text));
@@ -218,6 +246,9 @@ public final class FeedbackPromptRenderer {
         if ("element".equals(kind)) {
             return "짚은 요소 하나";
         }
+        if ("region".equals(kind)) {
+            return regionLine(element);
+        }
         StringBuilder line = new StringBuilder();
         String word = com.example.dvely.deviceshare.application.session.PinResultSanitizer.groupWord(scope.path("type").asText(""));
         String selector = code(scope.path("selector").asText(""));
@@ -232,10 +263,51 @@ public final class FeedbackPromptRenderer {
         if (!component.isEmpty()) {
             line.append(" · 컴포넌트 `").append(component).append('`');
         }
-        if (element.path("element").isObject()) {
+        if ("region".equals(element.path("scopes").path(0).path("kind").asText())) {
+            line.append(" — 끈 영역을 품은 범위를 골랐다");
+        } else if (element.path("element").isObject()) {
             line.append(" — 짚은 요소를 품은 범위를 골랐다");
         }
         return line.toString();
+    }
+
+    /** 끈 영역 그대로(§15.4·§15.11): 안의 요소들, 비었으면 둘레. 글자는 "화면에서 읽은 글" 에 번호로 있다 */
+    static String regionLine(JsonNode element) {
+        JsonNode members = element.path("members");
+        if (members.isArray() && !members.isEmpty()) {
+            List<String> codes = new ArrayList<>();
+            for (JsonNode m : members) {
+                codes.add(elementCode(m));
+            }
+            return "영역 · 안의 요소 " + members.size() + "개: " + String.join(" · ", codes)
+                    + " — 그 영역 전체(요소들의 배치·간격)에 대한 글이다";
+        }
+        JsonNode near = element.path("near");
+        if (near.isArray() && !near.isEmpty()) {
+            List<String> around = new ArrayList<>();
+            for (JsonNode item : near) {
+                around.add(dirWord(item.path("dir").asText("")) + " " + elementCode(item));
+            }
+            return "빈 자리 · " + String.join(" · ", around) + " — 이 자리에 무언가를 넣거나 옮겨 달라는 글일 수 있다";
+        }
+        return "영역 — 화면의 한 부분에 대한 글이다";
+    }
+
+    /** 요소 하나를 코드로: {@code `h2`}, {@code `button#change`}. 글자는 넣지 않는다 */
+    static String elementCode(JsonNode item) {
+        String type = code(item.path("type").asText(""));
+        String id = code(item.path("id").asText(""));
+        return "`" + (type.isEmpty() ? "요소" : type) + (id.isEmpty() ? "" : "#" + id) + "`";
+    }
+
+    private static String dirWord(String dir) {
+        return switch (dir) {
+            case "up" -> "위";
+            case "down" -> "아래";
+            case "left" -> "왼쪽";
+            case "right" -> "오른쪽";
+            default -> "옆";
+        };
     }
 
     /** 글 안의 가장 긴 백틱 줄보다 하나 긴 펜스로 감싼다. */

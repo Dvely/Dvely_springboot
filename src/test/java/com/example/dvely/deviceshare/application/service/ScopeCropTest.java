@@ -42,6 +42,15 @@ class ScopeCropTest {
     }
 
     @Test
+    void 끈_영역은_기기가_사각형으로_잘라_보낸_것이고_없으면_서버가_자른다() throws Exception {
+        byte[] screen = jpeg(400, 400);
+        JsonNode region = json.readTree("{\"kind\":\"region\",\"bounds\":{\"x\":0,\"y\":0.5,\"w\":0.5,\"h\":0.5}}");
+        assertThat(ShareFeedbackService.selectedCrop(region, DEVICE_CROP, screen)).isSameAs(DEVICE_CROP);
+        BufferedImage cut = ImageIO.read(new ByteArrayInputStream(ShareFeedbackService.selectedCrop(region, null, screen)));
+        assertThat(cut.getWidth()).isBetween(200, 215);
+    }
+
+    @Test
     void 화면을_읽지_못하면_기기가_잘라_보낸_것으로_둔다() throws Exception {
         JsonNode scope = json.readTree("{\"kind\":\"component\",\"bounds\":{\"x\":0,\"y\":0,\"w\":0.5,\"h\":0.5}}");
         assertThat(ShareFeedbackService.selectedCrop(scope, DEVICE_CROP, new byte[] {1, 2, 3})).isSameAs(DEVICE_CROP);

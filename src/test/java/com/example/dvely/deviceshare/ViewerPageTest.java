@@ -51,6 +51,8 @@ class ViewerPageTest {
         String page = viewer();
         assertThat(page).contains("m.pinCaps", "m.scopes", "m.defaultScope", "msg.scope = P.scope", "screen: true");
         assertThat(page).contains("hasCap('pin-screen')");
+        // §15.4: 끌기는 pin-region 을 알린 기기에만, 사각형은 rect 로 간다
+        assertThat(page).contains("hasCap('pin-region')", "rect: P.point.rect", "m.empty", "m.near");
         // 범위를 바꿔도 기기에 다시 묻지 않는다(소켓으로 보내는 것은 짚기·보내기뿐)
         assertThat(page).doesNotContain("type: 'pin-scope'");
     }

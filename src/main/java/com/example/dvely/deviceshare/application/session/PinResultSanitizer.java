@@ -30,6 +30,10 @@ public final class PinResultSanitizer {
     /** §15.3: 범위 사다리는 6칸까지, 칸의 글은 60자까지 */
     static final int MAX_SCOPES = 6;
     static final int MAX_SCOPE_TEXT = 60;
+    /** §15.4: 끈 영역 안의 요소 12개, 빈 자리 둘레 4개 */
+    static final int MAX_MEMBERS = 12;
+    static final int MAX_NEAR = 4;
+    private static final Set<String> NEAR_DIRS = Set.of("up", "down", "left", "right");
 
     private static final Pattern PROBE_ID = Pattern.compile("p[0-9]{1,9}");
     private static final Set<String> REASONS = Set.of("NO_ELEMENT", "UNSUPPORTED", "TIMEOUT");
@@ -76,11 +80,26 @@ public final class PinResultSanitizer {
         ArrayNode scopes = ok ? list(raw.path("scopes"), MAX_SCOPES, this::scope) : json.createArrayNode();
         // §15.6: 화면 전체를 짚으면 요소 없이 화면 칸 하나만 온다. 그것도 찾은 것이다
         boolean screenOnly = element == null && scopes.size() == 1 && "screen".equals(scopes.get(0).path("kind").asText());
-        boolean resolved = element != null || screenOnly;
+        // §15.4: 끈 영역은 가운데에 요소가 없어도(빈 자리) 찾은 것이다
+        boolean region = !scopes.isEmpty() && "region".equals(scopes.get(0).path("kind").asText());
+        boolean resolved = element != null || screenOnly || region;
         if (resolved && !scopes.isEmpty()) {
             out.set("scopes", scopes);
             int defaultScope = raw.path("defaultScope").asInt(0);
             out.put("defaultScope", defaultScope >= 0 && defaultScope < scopes.size() ? defaultScope : 0);
+        }
+        if (resolved && region) {
+            ArrayNode members = list(raw.path("members"), MAX_MEMBERS, this::member);
+            if (!members.isEmpty()) {
+                out.set("members", members);
+            }
+            // 비었는지는 기기의 값이다. 목록은 크기 때문에 덜어졌거나(§15.9), 페이지가 시간 안에 다 세지 못했을 수 있다
+            out.put("empty", raw.path("empty").isBoolean() ? raw.path("empty").asBoolean() : members.isEmpty());
+        }
+        // 빈 자리 둘레는 끈 영역에도, 빈 곳을 탭한 실패에도 온다
+        ArrayNode near = list(raw.path("near"), MAX_NEAR, this::nearItem);
+        if (!near.isEmpty()) {
+            out.set("near", near);
         }
         if (element != null) {
             out.set("element", element);
@@ -108,7 +127,8 @@ public final class PinResultSanitizer {
         String screenLabel = screen.path("label").asText("");
         ObjectNode bounds = element == null ? null : (ObjectNode) element.get("bounds");
         String component = out.path("components").path(0).path("name").asText(null);
-        String label = element != null ? viewerLabel(element) : screenOnly ? SCREEN_LABEL : null;
+        String label = element != null ? viewerLabel(element) : screenOnly ? SCREEN_LABEL
+                : region ? scopeLabel(scopes.get(0), false) : null;
         return Optional.of(new PinResolution(probeId, resolved, reason, out, screenLabel, bounds, label, component));
     }
 
@@ -131,8 +151,55 @@ public final class PinResultSanitizer {
         putText(out, "id", node.path("id"), MAX_NAME);
         putText(out, "selector", node.path("selector"), MAX_SELECTOR);
         putText(out, "component", node.path("component"), MAX_NAME);
+        if ("region".equals(kind) && node.path("members").isInt()) {
+            out.put("members", Math.max(0, Math.min(MAX_MEMBERS, node.path("members").asInt())));
+        }
         out.set("bounds", bounds);
         return out;
+    }
+
+    /** §15.4: 끈 영역 안의 요소 하나. 테두리가 있어야 하고, 글은 60자 */
+    private ObjectNode member(JsonNode node) {
+        if (!node.isObject()) {
+            return null;
+        }
+        ObjectNode bounds = ratioRect(node.path("bounds"));
+        if (bounds == null) {
+            return null;
+        }
+        ObjectNode out = json.createObjectNode();
+        putText(out, "type", node.path("type"), MAX_TYPE);
+        putText(out, "text", node.path("text"), MAX_SCOPE_TEXT);
+        putText(out, "id", node.path("id"), MAX_NAME);
+        out.set("bounds", bounds);
+        return out;
+    }
+
+    /** §15.4: 빈 자리 둘레의 요소 하나. 방향은 위·아래·왼쪽·오른쪽, 거리는 화면 비율 */
+    private ObjectNode nearItem(JsonNode node) {
+        ObjectNode out = member(node);
+        String dir = node.path("dir").asText("");
+        if (out == null || !NEAR_DIRS.contains(dir)) {
+            return null;
+        }
+        out.put("dir", dir);
+        if (node.path("distance").isNumber()) {
+            out.put("distance", ratio(node.path("distance").asDouble()));
+        }
+        return out;
+    }
+
+    /** 둘레 요소의 짧은 이름. 예: {@code 위 <h2> "요금제"}. 컴포넌트 이름이 없어 손님에게도 그대로 간다 */
+    public static String nearLabel(JsonNode near) {
+        String dir = switch (near.path("dir").asText("")) {
+            case "up" -> "위";
+            case "down" -> "아래";
+            case "left" -> "왼쪽";
+            case "right" -> "오른쪽";
+            default -> "";
+        };
+        String name = viewerLabel(near);
+        return cut(dir + (name == null ? "" : " " + name), MAX_VIEWER_LABEL);
     }
 
     private ObjectNode fullScreen() {
@@ -149,7 +216,11 @@ public final class PinResultSanitizer {
         String component = scope.path("component").asText("");
         String label = switch (kind) {
             case "screen" -> SCREEN_LABEL;
-            case "region" -> "영역";
+            case "region" -> {
+                // 끈 영역: 안의 요소 수, 비었으면 빈 자리(§15.4)
+                JsonNode members = scope.path("members");
+                yield !members.isInt() ? "영역" : members.asInt() == 0 ? "빈 자리" : "영역 · 요소 " + members.asInt() + "개";
+            }
             case "text" -> {
                 String text = scope.path("text").asText("");
                 yield text.isEmpty() ? "글자" : "글자 \"" + text + '"';

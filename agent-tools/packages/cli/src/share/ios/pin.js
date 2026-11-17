@@ -1,7 +1,8 @@
 /**
- * Pinning on a shared iOS simulator (§14.3, #682 PR-3): which element is at the viewer's point,
- * from AXe `describe-ui` (the accessibility tree, in points); a crop from `axe screenshot` (a PNG in
- * pixels); the screen as the viewer last saw it (the latest stream-video frame).
+ * Pinning on a shared iOS simulator (§14.3, #682 PR-3): which element is at the viewer's point (or
+ * inside a dragged rectangle, §15.4), from AXe `describe-ui` (the accessibility tree, in points); a
+ * crop from `axe screenshot` (a PNG in pixels); the screen as the viewer last saw it (the latest
+ * stream-video frame).
  *
  * The tree has accessibility roles, not view types: a SwiftUI `SaveButton` view comes out as a
  * `Button` (measured, AXe 2.0.4, iOS 26.5), a UIKit subclass likewise. So the app's own names come
@@ -9,11 +10,11 @@
  *
  * Read-only: one tree and one screenshot. Nothing is tapped.
  */
-import { LIMIT, MAX_CROP_BYTES, MAX_SCREEN_BYTES, clip, r4, screenResult, unresolved } from '../pin.js';
+import { LIMIT, MAX_CROP_BYTES, MAX_SCREEN_BYTES, clip, probePoint, r4, screenResult, unresolved } from '../pin.js';
 import { jpegUnder } from '../jpeg.js';
 import { parsePng } from '../png.js';
 import { findSourceHints } from '../source-hints.js';
-import { buildLadder, scopeIdsOf } from '../scope.js';
+import { buildLadder, buildRegion, nearAround, scopeIdsOf } from '../scope.js';
 
 /** Around the element, in points (×3 on a 3x screen: about the web's 16 CSS px at DPR 2). */
 const CROP_MARGIN_PT = 12;
@@ -160,13 +161,20 @@ export function describeIosScreen(nodes, points, shared = {}) {
 }
 
 /**
- * The description of the element at the point (§14.3), without images.
+ * The description of the element at the point (§14.3), without images. A point on the background
+ * says NO_ELEMENT with the nearest named element on each side (`near`, §15.4).
  *
  * @param {{width: number, height: number}} points the screen in points (the tree's coordinates)
  * @param {{bundleId?: string|null, appPid?: number|null}} [shared] the shared app; its bundle ID is
  *   named only while that app is the one in front
  */
 export function describeIosPoint(nodes, probe, points, shared = {}) {
+  const result = pointResult(nodes, probe, points, shared);
+  if (!result.ok) result.near = nearAround({ rect: { x: probe.x, y: probe.y, w: 0, h: 0 }, nodes, boundsOf: boundsIn(points), memberOf: memberOfIn(nodes) });
+  return result;
+}
+
+function pointResult(nodes, probe, points, shared) {
   const where = describeIosScreen(nodes, points, shared);
   const picked = pickElement(nodes, probe.x * points.width, probe.y * points.height);
   // Only a full-screen container that says nothing there: the background.
@@ -175,7 +183,7 @@ export function describeIosPoint(nodes, probe, points, shared = {}) {
   }
   const { node, text: said } = picked;
   const f = node.frame;
-  const element = { type: clip(node.secure ? 'SecureTextField' : node.type || node.role.replace(/^AX/, ''), 40) ?? 'Element' };
+  const element = { type: typeOf(node) };
   const shown = clip(said, LIMIT.text);
   if (shown) element.text = shown;
   const id = clip(node.id, 100);
@@ -210,7 +218,49 @@ export function describeIosPoint(nodes, probe, points, shared = {}) {
   };
 }
 
+/** The element's kind as the result names it; a secure field says so whatever AXe calls it. */
+const typeOf = (n) => clip(n.secure ? 'SecureTextField' : n.type || n.role.replace(/^AX/, ''), 40) ?? 'Element';
+
+/**
+ * The description of a dragged rectangle (§15.4), without images: the element at its centre exactly
+ * as a tap there would say it (`element`, left out on the background), the elements inside it
+ * (`members`), the containers holding it (`scopes`, the rectangle first), and around an empty one
+ * the nearest elements (`near`). All from the one tree.
+ *
+ * @param {{probeId: string, rect: {x: number, y: number, w: number, h: number}}} probe
+ */
+export function describeIosRegion(nodes, probe, points, shared = {}) {
+  const centre = { probeId: probe.probeId, ...probePoint(probe) };
+  const at = pointResult(nodes, centre, points, shared);
+  const where = describeIosScreen(nodes, points, shared);
+  const region = buildRegion({ rect: probe.rect, nodes, boundsOf: boundsIn(points), describe: describeStep, memberOf: memberOfIn(nodes) });
+  return {
+    probeId: probe.probeId,
+    ok: true,
+    ...(where ? { screen: where } : {}),
+    point: { x: r4(centre.x), y: r4(centre.y) },
+    ...(at.ok ? { element: at.element } : {}),
+    ancestors: at.ok ? at.ancestors : [],
+    components: [],
+    scopes: region.scopes,
+    defaultScope: 0,
+    members: region.members,
+    empty: region.empty,
+    ...(region.near ? { near: region.near } : {}),
+  };
+}
+
 const LIST_TYPE = /^(Table|CollectionView|List|Outline)$/;
+
+/** An element's frame as screen ratios, clipped to the screen; null when none of it is on screen. */
+const boundsIn = (points) => (n) => {
+  if (!n.frame) return null;
+  const x0 = Math.max(n.frame.x, 0);
+  const y0 = Math.max(n.frame.y, 0);
+  const x1 = Math.min(n.frame.x + n.frame.w, points.width);
+  const y1 = Math.min(n.frame.y + n.frame.h, points.height);
+  return x1 > x0 && y1 > y0 ? { x: x0 / points.width, y: y0 / points.height, w: (x1 - x0) / points.width, h: (y1 - y0) / points.height } : null;
+};
 
 /**
  * The scope ladder (§15.3) from the accessibility tree: the element, then the containers around it
@@ -219,34 +269,46 @@ const LIST_TYPE = /^(Table|CollectionView|List|Outline)$/;
  * (`.accessibilityElement(children: .contain)` with an identifier).
  */
 function iosLadder(node, element, points) {
-  return buildLadder({
-    element,
-    node,
-    boundsOf: (n) => {
-      if (!n.frame) return null;
-      const x0 = Math.max(n.frame.x, 0);
-      const y0 = Math.max(n.frame.y, 0);
-      const x1 = Math.min(n.frame.x + n.frame.w, points.width);
-      const y1 = Math.min(n.frame.y + n.frame.h, points.height);
-      return x1 > x0 && y1 > y0 ? { x: x0 / points.width, y: y0 / points.height, w: (x1 - x0) / points.width, h: (y1 - y0) / points.height } : null;
-    },
-    describe: (n) => {
-      if (n.app || n.secure) return null;
-      const cell = n.type === 'Cell' || n.role === 'AXCell';
-      if (!n.id && !n.label && !cell && !LIST_TYPE.test(n.type)) return null;
-      return { kind: 'group', type: n.type || n.role.replace(/^AX/, '') || 'Group', text: n.label || null, id: n.id || null };
-    },
-  });
+  return buildLadder({ element, node, boundsOf: boundsIn(points), describe: describeStep });
+}
+
+function describeStep(n) {
+  if (n.app || n.secure) return null;
+  const cell = n.type === 'Cell' || n.role === 'AXCell';
+  if (!n.id && !n.label && !cell && !LIST_TYPE.test(n.type)) return null;
+  return { kind: 'group', type: n.type || n.role.replace(/^AX/, '') || 'Group', text: n.label || null, id: n.id || null };
 }
 
 /**
- * Reads the point on the simulator: the tree and a screenshot side by side (0.47 s together,
- * measured on an iPhone 17 Pro simulator).
+ * An element as a member of an area or a neighbour (§15.4): what pickElement calls named — a label,
+ * an identifier, or something to press or type into — never the app root or the scroll indicator.
+ * A control with no label of its own (a cell) is named by the first label inside it, as a tap on it
+ * would be. Labels only: a field's value (what was typed, a password's dots) is never read.
+ */
+function memberOfIn(nodes) {
+  const inner = new Map();
+  for (const n of nodes) {
+    if (!n.label) continue;
+    for (let a = n.parent, i = 0; a && i < 3; a = a.parent, i++) {
+      if (interactive(a) && !inner.has(a)) inner.set(a, n.label);
+    }
+  }
+  return (n) => {
+    if (n.app || scrollBar(n) || !named(n)) return null;
+    const own = labelOf(n);
+    return { type: typeOf(n), text: own || (interactive(n) ? inner.get(n) : '') || null, id: n.id || null, interactive: interactive(n) };
+  };
+}
+
+/**
+ * Reads the point (or the dragged rectangle, §15.4) on the simulator: the tree and a screenshot side
+ * by side (0.47 s together, measured on an iPhone 17 Pro simulator).
  *
  * @param {object} o
  * @param {{request: Function, screenshot?: Function}} o.commands AxeCommands
- * @param {{probeId: string, x: number, y: number}|{probeId: string, screen: true}} o.probe a point, or
- *   the whole screen (resolveIosScreen)
+ * @param {{probeId: string, x: number, y: number}|{probeId: string, screen: true}|
+ *   {probeId: string, rect: object}} o.probe a point, the whole screen (resolveIosScreen) or a
+ *   rectangle
  * @param {string|null} o.project
  * @param {string|null} [o.bundleId] the shared app
  * @param {number|null} [o.appPid]
@@ -270,20 +332,21 @@ export async function resolveIosPin({ commands, probe, project, bundleId = null,
   const k = shot && size ? shot.width / size.width : 0;
   const fits = k > 0 && Math.abs(shot.height / k - size.height) <= 2;
   const cut = (rect) => (fits ? jpegUnder(shot, scaled(rect, k), { maxSide: CROP_MAX_SIDE, maxBytes: MAX_CROP_BYTES, quality: 80 }) : null);
+  // A box in screen ratios with the margin an element gets: an element, or the rectangle as drawn.
+  const around = (b) => cut(padded({ x: b.x * size.width, y: b.y * size.height, width: b.w * size.width, height: b.h * size.height }, size));
 
   if (!size || !nodes.length) {
     // No tree to read (AXe failed, or an app with nothing in its accessibility tree): the point and
     // the picture still go (§14.1).
-    return { result: unresolved(probe, 'UNSUPPORTED'), crop: size ? cut(spot(probe, size)) : null, screen };
+    const crop = size ? (probe.rect ? around(probe.rect) : cut(spot(probe, size))) : null;
+    return { result: unresolved(probe, 'UNSUPPORTED'), crop, screen };
   }
-  const result = describeIosPoint(nodes, probe, size, { bundleId, appPid });
+  const result = probe.rect ? describeIosRegion(nodes, probe, size, { bundleId, appPid }) : describeIosPoint(nodes, probe, size, { bundleId, appPid });
   if (result.ok) {
-    result.sourceHints = await findHints({ project, components: result.components, element: result.element, scopeIds: scopeIdsOf(result.scopes) }).catch(() => []);
+    result.sourceHints = await findHints({ project, components: result.components, element: result.element ?? {}, scopeIds: scopeIdsOf(result.scopes) }).catch(() => []);
   }
   const b = result.element?.bounds;
-  const crop = b
-    ? cut(padded({ x: b.x * size.width, y: b.y * size.height, width: b.w * size.width, height: b.h * size.height }, size))
-    : cut(spot(probe, size));
+  const crop = probe.rect ? around(probe.rect) : b ? around(b) : cut(spot(probe, size));
   return { result, crop, screen };
 }
 

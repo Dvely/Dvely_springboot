@@ -348,12 +348,18 @@ export class IosShareSession extends TunnelSession {
     return { cliVersion: this.cliVersion, kind: 'IOS', target: this.targetLabel };
   }
 
-  /** §15.9: the scope ladder comes from the same tree (scope.js); the whole screen needs none. */
+  /**
+   * §15.9: the scope ladder and a dragged area (§15.4) come from the same tree (scope.js); the whole
+   * screen needs none.
+   */
   pinFeatures() {
-    return ['pin', 'pin-scope', 'pin-screen'];
+    return ['pin', 'pin-scope', 'pin-screen', 'pin-region'];
   }
 
-  /** §14.3: what is at the viewer's point, or the whole screen (§15.6). Reads the tree and a screenshot; taps nothing. */
+  /**
+   * §14.3: what is at the viewer's point, the whole screen (§15.6) or a dragged area (§15.4). Reads
+   * the tree and a screenshot; taps nothing.
+   */
   resolvePin(probe) {
     return resolveIosPin({
       commands: this.commands,

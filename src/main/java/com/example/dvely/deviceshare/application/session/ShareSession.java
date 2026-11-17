@@ -533,10 +533,11 @@ public class ShareSession {
     private void onPinProbe(Viewer viewer, JsonNode message) {
         boolean wholeScreen = message.path("screen").asBoolean(false);
         boolean region = message.has("rect");
+        ObjectNode rect = region ? probeRect(message.path("rect")) : null;
         JsonNode x = message.path("x");
         JsonNode y = message.path("y");
-        if (!wholeScreen && !region
-                && (!x.isNumber() || !y.isNumber() || x.asDouble() < 0 || x.asDouble() > 1 || y.asDouble() < 0 || y.asDouble() > 1)) {
+        if ((region && rect == null) || (!wholeScreen && !region
+                && (!x.isNumber() || !y.isNumber() || x.asDouble() < 0 || x.asDouble() > 1 || y.asDouble() < 0 || y.asDouble() > 1))) {
             viewer.channel().sendText(object("type", "error").put("message", "짚은 위치가 화면 밖입니다.").toString());
             return;
         }
@@ -544,8 +545,8 @@ public class ShareSession {
             viewer.channel().sendText(pinFailed(null, "offline"));
             return;
         }
-        if (!pinSupported() || region || (wholeScreen && !deviceFeatures.contains("pin-screen"))) {
-            // 끌기(영역)는 §15.13 PR-4 에서 연다
+        if (!pinSupported() || (region && !deviceFeatures.contains("pin-region"))
+                || (wholeScreen && !deviceFeatures.contains("pin-screen"))) {
             viewer.channel().sendText(pinFailed(null, "unsupported"));
             return;
         }
@@ -561,11 +562,33 @@ public class ShareSession {
         ObjectNode probe = object("probeId", probeId);
         if (wholeScreen) {
             probe.put("screen", true);
+        } else if (region) {
+            probe.set("rect", rect);
         } else {
             probe.put("x", x.asDouble()).put("y", y.asDouble());
         }
         device.sendBinary(ShareFrames.encode(ShareFrames.PIN_PROBE, probe.toString()));
         viewer.channel().sendText(object("type", "pin").put("probeId", probeId).put("state", "pending").toString());
+    }
+
+    /**
+     * 끌기 짚기의 사각형(§15.4). 화면 비율이고 화면 안이어야 한다. 너무 작은 것(변이 화면의 0.5% 미만)은 탭과 다르지 않아 받지
+     * 않는다 — 뷰어는 10px 넘게 움직였을 때만 끌기로 본다.
+     */
+    private ObjectNode probeRect(JsonNode node) {
+        if (!node.path("x").isNumber() || !node.path("y").isNumber() || !node.path("w").isNumber() || !node.path("h").isNumber()) {
+            return null;
+        }
+        double x = node.path("x").asDouble();
+        double y = node.path("y").asDouble();
+        double w = node.path("w").asDouble();
+        double h = node.path("h").asDouble();
+        double eps = 1e-6;
+        if (x < 0 || y < 0 || w < 0.005 || h < 0.005 || x + w > 1 + eps || y + h > 1 + eps
+                || !Double.isFinite(x + y + w + h)) {
+            return null;
+        }
+        return json.createObjectNode().put("x", x).put("y", y).put("w", Math.min(w, 1 - x)).put("h", Math.min(h, 1 - y));
     }
 
     /** {@code [JSON 길이 u32][JSON][잘라 낸 이미지 길이 u32][잘라 낸 JPEG][화면 JPEG]} (§14.3). */
@@ -636,6 +659,20 @@ public class ShareSession {
                         .set("bounds", scope.path("bounds"));
             }
             message.put("defaultScope", r.description().path("defaultScope").asInt(0));
+        }
+        // §15.4: 끈 영역 안의 요소 수와 빈 자리의 둘레. 둘레 이름에는 컴포넌트 이름이 없어 손님에게도 간다
+        if (r.description().has("empty")) {
+            // 개수는 영역 칸의 것이 먼저다. 목록은 크기 때문에 덜어졌을 수 있다
+            JsonNode count = r.description().path("scopes").path(0).path("members");
+            message.put("members", count.isInt() ? count.asInt() : r.description().path("members").size());
+            message.put("empty", r.description().path("empty").asBoolean());
+        }
+        JsonNode near = r.description().path("near");
+        if (near.isArray() && !near.isEmpty()) {
+            ArrayNode out = message.putArray("near");
+            for (JsonNode item : near) {
+                out.addObject().put("dir", item.path("dir").asText()).put("label", PinResultSanitizer.nearLabel(item));
+            }
         }
         viewer.channel().sendText(message.toString());
     }

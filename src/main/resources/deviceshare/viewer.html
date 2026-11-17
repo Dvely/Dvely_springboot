@@ -55,7 +55,8 @@ button[aria-pressed="true"]{background:var(--pin);border-color:var(--pin);color:
 button[aria-pressed="true"]:hover:not(:disabled){background:var(--pin)}
 #b-mine.alert{border-color:var(--pin)}
 #mine-n:not(:empty){display:inline-block;min-width:18px;margin-left:4px;padding:0 5px;border-radius:9px;background:var(--pin);color:var(--pin-fg);font-size:12px;font-weight:700;line-height:18px;text-align:center}
-#stage.pin #screen{cursor:crosshair;touch-action:manipulation}
+#stage.pin #screen{cursor:crosshair;touch-action:pinch-zoom}
+#pin-rect{position:absolute;border:2px dashed var(--pin);border-radius:2px;background:var(--pin-bg);pointer-events:none}
 #pinhint{position:absolute;left:8px;top:8px;max-width:calc(100% - 16px);padding:4px 8px;border:1px solid var(--pin);border-radius:6px;background:var(--bar);font-size:12px;pointer-events:none}
 #pin-box{position:absolute;border:2px solid var(--pin);border-radius:3px;background:var(--pin-bg);box-shadow:0 0 0 1px rgba(255,255,255,.8);pointer-events:none}
 #pin-dot{position:absolute;width:18px;height:18px;margin:-9px 0 0 -9px;border:2px solid var(--pin);border-radius:50%;background:var(--pin-bg);box-shadow:0 0 0 1px rgba(255,255,255,.8);pointer-events:none}
@@ -116,7 +117,8 @@ button[aria-pressed="true"]:hover:not(:disabled){background:var(--pin)}
   <canvas id="screen" role="img" aria-label="공유된 앱 화면"></canvas>
   <div id="ov" class="ov" role="status" hidden><div><p id="ov-t" class="t"></p><p id="ov-s" class="s"></p></div></div>
   <div id="typing" hidden>키보드 입력을 기기로 보냅니다 · Esc 두 번: 나가기</div>
-  <div id="pinhint" hidden>짚기 — 고칠 곳을 누르세요. 기기는 조작되지 않습니다<span class="kb"> · Esc: 끝내기</span><button type="button" id="b-whole" hidden>화면 전체</button></div>
+  <div id="pinhint" hidden><span id="pinhint-t">짚기 — 고칠 곳을 누르세요. 기기는 조작되지 않습니다</span><span class="kb"> · Esc: 끝내기</span><button type="button" id="b-whole" hidden>화면 전체</button></div>
+  <div id="pin-rect" hidden></div>
   <div id="pin-orig" hidden></div>
   <div id="pin-box" hidden></div>
   <div id="pin-prev" hidden></div>
@@ -179,6 +181,7 @@ const P = {
   mode: false, point: null, waiting: false, result: null, probeId: null, resolvedAt: 0,
   sent: 0, acked: 0, lastSent: 0, queued: 0, stale: false, submitting: false, scope: 0, preview: -1
 };
+let pinDrag = null; // 끌고 있는 영역(§15.4). 짚기 상태와 따로 둔다 — 끄는 동안에도 이전 짚기는 그대로다
 
 // 내 제어 링크(#c=…): 비밀은 메모리(+이 탭의 sessionStorage, 새로고침 대비)에만 두고 주소창에서 바로 지운다.
 const hash = new URLSearchParams(location.hash.slice(1));
@@ -738,7 +741,8 @@ function probePin(p) {
 function sendProbe() {
   P.queued = 0;
   if (!P.point || !P.waiting) return;
-  const probe = P.point.screen ? { type: 'pin-probe', screen: true } : { type: 'pin-probe', x: P.point.x, y: P.point.y };
+  const probe = P.point.screen ? { type: 'pin-probe', screen: true }
+    : P.point.rect ? { type: 'pin-probe', rect: P.point.rect } : { type: 'pin-probe', x: P.point.x, y: P.point.y };
   if (send(probe)) { P.sent++; P.lastSent = Date.now(); }
   else { P.stale = true; P.waiting = false; renderPin(); } // 소켓이 다시 이어지면 같은 자리를 다시 짚는다
 }
@@ -766,7 +770,9 @@ function onPin(m) {
   if (m.state === 'failed') { pinFailed(m.reason); return; }
   if (m.state !== 'resolved') return;
   P.waiting = false; P.resolvedAt = Date.now();
-  P.result = { bounds: bounds(m.bounds), label: str(m.label), component: str(m.component), reason: str(m.reason), scopes: scopes(m.scopes) };
+  P.result = { bounds: bounds(m.bounds), label: str(m.label), component: str(m.component), reason: str(m.reason), scopes: scopes(m.scopes),
+    // §15.4: 끈 영역 안의 요소 수, 빈 자리의 둘레(서버가 만든 이름)
+    region: typeof m.empty === 'boolean' ? { members: m.members | 0, empty: m.empty } : null, near: nearList(m.near) };
   const d = m.defaultScope | 0;
   P.scope = d >= 0 && d < P.result.scopes.length ? d : 0;
   renderPin();
@@ -784,6 +790,10 @@ function scopes(list) {
   return out;
 }
 const hasCap = (c) => S.pinCaps.indexOf(c) >= 0;
+function nearList(list) {
+  if (!Array.isArray(list)) return [];
+  return list.slice(0, 4).map((n) => (n && typeof n === 'object' ? str(n.label) : null)).filter(Boolean).map((l) => l.slice(0, 80));
+}
 const chosen = () => (P.result && P.result.scopes.length ? P.result.scopes[P.scope] || null : null);
 // 고른 범위의 이름. 내 피드백 목록·시트 제목이 같이 쓴다(서버의 selectedLabel 과 같은 뜻)
 function chosenLabel() {
@@ -811,6 +821,7 @@ function renderPin() {
   stage.classList.toggle('pin', P.mode);
   $('pinhint').hidden = !P.mode || open;
   $('b-whole').hidden = !hasCap('pin-screen');
+  text('pinhint-t', hasCap('pin-region') ? '짚기 — 누르면 요소, 끌면 영역. 기기는 조작되지 않습니다' : '짚기 — 고칠 곳을 누르세요. 기기는 조작되지 않습니다');
   sheet.hidden = !open;
   placePin();
   if (!open) return;
@@ -820,15 +831,22 @@ function renderPin() {
   const r = P.result;
   let t, s = '';
   if (P.stale) t = '연결이 다시 이어지면 같은 자리를 다시 짚습니다';
-  else if (P.waiting) t = P.point.screen ? '화면을 담는 중입니다…' : '짚은 곳의 요소를 찾는 중입니다…';
+  else if (P.waiting) t = P.point.screen ? '화면을 담는 중입니다…' : P.point.rect ? '끈 영역을 읽는 중입니다…' : '짚은 곳의 요소를 찾는 중입니다…';
   else if (!r) t = '짚지 못했습니다. 다시 짚어 주세요.';
-  else if (r.reason) { t = '짚은 자리'; s = PIN_MISS[r.reason] || PIN_MISS.NO_ELEMENT; }
-  else {
+  else if (r.reason) {
+    t = '짚은 자리'; s = PIN_MISS[r.reason] || PIN_MISS.NO_ELEMENT;
+    if (r.near.length) s += ' 둘레: ' + r.near.join(' · ');
+  } else {
     const c = chosen();
     t = chosenLabel();
-    // 범위를 넓혔으면 처음 짚은 것을 함께 보인다. 에이전트도 둘 다 받는다
-    if (c && c.kind !== 'element' && c.kind !== 'screen' && r.label) s = '처음 짚은 것: ' + r.label;
-    else if (!c || c.kind === 'element') s = r.component ? '컴포넌트 ' + r.component : '';
+    if (c && c.kind === 'region') {
+      // 끈 영역: 안의 요소 수, 비었으면 둘레(§15.4)
+      s = r.region && r.region.empty ? (r.near.length ? '빈 자리 — 둘레: ' + r.near.join(' · ') : '빈 자리')
+        : '안의 요소 ' + (r.region ? r.region.members : 0) + '개' + (r.label ? ' · 가운데: ' + r.label : '');
+    } else if (c && c.kind !== 'element' && c.kind !== 'screen' && r.label) {
+      // 범위를 넓혔으면 처음 짚은 것을 함께 보인다. 에이전트도 둘 다 받는다
+      s = (P.point.rect ? '끈 영역 가운데: ' : '처음 짚은 것: ') + r.label;
+    } else if (!c || c.kind === 'element') s = r.component ? '컴포넌트 ' + r.component : '';
   }
   text('sh-t', t); text('sh-s', s);
   $('sh-s').hidden = !s;
@@ -851,13 +869,15 @@ function placePin() {
   const p = P.mode && view.w ? P.point : null, r = p ? P.result : null, c = r ? chosen() : null;
   // 고른 칸의 테두리. 사다리가 없으면 요소, 화면을 짚었으면 화면 전체
   const b = c ? c.bounds : r && r.bounds ? r.bounds : r && p.screen && !r.reason ? FULL : null;
-  dot.hidden = !p || !!b || !!p.screen;
+  dot.hidden = !p || !!b || !!p.screen || !!p.rect;
+  // 끈 영역은 답을 기다리는 동안 그 사각형을 그대로 보인다
+  if (!pinDrag) frame($('pin-rect'), p && p.rect && !b ? p.rect : null);
   frame(box, b);
   frame($('pin-orig'), c && c.kind !== 'element' && r.bounds ? r.bounds : null);
   const prev = r && P.preview >= 0 && P.preview !== P.scope ? r.scopes[P.preview] : null;
   frame($('pin-prev'), prev ? prev.bounds : null);
   dot.classList.toggle('wait', !!(p && P.waiting));
-  if (!b && p && !p.screen) {
+  if (!b && p && !p.screen && !p.rect) {
     dot.style.left = view.x + p.x * view.w + 'px'; dot.style.top = view.y + p.y * view.h + 'px';
   }
   placeScope(b);
@@ -1002,8 +1022,38 @@ function renderMine() {
 }
 
 $('b-pin').addEventListener('click', () => setPinMode(!P.mode));
+// 끌기로 영역(§15.4). 누른 뒤 10px 넘게 움직이면 끌기다(터치 스크롤 판정과 같은 기준). 두 번째 손가락이 닿으면
+// 사각형을 버리고 확대로 넘긴다. 끌기를 모르는 기기면 지금처럼 탭만 짚는다.
+const rectOf = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
+canvas.addEventListener('pointerdown', (e) => {
+  if (!P.mode || !hasCap('pin-region')) return;
+  if (pinDrag) { pinDrag = null; frame($('pin-rect'), null); return; }
+  const p = ratio(e, false);
+  if (p) pinDrag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, p0: p, p1: null, on: false };
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!pinDrag || e.pointerId !== pinDrag.id) return;
+  if (!pinDrag.on && Math.hypot(e.clientX - pinDrag.x0, e.clientY - pinDrag.y0) > 10) {
+    pinDrag.on = true;
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* 무시 */ }
+  }
+  if (pinDrag.on) { pinDrag.p1 = ratio(e, true); frame($('pin-rect'), rectOf(pinDrag.p0, pinDrag.p1)); }
+});
+function endDrag(e, cancel) {
+  if (!pinDrag || e.pointerId !== pinDrag.id) return;
+  const d = pinDrag;
+  pinDrag = null;
+  if (!d.on || cancel || !d.p1) { placePin(); return; }
+  P.skipClick = true; // 끌기 뒤에 오는 click 은 짚기가 아니다
+  const r = rectOf(d.p0, d.p1);
+  if (r.w < 0.01 || r.h < 0.01) { placePin(); return; } // 선 하나: 영역이라 할 수 없다
+  probePin({ x: r4(r.x + r.w / 2), y: r4(r.y + r.h / 2), rect: { x: r4(r.x), y: r4(r.y), w: r4(r.w), h: r4(r.h) } });
+}
+canvas.addEventListener('pointerup', (e) => endDrag(e, false));
+canvas.addEventListener('pointercancel', (e) => endDrag(e, true));
 canvas.addEventListener('click', (e) => {
   if (!P.mode) return;
+  if (P.skipClick) { P.skipClick = false; return; }
   const p = ratio(e, false);
   if (!p) return;
   e.preventDefault();

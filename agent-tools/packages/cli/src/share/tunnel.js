@@ -11,9 +11,10 @@
  *   handleInput(input)   one §4.3 input from the viewer holding control
  *   onKeyframeRequest()  the server needs a fresh key frame (H.264 only, §12.3)
  *   onFinished()         the share is over: stop timers, release the device
- *   resolvePin(probe)    optional: read what is at a viewer's point (§14.3), or the whole screen
- *                        (`probe.screen`, §15.6). A session that has it announces pinFeatures() in
- *                        HELLO, and only then does the server offer pinning to viewers
+ *   resolvePin(probe)    optional: read what is at a viewer's point (§14.3), the whole screen
+ *                        (`probe.screen`, §15.6) or a dragged rectangle (`probe.rect`, §15.4). A
+ *                        session that has it announces pinFeatures() in HELLO, and only then does
+ *                        the server offer pinning to viewers
  *   pinFeatures()        which kinds of pinning it answers (§15.9): `pin` alone by default
  */
 import WebSocket from 'ws';
@@ -253,7 +254,9 @@ export class TunnelSession {
   onPinProbe(payload) {
     const probe = parseProbe(payload);
     if (!probe || this.closed || !this.canPin()) return;
+    // A shape this session did not announce is not read: the server should not have sent it.
     if (probe.screen && !this.pinFeatures().includes('pin-screen')) return;
+    if (probe.rect && !this.pinFeatures().includes('pin-region')) return;
     const arrived = this.now();
     this.pinQueue = this.pinQueue.then(() => this.answerPin(probe, arrived)).catch(noop);
   }

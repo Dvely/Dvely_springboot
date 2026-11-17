@@ -1,6 +1,7 @@
 /**
- * Pinning on a shared Android emulator (§14.3, #682 PR-2): which view is at the viewer's point,
- * from `uiautomator dump`; which Activity is in front; a crop and the screen, from `screencap`.
+ * Pinning on a shared Android emulator (§14.3, #682 PR-2): which view is at the viewer's point (or
+ * inside a dragged rectangle, §15.4), from `uiautomator dump`; which Activity is in front; a crop and
+ * the screen, from `screencap`.
  *
  * The dump reports a view's accessibility class: a `FancyButton extends Button` shows up as
  * `android.widget.Button` (measured, API 35). So the app's own names come mostly from the Activity,
@@ -8,10 +9,10 @@
  *
  * All of it is read-only: an accessibility snapshot, `dumpsys`, a screenshot. Nothing is tapped.
  */
-import { MAX_CROP_BYTES, MAX_SCREEN_BYTES, LIMIT, clip, r4, screenResult, unresolved } from '../pin.js';
+import { MAX_CROP_BYTES, MAX_SCREEN_BYTES, LIMIT, clip, probePoint, r4, screenResult, unresolved } from '../pin.js';
 import { jpegUnder, parseScreencap } from '../jpeg.js';
 import { findSourceHints } from '../source-hints.js';
-import { buildLadder, scopeIdsOf } from '../scope.js';
+import { buildLadder, buildRegion, nearAround, scopeIdsOf } from '../scope.js';
 
 const CROP_MARGIN = 24;
 const CROP_MAX_SIDE = 800;
@@ -108,12 +109,19 @@ function labelOf(n) {
 }
 
 /**
- * The description of the view at the point (§14.3), without images.
+ * The description of the view at the point (§14.3), without images. A point where only the window is
+ * says NO_ELEMENT with the nearest named view on each side (`near`, §15.4): "here, under the form".
  *
  * @param {{width: number, height: number}} size the screen in device pixels (the dump's coordinates)
  */
 export function describeAndroidPoint(nodes, probe, size, top) {
-  const screen = top ? { label: `${top.package}/${top.activity}`, package: top.package, activity: top.activity } : undefined;
+  const result = pointResult(nodes, probe, size, top);
+  if (!result.ok) result.near = nearAround({ rect: { x: probe.x, y: probe.y, w: 0, h: 0 }, nodes, boundsOf: boundsIn(size), memberOf: memberOfIn(nodes) });
+  return result;
+}
+
+function pointResult(nodes, probe, size, top) {
+  const screen = top ? screenOf(top) : undefined;
   const px = probe.x * size.width;
   const py = probe.y * size.height;
   const picked = pickNode(nodes, px, py);
@@ -176,6 +184,66 @@ export function describeAndroidPoint(nodes, probe, size, top) {
   };
 }
 
+/**
+ * The description of a dragged rectangle (§15.4), without images: the view at its centre exactly as
+ * a tap there would say it (`element`, left out when only the window is there), the views inside it
+ * (`members`), the layouts holding it (`scopes`, the rectangle first), and around an empty one the
+ * nearest views (`near`). All from the one dump.
+ *
+ * @param {{probeId: string, rect: {x: number, y: number, w: number, h: number}}} probe
+ */
+export function describeAndroidRegion(nodes, probe, size, top) {
+  const centre = { probeId: probe.probeId, ...probePoint(probe) };
+  const at = pointResult(nodes, centre, size, top);
+  const region = buildRegion({ rect: probe.rect, nodes, boundsOf: boundsIn(size), describe: describeStep, memberOf: memberOfIn(nodes) });
+  const screen = top ? screenOf(top) : undefined;
+  return {
+    probeId: probe.probeId,
+    ok: true,
+    ...(screen ? { screen } : {}),
+    point: { x: r4(centre.x), y: r4(centre.y) },
+    ...(at.ok ? { element: at.element } : {}),
+    ancestors: at.ok ? at.ancestors : [],
+    components: at.ok ? at.components : [],
+    scopes: region.scopes,
+    defaultScope: 0,
+    members: region.members,
+    empty: region.empty,
+    ...(region.near ? { near: region.near } : {}),
+  };
+}
+
+/** A view's box as screen ratios, clipped to the screen; null when none of it is on screen. */
+const boundsIn = (size) => (n) => {
+  if (!n.bounds) return null;
+  const l = Math.max(n.bounds.l, 0);
+  const t = Math.max(n.bounds.t, 0);
+  const r = Math.min(n.bounds.r, size.width);
+  const b = Math.min(n.bounds.b, size.height);
+  return r > l && b > t ? { x: l / size.width, y: t / size.height, w: (r - l) / size.width, h: (b - t) / size.height } : null;
+};
+
+/**
+ * A view as a member of an area or a neighbour (§15.4): what pickNode calls named — pressable, says
+ * something, or has an app id. A pressable container with nothing of its own to say (Compose) is
+ * named by the first label inside it, as a tap on it would be; the label itself then goes, being part
+ * of it. A password field's text is never read.
+ */
+function memberOfIn(nodes) {
+  const inner = new Map();
+  for (const n of nodes) {
+    const label = labelOf(n);
+    if (!label) continue;
+    for (let a = n.parent, i = 0; a && i < 3; a = a.parent, i++) {
+      if (a.clickable && !inner.has(a)) inner.set(a, label);
+    }
+  }
+  return (n) => {
+    if (!named(n)) return null;
+    return { type: shortClass(n.cls) || 'View', text: labelOf(n) || (n.clickable ? inner.get(n) : '') || null, id: shortId(n.rid) || null, interactive: n.clickable };
+  };
+}
+
 const appClass = (cls) => {
   if (!cls || PLATFORM_CLASS.test(cls)) return null;
   const name = shortClass(cls);
@@ -190,34 +258,25 @@ const LIST_CLASS = /(RecyclerView|ListView|GridView)$/;
  * views) is never a step.
  */
 function androidLadder(node, element, size) {
-  return buildLadder({
-    element,
-    node,
-    component: appClass(node.cls),
-    boundsOf: (n) => {
-      if (!n.bounds) return null;
-      const l = Math.max(n.bounds.l, 0);
-      const t = Math.max(n.bounds.t, 0);
-      const r = Math.min(n.bounds.r, size.width);
-      const b = Math.min(n.bounds.b, size.height);
-      return r > l && b > t ? { x: l / size.width, y: t / size.height, w: (r - l) / size.width, h: (b - t) / size.height } : null;
-    },
-    describe: (n) => {
-      const appId = n.rid && !n.rid.startsWith('android:') ? shortId(n.rid) : '';
-      const component = appClass(n.cls);
-      if (!appId && !n.desc && !component && !n.clickable && !LIST_CLASS.test(n.cls)) return null;
-      return { kind: component ? 'component' : 'group', type: shortClass(n.cls) || 'View', text: n.desc || null, id: appId || null, component };
-    },
-  });
+  return buildLadder({ element, node, component: appClass(node.cls), boundsOf: boundsIn(size), describe: describeStep });
+}
+
+function describeStep(n) {
+  const appId = n.rid && !n.rid.startsWith('android:') ? shortId(n.rid) : '';
+  const component = appClass(n.cls);
+  if (!appId && !n.desc && !component && !n.clickable && !LIST_CLASS.test(n.cls)) return null;
+  return { kind: component ? 'component' : 'group', type: shortClass(n.cls) || 'View', text: n.desc || null, id: appId || null, component };
 }
 
 /**
- * Reads the point on the emulator: the dump and the screenshot in parallel.
+ * Reads the point (or the dragged rectangle, §15.4) on the emulator: the dump and the screenshot in
+ * parallel.
  *
  * @param {object} o
  * @param {{uiDump: Function, screencapRaw: Function, foregroundActivity: Function}} o.adb
- * @param {{probeId: string, x: number, y: number}|{probeId: string, screen: true}} o.probe a point, or
- *   the whole screen (resolveAndroidScreen)
+ * @param {{probeId: string, x: number, y: number}|{probeId: string, screen: true}|
+ *   {probeId: string, rect: object}} o.probe a point, the whole screen (resolveAndroidScreen) or a
+ *   rectangle
  * @param {string|null} o.project
  * @returns {Promise<{result: object, crop: Buffer|null, screen: Buffer|null}>}
  */
@@ -233,31 +292,28 @@ export async function resolveAndroidPin({ adb, probe, project, findHints = findS
   const size = shot ? { width: shot.width, height: shot.height } : rootSize(nodes);
   const screen = shot ? screenJpeg(shot) : null;
   if (!size) return { result: unresolved(probe, xml ? 'NO_ELEMENT' : 'UNSUPPORTED'), crop: null, screen };
+  // A rectangle is cut as the person drew it, with the margin an element gets (§15.4).
+  const around = (b) =>
+    jpegUnder(
+      shot,
+      { x: b.x * size.width - CROP_MARGIN, y: b.y * size.height - CROP_MARGIN, width: b.w * size.width + CROP_MARGIN * 2, height: b.h * size.height + CROP_MARGIN * 2 },
+      { maxSide: CROP_MAX_SIDE, maxBytes: MAX_CROP_BYTES, quality: 80 }
+    );
   if (!nodes.length) {
     // An app the accessibility tree does not see into (games, Flutter without semantics): the point
     // and the picture still go (§14.1).
-    return { result: unresolved(probe, 'UNSUPPORTED', top ? screenOf(top) : undefined), crop: shot ? spot(shot, probe) : null, screen };
+    const crop = shot ? (probe.rect ? around(probe.rect) : spot(shot, probe)) : null;
+    return { result: unresolved(probe, 'UNSUPPORTED', top ? screenOf(top) : undefined), crop, screen };
   }
 
-  const result = describeAndroidPoint(nodes, probe, size, top);
+  const result = probe.rect ? describeAndroidRegion(nodes, probe, size, top) : describeAndroidPoint(nodes, probe, size, top);
   if (result.ok) {
-    result.sourceHints = await findHints({ project, components: result.components, element: result.element, scopeIds: scopeIdsOf(result.scopes) }).catch(() => []);
+    result.sourceHints = await findHints({ project, components: result.components, element: result.element ?? {}, scopeIds: scopeIdsOf(result.scopes) }).catch(() => []);
   }
   let crop = null;
   if (shot) {
     const b = result.element?.bounds;
-    crop = b
-      ? jpegUnder(
-          shot,
-          {
-            x: b.x * size.width - CROP_MARGIN,
-            y: b.y * size.height - CROP_MARGIN,
-            width: b.w * size.width + CROP_MARGIN * 2,
-            height: b.h * size.height + CROP_MARGIN * 2,
-          },
-          { maxSide: CROP_MAX_SIDE, maxBytes: MAX_CROP_BYTES, quality: 80 }
-        )
-      : spot(shot, probe);
+    crop = probe.rect ? around(probe.rect) : b ? around(b) : spot(shot, probe);
   }
   return { result, crop, screen };
 }

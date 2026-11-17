@@ -8,7 +8,7 @@
  *
  * Since §15 a point's answer also carries a scope ladder (`scopes`, narrow to wide, the screen
  * last) so the viewer can widen the pin without asking again, and a probe can ask for the whole
- * screen instead of a point.
+ * screen or a dragged rectangle (§15.4) instead of a point.
  *
  * Reading is all a probe does. Nothing here clicks, types or runs anything the viewer sent; the
  * viewer only chooses the point.
@@ -37,6 +37,11 @@ export const LIMIT = Object.freeze({
   /** §15.3: a ladder has at most this many steps, the screen included, and each says this much */
   scopes: 6,
   scopeText: 60,
+  /** §15.4: a dragged area lists this many elements inside it, each saying this much */
+  members: 12,
+  memberText: 60,
+  /** §15.4: an empty spot names at most one neighbour per side */
+  near: 4,
 });
 
 /**
@@ -48,22 +53,44 @@ export const PIN_DEADLINE_MS = 4000;
 const PROBE_ID = /^p[0-9]{1,9}$/;
 
 /**
- * A point (`{probeId, x, y}`, §14.3) or the whole screen (`{probeId, screen: true}`, §15.6).
+ * A point (`{probeId, x, y}`, §14.3), the whole screen (`{probeId, screen: true}`, §15.6) or a dragged
+ * rectangle (`{probeId, rect: {x, y, w, h}}`, §15.4), all in screen ratios.
  *
- * A shape this CLI does not read yet — a dragged `rect` (§15.4), or a screen probe that also names a
- * point — is dropped rather than guessed at: the server only sends what HELLO announced.
+ * Anything else — a rectangle that also names a point or the screen, one with no area or reaching
+ * past the screen — is dropped rather than guessed at: the server only sends what HELLO announced,
+ * so an odd shape is a bug or someone else talking.
  *
- * @returns {{probeId: string, x: number, y: number}|{probeId: string, screen: true}|null} null when
- *   the server sent something odd
+ * @returns {{probeId: string, x: number, y: number}|{probeId: string, screen: true}|
+ *   {probeId: string, rect: {x: number, y: number, w: number, h: number}}|null} null when the server
+ *   sent something odd
  */
 export function parseProbe(payload) {
   if (!payload || typeof payload !== 'object') return null;
   const { probeId, x, y } = payload;
   if (typeof probeId !== 'string' || !PROBE_ID.test(probeId)) return null;
-  if (payload.rect !== undefined) return null;
+  if (payload.rect !== undefined) {
+    if (x !== undefined || y !== undefined || payload.screen === true) return null;
+    const rect = parseRect(payload.rect);
+    return rect ? { probeId, rect } : null;
+  }
   if (payload.screen === true) return x === undefined && y === undefined ? { probeId, screen: true } : null;
   if (!isRatio(x) || !isRatio(y)) return null;
   return { probeId, x, y };
+}
+
+/** A rectangle inside the screen with some area: 0 ≤ x, y; w, h > 0; x + w ≤ 1; y + h ≤ 1. */
+function parseRect(r) {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+  const { x, y, w, h } = r;
+  if (![x, y, w, h].every((v) => typeof v === 'number' && Number.isFinite(v))) return null;
+  if (x < 0 || y < 0 || !(w > 0) || !(h > 0) || x + w > 1 || y + h > 1) return null;
+  return { x, y, w, h };
+}
+
+/** The point a probe stands for: its own, or the centre of its rectangle (§15.4). */
+export function probePoint(probe) {
+  if (probe?.rect) return { x: probe.rect.x + probe.rect.w / 2, y: probe.rect.y + probe.rect.h / 2 };
+  return { x: probe?.x, y: probe?.y };
 }
 
 /**
@@ -88,9 +115,13 @@ export function clip(value, max = LIMIT.text) {
 /** A 0..1 ratio rounded to four places (what the viewer draws with). */
 export const r4 = (v) => Math.round(Math.min(Math.max(v, 0), 1) * 10000) / 10000;
 
-/** The answer when nothing could be read; the point (if there was one) and the screen still go (§14.1). */
+/**
+ * The answer when nothing could be read; the point (if there was one) and the screen still go (§14.1).
+ * A rectangle's point is its centre, as in its answer when it is read (§15.4).
+ */
 export function unresolved(probe, reason, screen = null) {
-  const point = isRatio(probe.x) && isRatio(probe.y) ? { point: { x: r4(probe.x), y: r4(probe.y) } } : {};
+  const at = probePoint(probe);
+  const point = isRatio(at.x) && isRatio(at.y) ? { point: { x: r4(at.x), y: r4(at.y) } } : {};
   return { probeId: probe.probeId, ok: false, reason, ...point, ...(screen ? { screen } : {}) };
 }
 
@@ -109,9 +140,12 @@ export function screenResult(probe, screen) {
  * Keeps the description under `max` bytes (16 KiB, or what the server allowed in WELCOME) by letting
  * go of the least useful parts first.
  *
- * The scope ladder goes first, from its widest step inwards (§15.9): an outer step is the cheapest
- * thing to lose, since the viewer can still choose the element or the whole screen. The element
- * step and the screen step stay, and so does `element`, through everything but the last resort.
+ * A dragged area's extras go first (§15.9): the words of the elements inside it (the crop shows
+ * them), then the neighbours of an empty spot, then the list itself — its count stays on the region
+ * step. Then the scope ladder, from its widest step inwards: an outer step is the cheapest thing to
+ * lose, since the viewer can still choose the first step or the whole screen. The first step (the
+ * element, or the region) and the screen step stay, and so does `element`, through everything but
+ * the last resort.
  *
  * @returns {string} JSON
  */
@@ -121,6 +155,11 @@ export function fitResult(result, max = MAX_RESULT_JSON_BYTES) {
   if (Buffer.byteLength(json) <= limit) return json;
   const slim = structuredClone(result);
   const steps = [];
+  if (Array.isArray(slim.members) && slim.members.some((m) => m?.text !== undefined)) {
+    steps.push(() => (slim.members = slim.members.map((m) => (m && typeof m === 'object' ? withoutText(m) : m))));
+  }
+  if (slim.near !== undefined) steps.push(() => delete slim.near);
+  if (slim.members !== undefined) steps.push(() => delete slim.members);
   // Narrow to wide, the screen last: the step before the screen is the widest one left.
   const outer = Array.isArray(slim.scopes) ? slim.scopes.length - 2 : 0;
   for (let i = 0; i < outer; i++) {
@@ -148,6 +187,11 @@ export function fitResult(result, max = MAX_RESULT_JSON_BYTES) {
     if (Buffer.byteLength(json) <= limit) return json;
   }
   return JSON.stringify(unresolved({ probeId: result.probeId, x: result.point?.x, y: result.point?.y }, 'NO_ELEMENT'));
+}
+
+function withoutText(member) {
+  const { text, ...rest } = member;
+  return rest;
 }
 
 const isJpeg = (b) => Buffer.isBuffer(b) && b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;

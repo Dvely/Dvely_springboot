@@ -173,7 +173,7 @@ describe('share session over a real tunnel socket', () => {
     assert.equal(hello.streamId, 0);
     assert.equal(hello.binary, true);
     // §15.9: a web share answers points with their scope ladder, and the whole screen
-    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'WEB', target: 'http://localhost:5173', features: ['pin', 'pin-scope', 'pin-screen'] });
+    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'WEB', target: 'http://localhost:5173', features: ['pin', 'pin-scope', 'pin-screen', 'pin-region'] });
     assert.ok(!cdp.calls.some((c) => c.method === 'Page.screencastFrameAck'), 'no ack before WELCOME');
 
     conn.send(KIND.WELCOME, { shareId: 7, expiresAt: '2026-11-12T13:00:00Z' });
@@ -417,7 +417,7 @@ describe('pinning over a real tunnel socket (§14, #682)', () => {
     const conn = await server.nextConnection();
     cdp.emit('page', 'Page.screencastFrame', frameEvent(JPEG, 1));
     const hello = await conn.next();
-    assert.deepEqual(hello.json.features, ['pin', 'pin-scope', 'pin-screen']);
+    assert.deepEqual(hello.json.features, ['pin', 'pin-scope', 'pin-screen', 'pin-region']);
     conn.send(KIND.WELCOME, { shareId: 7, ...welcome });
     assert.equal((await conn.next()).kind, KIND.SCREEN_CONFIG);
     assert.equal((await conn.next()).kind, KIND.SCREEN_FRAME);
@@ -557,11 +557,119 @@ describe('pinning over a real tunnel socket (§14, #682)', () => {
     assert.deepEqual(screen, JPEG);
   });
 
+  /** What inspectPoint returns for a dragged area over the demo form (§15.4); some of it wrong on purpose. */
+  const AREA_RAW = () => ({
+    ok: true,
+    screen: SAVE_BUTTON.screen,
+    view: SAVE_BUTTON.view,
+    element: SAVE_BUTTON.element,
+    rect: SAVE_BUTTON.rect,
+    ancestors: [{ type: 'form', id: null, text: null }],
+    components: [{ name: 'SaveButton', source: { url: 'http://localhost:5173/src/components/SaveButton.tsx?t=17', line: 2 } }],
+    framework: 'react',
+    scopes: [
+      { kind: 'region', type: 'whatever', bounds: { x: 0, y: 0, w: 1, h: 1 } },
+      { kind: 'group', type: 'form', id: 'profile', selector: '#profile', bounds: { x: 0.05, y: 0.15, w: 0.6, h: 0.4 } },
+      { kind: 'element', type: 'button', bounds: { x: 0, y: 0, w: 0.1, h: 0.1 } },
+      { kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } },
+    ],
+    defaultScope: 3,
+    members: [
+      { type: 'h2', text: '프로필', bounds: { x: 0.1, y: 0.16, w: 0.3, h: 0.04 } },
+      { type: 'button', text: '저장'.repeat(40), id: 'save', bounds: SAVE_BUTTON.element.bounds },
+      { type: 'a', text: '밖', bounds: { x: 0.1, y: 0.3, w: 0, h: 0.05 } },
+      ...Array.from({ length: 14 }, (_, i) => ({ type: 'a', text: '항목 ' + i, bounds: { x: 0.1, y: 0.3 + i * 0.01, w: 0.2, h: 0.01 } })),
+    ],
+    near: [{ dir: 'up', type: 'h1', bounds: { x: 0, y: 0, w: 1, h: 0.1 }, distance: 0.05 }],
+  });
+  const AREA = { x: 0.1, y: 0.2, w: 0.5, h: 0.25 };
+
+  it('answers a dragged area: the centre element, what is inside, the containers, a crop of the area (§15.4)', { timeout: 10000 }, async () => {
+    const project = demoProject();
+    const { cdp, conn } = await connected(
+      {
+        'Runtime.evaluate': () => ({ result: { value: AREA_RAW() } }),
+        'Page.captureScreenshot': () => ({ data: viewportPng().toString('base64') }),
+      },
+      { project },
+      { shareId: 7, pinResultMax: 49152 }
+    );
+    conn.send(KIND.PIN_PROBE, { probeId: 'p11', rect: AREA });
+    const { json, crop } = readPinResult((await conn.next()).payload);
+    assert.equal(json.ok, true);
+    assert.deepEqual(json.point, { x: 0.35, y: 0.325 }, 'the centre');
+    assert.deepEqual(json.element, SAVE_BUTTON.element);
+    assert.deepEqual(json.ancestors, [{ type: 'form' }]);
+    assert.deepEqual(json.components, [{ name: 'SaveButton', file: 'src/components/SaveButton.tsx', line: 1 }]);
+    // The region step is the probe's rectangle, never the page's; only known kinds follow it.
+    assert.deepEqual(json.scopes, [
+      { kind: 'region', type: 'region', bounds: AREA, members: 12 },
+      { kind: 'group', type: 'form', id: 'profile', selector: '#profile', bounds: { x: 0.05, y: 0.15, w: 0.6, h: 0.4 } },
+      SCREEN_STEP,
+    ]);
+    assert.equal(json.defaultScope, 0);
+    assert.equal(json.members.length, 12, 'twelve at most; one with no box left out');
+    assert.deepEqual(json.members[0], { type: 'h2', text: '프로필', bounds: { x: 0.1, y: 0.16, w: 0.3, h: 0.04 } });
+    assert.equal(Array.from(json.members[1].text).length, 60);
+    assert.equal(json.empty, false);
+    assert.equal(json.near, undefined, 'neighbours only around an empty area');
+    assert.ok(json.sourceHints.some((h) => h.reason === 'COMPONENT' && h.file === 'src/components/SaveButton.tsx'), JSON.stringify(json.sourceHints));
+    const evaluate = cdp.calls.find((c) => c.method === 'Runtime.evaluate');
+    assert.match(evaluate.params.expression, /\(\{"rect":\{"x":0\.1,"y":0\.2,"w":0\.5,"h":0\.25\},"limit":/);
+    // The area plus 16 CSS px, at DPR 2 — not the centre element: CSS 23..250 × 152.8..395.8
+    assert.ok(isJpeg(crop));
+    const sof = crop.indexOf(Buffer.from([0xff, 0xc0]));
+    assert.deepEqual([crop.readUInt16BE(sof + 7), crop.readUInt16BE(sof + 5)], [454, 487]);
+  });
+
+  it('answers an empty area with its neighbours; one the page could not finish is not called empty', { timeout: 10000 }, async () => {
+    const answers = [
+      { ...AREA_RAW(), element: undefined, members: [], near: [
+        { dir: 'down', type: 'footer', text: '© Qeploy', bounds: { x: 0, y: 0.9, w: 1, h: 0.1 }, distance: 0.12345 },
+        { dir: 'down', type: 'p', bounds: { x: 0, y: 0.8, w: 1, h: 0.1 }, distance: 0.1 },
+        { dir: 'north', type: 'p', bounds: { x: 0, y: 0, w: 1, h: 0.1 }, distance: 0.1 },
+        { dir: 'up', type: 'h2', text: '요금제', bounds: { x: 0.1, y: 0.1, w: 0.3, h: 0.05 }, distance: -1 },
+        { dir: 'left', type: 'nav', bounds: { x: 0, y: 0.2, w: 0.05, h: 0.3 }, distance: 0.05 },
+      ] },
+      { ...AREA_RAW(), members: [], cut: true, near: [{ dir: 'up', type: 'h2', bounds: { x: 0, y: 0, w: 1, h: 0.1 }, distance: 0.1 }] },
+    ];
+    const { conn } = await connected({ 'Runtime.evaluate': () => ({ result: { value: answers.shift() } }) });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p12', rect: AREA });
+    let { json } = readPinResult((await conn.next()).payload);
+    assert.equal(json.ok, true);
+    assert.equal(json.element, undefined, 'the centre was the background');
+    assert.deepEqual(json.components, []);
+    assert.deepEqual(json.members, []);
+    assert.equal(json.empty, true);
+    assert.equal(json.scopes[0].members, 0);
+    // One per side, known sides only, a distance that makes sense
+    assert.deepEqual(json.near, [
+      { dir: 'down', type: 'footer', text: '© Qeploy', bounds: { x: 0, y: 0.9, w: 1, h: 0.1 }, distance: 0.1235 },
+      { dir: 'left', type: 'nav', bounds: { x: 0, y: 0.2, w: 0.05, h: 0.3 }, distance: 0.05 },
+    ]);
+
+    conn.send(KIND.PIN_PROBE, { probeId: 'p13', rect: AREA });
+    ({ json } = readPinResult((await conn.next()).payload));
+    assert.deepEqual(json.members, []);
+    assert.equal(json.empty, false);
+    assert.equal(json.near, undefined);
+    assert.deepEqual(json.scopes[0], { kind: 'region', type: 'region', bounds: AREA }, 'no count: not known');
+  });
+
+  it('sends the neighbours of an empty tap', { timeout: 10000 }, async () => {
+    const near = [{ dir: 'up', type: 'a', text: '자세히', bounds: { x: 0.3, y: 0.375, w: 0.1, h: 0.05 }, distance: 0.1375 }];
+    const { conn } = await connected({ 'Runtime.evaluate': () => ({ result: { value: { ok: false, reason: 'NO_ELEMENT', screen: { label: '/' }, view: SAVE_BUTTON.view, near } } }) });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p14', x: 0.35, y: 0.5625 });
+    const { json } = readPinResult((await conn.next()).payload);
+    assert.deepEqual(json, { probeId: 'p14', ok: false, reason: 'NO_ELEMENT', point: { x: 0.35, y: 0.5625 }, screen: { label: '/' }, near });
+  });
+
   it('ignores a malformed probe', { timeout: 10000 }, async () => {
     const { conn, cdp } = await connected({ 'Runtime.evaluate': () => ({ result: { value: SAVE_BUTTON } }) });
     conn.send(KIND.PIN_PROBE, { probeId: 'x1', x: 0.5, y: 0.5 });
     conn.send(KIND.PIN_PROBE, { probeId: 'p4', x: 2, y: 0.5 });
-    conn.send(KIND.PIN_PROBE, { probeId: 'p6', rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } }); // §15.4, not yet
+    conn.send(KIND.PIN_PROBE, { probeId: 'p6', rect: { x: 0.9, y: 0.1, w: 0.2, h: 0.2 } }); // past the right edge
+    conn.send(KIND.PIN_PROBE, { probeId: 'p7', rect: { x: 0.1, y: 0.1, w: 0, h: 0.2 } }); // no area
     conn.send(KIND.PIN_PROBE, { probeId: 'p5', x: 0.5, y: 0.5 });
     const { json } = readPinResult((await conn.next()).payload);
     assert.equal(json.probeId, 'p5', 'only the well-formed probe was answered');
@@ -661,6 +769,28 @@ describe('pin limits and features over a real tunnel socket (§15.9)', () => {
     const answer = readPinResult((await conn.next()).payload);
     assert.deepEqual(answer.json, { probeId: 'p3', ok: false, reason: 'TIMEOUT' });
     assert.deepEqual(answer.screen, JPEG);
+  });
+
+  it('reads a dragged area only after announcing pin-region (§15.9)', { timeout: 10000 }, async () => {
+    const asked = [];
+    const resolvePin = (probe) => {
+      asked.push(probe);
+      return { result: { probeId: probe.probeId, ok: true, scopes: [{ kind: 'region' }] }, crop: null, screen: null };
+    };
+    const { session, conn } = await bare(resolvePin);
+    conn.send(KIND.WELCOME, { shareId: 7 });
+    session.pinFeatures = () => ['pin', 'pin-scope', 'pin-screen'];
+    conn.send(KIND.PIN_PROBE, { probeId: 'p1', rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p2', x: 0.5, y: 0.5 });
+    let { json } = readPinResult((await conn.next()).payload);
+    assert.equal(json.probeId, 'p2');
+    assert.deepEqual(asked.map((p) => p.probeId), ['p2'], 'not announced, not read');
+
+    session.pinFeatures = () => ['pin', 'pin-region'];
+    conn.send(KIND.PIN_PROBE, { probeId: 'p3', rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } });
+    ({ json } = readPinResult((await conn.next()).payload));
+    assert.equal(json.probeId, 'p3');
+    assert.deepEqual(asked.at(-1), { probeId: 'p3', rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } });
   });
 });
 

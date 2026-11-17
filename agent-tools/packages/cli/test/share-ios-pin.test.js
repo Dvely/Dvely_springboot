@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { AxeCommands } from '../src/share/ios/axe.js';
-import { describeIosPoint, parseAxTree, pickElement, resolveIosPin, screenTitle } from '../src/share/ios/pin.js';
+import { describeIosPoint, describeIosRegion, parseAxTree, pickElement, resolveIosPin, screenTitle } from '../src/share/ios/pin.js';
 import { clearListings } from '../src/share/source-hints.js';
 import { ACME_TREE, APP_PID } from './fixtures/ios-acme.js';
 
@@ -147,12 +147,73 @@ describe('ios pin description (§14.3, #682 iOS)', () => {
     assert.equal(empty.ok, false);
     assert.equal(empty.reason, 'NO_ELEMENT');
     assert.equal(empty.screen.label, 'dev.qeploy.acme');
+    // §15.4: the nearest named element around it; the scroll indicator is none
+    assert.deepEqual(empty.near, [
+      { dir: 'up', type: 'StaticText', text: '지금은 무료 요금제를 쓰고 있습니다.', bounds: { x: 0.0398, y: 0.6499, w: 0.9204, h: 0.0599 }, distance: 0.1598 },
+    ]);
   });
 
   it('lists named ancestors: the navigation bar around its title', () => {
     const result = describeIosPoint(parseAxTree(ACME_TREE), at(60, 140), POINTS);
     assert.deepEqual(result.element.text, '프로필');
     assert.deepEqual(result.ancestors, [{ type: 'Group', id: '프로필' }]);
+  });
+});
+
+describe('a dragged area on the simulator (§15.4, #694 PR-4)', () => {
+  const area = (l, t, r, b) => ({ x: l / POINTS.width, y: t / POINTS.height, w: (r - l) / POINTS.width, h: (b - t) / POINTS.height });
+
+  it('lists the named elements inside by their labels — never a value — and the centre element', () => {
+    const r = describeIosRegion(parseAxTree(ACME_TREE), { probeId: 'p1', rect: area(10, 160, 392, 430) }, POINTS, { bundleId: 'dev.qeploy.acme', appPid: APP_PID });
+    assert.equal(r.ok, true);
+    assert.equal(r.screen.label, 'dev.qeploy.acme');
+    assert.equal(r.element, undefined, 'the centre (201, 295) is between the fields: background');
+    assert.deepEqual(
+      r.members.map((m) => [m.type, m.text ?? '', m.id ?? '']),
+      [
+        ['Heading', '이름', ''],
+        ['TextField', '', 'nameField'],
+        ['SecureTextField', '', 'passwordField'],
+        // the switch row; its label and its knob are part of it
+        ['CheckBox', '알림 받기', ''],
+      ]
+    );
+    assert.deepEqual(r.scopes.map((s) => s.kind), ['region', 'screen'], 'SwiftUI names no container here');
+    assert.equal(r.scopes[0].members, 4);
+    const json = JSON.stringify(r);
+    assert.equal(json.includes('김민지'), false);
+    assert.equal(json.includes('••'), false);
+  });
+
+  it('starts the wider steps at the named container holding it', () => {
+    const tree = structuredClone(ACME_TREE);
+    const list = tree.data.result[0].children[0].children[1];
+    const row = list.children.find((n) => n.type === 'CheckBox');
+    const named = { type: 'Group', role: 'AXGroup', AXUniqueId: 'securitySection', frame: { x: 16, y: 320, width: 370, height: 104 }, children: [row] };
+    const cell = { type: 'Cell', role: 'AXCell', frame: { x: 0, y: 300, width: 402, height: 140 }, children: [named] };
+    const table = { type: 'Table', role: 'AXTable', frame: { x: 0, y: 160, width: 402, height: 500 }, children: [cell] };
+    list.children = list.children.filter((n) => n !== row).concat(table);
+
+    const nodes = parseAxTree(tree);
+    const r = describeIosRegion(nodes, { probeId: 'p2', rect: area(20, 330, 380, 415) }, POINTS);
+    assert.equal(r.element.text, '알림 받기');
+    assert.deepEqual(r.scopes.map((s) => s.kind + ':' + s.type + (s.id ? '#' + s.id : '')), ['region:region', 'group:Group#securitySection', 'group:Cell', 'group:Table', 'screen:screen']);
+    // A named group only names itself: what is in it stays. The section box is tall, so the switch
+    // row sits on its row (centres 372 and 397, within 26).
+    assert.deepEqual(r.members.map((m) => m.id ?? m.text), ['passwordField', 'securitySection', '알림 받기']);
+    // A little more and the cell (61% inside) is in: something to press, it speaks for what is in it,
+    // named by the first label inside.
+    const more = describeIosRegion(nodes, { probeId: 'p3', rect: area(20, 325, 380, 420) }, POINTS);
+    assert.deepEqual(more.members.map((m) => `${m.type}:${m.id ?? m.text}`), ['SecureTextField:passwordField', 'Cell:알림 받기']);
+  });
+
+  it('around an empty area, the nearest element on each side', () => {
+    const r = describeIosRegion(parseAxTree(ACME_TREE), { probeId: 'p3', rect: area(20, 640, 380, 800) }, POINTS);
+    assert.deepEqual(r.members, []);
+    assert.equal(r.empty, true);
+    assert.deepEqual(r.near, [
+      { dir: 'up', type: 'StaticText', text: '지금은 무료 요금제를 쓰고 있습니다.', bounds: { x: 0.0398, y: 0.6499, w: 0.9204, h: 0.0599 }, distance: 0.0225 },
+    ]);
   });
 });
 
@@ -211,6 +272,29 @@ describe('ios pin on the simulator (§14.3, #682 iOS)', () => {
     assert.equal(result.reason, 'UNSUPPORTED');
     assert.deepEqual(jpegSize(crop), { width: 240, height: 160 }, 'the spot around the point');
     assert.equal(screen, FRAME);
+  });
+
+  it('crops a dragged area as drawn, 12 pt around it, and searches its container’s id (§15.4)', async () => {
+    const rect = { x: 20 / 402, y: 640 / 874, w: 360 / 402, h: 160 / 874 };
+    const { result, crop, screen } = await resolveIosPin({ commands: fakeCommands(), probe: { probeId: 'p5', rect }, project, frame: FRAME });
+    assert.equal(result.ok, true);
+    assert.equal(result.empty, true);
+    assert.deepEqual(result.sourceHints, []);
+    assert.deepEqual(jpegSize(crop), { width: 384, height: 184 });
+    assert.equal(screen, FRAME);
+
+    // The save button in the middle of an area: its id is found as a tap's would be.
+    const around = { x: 10 / 402, y: 440 / 874, w: 382 / 402, h: 90 / 874 };
+    const save = await resolveIosPin({ commands: fakeCommands(), probe: { probeId: 'p6', rect: around }, project, frame: FRAME });
+    assert.equal(save.result.element.id, 'saveButton');
+    assert.deepEqual(save.result.members.map((m) => m.id), ['saveButton']);
+    assert.ok(save.result.sourceHints.some((h) => h.file === 'Acme/SaveButton.swift' && h.reason === 'ID'), JSON.stringify(save.result.sourceHints));
+
+    // No tree: the centre and the area's crop still go.
+    const blind = await resolveIosPin({ commands: fakeCommands({ failTree: true }), probe: { probeId: 'p7', rect }, project, points: POINTS, frame: FRAME });
+    assert.equal(blind.result.reason, 'UNSUPPORTED');
+    assert.deepEqual(blind.result.point, { x: 0.4975, y: 0.8238 });
+    assert.deepEqual(jpegSize(blind.crop), { width: 384, height: 184 });
   });
 
   it('makes no crop when the screenshot is not the screen the tree describes (turned)', async () => {

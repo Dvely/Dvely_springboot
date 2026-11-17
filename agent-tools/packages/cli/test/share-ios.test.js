@@ -769,7 +769,7 @@ describe('ios share session (§13)', () => {
 
     const hello = await conn.next();
     assert.equal(hello.kind, KIND.HELLO);
-    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'IOS', target: 'iPhone 17 · com.example.app', features: ['pin', 'pin-scope', 'pin-screen'] });
+    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'IOS', target: 'iPhone 17 · com.example.app', features: ['pin', 'pin-scope', 'pin-screen', 'pin-region'] });
     assert.deepEqual(commands.sent, ['displays'], 'the size in points is read before anything else');
     assert.deepEqual(session.points, SCREEN);
 
