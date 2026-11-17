@@ -7,6 +7,8 @@
  * nothing and calls nothing of the page's own.
  */
 import { LIMIT, clip, r4, unresolved } from './pin.js';
+import { jpegUnder } from './jpeg.js';
+import { parsePng } from './png.js';
 import { definitionLine, findSourceHints, toProjectPath } from './source-hints.js';
 
 const EVALUATE_TIMEOUT_MS = 1500;
@@ -362,28 +364,26 @@ export function spotAround(probe, view) {
 }
 
 /**
- * A JPEG of one area of the page. Large areas are scaled down so the crop stays a crop (and under
- * the 512 KiB the server keeps). CDP's clip is in page coordinates, hence the scroll offset.
+ * A JPEG of one area of the page, cut by us from one full-viewport screenshot.
+ *
+ * Not CDP's `clip`: a clipped capture changes the page's device metrics while it runs, and the
+ * screencast sends that zoomed frame to every viewer — on a still page it stayed on their screen
+ * (measured 2026-11-17). A plain capture leaves the view as it is. The screenshot is in device
+ * pixels; the area is in CSS pixels of the viewport.
  */
-const round = (v) => Math.round(v * 100) / 100;
-
 async function crop(page, area, view) {
-  const devicePixels = Math.max(area.width, area.height) * view.dpr;
-  let scale = Math.min(1, CROP_MAX_PIXELS / devicePixels);
-  for (const quality of [80, 55]) {
-    try {
-      const shot = await page.send('Page.captureScreenshot', {
-        format: 'jpeg',
-        quality,
-        clip: { x: round(area.x + view.pageX), y: round(area.y + view.pageY), width: round(area.width), height: round(area.height), scale },
-        captureBeyondViewport: false,
-      });
-      const bytes = typeof shot?.data === 'string' ? Buffer.from(shot.data, 'base64') : null;
-      if (bytes && bytes.length <= CROP_MAX_BYTES) return bytes;
-      scale /= 2;
-    } catch {
-      return null;
-    }
+  let shot = null;
+  try {
+    const reply = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    shot = typeof reply?.data === 'string' ? parsePng(Buffer.from(reply.data, 'base64')) : null;
+  } catch {
+    return null;
   }
-  return null;
+  if (!shot) return null;
+  const k = shot.width / view.width;
+  return jpegUnder(
+    shot,
+    { x: area.x * k, y: area.y * k, width: area.width * k, height: area.height * k },
+    { maxSide: CROP_MAX_PIXELS, maxBytes: CROP_MAX_BYTES, quality: 80 }
+  );
 }

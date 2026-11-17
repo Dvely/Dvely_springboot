@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { deflateSync } from 'node:zlib';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { KIND, MAX_PAYLOAD_BYTES, decodeFrame, encodeJsonFrame, parseJsonPayload } from '../src/share/protocol.js';
@@ -331,6 +332,44 @@ describe('share session over a real tunnel socket', () => {
   }
 });
 
+/**
+ * A real PNG of the whole viewport (390×844 at DPR 2 = 780×1688): white, with a blue band where
+ * the demo's save button is (CSS 39,168.8 117×42.2). Filter 0 rows — parsePng's own tests cover the
+ * other filters.
+ */
+function viewportPng(width = 780, height = 1688) {
+  const rows = Buffer.alloc(height * (width * 3 + 1), 255);
+  for (let y = 0; y < height; y++) {
+    rows[y * (width * 3 + 1)] = 0;
+    for (let x = 0; x < width; x++) {
+      if (x >= 78 && x < 312 && y >= 338 && y < 422) {
+        const i = y * (width * 3 + 1) + 1 + x * 3;
+        rows[i] = 37;
+        rows[i + 1] = 99;
+        rows[i + 2] = 235;
+      }
+    }
+  }
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    return Buffer.concat([len, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(rows)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+const isJpeg = (b) => b.length > 4 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff && b.at(-2) === 0xff && b.at(-1) === 0xd9;
+
 /** `[json length][json][crop length][crop][screen]` (§14.3) */
 function readPinResult(payload) {
   const n = payload.readUInt32BE(0);
@@ -384,11 +423,11 @@ describe('pinning over a real tunnel socket (§14, #682)', () => {
 
   it('answers a probe with the element, its components, source candidates, a crop and the screen — and never touches input', { timeout: 10000 }, async () => {
     const project = demoProject();
-    const crop = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x42, 0xff, 0xd9]);
+    const png = viewportPng();
     const { cdp, conn } = await connected(
       {
         'Runtime.evaluate': () => ({ result: { type: 'object', value: structuredClone(SAVE_BUTTON) } }),
-        'Page.captureScreenshot': () => ({ data: crop.toString('base64') }),
+        'Page.captureScreenshot': () => ({ data: png.toString('base64') }),
       },
       { project }
     );
@@ -411,7 +450,11 @@ describe('pinning over a real tunnel socket (§14, #682)', () => {
     assert.deepEqual(json.sourceHints[0], { file: 'src/components/SaveButton.tsx', line: 1, reason: 'COMPONENT' });
     assert.ok(json.sourceHints.some((h) => h.file === 'src/pages/Settings.tsx' && h.line === 3 && h.reason === 'COMPONENT'), JSON.stringify(json.sourceHints));
     assert.ok(json.sourceHints.every((h) => !h.file.startsWith('/')));
-    assert.deepEqual(sentCrop, crop);
+    // Cut by the CLI from the viewport PNG: the button plus 16 CSS px, at DPR 2 (fractional edges
+    // round outwards: 152.8..227 CSS → rows 305..454).
+    assert.ok(isJpeg(sentCrop), 'the crop is a JPEG');
+    const sof = sentCrop.indexOf(Buffer.from([0xff, 0xc0]));
+    assert.deepEqual([sentCrop.readUInt16BE(sof + 7), sentCrop.readUInt16BE(sof + 5)], [298, 149]);
     assert.deepEqual(screen, JPEG, 'the screen is the frame the viewer saw');
 
     const evaluate = cdp.calls.find((c) => c.method === 'Runtime.evaluate');
@@ -420,8 +463,9 @@ describe('pinning over a real tunnel socket (§14, #682)', () => {
     assert.match(evaluate.params.expression, /^\(function inspectPoint\(args\)/);
     assert.match(evaluate.params.expression, /\{"x":0\.2,"y":0\.22,/);
     const shot = cdp.calls.find((c) => c.method === 'Page.captureScreenshot');
-    // The element plus a 16 px margin, in page coordinates (scrolled 300 px).
-    assert.deepEqual(shot.params.clip, { x: 23, y: 452.8, width: 149, height: 74.2, scale: 1 });
+    // No clip: a clipped capture changes the page's metrics and the screencast shows viewers that
+    // zoomed frame (measured). The whole viewport is captured and cut here.
+    assert.deepEqual(shot.params, { format: 'png', captureBeyondViewport: false });
     assert.equal(cdp.calls.filter((c) => c.method.startsWith('Input.')).length, inputsBefore, 'a probe sends no input');
   });
 
@@ -437,14 +481,16 @@ describe('pinning over a real tunnel socket (§14, #682)', () => {
   it('says NO_ELEMENT for the background, with a crop around the point', { timeout: 10000 }, async () => {
     const { conn, cdp } = await connected({
       'Runtime.evaluate': () => ({ result: { value: { ok: false, reason: 'NO_ELEMENT', screen: { label: '/' }, view: SAVE_BUTTON.view } } }),
-      'Page.captureScreenshot': () => ({ data: JPEG.toString('base64') }),
+      'Page.captureScreenshot': () => ({ data: viewportPng().toString('base64') }),
     });
     conn.send(KIND.PIN_PROBE, { probeId: 'p3', x: 0.5, y: 0.5 });
     const { json, crop } = readPinResult((await conn.next()).payload);
     assert.deepEqual(json, { probeId: 'p3', ok: false, reason: 'NO_ELEMENT', point: { x: 0.5, y: 0.5 }, screen: { label: '/' } });
-    assert.deepEqual(crop, JPEG);
-    const shot = cdp.calls.find((c) => c.method === 'Page.captureScreenshot');
-    assert.deepEqual(shot.params.clip, { x: 75, y: 642, width: 240, height: 160, scale: 1 });
+    // 240×160 CSS around the point at DPR 2, shrunk to 800 on the longer side → 480×320
+    assert.ok(isJpeg(crop));
+    const sof = crop.indexOf(Buffer.from([0xff, 0xc0]));
+    assert.deepEqual([crop.readUInt16BE(sof + 7), crop.readUInt16BE(sof + 5)], [480, 320]);
+    assert.equal(cdp.calls.find((c) => c.method === 'Page.captureScreenshot').params.clip, undefined);
   });
 
   it('ignores a malformed probe', { timeout: 10000 }, async () => {
