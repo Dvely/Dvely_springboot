@@ -38,6 +38,7 @@ import org.eclipse.jgit.lib.ObjectId;
 import com.example.dvely.agent.domain.value.AgentType;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.store.TaskStore;
+import com.example.dvely.support.CapturedLogs;
 import com.example.dvely.agent.infrastructure.worker.AgentExecutionRegistry;
 import com.example.dvely.change.application.service.ChangeService;
 import com.example.dvely.common.exception.LlmProviderException;
@@ -696,22 +697,14 @@ class AgentPlanExecutorTest {
         com.example.dvely.agent.infrastructure.git.ServerGitPublisher.RemoteMovedException moved =
                 new com.example.dvely.agent.infrastructure.git.ServerGitPublisher.RemoteMovedException("preview");
         when(codeService.execute(eq(step), eq(AiProvider.ANTHROPIC), eq(1L), eq(11L), eq("task-1"), any())).thenThrow(moved);
-        ch.qos.logback.classic.Logger logger =
-                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AgentPlanExecutor.class);
-        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
-                new ch.qos.logback.core.read.ListAppender<>();
-        appender.start();
-        logger.addAppender(appender);
-        try {
-            executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.ANTHROPIC, 11L), "task-1", 1L);
-        } finally {
-            logger.detachAppender(appender);
-        }
+        // 이 스레드의 로그만 본다. 캐시된 다른 컨텍스트의 AgentRunWorker 가 같은 로거로 남기는 ERROR 가 섞이면 깨진다(CapturedLogs).
+        List<ch.qos.logback.classic.spi.ILoggingEvent> logs = CapturedLogs.of(AgentPlanExecutor.class, () ->
+                executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.ANTHROPIC, 11L), "task-1", 1L));
 
         verify(taskStore).markFailed("task-1", moved.getMessage());
         verify(messageService).appendAssistant(21L, moved.getMessage(), ChatMessageKind.TASK_FAILED, "task-1");
-        assertThat(appender.list).noneMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.ERROR);
-        assertThat(appender.list).anyMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.WARN
+        assertThat(logs).noneMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.ERROR);
+        assertThat(logs).anyMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.WARN
                 && event.getFormattedMessage().contains("task-1") && event.getThrowableProxy() == null);
     }
 
@@ -729,22 +722,14 @@ class AgentPlanExecutorTest {
                         com.example.dvely.common.response.ErrorCode.PREVIEW_LIMIT_EXCEEDED,
                         "열린 프리뷰가 3개라 새 프리뷰를 띄울 수 없습니다(사용자당 3개).");
         when(codeService.execute(eq(step), eq(AiProvider.ANTHROPIC), eq(1L), eq(11L), eq("task-1"), any())).thenThrow(limit);
-        ch.qos.logback.classic.Logger logger =
-                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(AgentPlanExecutor.class);
-        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
-                new ch.qos.logback.core.read.ListAppender<>();
-        appender.start();
-        logger.addAppender(appender);
-        try {
-            executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.ANTHROPIC, 11L), "task-1", 1L);
-        } finally {
-            logger.detachAppender(appender);
-        }
+        // 이 스레드의 로그만 본다. 캐시된 다른 컨텍스트의 AgentRunWorker 가 같은 로거로 남기는 ERROR 가 섞이면 깨진다(CapturedLogs).
+        List<ch.qos.logback.classic.spi.ILoggingEvent> logs = CapturedLogs.of(AgentPlanExecutor.class, () ->
+                executor.execute(new AgentPlan(List.of(step), "reason", AiProvider.ANTHROPIC, 11L), "task-1", 1L));
 
         verify(taskStore).markFailed("task-1", limit.getMessage());
         verify(messageService).appendAssistant(21L, limit.getMessage(), ChatMessageKind.TASK_FAILED, "task-1");
-        assertThat(appender.list).noneMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.ERROR);
-        assertThat(appender.list).anyMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.WARN
+        assertThat(logs).noneMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.ERROR);
+        assertThat(logs).anyMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.WARN
                 && event.getFormattedMessage().contains("PREVIEW_LIMIT_EXCEEDED") && event.getThrowableProxy() == null);
     }
 
