@@ -769,7 +769,7 @@ describe('ios share session (§13)', () => {
 
     const hello = await conn.next();
     assert.equal(hello.kind, KIND.HELLO);
-    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'IOS', target: 'iPhone 17 · com.example.app' });
+    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'IOS', target: 'iPhone 17 · com.example.app', features: ['pin'] });
     assert.deepEqual(commands.sent, ['displays'], 'the size in points is read before anything else');
     assert.deepEqual(session.points, SCREEN);
 
@@ -823,6 +823,53 @@ describe('ios share session (§13)', () => {
     assert.deepEqual(await done, { reason: 'revoked' });
     assert.equal(video.stopped, true);
     assert.equal(commands.stopped, true);
+  });
+
+  it('answers a pin from the tree, in line after an input, and sends the simulator nothing for it', { timeout: 10000 }, async () => {
+    const server = await tunnelServer();
+    const commands = fakeCommands();
+    const plain = commands.request;
+    const tree = describeReply('My App', APP_PID);
+    tree.data.result[0].children.push({
+      type: 'Button',
+      role: 'AXButton',
+      AXLabel: '저장',
+      AXUniqueId: 'saveButton',
+      frame: { x: 16, y: 458, width: 370, height: 52 },
+      children: [],
+    });
+    commands.request = (args) => (args[0] === 'describe-ui' ? (commands.sent.push('describe-ui'), Promise.resolve(tree)) : plain(args));
+    commands.shots = 0;
+    commands.screenshot = async () => {
+      commands.shots++;
+      throw new Error('no screenshot in this test');
+    };
+    const { session, video } = newIosSession({ tunnelUrl: server.url, commands });
+    session.run();
+    const conn = await server.nextConnection();
+    await conn.next(); // HELLO
+    video.handlers.onFrame(fakeJpeg(201, 437, 1));
+    conn.send(KIND.WELCOME, { shareId: 7 });
+    assert.equal((await conn.next()).kind, KIND.SCREEN_CONFIG);
+    assert.equal((await conn.next()).kind, KIND.SCREEN_FRAME);
+
+    session.handleInput({ type: 'pointer', action: 'down', x: 0.1, y: 0.1, button: 'left' });
+    session.handleInput({ type: 'pointer', action: 'up', x: 0.1, y: 0.1, button: 'left' });
+    conn.send(KIND.PIN_PROBE, { probeId: 'p1', x: 0.5, y: 0.55 });
+    const answer = await conn.next();
+    assert.equal(answer.kind, KIND.PIN_RESULT);
+    const n = answer.payload.readUInt32BE(0);
+    const json = JSON.parse(answer.payload.subarray(4, 4 + n).toString('utf8'));
+    const cropLength = answer.payload.readUInt32BE(4 + n);
+    assert.equal(json.ok, true);
+    assert.deepEqual(json.element, { type: 'Button', text: '저장', id: 'saveButton', bounds: { x: 0.0398, y: 0.524, w: 0.9204, h: 0.0595 } });
+    assert.deepEqual(json.screen, { label: 'com.example.app', bundleId: 'com.example.app', appName: 'My App' });
+    assert.equal(cropLength, 0, 'no screenshot, no crop');
+    assert.deepEqual(answer.payload.subarray(8 + n + cropLength), fakeJpeg(201, 437, 1), 'the frame the viewer saw');
+    assert.equal(commands.shots, 1);
+    const tap = commands.sent.findIndex((c) => c.startsWith('tap'));
+    assert.ok(tap >= 0 && tap < commands.sent.lastIndexOf('describe-ui'), 'the tree is read after the tap before it');
+    assert.equal(inputsOf(commands).length, 1, 'only the tap went to the simulator');
   });
 
   it('skips frames while the tunnel is backed up, and sends the latest once it is not', () => {
