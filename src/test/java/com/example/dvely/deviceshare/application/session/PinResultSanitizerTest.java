@@ -121,6 +121,23 @@ class PinResultSanitizerTest {
     }
 
     @Test
+    void 소스_후보의_칸_번호는_1에서_5까지만_남긴다() throws Exception {
+        PinResolution r = sanitizer.sanitize(json.readTree("""
+                {"probeId":"p6","ok":true,"element":{"type":"Button"},
+                 "sourceHints":[{"file":"A.swift","line":3,"reason":"ID","scope":1},
+                                {"file":"B.swift","reason":"ID","scope":0},
+                                {"file":"C.swift","reason":"ID","scope":9},
+                                {"file":"D.swift","reason":"ID","scope":"2"}]}
+                """)).orElseThrow();
+
+        JsonNode hints = r.description().path("sourceHints");
+        assertThat(hints.get(0).path("scope").asInt()).isEqualTo(1);
+        assertThat(hints.get(1).has("scope")).isFalse();
+        assertThat(hints.get(2).has("scope")).isFalse();
+        assertThat(hints.get(3).has("scope")).isFalse();
+    }
+
+    @Test
     void 화면_전체만_온_결과도_찾은_것이고_화면_칸의_테두리는_늘_화면_전체다() throws Exception {
         PinResolution r = sanitizer.sanitize(json.readTree("""
                 {"probeId":"p4","ok":true,"screen":{"label":"/"},
@@ -172,6 +189,14 @@ class PinResultSanitizerTest {
         assertThat(PinResultSanitizer.groupWord("UL")).isEqualTo("목록");
         assertThat(PinResultSanitizer.groupWord("listitem")).isEqualTo("항목");
         assertThat(PinResultSanitizer.groupWord("div")).isEqualTo("<div>");
+        // Android 뷰 클래스·iOS 접근성 종류(#694 PR-3)
+        assertThat(PinResultSanitizer.groupWord("LinearLayout")).isEqualTo("묶음");
+        assertThat(PinResultSanitizer.groupWord("RecyclerView")).isEqualTo("목록");
+        assertThat(PinResultSanitizer.groupWord("MaterialCardView")).isEqualTo("카드");
+        assertThat(PinResultSanitizer.groupWord("Group")).isEqualTo("묶음");
+        assertThat(PinResultSanitizer.groupWord("Cell")).isEqualTo("항목");
+        assertThat(PinResultSanitizer.groupWord("Table")).isEqualTo("목록");
+        assertThat(PinResultSanitizer.groupWord("fieldset")).isEqualTo("입력 묶음");
         assertThat(PinResultSanitizer.groupWord("")).isEqualTo("덩어리");
     }
 }

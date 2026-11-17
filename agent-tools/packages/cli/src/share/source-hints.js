@@ -209,6 +209,19 @@ export async function definitionLine(project, file, name) {
   }
 }
 
+/**
+ * Where an id is set: web `id="…"`, Android `@+id/…`·`R.id.…`, iOS `accessibilityIdentifier("…")`
+ * (SwiftUI) or `= "…"` (UIKit), a storyboard's `identifier="…"`, React Native's `testID` (which iOS
+ * reports as the id).
+ */
+function idPattern(id) {
+  const e = escape(id);
+  return new RegExp(
+    `\\b(?:id|testID)\\s*=\\s*\\{?\\s*["'\`]${e}["'\`]|@\\+?id/${e}\\b|\\bR\\.id\\.${e}\\b` +
+      `|\\baccessibilityIdentifier\\s*(?:\\(\\s*|=\\s*)"${e}"|\\bidentifier="${e}"`
+  );
+}
+
 /** Visible text worth searching for: short, and more than digits or punctuation. */
 export function searchableText(text) {
   if (typeof text !== 'string') return null;
@@ -225,20 +238,25 @@ export function searchableText(text) {
  * @param {{name: string, file?: string, line?: number}[]} [o.components] innermost first; a `file`
  *   is already project-relative (toProjectPath)
  * @param {{id?: string|null, text?: string|null}} [o.element]
- * @returns {Promise<{file: string, line?: number, reason: 'COMPONENT'|'ID'|'TEXT'}[]>}
+ * @param {{id: string, scope: number}[]} [o.scopeIds] ids of the wider scope steps (§15.3): the
+ *   person may widen to one of them after pinning, so each is looked for now, and its hint says
+ *   which step it came from
+ * @returns {Promise<{file: string, line?: number, reason: 'COMPONENT'|'ID'|'TEXT', scope?: number}[]>}
  */
-export async function findSourceHints({ project, components = [], element = {}, max = MAX_HINTS, budgetMs = HINT_BUDGET_MS, now = Date.now }) {
+export async function findSourceHints({ project, components = [], element = {}, scopeIds = [], max = MAX_HINTS, budgetMs = HINT_BUDGET_MS, now = Date.now }) {
   if (!project) return [];
   const deadline = now() + budgetMs;
   const hints = [];
   const seen = new Set();
-  const add = (file, line, reason) => {
+  const add = (file, line, reason, scope) => {
     if (hints.length >= max) return;
     const key = `${file}:${line ?? 0}`;
-    // One file once per reason is enough; a second line in the same file adds little.
-    if (seen.has(key) || hints.some((h) => h.file === file && h.reason === reason)) return;
+    // One file once per reason (and step) is enough; a second line in the same file adds little.
+    if (seen.has(key) || hints.some((h) => h.file === file && h.reason === reason && h.scope === scope)) return;
     seen.add(key);
-    hints.push(line > 0 ? { file, line, reason } : { file, reason });
+    const hint = line > 0 ? { file, line, reason } : { file, reason };
+    if (scope > 0) hint.scope = scope;
+    hints.push(hint);
   };
 
   // 1. The dev server said where the component is.
@@ -248,9 +266,11 @@ export async function findSourceHints({ project, components = [], element = {}, 
   const names = [...new Set(components.filter((c) => !c.file).map((c) => c.name))]
     .filter((n) => /^[A-Z][A-Za-z0-9_$]{1,60}$/.test(n))
     .slice(0, 4);
-  const id = typeof element.id === 'string' && /^[A-Za-z0-9_.-]{2,80}$/.test(element.id) ? element.id : null;
+  const validId = (v) => typeof v === 'string' && /^[A-Za-z0-9_.-]{2,80}$/.test(v);
+  const id = validId(element.id) ? element.id : null;
   const text = searchableText(element.text);
-  if (!names.length && !id && !text) return hints;
+  const wider = scopeIds.filter((s) => validId(s.id) && s.id !== id && Number.isInteger(s.scope) && s.scope > 0).slice(0, 4);
+  if (!names.length && !id && !text && !wider.length) return hints;
 
   const files = await listSourceFiles(project, { deadline, now });
 
@@ -259,18 +279,16 @@ export async function findSourceHints({ project, components = [], element = {}, 
   const defRe = names.length ? definitionPattern(alternatives) : null;
   // Web `id="…"`, Android `@+id/…`·`R.id.…`, iOS `accessibilityIdentifier("…")` (SwiftUI) or `= "…"`
   // (UIKit), a storyboard's `identifier="…"`, React Native's `testID` (which iOS reports as the id).
-  const idRe = id
-    ? new RegExp(
-        `\\b(?:id|testID)\\s*=\\s*\\{?\\s*["'\`]${escape(id)}["'\`]|@\\+?id/${escape(id)}\\b|\\bR\\.id\\.${escape(id)}\\b` +
-          `|\\baccessibilityIdentifier\\s*(?:\\(\\s*|=\\s*)"${escape(id)}"|\\bidentifier="${escape(id)}"`
-      )
-    : null;
-  const found = { def: [], id: [], text: [], textRef: [] };
+  const idRe = id ? idPattern(id) : null;
+  // A wider step's id: its first place in the project is enough (one hint per step).
+  const widerRes = wider.map((s) => ({ re: idPattern(s.id), scope: s.scope }));
+  const found = { def: [], id: [], text: [], textRef: [], wider: [] };
   const stringNames = [];
   const want = max;
   for (const file of files) {
     if (now() > deadline) break;
-    if ((!defRe || found.def.length >= want) && (!idRe || found.id.length >= want) && (!text || found.text.length >= want)) break;
+    if ((!defRe || found.def.length >= want) && (!idRe || found.id.length >= want) && (!text || found.text.length >= want)
+      && found.wider.length >= widerRes.length) break;
     let body;
     try {
       const full = join(project, file);
@@ -286,6 +304,11 @@ export async function findSourceHints({ project, components = [], element = {}, 
     if (idRe && found.id.length < want) {
       const m = idRe.exec(body);
       if (m) found.id.push({ file, line: lineAt(body, m.index) });
+    }
+    for (const w of widerRes) {
+      if (found.wider.some((f) => f.scope === w.scope)) continue;
+      const m = w.re.exec(body);
+      if (m) found.wider.push({ file, line: lineAt(body, m.index), scope: w.scope });
     }
     if (text && found.text.length < want) {
       const i = body.indexOf(text);
@@ -328,6 +351,8 @@ export async function findSourceHints({ project, components = [], element = {}, 
     }
   }
   for (const h of found.id) add(h.file, h.line, 'ID');
+  // The wider steps' ids, narrowest first: the person may widen to them (§15.3).
+  for (const h of found.wider.sort((a, b) => a.scope - b.scope)) add(h.file, h.line, 'ID', h.scope);
   // Where the text is used (a layout, a screen) before where it is defined (strings.xml).
   for (const h of found.textRef) add(h.file, h.line, 'TEXT');
   for (const h of found.text) add(h.file, h.line, 'TEXT');

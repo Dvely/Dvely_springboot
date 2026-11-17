@@ -108,7 +108,8 @@ qeploy share android --app com.example.app   # 이 앱을 띄워서 공유
 - **에뮬레이터를 창으로 띄우면 에뮬레이터 클립보드가 내 Mac 클립보드로 넘어온다**(에뮬레이터의 Enable clipboard sharing, 기본 켜짐). 조작권을 받은 사람이 복사하거나 한글을 입력하면 내 Mac 클립보드가 바뀌므로, 시작할 때 경고한다. 끄려면 에뮬레이터 Extended controls(⋯) > Settings > General > Enable clipboard sharing 을 끄거나 `-no-window` 로 띄운다.
 - Ctrl+C 로 끝내면 링크를 회수하고 에뮬레이터의 scrcpy 서버와 `adb forward` 를 정리한다.
 - **짚기**(`share web` 의 "짚기 피드백"과 같다): `uiautomator dump` 로 그 점의 뷰를 읽고(누를 수 있거나 텍스트가 있는 가장 작은 것, 글자만 있는 Compose 노드는 누를 수 있는 바깥으로), 지금 Activity 와 함께 보낸다. 소스 후보는 Activity·`@+id/…`·`R.id.…`·보이는 텍스트(`strings.xml` 이면 그 이름을 쓰는 레이아웃·코드까지)로 찾는다. 이미지는 `screencap` 날 픽셀을 CLI 가 JPEG 으로 만든다. 비밀번호 입력란의 글은 읽지 않는다. 짚기 하나에 약 2초(실측, API 35 에뮬레이터)
-  - **화면 전체**는 덤프 없이 지금 Activity 와 `screencap` 화면만 보낸다. 범위 넓히기는 아직 웹만 된다
+  - **화면 전체**는 덤프 없이 지금 Activity 와 `screencap` 화면만 보낸다
+  - **범위 넓히기**: 같은 덤프에서 뷰 → 앱 `resource-id`·설명이 있거나 누를 수 있는 레이아웃, 목록(`RecyclerView`·`ListView`), 앱 자신의 클래스 → 화면 순서로 칸을 만든다. 플랫폼 틀(`android:id/content`)은 칸이 아니다. 넓은 칸의 id(`@+id/…`)도 소스에서 찾아, 그 칸을 고르면 그 줄이 소스 후보 맨 앞에 온다
   - 접근성 트리는 뷰의 접근성 클래스를 보고한다. `FancyButton extends Button` 은 `Button` 으로 나와, 직접 만든 뷰 이름은 대개 나오지 않는다
 
 ## iOS 시뮬레이터 공유 — `share ios` (macOS)
@@ -137,7 +138,8 @@ qeploy share ios --udid <UDID> --app com.apple.mobilesafari
 - **클립보드 경고**: Simulator 는 기본으로 Mac 클립보드와 자동 동기화한다. 켜져 있으면 조작권을 받은 사람이 앱의 붙여넣기로 지금 Mac 에 복사해 둔 내용을 볼 수 있어서, 시작할 때 크게 경고한다. 끄려면 Simulator 메뉴 Edit > Automatically Sync Pasteboard 의 체크를 해제한다(CLI 는 설정을 바꾸지 않는다). Cmd+V 는 보내지 않는다.
 - **글자 입력**: 보는 사람이 친 글자를 시뮬레이터의 하드웨어 키보드 키로 친다. 클립보드는 쓰지 않는다.
 - **짚기**(`share web` 의 "짚기 피드백"과 같다): AXe `describe-ui` 로 그 점의 요소를 읽고(누르거나 입력하는 것, 이름이 있는 가장 작은 것. 스위치 줄의 글자·손잡이는 그 스위치로), 앱 이름·번들 ID·내비게이션 제목과 함께 보낸다. 접근성 트리에는 뷰 타입 이름이 없어서(SwiftUI `SaveButton` 도 `Button`) 컴포넌트 이름은 보내지 않고, 소스 후보는 `accessibilityIdentifier`(SwiftUI `.accessibilityIdentifier("…")`·UIKit `= "…"`·스토리보드 `identifier="…"`·React Native `testID`)와 보이는 텍스트로 찾는다. 이미지는 `axe screenshot` PNG 를 CLI 가 잘라 JPEG 으로 만든다. 입력란에 친 값(비밀번호 포함)은 보내지 않는다. 짚기 하나에 약 0.4~0.7초(실측, iPhone 17 Pro 시뮬레이터)
-  - **화면 전체**는 `describe-ui` 한 번으로 앱 이름·번들 ID·제목을 읽고, 보는 사람이 본 화면(스트림 마지막 장, 없으면 `axe screenshot`)을 보낸다. 범위 넓히기는 아직 웹만 된다
+  - **화면 전체**는 `describe-ui` 한 번으로 앱 이름·번들 ID·제목을 읽고, 보는 사람이 본 화면(스트림 마지막 장, 없으면 `axe screenshot`)을 보낸다
+  - **범위 넓히기**: 같은 트리에서 요소 → `accessibilityIdentifier`·레이블이 있는 묶음, 셀·목록 → 화면 순서로 칸을 만든다. SwiftUI 는 바깥 묶음에 이름이 없어 칸이 적다. 카드·폼 같은 묶음에 `.accessibilityElement(children: .contain)` 과 `.accessibilityIdentifier("profileForm")` 을 붙이면 칸이 생기고, 그 칸을 고르면 그 id 를 쓴 줄이 소스 후보 맨 앞에 온다
   - 영문·숫자·기호, Enter·Tab·화살표 같은 키가 들어간다.
   - **한글은 시뮬레이터 언어가 한국어일 때만 들어간다**(시뮬레이터는 만들 때 Mac 의 언어를 따른다). 한글은 두벌식 자판의 키로 바꿔 치고, 시뮬레이터가 글자로 조합한다. 언어가 한국어가 아니면 한글은 넣지 않고 한 번 알린다.
   - 한글 시뮬레이터의 키보드는 한글·영문 두 상태가 있어서, 영문 글자는 영문 상태에서, 한글은 한글 상태에서 쳐야 한다. CLI 가 필요한 상태를 화면의 키보드에서 읽어 확인하고, 다르면 Caps Lock 으로 바꾼 뒤 다시 읽어 확인한다. 이모지 키보드에 있으면 Ctrl+Space 로 먼저 빠져나온다. 숫자·공백·기호는 어느 상태에서나 같아서 바꾸지 않는다.

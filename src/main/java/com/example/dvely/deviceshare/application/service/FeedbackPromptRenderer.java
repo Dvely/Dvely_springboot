@@ -113,7 +113,8 @@ public final class FeedbackPromptRenderer {
         if (hints.isArray() && !hints.isEmpty()) {
             out.append("- 소스 후보:\n");
             int n = 0;
-            for (JsonNode h : chosenFirst(hints, chosen.orElse(null), element.path("components"))) {
+            int chosenIndex = element.path("scope").asInt(element.path("defaultScope").asInt(0));
+            for (JsonNode h : chosenFirst(hints, chosen.orElse(null), chosenIndex, element.path("components"))) {
                 out.append("  ").append(++n).append(". ").append(code(h.path("file").asText("")));
                 if (h.path("line").asInt(0) > 0) {
                     out.append(':').append(h.path("line").asInt());
@@ -121,6 +122,9 @@ public final class FeedbackPromptRenderer {
                 String why = hintReason(h.path("reason").asText(""));
                 if (!why.isEmpty()) {
                     out.append(" — ").append(why);
+                }
+                if (chosenIndex > 0 && h.path("scope").asInt(0) == chosenIndex) {
+                    out.append("(고른 범위)");
                 }
                 out.append('\n');
             }
@@ -163,9 +167,18 @@ public final class FeedbackPromptRenderer {
      * 사람이 범위를 넓혀 컴포넌트를 골랐으면 그 컴포넌트 파일의 후보를 앞에 둔다(§15.3). 기기는 짚을 때 후보를 한 번만 찾고, 범위는
      * 그 뒤에 고르기 때문이다. 나머지 순서는 그대로다.
      */
-    static List<JsonNode> chosenFirst(JsonNode hints, JsonNode scope, JsonNode components) {
+    static List<JsonNode> chosenFirst(JsonNode hints, JsonNode scope, int chosenIndex, JsonNode components) {
         List<JsonNode> all = new ArrayList<>();
         hints.forEach(all::add);
+        // 기기가 그 칸의 id 로 찾은 후보(§15.3, Android·iOS)
+        if (chosenIndex > 0) {
+            List<JsonNode> mine = all.stream().filter(h -> h.path("scope").asInt(0) == chosenIndex).toList();
+            if (!mine.isEmpty()) {
+                List<JsonNode> ordered = new ArrayList<>(mine);
+                all.stream().filter(h -> h.path("scope").asInt(0) != chosenIndex).forEach(ordered::add);
+                return ordered;
+            }
+        }
         String name = scope == null || "element".equals(scope.path("kind").asText()) ? "" : scope.path("component").asText("");
         if (name.isEmpty() || !components.isArray()) {
             return all;

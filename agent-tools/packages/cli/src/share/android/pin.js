@@ -11,6 +11,7 @@
 import { MAX_CROP_BYTES, MAX_SCREEN_BYTES, LIMIT, clip, r4, screenResult, unresolved } from '../pin.js';
 import { jpegUnder, parseScreencap } from '../jpeg.js';
 import { findSourceHints } from '../source-hints.js';
+import { buildLadder, scopeIdsOf } from '../scope.js';
 
 const CROP_MARGIN = 24;
 const CROP_MAX_SIDE = 800;
@@ -170,7 +171,44 @@ export function describeAndroidPoint(nodes, probe, size, top) {
     element,
     ancestors,
     components: components.slice(0, LIMIT.components),
+    scopes: androidLadder(node, element, size),
+    defaultScope: 0,
   };
+}
+
+const appClass = (cls) => {
+  if (!cls || PLATFORM_CLASS.test(cls)) return null;
+  const name = shortClass(cls);
+  return /^[A-Z][A-Za-z0-9_$]{1,80}$/.test(name) ? name : null;
+};
+const LIST_CLASS = /(RecyclerView|ListView|GridView)$/;
+
+/**
+ * The scope ladder (§15.3) from the dump: the view, then the layouts around it that say something —
+ * an app `resource-id`, a content description, a pressable container, a list, or a class of the
+ * app's own (a component) — then the screen. The platform's frame (`android:id/content`, decor
+ * views) is never a step.
+ */
+function androidLadder(node, element, size) {
+  return buildLadder({
+    element,
+    node,
+    component: appClass(node.cls),
+    boundsOf: (n) => {
+      if (!n.bounds) return null;
+      const l = Math.max(n.bounds.l, 0);
+      const t = Math.max(n.bounds.t, 0);
+      const r = Math.min(n.bounds.r, size.width);
+      const b = Math.min(n.bounds.b, size.height);
+      return r > l && b > t ? { x: l / size.width, y: t / size.height, w: (r - l) / size.width, h: (b - t) / size.height } : null;
+    },
+    describe: (n) => {
+      const appId = n.rid && !n.rid.startsWith('android:') ? shortId(n.rid) : '';
+      const component = appClass(n.cls);
+      if (!appId && !n.desc && !component && !n.clickable && !LIST_CLASS.test(n.cls)) return null;
+      return { kind: component ? 'component' : 'group', type: shortClass(n.cls) || 'View', text: n.desc || null, id: appId || null, component };
+    },
+  });
 }
 
 /**
@@ -203,7 +241,7 @@ export async function resolveAndroidPin({ adb, probe, project, findHints = findS
 
   const result = describeAndroidPoint(nodes, probe, size, top);
   if (result.ok) {
-    result.sourceHints = await findHints({ project, components: result.components, element: result.element }).catch(() => []);
+    result.sourceHints = await findHints({ project, components: result.components, element: result.element, scopeIds: scopeIdsOf(result.scopes) }).catch(() => []);
   }
   let crop = null;
   if (shot) {
