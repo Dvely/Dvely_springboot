@@ -182,9 +182,12 @@ export class AndroidShareSession extends TunnelSession {
     return Boolean(this.adb);
   }
 
-  /** §15.9: the scope ladder comes from the same dump (scope.js); the whole screen needs none. */
+  /**
+   * §15.9: the scope ladder and a dragged area (§15.4) come from the same dump (scope.js); the whole
+   * screen needs none.
+   */
   pinFeatures() {
-    return ['pin', 'pin-scope', 'pin-screen'];
+    return ['pin', 'pin-scope', 'pin-screen', 'pin-region'];
   }
 
   resolvePin(probe) {

@@ -210,7 +210,7 @@ class ShareSessionPinTest {
     }
 
     @Test
-    void 끌기_짚기는_아직_기기로_보내지_않는다() {
+    void 끌기_짚기는_pin_region_을_알리지_않은_기기로_보내지_않는다() {
         announce("\"pin\",\"pin-scope\",\"pin-screen\"");
         session.onViewerMessage(guestId, msg("{\"type\":\"pin-probe\",\"rect\":{\"x\":0.1,\"y\":0.1,\"w\":0.3,\"h\":0.2}}"),
                 Instant.now());
@@ -266,6 +266,73 @@ class ShareSessionPinTest {
                 + "\",\"element\":{\"type\":\"button\"}}", JPEG, JPEG));
         assertThat(guest.last("pin").path("probeId").asText()).as("넘으면 버린다").isEqualTo("p2");
         assertThat(guest.last("pin").path("state").asText()).isEqualTo("pending");
+    }
+
+    @Test
+    void 끌기_짚기는_pin_region_을_알린_기기로_사각형째_가고_영역_안_요소_수와_둘레가_뷰어로_간다() {
+        announce("\"pin\",\"pin-scope\",\"pin-screen\",\"pin-region\"");
+        session.onViewerMessage(guestId, msg("{\"type\":\"pin-probe\",\"rect\":{\"x\":0.1,\"y\":0.2,\"w\":0.5,\"h\":0.3}}"),
+                Instant.now());
+
+        JsonNode sent = device.lastJson(ShareFrames.PIN_PROBE);
+        assertThat(sent.path("rect").path("w").asDouble()).isEqualTo(0.5);
+        assertThat(sent.has("x")).isFalse();
+        session.onDeviceFrame(device, result("""
+                {"probeId":"p1","ok":true,"point":{"x":0.35,"y":0.35},
+                 "element":{"type":"p","text":"지금은 무료","bounds":{"x":0.12,"y":0.3,"w":0.4,"h":0.05}},
+                 "scopes":[{"kind":"region","type":"region","members":2,"bounds":{"x":0.1,"y":0.2,"w":0.5,"h":0.3}},
+                           {"kind":"component","type":"section","component":"PlanCard","bounds":{"x":0.05,"y":0.15,"w":0.9,"h":0.45}},
+                           {"kind":"screen","type":"screen"}],
+                 "defaultScope":0,"empty":false,
+                 "members":[{"type":"h2","text":"요금제","bounds":{"x":0.12,"y":0.22,"w":0.2,"h":0.05}},
+                            {"type":"p","text":"지금은 무료","bounds":{"x":0.12,"y":0.3,"w":0.4,"h":0.05}}]}
+                """, JPEG, JPEG));
+
+        JsonNode pin = guest.last("pin");
+        assertThat(pin.path("scopes").findValuesAsText("label")).containsExactly("영역 · 요소 2개", "구역", "화면 전체");
+        assertThat(pin.path("members").asInt()).isEqualTo(2);
+        assertThat(pin.path("empty").asBoolean()).isFalse();
+        assertThat(pin.toString()).doesNotContain("PlanCard").doesNotContain("요금제");
+    }
+
+    @Test
+    void 빈_자리의_둘레는_방향과_이름으로_가고_빈_곳을_탭한_실패에도_간다() {
+        announce("\"pin\",\"pin-scope\",\"pin-region\"");
+        session.onViewerMessage(guestId, msg("{\"type\":\"pin-probe\",\"rect\":{\"x\":0.1,\"y\":0.6,\"w\":0.8,\"h\":0.1}}"),
+                Instant.now());
+        session.onDeviceFrame(device, result("""
+                {"probeId":"p1","ok":true,"point":{"x":0.5,"y":0.65},
+                 "scopes":[{"kind":"region","type":"region","members":0,"bounds":{"x":0.1,"y":0.6,"w":0.8,"h":0.1}},
+                           {"kind":"screen","type":"screen"}],
+                 "defaultScope":0,"empty":true,
+                 "near":[{"dir":"up","type":"h2","text":"요금제","bounds":{"x":0.1,"y":0.5,"w":0.3,"h":0.05},"distance":0.05},
+                         {"dir":"down","type":"footer","bounds":{"x":0,"y":0.8,"w":1,"h":0.1},"distance":0.1},
+                         {"dir":"sideways","type":"x","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}}]}
+                """, JPEG, JPEG));
+        JsonNode pin = guest.last("pin");
+        assertThat(pin.path("state").asText()).isEqualTo("resolved");
+        assertThat(pin.path("label").asText()).isEqualTo("빈 자리");
+        assertThat(pin.path("empty").asBoolean()).isTrue();
+        assertThat(pin.path("near").findValuesAsText("label")).containsExactly("위 <h2> \"요금제\"", "아래 <footer>");
+
+        nanos += 2 * SECOND;
+        probe(guestId, 0.5, 0.95);
+        session.onDeviceFrame(device, result("""
+                {"probeId":"p2","ok":false,"reason":"NO_ELEMENT","point":{"x":0.5,"y":0.95},
+                 "near":[{"dir":"up","type":"button","text":"저장","bounds":{"x":0.1,"y":0.8,"w":0.2,"h":0.05}}]}
+                """, JPEG, JPEG));
+        assertThat(guest.last("pin").path("near").get(0).path("label").asText()).isEqualTo("위 <button> \"저장\"");
+    }
+
+    @Test
+    void 화면_밖이거나_너무_작은_사각형은_받지_않는다() {
+        announce("\"pin\",\"pin-region\"");
+        for (String rect : List.of("{\"x\":0.8,\"y\":0.1,\"w\":0.5,\"h\":0.2}", "{\"x\":0.1,\"y\":0.1,\"w\":0.001,\"h\":0.2}",
+                "{\"x\":-0.1,\"y\":0.1,\"w\":0.2,\"h\":0.2}", "{\"x\":\"0.1\",\"y\":0.1,\"w\":0.2,\"h\":0.2}")) {
+            session.onViewerMessage(guestId, msg("{\"type\":\"pin-probe\",\"rect\":" + rect + "}"), Instant.now());
+            assertThat(guest.last("error").path("message").asText()).as(rect).contains("화면 밖");
+        }
+        assertThat(device.count(ShareFrames.PIN_PROBE)).isZero();
     }
 
     /** 기기가 다시 HELLO 를 보내 기능을 알리고, 화면 설정을 다시 보내 config 가 새로 나가게 한다 */

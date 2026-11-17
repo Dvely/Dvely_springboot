@@ -1,14 +1,16 @@
 /**
  * Pinning on a shared web page (§14.3, #682): what is at the viewer's point, which component drew
- * it, where that component lives in the project, and a crop of it.
+ * it, where that component lives in the project, and a crop of it. A dragged rectangle (§15.4) is
+ * read the same way at its centre, plus what is inside it and what holds it.
  *
  * The page is read with one Runtime.evaluate of `inspectPoint` below. It only reads the DOM and the
  * framework's dev-mode bookkeeping (React fibers, Vue instances, Svelte metadata); it changes
  * nothing and calls nothing of the page's own.
  */
-import { LIMIT, clip, r4, screenResult, screenScope, unresolved, withDeadline } from './pin.js';
+import { LIMIT, clip, probePoint, r4, screenResult, screenScope, unresolved, withDeadline } from './pin.js';
 import { jpegUnder } from './jpeg.js';
 import { parsePng } from './png.js';
+import { NEAR_DIRS, scopeIdsOf } from './scope.js';
 import { definitionLine, findSourceHints, toProjectPath } from './source-hints.js';
 
 const EVALUATE_TIMEOUT_MS = 1500;
@@ -23,14 +25,20 @@ const SPOT = { width: 240, height: 160 };
 /**
  * Runs inside the page. Self-contained (it is sent as source text): no imports, no closures.
  *
- * @param {{x: number, y: number, limit: {text: number, selector: number, ancestors: number, components: number}}} args
+ * A point (`x`, `y`) is read as §14.3 says, then its scope ladder (§15.3). A dragged rectangle
+ * (`rect`, §15.4) is read at its centre exactly as a point there would be, then as an area: the named
+ * elements inside it, the containers holding it, and around an empty one the nearest named elements.
+ *
+ * @param {{x?: number, y?: number, rect?: {x: number, y: number, w: number, h: number},
+ *   limit: {text: number, selector: number, ancestors: number, components: number}}} args
  */
 export function inspectPoint(args) {
   const L = args.limit;
   const W = window.innerWidth;
   const H = window.innerHeight;
-  const px = args.x * W;
-  const py = args.y * H;
+  const drawn = args.rect && typeof args.rect === 'object' ? args.rect : null;
+  const px = (drawn ? drawn.x + drawn.w / 2 : args.x) * W;
+  const py = (drawn ? drawn.y + drawn.h / 2 : args.y) * H;
   const fold = (v, n) => {
     const t = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
     return t ? Array.from(t).slice(0, n).join('') : null;
@@ -43,32 +51,17 @@ export function inspectPoint(args) {
     pageY: window.visualViewport ? window.visualViewport.pageTop : window.scrollY,
   };
   const screen = { label: location.pathname || '/', url: location.href.split('#')[0], title: fold(document.title, 200) };
-
-  let hit = document.elementFromPoint(px, py);
-  for (let i = 0; hit && hit.shadowRoot && i < 8; i++) {
-    const inner = hit.shadowRoot.elementFromPoint(px, py);
-    if (!inner || inner === hit) break;
-    hit = inner;
-  }
-  if (!hit || hit === document.documentElement || hit === document.body) return { ok: false, reason: 'NO_ELEMENT', screen, view };
+  // Whatever is worked out after the element — the ladder, an area's contents, the neighbours of an
+  // empty spot — runs on this budget: a huge tree must not push the whole evaluate past its timeout
+  // and lose the element with it (§15.12).
+  const clock = typeof performance === 'object' && performance && typeof performance.now === 'function' ? () => performance.now() : () => Date.now();
+  const BUDGET_MS = 400;
+  const MAX_NODES = 2000;
 
   const up = (e) => e.parentElement || (e.getRootNode && e.getRootNode().host) || null;
   const INTERACTIVE = /^(a|button|input|select|textarea|label|summary|option)$/;
   const ROLES = /^(button|link|checkbox|radio|switch|tab|menuitem|option|textbox|combobox|slider)$/;
   const interactive = (e) => INTERACTIVE.test(e.localName) || ROLES.test(e.getAttribute('role') || '');
-  // A press on a button's label or icon means the button.
-  let el = hit;
-  for (let e = hit, i = 0; e && e.nodeType === 1 && i < 5; e = up(e), i++) {
-    if (interactive(e)) {
-      el = e;
-      break;
-    }
-  }
-  if (!interactive(el) && el.closest) {
-    const svg = el.closest('svg');
-    if (svg) el = svg;
-  }
-
   const typeOf = (e) => fold(e.getAttribute('role'), 40) || e.localName;
   const textOf = (e) => {
     const aria = e.getAttribute('aria-label');
@@ -82,6 +75,10 @@ export function inspectPoint(args) {
       return fold(label || e.getAttribute('placeholder') || e.getAttribute('name') || e.getAttribute('title'), L.text);
     }
     if (tag === 'img') return fold(e.getAttribute('alt') || e.getAttribute('title'), L.text);
+    // An editable area (and anything inside one) holds what someone typed, like a field: name it, not its words.
+    if (e.isContentEditable) {
+      return fold(e.getAttribute('aria-placeholder') || e.getAttribute('placeholder') || e.getAttribute('data-placeholder') || e.getAttribute('title'), L.text);
+    }
     const inner = typeof e.innerText === 'string' ? e.innerText : e.textContent;
     return fold(inner, L.text) || fold(e.getAttribute('title'), L.text);
   };
@@ -100,28 +97,6 @@ export function inspectPoint(args) {
     }
     return parts.join(' > ');
   };
-
-  const rect = el.getBoundingClientRect();
-  const left = Math.max(0, rect.left);
-  const top = Math.max(0, rect.top);
-  const right = Math.min(W, rect.right);
-  const bottom = Math.min(H, rect.bottom);
-  const visible = right > left && bottom > top;
-  const element = {
-    type: typeOf(el),
-    text: textOf(el),
-    id: fold(el.id, 100),
-    selector: fold(selectorOf(el), L.selector),
-  };
-  if (visible) element.bounds = { x: left / W, y: top / H, w: (right - left) / W, h: (bottom - top) / H };
-
-  const LANDMARK = /^(form|nav|header|footer|main|section|article|aside|dialog|ul|ol|table|fieldset)$/;
-  const ancestors = [];
-  for (let a = up(el), i = 0; a && a.nodeType === 1 && a !== document.body && ancestors.length < L.ancestors && i < 40; a = up(a), i++) {
-    if (a.id || a.getAttribute('role') || LANDMARK.test(a.localName)) {
-      ancestors.push({ type: typeOf(a), id: fold(a.id, 100), text: fold(a.getAttribute('aria-label'), 80) });
-    }
-  }
 
   const clean = (n) => (typeof n === 'string' && /^[+A-Za-z_$][\w$.+-]{0,80}$/.test(n) && !/^(Anonymous|_c\d*)$/.test(n) ? n : null);
   const baseName = (p) => String(p).split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
@@ -210,35 +185,7 @@ export function inspectPoint(args) {
     return out.length ? out : null;
   };
 
-  let components = null;
-  let framework = null;
-  const tries = [['react', react], ['vue', vue], ['svelte', svelte]];
-  for (let i = 0; i < tries.length && !components; i++) {
-    try {
-      components = tries[i][1](el) || (el !== hit ? tries[i][1](hit) : null);
-      if (components) framework = tries[i][0];
-    } catch (e) {
-      components = null;
-    }
-  }
-
-  const out = {
-    ok: true,
-    screen,
-    view,
-    element,
-    rect: visible ? { x: left, y: top, width: right - left, height: bottom - top } : null,
-    ancestors,
-    components: components || [],
-    framework,
-  };
-
-  // ── scope ladder (§15.3) ─────────────────────────────────────────────────
-  // Worked out only now that the element is settled, and on a budget: a huge tree must not push the
-  // whole evaluate past its timeout and lose the element with it (§15.12). Whatever happens here,
-  // the answer above stands.
-  const clock = typeof performance === 'object' && performance && typeof performance.now === 'function' ? () => performance.now() : () => Date.now();
-  const BUDGET_MS = 400;
+  // ── scope ladder (§15.3) ───────────────────────────────────────────────────
   const GROUP = /^(form|nav|header|footer|main|section|article|aside|dialog|ul|ol|li|table|fieldset)$/;
   // Generated ids (React's `:r1:`, `ember1234`) change between builds and name nothing.
   const stableId = (id) => typeof id === 'string' && /^[A-Za-z][\w-]{0,60}$/.test(id) && !/\d{3,}/.test(id);
@@ -251,7 +198,7 @@ export function inspectPoint(args) {
     return rr > l && b > t ? { x: l / W, y: t / H, w: (rr - l) / W, h: (b - t) / H } : null;
   };
   const areaOf = (b) => b.w * b.h; // of the viewport, which is 1
-  const near = (a, b) => Math.abs(a - b) <= 0.1 * Math.max(a, b);
+  const alike = (a, b) => Math.abs(a - b) <= 0.1 * Math.max(a, b);
   // A step's own words: its aria-label, or text written directly in it — not everything inside it,
   // which for a form or a section is the whole page. Never what someone typed into an editable area.
   const ownText = (e) => {
@@ -295,6 +242,7 @@ export function inspectPoint(args) {
       return null;
     }
   };
+  const meaningful = (a) => Boolean(componentAt(a) || GROUP.test(a.localName) || a.getAttribute('role') || stableId(a.id));
   // Two nodes with nearly the same box are one step, named by the most telling of them: a
   // component name over a stable id over a bare tag. The step keeps the inner node's type, so a
   // `<form id="profile">` that `ProfileForm` draws reads "form · ProfileForm". The innermost
@@ -312,19 +260,10 @@ export function inspectPoint(args) {
     }
     if (s.text && !kept.text) kept.text = s.text;
   };
-
-  try {
-    const start = clock();
-    const first = { kind: 'element', type: element.type };
-    const said = fold(element.text, L.scopeText);
-    if (said) first.text = said;
-    if (element.id) first.id = element.id;
-    if (element.selector) first.selector = element.selector;
-    const own = componentAt(el);
-    if (own) first.component = own;
-    if (element.bounds) first.bounds = element.bounds;
-    const steps = [first];
-    for (let a = up(el), i = 0; a && a.nodeType === 1 && a !== document.body && a !== document.documentElement && i < 40; a = up(a), i++) {
+  // Adds the steps from `from` outward. Nothing merges into a dragged region's own step, nor is
+  // measured against it; above it, as in scope.js, a container never narrows the ladder.
+  const climb = (steps, from, start, region) => {
+    for (let a = from, i = 0; a && a.nodeType === 1 && a !== document.body && a !== document.documentElement && i < 40; a = up(a), i++) {
       if (clock() - start > BUDGET_MS) break;
       const name = componentAt(a);
       if (!name && !GROUP.test(a.localName) && !a.getAttribute('role') && !stableId(a.id)) continue;
@@ -344,14 +283,303 @@ export function inspectPoint(args) {
       step.bounds = bounds;
       // Nearly the same box as the step below it: one step, so widening never stops twice in place.
       const last = steps[steps.length - 1];
-      if (last.bounds && near(area, areaOf(last.bounds))) {
+      const measured = last.bounds && last.kind !== 'region';
+      if (measured && alike(area, areaOf(last.bounds))) {
         merge(last, step);
         continue;
       }
+      if (region && measured && area < areaOf(last.bounds)) continue;
       if (steps.length >= L.scopes - 1) break;
       steps.push(step);
     }
-    steps.push({ kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } });
+  };
+  const screenStep = () => ({ kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } });
+
+  // ── what is in an area, and around an empty spot (§15.4) ─────────────────────
+  // Boxes here are CSS pixels of the viewport, `{x, y, w, h}`.
+  const SKIP = /^(script|style|template|noscript|iframe|object|embed)$/;
+  const rawOf = (e) => {
+    const r = e.getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top };
+  };
+  const onScreen = (b) => {
+    const l = Math.max(0, b.x);
+    const t = Math.max(0, b.y);
+    const r = Math.min(W, b.x + b.w);
+    const bt = Math.min(H, b.y + b.h);
+    return r > l && bt > t ? { x: l, y: t, w: r - l, h: bt - t } : null;
+  };
+  const ratioOf = (b) => ({ x: b.x / W, y: b.y / H, w: b.w / W, h: b.h / H });
+  const overlap = (a, b) => {
+    const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    return w > 0 && h > 0 ? w * h : 0;
+  };
+  // Whether [a0, a1] overlaps [b0, b1]; a zero-width [b0, b1] (a point's) must lie within [a0, a1].
+  const spans = (a0, a1, b0, b1) => (b1 > b0 ? a0 < b1 && a1 > b0 : a0 <= b0 && b0 <= a1);
+  // What a person would name when describing an area: something to press or type into, words of its
+  // own, a described picture. A box of a pixel or two is screen-reader text; one of most of the
+  // screen is the page itself. 'interactive' speaks for everything inside it (a button's label).
+  const kindOf = (e, box) => {
+    if (box.w < 2 || box.h < 2 || box.w * box.h >= 0.8 * W * H) return null;
+    if (interactive(e) || e.isContentEditable) return 'interactive';
+    const tag = e.localName;
+    if (tag === 'img' || tag === 'svg' || e.getAttribute('role') === 'img') return e.getAttribute('alt') || e.getAttribute('aria-label') ? 'plain' : null;
+    const kids = e.childNodes || [];
+    for (let i = 0; i < kids.length && i < 50; i++) if (kids[i] && kids[i].nodeType === 3 && /\S/.test(kids[i].nodeValue || '')) return 'plain';
+    return null;
+  };
+  const shown = (e) => typeof e.checkVisibility !== 'function' || e.checkVisibility({ opacityProperty: true, visibilityProperty: true });
+  // Whether an element found at `kind` stays, given what its nearest kept ancestor was: inside
+  // something to press it is part of it; inside words of their own, only something to press stands
+  // apart (the outer words already include the inner ones: `<p>… <em>무료</em></p>`).
+  const stays = (state, kind) => state !== 'interactive' && (state !== 'plain' || kind === 'interactive');
+  // Elements in tree order from <body>, open shadow roots included, looking inside only those whose
+  // box passes `look`. One with no box (`display: contents`, a collapsed wrapper) is looked inside,
+  // since what is in it may still show. `visit(e, box on screen or null, state)` returns the state
+  // for its children. Stops at 2,000 elements or when the time is up, and then says false.
+  const walk = (look, visit, start) => {
+    const stack = [];
+    const push = (list, state) => {
+      if (!list) return;
+      for (let i = list.length - 1; i >= 0; i--) stack.push([list[i], state]);
+    };
+    push(document.body && document.body.children, null);
+    for (let n = 0; stack.length; n++) {
+      if (n >= MAX_NODES || clock() - start > BUDGET_MS) return false;
+      const [e, state] = stack.pop();
+      if (!e || e.nodeType !== 1 || SKIP.test(e.localName)) continue;
+      const raw = rawOf(e);
+      if (raw.w > 0 && raw.h > 0 && !look(raw)) continue;
+      const next = visit(e, onScreen(raw), state);
+      // A picture's insides and an editor's contents (what someone typed) are not read.
+      if (e.localName === 'svg' || e.isContentEditable) continue;
+      if (e.shadowRoot) push(e.shadowRoot.children, next);
+      push(e.children, next);
+    }
+    return true;
+  };
+  // Top to bottom by row, then left to right; boxes whose vertical centres are within half the
+  // smaller height share a row.
+  const readingOrder = (list) => {
+    const cy = (b) => b.y + b.h / 2;
+    const sorted = list.slice().sort((a, b) => cy(a.box) - cy(b.box));
+    const rows = [];
+    for (let i = 0; i < sorted.length; i++) {
+      const m = sorted[i];
+      const row = rows[rows.length - 1];
+      if (row && row.some((o) => Math.abs(cy(o.box) - cy(m.box)) <= Math.min(o.box.h, m.box.h) / 2)) row.push(m);
+      else rows.push([m]);
+    }
+    const out = [];
+    for (let i = 0; i < rows.length; i++) out.push(...rows[i].sort((a, b) => a.box.x - b.box.x));
+    return out;
+  };
+  const itemOf = (m) => {
+    const e = m.e;
+    const item = { type: typeOf(e) };
+    // An editor is named by its label only: its words are what someone typed.
+    const text = fold(e.isContentEditable ? e.getAttribute('aria-label') : textOf(e), L.memberText);
+    if (text) item.text = text;
+    const id = fold(e.id, 100);
+    if (id) item.id = id;
+    item.bounds = ratioOf(m.box);
+    return item;
+  };
+  // The nearest named element on each side of `T` (zero-size for a point): entirely above, below,
+  // left or right of it, and across its span on the other axis.
+  const nearOf = (T, start) => {
+    const best = {};
+    const cross = (raw) => onScreen(raw) && (spans(raw.x, raw.x + raw.w, T.x, T.x + T.w) || spans(raw.y, raw.y + raw.h, T.y, T.y + T.h));
+    walk(cross, (e, box, state) => {
+      const kind = box ? kindOf(e, box) : null;
+      if (!kind || !shown(e) || !stays(state, kind)) return state;
+      const xs = spans(box.x, box.x + box.w, T.x, T.x + T.w);
+      const ys = spans(box.y, box.y + box.h, T.y, T.y + T.h);
+      const sides = [];
+      if (xs && box.y + box.h <= T.y) sides.push(['up', (T.y - box.y - box.h) / H]);
+      if (xs && box.y >= T.y + T.h) sides.push(['down', (box.y - T.y - T.h) / H]);
+      if (ys && box.x + box.w <= T.x) sides.push(['left', (T.x - box.x - box.w) / W]);
+      if (ys && box.x >= T.x + T.w) sides.push(['right', (box.x - T.x - T.w) / W]);
+      for (let i = 0; i < sides.length; i++) {
+        const dir = sides[i][0];
+        const gap = sides[i][1];
+        const cur = best[dir];
+        if (!cur || gap < cur.gap || (gap === cur.gap && box.w * box.h < cur.box.w * cur.box.h)) best[dir] = { e, box, gap };
+      }
+      return kind;
+    }, start);
+    const out = [];
+    const dirs = ['up', 'down', 'left', 'right'];
+    for (let i = 0; i < dirs.length && out.length < L.near; i++) {
+      const b = best[dirs[i]];
+      if (b) out.push(Object.assign({ dir: dirs[i] }, itemOf(b), { distance: b.gap }));
+    }
+    return out;
+  };
+
+  let hit = document.elementFromPoint(px, py);
+  for (let i = 0; hit && hit.shadowRoot && i < 8; i++) {
+    const inner = hit.shadowRoot.elementFromPoint(px, py);
+    if (!inner || inner === hit) break;
+    hit = inner;
+  }
+  // A frame that covers most of the screen and says nothing itself (the app's root, a page wrapper)
+  // is the background, as on Android and iOS: the spot is empty (§15.4). Without this a tap between
+  // things named the whole app, with every word on the page as its text.
+  const backdrop = (e) => {
+    if (!e || e.nodeType !== 1 || interactive(e) || e.getAttribute('aria-label')) return false;
+    const kids = e.childNodes || [];
+    for (let i = 0; i < kids.length && i < 50; i++) if (kids[i] && kids[i].nodeType === 3 && String(kids[i].nodeValue).trim()) return false;
+    const r = e.getBoundingClientRect();
+    const w = Math.min(W, r.right) - Math.max(0, r.left);
+    const h = Math.min(H, r.bottom) - Math.max(0, r.top);
+    return w > 0 && h > 0 && (w * h) / (W * H) >= 0.8;
+  };
+  const none = !hit || hit === document.documentElement || hit === document.body || backdrop(hit);
+  if (none && !drawn) {
+    // An empty spot: what is around it says where it is (§15.4).
+    const out = { ok: false, reason: 'NO_ELEMENT', screen, view };
+    try {
+      out.near = nearOf({ x: px, y: py, w: 0, h: 0 }, clock());
+    } catch (e) {
+      // The point alone, as before.
+    }
+    return out;
+  }
+
+  const out = { ok: true, screen, view };
+  let el = null;
+  if (!none) {
+    // A press on a button's label or icon means the button.
+    el = hit;
+    for (let e = hit, i = 0; e && e.nodeType === 1 && i < 5; e = up(e), i++) {
+      if (interactive(e)) {
+        el = e;
+        break;
+      }
+    }
+    if (!interactive(el) && el.closest) {
+      const svg = el.closest('svg');
+      if (svg) el = svg;
+    }
+
+    const rect = el.getBoundingClientRect();
+    const left = Math.max(0, rect.left);
+    const top = Math.max(0, rect.top);
+    const right = Math.min(W, rect.right);
+    const bottom = Math.min(H, rect.bottom);
+    const visible = right > left && bottom > top;
+    const element = {
+      type: typeOf(el),
+      text: textOf(el),
+      id: fold(el.id, 100),
+      selector: fold(selectorOf(el), L.selector),
+    };
+    if (visible) element.bounds = { x: left / W, y: top / H, w: (right - left) / W, h: (bottom - top) / H };
+
+    const LANDMARK = /^(form|nav|header|footer|main|section|article|aside|dialog|ul|ol|table|fieldset)$/;
+    const ancestors = [];
+    for (let a = up(el), i = 0; a && a.nodeType === 1 && a !== document.body && ancestors.length < L.ancestors && i < 40; a = up(a), i++) {
+      if (a.id || a.getAttribute('role') || LANDMARK.test(a.localName)) {
+        ancestors.push({ type: typeOf(a), id: fold(a.id, 100), text: fold(a.getAttribute('aria-label'), 80) });
+      }
+    }
+
+    let components = null;
+    let framework = null;
+    const tries = [['react', react], ['vue', vue], ['svelte', svelte]];
+    for (let i = 0; i < tries.length && !components; i++) {
+      try {
+        components = tries[i][1](el) || (el !== hit ? tries[i][1](hit) : null);
+        if (components) framework = tries[i][0];
+      } catch (e) {
+        components = null;
+      }
+    }
+    out.element = element;
+    out.rect = visible ? { x: left, y: top, width: right - left, height: bottom - top } : null;
+    out.ancestors = ancestors;
+    out.components = components || [];
+    out.framework = framework;
+  } else {
+    out.ancestors = [];
+    out.components = [];
+    out.framework = null;
+  }
+
+  if (drawn) {
+    // ── a dragged area (§15.4) ──────────────────────────────────────────────
+    // Each part on its own: a failure in one leaves the others, and the element above, standing.
+    const R = { x: drawn.x * W, y: drawn.y * H, w: drawn.w * W, h: drawn.h * H };
+    const start = clock();
+    try {
+      // The smallest container holding 90% of the area. Such a box always holds the area's centre,
+      // so it is the centre element or one of its ancestors: the first of those, going out, that is a
+      // step and holds that much.
+      const steps = [{ kind: 'region', type: 'region', bounds: ratioOf(R) }];
+      for (let a = none ? null : hit, i = 0; a && a.nodeType === 1 && a !== document.body && a !== document.documentElement && i < 40; a = up(a), i++) {
+        if (clock() - start > BUDGET_MS) break;
+        if (meaningful(a) && overlap(rawOf(a), R) >= 0.9 * R.w * R.h) {
+          climb(steps, a, start, true);
+          break;
+        }
+      }
+      steps.push(screenStep());
+      out.scopes = steps;
+      out.defaultScope = 0;
+    } catch (e) {
+      // The device side falls back to the region and the screen.
+    }
+    let members = null;
+    let whole = false;
+    try {
+      const found = [];
+      whole = walk(
+        (raw) => overlap(raw, R) > 0,
+        (e, box, state) => {
+          const kind = box ? kindOf(e, box) : null;
+          if (!kind || overlap(box, R) < 0.6 * box.w * box.h || !shown(e) || !stays(state, kind)) return state;
+          found.push({ e, box });
+          return kind;
+        },
+        start
+      );
+      members = readingOrder(found).slice(0, L.members).map(itemOf);
+    } catch (e) {
+      members = null;
+    }
+    if (members) {
+      out.members = members;
+      // Cut short, an area with nothing listed is not known to be empty.
+      if (!whole) out.cut = true;
+      else if (!members.length) {
+        try {
+          out.near = nearOf(R, start);
+        } catch (e) {
+          // Empty, with nothing said around it.
+        }
+      }
+    }
+    return out;
+  }
+
+  // ── scope ladder (§15.3) ───────────────────────────────────────────────────
+  // Worked out only now that the element is settled. Whatever happens here, the answer above stands.
+  try {
+    const start = clock();
+    const element = out.element;
+    const first = { kind: 'element', type: element.type };
+    const said = fold(element.text, L.scopeText);
+    if (said) first.text = said;
+    if (element.id) first.id = element.id;
+    if (element.selector) first.selector = element.selector;
+    const own = componentAt(el);
+    if (own) first.component = own;
+    if (element.bounds) first.bounds = element.bounds;
+    const steps = [first];
+    climb(steps, up(el), start, false);
+    steps.push(screenStep());
     out.scopes = steps;
     out.defaultScope = 0;
   } catch (e) {
@@ -369,8 +597,9 @@ export function readScreen() {
 /**
  * @param {object} o
  * @param {{send: Function}} o.page
- * @param {{probeId: string, x: number, y: number}|{probeId: string, screen: true}} o.probe a point, or
- *   the whole screen (resolveWebScreen)
+ * @param {{probeId: string, x: number, y: number}|{probeId: string, screen: true}|
+ *   {probeId: string, rect: object}} o.probe a point, the whole screen (resolveWebScreen) or a dragged
+ *   rectangle (§15.4)
  * @param {string|null} o.project the folder to look in for source candidates; null looks nowhere
  * @param {string|null} o.origin the shared origin
  * @param {Buffer|null} o.screen the latest screencast frame (what the viewer saw)
@@ -378,9 +607,10 @@ export function readScreen() {
  */
 export async function resolveWebPin({ page, probe, project, origin, screen = null, findHints = findSourceHints }) {
   if (probe.screen) return resolveWebScreen({ page, probe, screen });
+  const drawn = probe.rect ?? null;
   let raw = null;
   try {
-    const args = JSON.stringify({ x: probe.x, y: probe.y, limit: LIMIT });
+    const args = JSON.stringify(drawn ? { rect: drawn, limit: LIMIT } : { x: probe.x, y: probe.y, limit: LIMIT });
     const reply = await page.send('Runtime.evaluate', {
       expression: `(${inspectPoint.toString()})(${args})`,
       returnByValue: true,
@@ -395,14 +625,24 @@ export async function resolveWebPin({ page, probe, project, origin, screen = nul
 
   const pageScreen = cleanScreen(raw.screen);
   const view = cleanView(raw.view);
-  if (!raw.ok || !raw.element) {
+  // A rectangle is cut as the person drew it, with the margin an element gets (§15.4).
+  const drawnArea = drawn && view ? padded({ x: drawn.x * view.width, y: drawn.y * view.height, width: drawn.w * view.width, height: drawn.h * view.height }, view) : null;
+  if (!drawn && (!raw.ok || !raw.element || typeof raw.element !== 'object')) {
     const spot = view ? spotAround(probe, view) : null;
-    return { result: unresolved(probe, 'NO_ELEMENT', pageScreen), crop: spot ? await crop(page, spot, view) : null, screen };
+    const result = unresolved(probe, 'NO_ELEMENT', pageScreen);
+    // What is around an empty spot says where it is (§15.4).
+    const near = cleanNear(raw.near);
+    if (near) result.near = near;
+    return { result, crop: spot ? await crop(page, spot, view) : null, screen };
+  }
+  if (drawn && !raw.ok) {
+    return { result: unresolved(probe, 'NO_ELEMENT', pageScreen), crop: drawnArea ? await crop(page, drawnArea, view) : null, screen };
   }
 
-  const element = cleanElement(raw.element);
+  // A rectangle's centre may be the page background: then there is no element, only the area.
+  const element = raw.element && typeof raw.element === 'object' ? cleanElement(raw.element) : null;
   const components = [];
-  for (const c of Array.isArray(raw.components) ? raw.components.slice(0, LIMIT.components) : []) {
+  for (const c of element && Array.isArray(raw.components) ? raw.components.slice(0, LIMIT.components) : []) {
     const name = clip(c?.name, 100);
     if (!name) continue;
     const file = c.source ? toProjectPath(c.source, project, origin) : null;
@@ -412,6 +652,31 @@ export async function resolveWebPin({ page, probe, project, origin, screen = nul
     if (file && !line) line = await definitionLine(project, file, name);
     components.push(file ? { name, file, ...(line ? { line } : {}) } : { name });
   }
+  const ancestors = element ? (Array.isArray(raw.ancestors) ? raw.ancestors : []).slice(0, LIMIT.ancestors).map(cleanAncestor).filter(Boolean) : [];
+
+  if (drawn) {
+    // A page cut short (its budget, 2,000 elements) or failing says nothing of an empty area: only a
+    // whole walk that found nothing is `empty`, and only then are the neighbours worth sending.
+    const members = cleanMembers(raw.members);
+    const empty = Boolean(members) && members.length === 0 && raw.cut !== true;
+    const scopes = cleanScopes(raw.scopes, regionStep(drawn, members, raw.cut === true));
+    const centre = probePoint(probe);
+    const result = {
+      probeId: probe.probeId,
+      ok: true,
+      screen: pageScreen,
+      point: { x: r4(centre.x), y: r4(centre.y) },
+      ...(element ? { element } : {}),
+      ancestors,
+      components,
+    };
+    // The containers' ids are searched with the centre element's, as a ladder's are on Android and iOS.
+    result.sourceHints = await findHints({ project, components, element: element ?? {}, scopeIds: scopeIdsOf(scopes) }).catch(() => []);
+    Object.assign(result, { scopes, defaultScope: 0, members: members ?? [], empty });
+    if (empty) result.near = cleanNear(raw.near) ?? [];
+    return { result, crop: drawnArea ? await crop(page, drawnArea, view) : null, screen };
+  }
+
   const sourceHints = await findHints({ project, components, element }).catch(() => []);
   const rect = cleanRect(raw.rect);
   const result = {
@@ -420,10 +685,10 @@ export async function resolveWebPin({ page, probe, project, origin, screen = nul
     screen: pageScreen,
     point: { x: r4(probe.x), y: r4(probe.y) },
     element,
-    ancestors: (Array.isArray(raw.ancestors) ? raw.ancestors : []).slice(0, LIMIT.ancestors).map(cleanAncestor).filter(Boolean),
+    ancestors,
     components,
     sourceHints,
-    scopes: cleanScopes(raw.scopes, element),
+    scopes: cleanScopes(raw.scopes, elementStep(raw.scopes, element)),
     defaultScope: 0,
   };
   const area = rect && view ? padded(rect, view) : view ? spotAround(probe, view) : null;
@@ -461,22 +726,12 @@ const STEP_KINDS = new Set(['group', 'component']);
 
 /**
  * The ladder as the page reported it, checked like everything else from the page: known kinds
- * only, words and names cut to size, bounds in 0..1 with something visible. The element step is
- * rebuilt from the cleaned `element` so the two always agree; only the component name comes from
- * the page's step. Whatever the page sent, the ladder starts at the element and ends at the screen.
+ * only, words and names cut to size, bounds in 0..1 with something visible. The first step is made
+ * here (elementStep, regionStep), never taken from the page. Whatever the page sent, the ladder
+ * starts there and ends at the screen.
  */
-function cleanScopes(raw, element) {
+function cleanScopes(raw, first) {
   const list = Array.isArray(raw) ? raw : [];
-  const head = list[0] && typeof list[0] === 'object' && list[0].kind === 'element' ? list[0] : {};
-  const first = { kind: 'element' };
-  if (element.type) first.type = element.type;
-  const said = clip(element.text, LIMIT.scopeText);
-  if (said) first.text = said;
-  if (element.id) first.id = element.id;
-  if (element.selector) first.selector = element.selector;
-  const component = str(head.component, 100);
-  if (component) first.component = component;
-  if (element.bounds) first.bounds = element.bounds;
   const steps = [first];
   for (const s of list.slice(1)) {
     if (steps.length >= LIMIT.scopes - 1) break;
@@ -498,6 +753,79 @@ function cleanScopes(raw, element) {
   }
   steps.push(screenScope());
   return steps;
+}
+
+/**
+ * The element step, rebuilt from the cleaned `element` so the two always agree; only the component
+ * name comes from the page's step.
+ */
+function elementStep(raw, element) {
+  const list = Array.isArray(raw) ? raw : [];
+  const head = list[0] && typeof list[0] === 'object' && list[0].kind === 'element' ? list[0] : {};
+  const first = { kind: 'element' };
+  if (element.type) first.type = element.type;
+  const said = clip(element.text, LIMIT.scopeText);
+  if (said) first.text = said;
+  if (element.id) first.id = element.id;
+  if (element.selector) first.selector = element.selector;
+  const component = str(head.component, 100);
+  if (component) first.component = component;
+  if (element.bounds) first.bounds = element.bounds;
+  return first;
+}
+
+/**
+ * The region step (§15.4): the rectangle the person drew, as the probe said it, and how many named
+ * elements are inside. A count the page could not finish is left out rather than given as 0, which
+ * would read "empty".
+ */
+function regionStep(rect, members, cut) {
+  const step = { kind: 'region', type: 'region', bounds: { x: r4(rect.x), y: r4(rect.y), w: r4(rect.w), h: r4(rect.h) } };
+  if (members && !(cut && members.length === 0)) step.members = members.length;
+  return step;
+}
+
+/** The elements inside a dragged area as the page listed them (reading order), checked and cut. */
+function cleanMembers(list) {
+  if (!Array.isArray(list)) return null;
+  const out = [];
+  for (const m of list) {
+    if (out.length >= LIMIT.members) break;
+    const item = cleanItem(m);
+    if (item) out.push(item);
+  }
+  return out;
+}
+
+/** The neighbours of an empty spot: one per side at most, up · down · left · right. */
+function cleanNear(list) {
+  if (!Array.isArray(list)) return null;
+  const out = [];
+  const seen = new Set();
+  for (const n of list) {
+    if (out.length >= LIMIT.near) break;
+    if (!n || typeof n !== 'object' || !NEAR_DIRS.includes(n.dir) || seen.has(n.dir)) continue;
+    if (typeof n.distance !== 'number' || !Number.isFinite(n.distance) || n.distance < 0) continue;
+    const item = cleanItem(n);
+    if (!item) continue;
+    seen.add(n.dir);
+    out.push({ dir: n.dir, ...item, distance: r4(n.distance) });
+  }
+  return out;
+}
+
+/** `{type, text?, id?, bounds}`; nothing without a box on screen. */
+function cleanItem(m) {
+  if (!m || typeof m !== 'object') return null;
+  const bounds = cleanBounds(m.bounds);
+  if (!bounds) return null;
+  const item = { type: str(m.type, 40) ?? 'element' };
+  const text = str(m.text, LIMIT.memberText);
+  const id = str(m.id, 100);
+  if (text) item.text = text;
+  if (id) item.id = id;
+  item.bounds = bounds;
+  return item;
 }
 
 function cleanBounds(b) {

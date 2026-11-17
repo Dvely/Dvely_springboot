@@ -547,7 +547,7 @@ describe('android pinning over a real tunnel socket (§14, #682)', () => {
     session.run();
     const conn = await server.nextConnection();
     const hello = await conn.next();
-    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'ANDROID', target: 'qeploy_test · com.example.app', features: ['pin', 'pin-scope', 'pin-screen'] });
+    assert.deepEqual(hello.json, { cliVersion: '9.9.9', kind: 'ANDROID', target: 'qeploy_test · com.example.app', features: ['pin', 'pin-scope', 'pin-screen', 'pin-region'] });
     conn.send(KIND.WELCOME, { shareId: 7 });
     await until(() => device.resets === 1);
     const controlsBefore = device.controls.length;
@@ -578,7 +578,7 @@ describe('android pinning over a real tunnel socket (§14, #682)', () => {
     const { session, device } = newAndroidSession({ tunnelUrl: server.url, adb });
     session.run();
     const conn = await server.nextConnection();
-    assert.deepEqual((await conn.next()).json.features, ['pin', 'pin-scope', 'pin-screen']);
+    assert.deepEqual((await conn.next()).json.features, ['pin', 'pin-scope', 'pin-screen', 'pin-region']);
     conn.send(KIND.WELCOME, { shareId: 7, pinResultMax: 49152 });
     await until(() => device.resets === 1);
     const controlsBefore = device.controls.length;

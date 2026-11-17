@@ -183,6 +183,57 @@ class PinResultSanitizerTest {
     }
 
     @Test
+    void 끈_영역은_가운데_요소가_없어도_찾은_것이고_안의_요소는_12개_글은_60자() throws Exception {
+        StringBuilder members = new StringBuilder();
+        for (int i = 0; i < 15; i++) {
+            members.append(i == 0 ? "" : ",").append("{\"type\":\"li\",\"text\":\"").append("가".repeat(80))
+                    .append("\",\"bounds\":{\"x\":0.1,\"y\":0.1,\"w\":0.1,\"h\":0.01},\"value\":\"x\"}");
+        }
+        PinResolution r = sanitizer.sanitize(json.readTree("""
+                {"probeId":"p7","ok":true,"empty":false,
+                 "scopes":[{"kind":"region","type":"region","members":99,"bounds":{"x":0.1,"y":0.1,"w":0.5,"h":0.5}},
+                           {"kind":"screen","type":"screen"}],
+                 "members":[%s,{"type":"p","text":"테두리 없음"}]}
+                """.formatted(members))).orElseThrow();
+
+        assertThat(r.resolved()).isTrue();
+        assertThat(r.label()).isEqualTo("영역 · 요소 12개");
+        JsonNode d = r.description();
+        assertThat(d.path("members")).hasSize(12);
+        assertThat(d.path("members").get(0).path("text").asText()).hasSize(60);
+        assertThat(d.path("members").get(0).has("value")).isFalse();
+        assertThat(d.path("empty").asBoolean()).isFalse();
+        assertThat(PinResultSanitizer.scopeLabel(json.readTree("{\"kind\":\"region\",\"members\":0}"), false)).isEqualTo("빈 자리");
+        assertThat(PinResultSanitizer.scopeLabel(json.readTree("{\"kind\":\"region\"}"), false)).isEqualTo("영역");
+    }
+
+    @Test
+    void 비었는지는_기기의_값을_따른다_목록이_덜어졌어도() throws Exception {
+        PinResolution r = sanitizer.sanitize(json.readTree("""
+                {"probeId":"p9","ok":true,"empty":false,
+                 "scopes":[{"kind":"region","type":"region","members":7,"bounds":{"x":0.1,"y":0.1,"w":0.5,"h":0.5}}]}
+                """)).orElseThrow();
+        assertThat(r.description().path("empty").asBoolean()).isFalse();
+        assertThat(r.label()).isEqualTo("영역 · 요소 7개");
+    }
+
+    @Test
+    void 빈_자리_둘레는_네_방향만_4개까지이고_실패한_짚기에도_남는다() throws Exception {
+        PinResolution r = sanitizer.sanitize(json.readTree("""
+                {"probeId":"p8","ok":false,"reason":"NO_ELEMENT",
+                 "near":[{"dir":"up","type":"h2","text":"요금제","bounds":{"x":0,"y":0,"w":0.2,"h":0.05},"distance":0.04},
+                         {"dir":"north","type":"x","bounds":{"x":0,"y":0,"w":0.2,"h":0.05}},
+                         {"dir":"down","type":"footer","distance":0.1},
+                         {"dir":"left","type":"nav","bounds":{"x":0,"y":0,"w":0.1,"h":0.5},"distance":7}]}
+                """)).orElseThrow();
+
+        JsonNode near = r.description().path("near");
+        assertThat(near.findValuesAsText("dir")).containsExactly("up", "left");
+        assertThat(near.get(1).path("distance").asDouble()).as("비율로 자른다").isEqualTo(1.0);
+        assertThat(PinResultSanitizer.nearLabel(near.get(0))).isEqualTo("위 <h2> \"요금제\"");
+    }
+
+    @Test
     void 덩어리_이름은_태그와_역할을_사람이_부르는_말로_옮긴다() {
         assertThat(PinResultSanitizer.groupWord("form")).isEqualTo("폼");
         assertThat(PinResultSanitizer.groupWord("navigation")).isEqualTo("메뉴");

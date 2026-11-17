@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import vm from 'node:vm';
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { deflateSync } from 'node:zlib';
@@ -51,14 +52,13 @@ describe('pin probe and result (§14.3)', () => {
     }
   });
 
-  it('takes a whole-screen probe, and drops shapes it does not read yet (§15.6, §15.9)', () => {
+  it('takes a whole-screen probe, and drops shapes it does not read (§15.6, §15.9)', () => {
     assert.deepEqual(parseProbe({ probeId: 'p8', screen: true }), { probeId: 'p8', screen: true });
     for (const bad of [
       { probeId: 'p8', screen: true, x: 0.5, y: 0.5 },
       { probeId: 'p8', screen: true, x: 0.5 },
       { probeId: 'p8', screen: 'yes' },
       { probeId: 'x8', screen: true },
-      { probeId: 'p8', rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } },
       { probeId: 'p8', x: 0.5, y: 0.5, rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } },
     ]) {
       assert.equal(parseProbe(bad), null, JSON.stringify(bad));
@@ -72,6 +72,35 @@ describe('pin probe and result (§14.3)', () => {
       scopes: [{ kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } }],
       defaultScope: 0,
     });
+  });
+
+  it('takes a dragged rectangle inside the screen, and nothing else with it (§15.4)', () => {
+    const rect = { x: 0.1, y: 0.2, w: 0.3, h: 0.4 };
+    assert.deepEqual(parseProbe({ probeId: 'p9', rect }), { probeId: 'p9', rect });
+    assert.deepEqual(parseProbe({ probeId: 'p9', rect: { x: 0.5, y: 0, w: 0.5, h: 1 } }), { probeId: 'p9', rect: { x: 0.5, y: 0, w: 0.5, h: 1 } }, 'to the edge');
+    assert.deepEqual(parseProbe({ probeId: 'p9', rect: { x: 0, y: 0, w: 1, h: 1, extra: 1 } }), { probeId: 'p9', rect: { x: 0, y: 0, w: 1, h: 1 } });
+    for (const bad of [
+      { x: -0.1, y: 0.2, w: 0.3, h: 0.4 },
+      { x: 0.1, y: -0.01, w: 0.3, h: 0.4 },
+      { x: 0.1, y: 0.2, w: 0, h: 0.4 },
+      { x: 0.1, y: 0.2, w: 0.3, h: -0.1 },
+      { x: 0.8, y: 0.2, w: 0.3, h: 0.4 },
+      { x: 0.1, y: 0.7, w: 0.3, h: 0.4 },
+      { x: 0.1, y: 0.2, w: 0.3 },
+      { x: '0.1', y: 0.2, w: 0.3, h: 0.4 },
+      { x: NaN, y: 0.2, w: 0.3, h: 0.4 },
+      { x: 0.1, y: 0.2, w: Infinity, h: 0.4 },
+      [0.1, 0.2, 0.3, 0.4],
+      null,
+      'x',
+    ]) {
+      assert.equal(parseProbe({ probeId: 'p9', rect: bad }), null, JSON.stringify(bad));
+    }
+    assert.equal(parseProbe({ probeId: 'p9', rect, screen: true }), null);
+    assert.equal(parseProbe({ probeId: 'p9', rect, x: 0.5 }), null);
+    assert.equal(parseProbe({ probeId: 'x9', rect }), null);
+    // A rectangle that could not be read still says where it was: its centre.
+    assert.deepEqual(unresolved({ probeId: 'p9', rect }, 'TIMEOUT'), { probeId: 'p9', ok: false, reason: 'TIMEOUT', point: { x: 0.25, y: 0.4 } });
   });
 
   it('takes the result limit from WELCOME only when it is a whole number from 16 to 48 KiB', () => {
@@ -169,6 +198,73 @@ describe('pin probe and result (§14.3)', () => {
     assert.equal(fitted.ok, true);
     assert.equal(fitted.components, undefined);
     assert.equal(fitted.ancestors, undefined);
+  });
+});
+
+describe('fitting a dragged area’s result (§15.9)', () => {
+  const REGION = { x: 0.1, y: 0.2, w: 0.5, h: 0.3 };
+  const ELEMENT = { type: 'p', text: '요금제', bounds: { x: 0.12, y: 0.3, w: 0.3, h: 0.05 } };
+  const SCREEN = { kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } };
+  const region = ({ members = [], near, steps = 1 } = {}) => ({
+    probeId: 'p5',
+    ok: true,
+    screen: { label: '/plans' },
+    point: { x: 0.35, y: 0.35 },
+    element: ELEMENT,
+    ancestors: [{ type: 'section' }],
+    components: [{ name: 'PlanCard' }],
+    sourceHints: [{ file: 'src/PlanCard.tsx', reason: 'COMPONENT' }],
+    scopes: [
+      { kind: 'region', type: 'region', bounds: REGION, members: Math.min(members.length, 12) },
+      ...Array.from({ length: steps }, (_, i) => ({ kind: 'group', type: 'section', id: 's' + i, bounds: { x: 0, y: 0, w: 0.6 + i * 0.05, h: 0.6 } })),
+      SCREEN,
+    ],
+    defaultScope: 0,
+    members,
+    empty: members.length === 0,
+    ...(near ? { near } : {}),
+  });
+  const member = (i, text) => ({ type: 'a', text, id: 'm' + i, bounds: { x: 0.1, y: 0.2 + i * 0.01, w: 0.1, h: 0.01 } });
+
+  it('drops the members’ words first, keeping everything else', () => {
+    const members = Array.from({ length: 12 }, (_, i) => member(i, String(i).repeat(1500)));
+    const near = [{ dir: 'up', type: 'h2', text: '요금제', bounds: ELEMENT.bounds, distance: 0.1 }];
+    const fitted = JSON.parse(fitResult(region({ members, near })));
+    assert.equal(fitted.members.length, 12);
+    assert.ok(fitted.members.every((m) => m.text === undefined && m.id && m.bounds));
+    assert.deepEqual(fitted.near, near, 'the neighbours go only after the words');
+    assert.equal(fitted.scopes.length, 3);
+    assert.deepEqual(fitted.ancestors, [{ type: 'section' }]);
+  });
+
+  it('then the neighbours, then the list — its count stays on the region step — then the outer steps', () => {
+    const near = [{ dir: 'up', type: 'h2', text: 'x'.repeat(20000), bounds: ELEMENT.bounds, distance: 0.1 }];
+    let fitted = JSON.parse(fitResult(region({ members: [member(0, '바꾸기')], near })));
+    assert.equal(fitted.near, undefined);
+    assert.deepEqual(fitted.members, [{ type: 'a', id: 'm0', bounds: member(0).bounds }]);
+
+    const huge = Array.from({ length: 3000 }, (_, i) => member(i));
+    fitted = JSON.parse(fitResult(region({ members: huge, steps: 4 })));
+    assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= MAX_RESULT_JSON_BYTES);
+    assert.equal(fitted.members, undefined);
+    assert.equal(fitted.empty, false, 'not empty: the list was let go of, not found empty');
+    assert.deepEqual(fitted.scopes[0], { kind: 'region', type: 'region', bounds: REGION, members: 12 });
+    assert.equal(fitted.scopes.length, 6, 'the list went before any step');
+    assert.deepEqual(fitted.element, ELEMENT);
+    assert.deepEqual(fitted.components, [{ name: 'PlanCard' }]);
+  });
+
+  it('keeps the region step and `element` to the last', () => {
+    const fat = { type: 'section', text: 'y'.repeat(200), bounds: { x: 0, y: 0, w: 0.5, h: 0.5 } };
+    const result = region({ members: Array.from({ length: 3000 }, (_, i) => member(i, 'z'.repeat(60))), steps: 4 });
+    result.ancestors = Array.from({ length: 5 }, () => ({ ...fat, text: 'a'.repeat(9000) }));
+    result.components = Array.from({ length: 8 }, (_, i) => ({ name: 'C' + i, file: 'f'.repeat(9000) }));
+    const fitted = JSON.parse(fitResult(result));
+    assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= MAX_RESULT_JSON_BYTES);
+    assert.equal(fitted.ok, true);
+    assert.deepEqual(fitted.scopes, [{ kind: 'region', type: 'region', bounds: REGION, members: 12 }, SCREEN]);
+    assert.deepEqual(fitted.element, { type: 'p', bounds: ELEMENT.bounds });
+    assert.deepEqual(fitted.point, { x: 0.35, y: 0.35 });
   });
 });
 
@@ -310,7 +406,7 @@ describe('reading the page at a point (inspectPoint, §14.3)', () => {
     }
   });
 
-  /** A small stand-in for the DOM: just what inspectPoint reads. */
+  /** A small stand-in for the DOM: just what inspectPoint reads. A node joins its parent's children. */
   function el(localName, { id = '', attrs = {}, text = '', rect = null, parent = null, classes = [], extra = {} } = {}) {
     const node = {
       nodeType: 1,
@@ -319,6 +415,7 @@ describe('reading the page at a point (inspectPoint, §14.3)', () => {
       innerText: text,
       textContent: text,
       parentElement: parent,
+      children: [],
       classList: classes,
       getAttribute: (name) => attrs[name] ?? null,
       getBoundingClientRect: () => rect ?? { left: 0, top: 0, right: 0, bottom: 0 },
@@ -326,8 +423,11 @@ describe('reading the page at a point (inspectPoint, §14.3)', () => {
       getRootNode: () => ({}),
       ...extra,
     };
+    if (parent?.children) parent.children.push(node);
     return node;
   }
+  /** Words written directly in an element (a text node child), as `childNodes` shows them. */
+  const own = (text) => ({ childNodes: [{ nodeType: 3, nodeValue: text }] });
 
   function page(hit, { width = 1000, height = 800 } = {}) {
     for (const k of ['window', 'document', 'location', 'performance']) saved[k] = globalThis[k];
@@ -337,6 +437,34 @@ describe('reading the page at a point (inspectPoint, §14.3)', () => {
     globalThis.location = { pathname: '/settings', href: 'http://localhost:5173/settings?tab=1#top' };
     return body;
   }
+
+  it('a tap on the app’s frame between things is an empty spot, with what is around it', () => {
+    const body = page(null);
+    const app = el('div', { text: '프로필 저장 요금제', rect: { left: 0, top: 0, right: 1000, bottom: 800 }, parent: body });
+    const save = el('button', { text: '저장', rect: { left: 100, top: 200, right: 200, bottom: 240 }, parent: app });
+    globalThis.document.elementFromPoint = () => app;
+    globalThis.document.body.children = [app];
+    const out = inspectPoint({ x: 0.15, y: 0.6, limit: LIMIT });
+    assert.equal(out.ok, false);
+    assert.equal(out.reason, 'NO_ELEMENT');
+    assert.equal(JSON.stringify(out).includes('프로필 저장 요금제'), false, 'not the whole page as one element');
+    assert.ok(Array.isArray(out.near));
+    void save;
+  });
+
+  it('never sends what was typed into an editable area, only what names it', () => {
+    const editor = el('div', {
+      attrs: { role: 'textbox', 'aria-placeholder': '메모를 쓰세요' },
+      text: '내 카드 번호는 1234',
+      rect: { left: 10, top: 10, right: 400, bottom: 200 },
+      extra: { isContentEditable: true },
+    });
+    const body = page(editor);
+    editor.parentElement = body;
+    const out = inspectPoint({ x: 0.1, y: 0.05, limit: LIMIT });
+    assert.equal(out.element.text, '메모를 쓰세요');
+    assert.equal(JSON.stringify(out).includes('1234'), false);
+  });
 
   it('picks the button under a label, and names React components with their own files', () => {
     function ProfileForm() {}
@@ -545,6 +673,150 @@ describe('reading the page at a point (inspectPoint, §14.3)', () => {
     assert.equal(out.scopes[0].component, undefined, 'the button is not the root of PlanCard, and much smaller than it');
     assert.deepEqual(out.scopes[1], { kind: 'component', type: 'div', selector: 'div.plan', component: 'PlanCard', bounds: { x: 0, y: 0, w: 0.4, h: 0.375 } });
     assert.deepEqual(out.scopes.at(-1), SCREEN_STEP);
+  });
+
+  /**
+   * A plans page (1000×800): main > section.plan > (div#intro > h2 "요금제", p "지금은 <em>무료</em> …"),
+   * "더 보기", "자세히", button > span "바꾸기", img "그래프"; an aside with "도움말"; a footer.
+   * `hit` names what elementFromPoint returns.
+   */
+  function plansPage(hit = 'p') {
+    const main = el('main', { rect: box(0, 0, 1000, 800) });
+    const section = el('section', { classes: ['plan'], rect: box(100, 100, 600, 400), parent: main });
+    const intro = el('div', { id: 'intro', rect: box(110, 110, 590, 230), parent: section });
+    const h2 = el('h2', { text: '요금제', rect: box(120, 120, 400, 160), parent: intro, extra: own('요금제') });
+    const p = el('p', { text: '지금은 무료 요금제를 쓰고 있습니다.', rect: box(120, 180, 580, 220), parent: intro, extra: own('지금은 ') });
+    el('em', { text: '무료', rect: box(170, 180, 200, 220), parent: p, extra: own('무료') });
+    // in the DOM before the button, on its row: reading order puts it after
+    el('a', { text: '더 보기', rect: box(420, 310, 580, 360), parent: section, extra: own('더 보기') });
+    el('a', { text: '자세히', rect: box(300, 300, 400, 340), parent: section, extra: own('자세히') });
+    const button = el('button', { classes: ['change'], text: '바꾸기', rect: box(120, 300, 240, 340), parent: section });
+    el('span', { text: '바꾸기', rect: box(130, 310, 230, 330), parent: button, extra: own('바꾸기') });
+    el('img', { attrs: { alt: '그래프' }, rect: box(420, 300, 580, 400), parent: section });
+    const aside = el('aside', { rect: box(700, 450, 950, 560), parent: main });
+    el('a', { text: '도움말', rect: box(700, 500, 900, 540), parent: aside, extra: own('도움말') });
+    el('footer', { text: '© Qeploy', rect: box(0, 700, 1000, 800), parent: main, extra: own('© Qeploy') });
+    const nodes = { main, section, p, button };
+    const body = page(hit === 'body' ? null : nodes[hit]);
+    if (hit === 'body') globalThis.document.elementFromPoint = () => body;
+    body.children.push(main);
+    main.parentElement = body;
+    return nodes;
+  }
+  const AREA = { x: 0.11, y: 0.1375, w: 0.48, h: 0.3 }; // 110..590 × 110..350 px
+
+  it('reads a dragged area: the centre element as a tap there, what is mostly inside in reading order, the card around it (§15.4)', () => {
+    plansPage('p');
+    const out = inspectPoint({ rect: AREA, limit: LIMIT });
+    assert.equal(out.ok, true);
+    const tap = inspectPoint({ x: AREA.x + AREA.w / 2, y: AREA.y + AREA.h / 2, limit: LIMIT });
+    assert.deepEqual(out.element, tap.element, 'the centre element exactly as a point there');
+    assert.equal(out.element.type, 'p');
+    assert.deepEqual(
+      out.members.map((m) => `${m.type}:${m.text}`),
+      // em: words inside words; span: part of its button; the image is only half inside; the button,
+      // 자세히 and 더 보기 share a row (centres 320, 320, 335 within half of 40)
+      ['h2:요금제', 'p:지금은 무료 요금제를 쓰고 있습니다.', 'button:바꾸기', 'a:자세히', 'a:더 보기']
+    );
+    assert.deepEqual(out.members[0], { type: 'h2', text: '요금제', bounds: { x: 0.12, y: 0.15, w: 0.28, h: 0.05 } });
+    assert.equal(out.cut, undefined);
+    assert.equal(out.near, undefined);
+    // div#intro holds half the area; section.plan all of it; main is the screen already
+    assert.deepEqual(out.scopes, [
+      { kind: 'region', type: 'region', bounds: { x: 0.11, y: 0.1375, w: 0.48, h: 0.3 } },
+      { kind: 'group', type: 'section', selector: 'main > section.plan', bounds: { x: 0.1, y: 0.125, w: 0.5, h: 0.375 } },
+      SCREEN_STEP,
+    ]);
+    assert.equal(out.defaultScope, 0);
+  });
+
+  it('lists twelve at most, looks into open shadow roots, and names a field by its label, never its value', () => {
+    const body = page(null);
+    const list = el('ul', { rect: box(0, 0, 1000, 400) });
+    for (let i = 14; i >= 0; i--) {
+      const x = (i % 5) * 200;
+      const y = Math.floor(i / 5) * 100;
+      el('a', { text: '항목 ' + i, rect: box(x, y, x + 150, y + 40), parent: list, extra: own('항목 ' + i) });
+    }
+    const host = el('x-card', { rect: box(0, 400, 1000, 600) });
+    const shadow = { children: [] };
+    host.shadowRoot = shadow;
+    shadow.children.push(el('button', { text: '구독', rect: box(20, 420, 120, 460) }));
+    shadow.children.push(el('input', { attrs: { type: 'email', placeholder: '이메일' }, rect: box(200, 420, 500, 460), extra: { value: 'minji@example.com', labels: [] } }));
+    body.children.push(list, host);
+    globalThis.document.elementFromPoint = () => body;
+
+    const all = inspectPoint({ rect: { x: 0, y: 0, w: 1, h: 0.75 }, limit: LIMIT });
+    assert.equal(all.members.length, 12);
+    assert.deepEqual(all.members.map((m) => m.text), Array.from({ length: 12 }, (_, i) => '항목 ' + i));
+    assert.equal(all.element, undefined, 'the centre is the page background');
+
+    const lower = inspectPoint({ rect: { x: 0, y: 0.5, w: 1, h: 0.25 }, limit: LIMIT });
+    assert.deepEqual(lower.members.map((m) => `${m.type}:${m.text}`), ['button:구독', 'input:이메일']);
+    assert.doesNotMatch(JSON.stringify(lower), /minji/);
+  });
+
+  it('says what is around an empty area and an empty tap: the nearest named thing on each side', () => {
+    plansPage('body');
+    // 100..600 × 420..680: between the card and the footer
+    const out = inspectPoint({ rect: { x: 0.1, y: 0.525, w: 0.5, h: 0.325 }, limit: LIMIT });
+    assert.equal(out.ok, true);
+    assert.equal(out.element, undefined);
+    assert.deepEqual(out.members, []);
+    assert.deepEqual(out.scopes, [{ kind: 'region', type: 'region', bounds: { x: 0.1, y: 0.525, w: 0.5, h: 0.325 } }, SCREEN_STEP]);
+    assert.deepEqual(
+      out.near.map((n) => [n.dir, n.type, n.text, n.distance]),
+      [
+        ['up', 'img', '그래프', 0.025],
+        ['down', 'footer', '© Qeploy', 0.025],
+        ['right', 'a', '도움말', 0.1],
+      ]
+    );
+    assert.deepEqual(out.near[0].bounds, { x: 0.42, y: 0.375, w: 0.16, h: 0.125 });
+
+    // A tap there finds nothing, and says what is around it (§15.4): across x = 350, 자세히 is nearest above.
+    const tap = inspectPoint({ x: 0.35, y: 0.5625, limit: LIMIT });
+    assert.equal(tap.reason, 'NO_ELEMENT');
+    assert.deepEqual(tap.near.map((n) => [n.dir, n.text, n.distance]), [['up', '자세히', 0.1375], ['down', '© Qeploy', 0.3125]]);
+  });
+
+  it('answers a dragged area with the centre element when its 400 ms are up', () => {
+    plansPage('button');
+    let reads = 0;
+    globalThis.performance = { now: () => (reads++ === 0 ? 1000 : 1401) };
+    const out = inspectPoint({ rect: AREA, limit: LIMIT });
+    assert.equal(out.ok, true);
+    assert.equal(out.element.type, 'button');
+    assert.equal(out.element.text, '바꾸기');
+    assert.deepEqual(out.members, []);
+    assert.equal(out.cut, true, 'cut short: not known to be empty');
+    assert.equal(out.near, undefined);
+    assert.deepEqual(out.scopes.map((s) => s.kind), ['region', 'screen']);
+  });
+
+  it('keeps the element when reading the area fails', () => {
+    const { section } = plansPage('p');
+    section.getBoundingClientRect = () => {
+      throw new Error('detached');
+    };
+    const out = inspectPoint({ rect: AREA, limit: LIMIT });
+    assert.equal(out.ok, true);
+    assert.equal(out.element.type, 'p');
+    assert.equal(out.scopes, undefined);
+    assert.equal(out.members, undefined);
+  });
+
+  it('runs from its own source alone, as the page gets it: nothing from this module', () => {
+    plansPage('p');
+    const context = vm.createContext({ window: globalThis.window, document: globalThis.document, location: globalThis.location });
+    // Through JSON, as returnByValue does (and out of the other realm's arrays)
+    const run = (args) => JSON.parse(JSON.stringify(vm.runInContext(`(${inspectPoint.toString()})(${JSON.stringify({ ...args, limit: LIMIT })})`, context)));
+    const area = run({ rect: AREA });
+    assert.equal(area.element.type, 'p');
+    assert.equal(area.members.length, 5);
+    assert.equal(area.scopes.length, 3);
+    globalThis.document.elementFromPoint = () => globalThis.document.body;
+    assert.deepEqual(run({ x: 0.35, y: 0.5625 }).near.map((n) => n.dir), ['up', 'down']);
   });
 
   it('crops the element with a margin, or a fixed spot, and stays on screen', () => {

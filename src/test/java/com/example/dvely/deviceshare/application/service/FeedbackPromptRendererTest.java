@@ -116,6 +116,55 @@ class FeedbackPromptRendererTest {
     }
 
     @Test
+    void 끈_영역은_안의_요소를_코드로_글자는_화면_글로_적는다() throws Exception {
+        String md = FeedbackPromptRenderer.render(feedback("간격이 들쭉날쭉해요", FeedbackAuthorRole.GUEST), json.readTree("""
+                {"ok":true,"v":2,"scope":0,"defaultScope":0,"empty":false,
+                 "element":{"type":"p","text":"지금은 무료"},
+                 "scopes":[{"kind":"region","type":"region","members":3,"bounds":{"x":0.1,"y":0.2,"w":0.5,"h":0.3}},
+                           {"kind":"component","type":"section","component":"PlanCard","selector":"section.plan","bounds":{"x":0,"y":0.1,"w":0.9,"h":0.5}},
+                           {"kind":"screen","type":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}],
+                 "members":[{"type":"h2","text":"요금제","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}},
+                            {"type":"p","text":"지금은 무료","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}},
+                            {"type":"a","id":"change","text":"바꾸기","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}}]}
+                """), List.of());
+
+        assertThat(md).contains("- 영역 가운데 요소: `<p>`\n");
+        assertThat(md).contains("- 고른 범위: 영역 · 안의 요소 3개: `h2` · `p` · `a#change` — 그 영역 전체(요소들의 배치·간격)에 대한 글이다\n");
+        assertThat(md).contains("```text\n영역 가운데 요소: 지금은 무료\n영역 안 1: 요금제\n영역 안 2: 지금은 무료\n영역 안 3: 바꾸기\n```\n");
+    }
+
+    @Test
+    void 끈_영역을_품은_범위를_고르면_그렇게_적는다() throws Exception {
+        String md = FeedbackPromptRenderer.render(feedback("카드 전체", FeedbackAuthorRole.GUEST), json.readTree("""
+                {"ok":true,"v":2,"scope":1,"defaultScope":0,"empty":false,"element":{"type":"p"},
+                 "scopes":[{"kind":"region","type":"region","members":1,"bounds":{"x":0.1,"y":0.2,"w":0.5,"h":0.3}},
+                           {"kind":"component","type":"section","component":"PlanCard","selector":"section.plan","bounds":{"x":0,"y":0.1,"w":0.9,"h":0.5}}],
+                 "members":[{"type":"p","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}}]}
+                """), List.of());
+
+        assertThat(md).contains("- 고른 범위: 구역 `section.plan` · 컴포넌트 `PlanCard` — 끈 영역을 품은 범위를 골랐다\n");
+    }
+
+    @Test
+    void 빈_자리는_둘레를_적고_빈_곳을_탭했어도_둘레를_적는다() throws Exception {
+        String empty = FeedbackPromptRenderer.render(feedback("여기에 검색창을", FeedbackAuthorRole.GUEST), json.readTree("""
+                {"ok":true,"v":2,"scope":0,"defaultScope":0,"empty":true,
+                 "scopes":[{"kind":"region","type":"region","members":0,"bounds":{"x":0.1,"y":0.6,"w":0.8,"h":0.1}}],
+                 "near":[{"dir":"up","type":"h2","text":"요금제","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}},
+                         {"dir":"down","type":"footer","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}}]}
+                """), List.of());
+        assertThat(empty).contains("- 고른 범위: 빈 자리 · 위 `h2` · 아래 `footer` — 이 자리에 무언가를 넣거나 옮겨 달라는 글일 수 있다\n");
+        assertThat(empty).contains("```text\n둘레 위: 요금제\n```\n");
+        assertThat(empty).doesNotContain("- 짚은 요소: 찾지 못함");
+
+        String tapped = FeedbackPromptRenderer.render(feedback("여기에 버튼", FeedbackAuthorRole.GUEST), json.readTree("""
+                {"ok":false,"reason":"NO_ELEMENT","near":[{"dir":"up","type":"button","id":"save","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}}]}
+                """), List.of());
+        assertThat(tapped).contains("- 짚은 요소: 찾지 못함(그 자리에 요소가 없음)\n");
+        assertThat(tapped).contains("- 둘레: 위 `button#save` — 빈 곳을 짚었다. 이 자리에 무언가를 넣거나 옮겨 달라는 글일 수 있다\n");
+    }
+
+    @Test
     void 화면_전체를_고르면_요소_없이_화면에_대한_글이라고_적는다() throws Exception {
         String md = FeedbackPromptRenderer.render(feedback("전체가 너무 어두워요", FeedbackAuthorRole.GUEST), json.readTree("""
                 {"screen":{"label":"dev.qeploy.acme","title":"프로필"},"ok":true,"v":2,"scope":0,"defaultScope":0,
