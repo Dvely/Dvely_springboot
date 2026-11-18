@@ -4,7 +4,10 @@ import io.swagger.v3.oas.annotations.media.Schema;
 
 @Schema(description = "EC2 백엔드 서버 생성 요청. 과금 자원이라 승인을 거칩니다.")
 public record CreateServerRequest(
-        @Schema(description = "인스턴스 티어. 생략 시 t3.micro(프리티어).", example = "t3.micro")
+        @Schema(description = "EC2 인스턴스 유형. 생략하거나 비우면 프로젝트 인프라 설정의 컴퓨트 등급을 따른다"
+                + "(MICRO→t3.micro, SMALL→t3.small, MEDIUM→t3.medium, LARGE→t3.large). 인프라 설정이 없거나 "
+                + "웹 전용 서버(webOnly=true)면 t3.micro. 값을 적으면 그 값이 등급보다 우선한다.",
+                example = "t3.small", nullable = true)
         String instanceType,
 
         @Schema(description = "배포 형태. NATIVE=jar 를 java -jar / DOCKER=앱 이미지를 docker run. "

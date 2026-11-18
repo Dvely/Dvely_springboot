@@ -212,7 +212,7 @@ public class DecisionAgentService {
                - BACKEND_DEPLOY puts the backend on the user's real cloud for production use.
                Parameters:
                - "instanceType": EC2 tier only if the user named one (e.g. "t3.small"); empty string
-                 otherwise (defaults to t3.micro, free-tier eligible)
+                 otherwise (the server then uses the project's compute tier setting, or t3.micro if none)
                - "dbEngine": "MYSQL" (default) or "POSTGRESQL" if the app needs a production database.
                  A data-storing backend needs one — set it so the deploy also provisions RDS and wires
                  the app to it. Leave empty only if the app genuinely needs no database.

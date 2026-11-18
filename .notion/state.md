@@ -564,7 +564,9 @@ CHAT Agent 와 `ChatAgentService` 는 완료(§2.14). 남은 것:
 설정 저장(4개 provider-중립 enum)과 INFRA_OPERATION standalone 승인 완료(§2.19).
 
 - ~~실제 AWS/GCP 프로비저닝 연결~~ → **완료.** §3.11 참고
-- **tier↔인스턴스 매핑 — 미구현**(예: MEDIUM ↔ t3.medium/e2-medium)
+- ~~tier↔인스턴스 매핑~~ → **AWS 완료(#597).** `AwsComputeTierTable` 한 곳에 `MICRO`→t3.micro, `SMALL`→t3.small, `MEDIUM`→t3.medium, `LARGE`→t3.large 를 둔다. 서버 생성에서 `instanceType` 을 비우면 적용된 인프라 설정의 등급으로 띄우고(요청값이 우선, 설정이 없거나 웹 전용 서버면 t3.micro), 승인 요약에 출처(요청 지정·인프라 설정 등급·기본값)를 적는다. 비용 추정의 AWS SERVER 행도 같은 표에서 읽어 둘이 갈라지지 않는다(테스트로 묶음)
+  - GCP 매핑과 ARM(Graviton, #580)은 미구현. 아키텍처·스토리지·네트워크 설정은 여전히 비용 추정에만 쓰인다
+  - 실행 중 서버의 사양 변경은 범위 밖(§3.12)
 - 오토스케일링/로드밸런서/DB 설정(BI-125~127)은 `BACKLOG_STATUS.md` Removed 에 따라 범위 밖
 
 ## 3.11 AWS/GCP 실제 배포 — **대부분 완료**
@@ -591,6 +593,8 @@ CdnDeletionReaper
 ## 3.12 비용/운영 확장 — **미구현 (선행 조건은 이미 충족됐다)**
 
 - **provider 가격 API 연동 — 미구현.** 지금은 정적 코드 상수 가격표(§2.21)
+  - 정적 가격표는 근사치다. 실제 가격은 사용자가 연결한 계정의 리전마다 다르며, 리전별 가격은 별도 과제다
+  - AWS SERVER 행은 #597 부터 서버 생성과 같은 표(`AwsComputeTierTable`)에서 읽는다. 금액(8.50/17/34/68)과 `priceTableVersion` 은 바꾸지 않았다
 - **예산 초과 알림/경고 발송 — 미구현.** `BudgetStatus` 로 상태만 계산하고 알림 채널이 없다
 - **서버 스펙 변경(RESOURCE_SCALING/AUTOSCALING_CHANGE) 실행 — 미구현.** §2.22 에서 감지·거부만
 - **미사용 리소스 정리(RESOURCE_CLEANUP) 실행 — 미구현.** 같음

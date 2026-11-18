@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.dvely.cloudconnection.domain.value.CloudProvider;
+import com.example.dvely.project.domain.value.AwsComputeTierTable;
 import com.example.dvely.project.domain.value.ComputeTier;
 import com.example.dvely.project.domain.value.CostEstimate;
 import com.example.dvely.project.domain.value.CostResourceType;
@@ -118,6 +119,23 @@ class InfrastructureCostEstimatorTest {
                     }
                 }
             }
+        }
+    }
+
+    @Test
+    void awsServerComputeCost_readsTheSameTableThatServerProvisioningUses() {
+        // #597: 추정하는 사양과 실제로 띄우는 사양이 갈라지지 않게, 둘 다 AwsComputeTierTable 한 곳을 읽는다.
+        for (ComputeTier tier : ComputeTier.values()) {
+            InfrastructureConfiguration configuration = new InfrastructureConfiguration(
+                    DeploymentArchitecture.SERVER, tier, StorageType.NONE, NetworkAccess.PUBLIC
+            );
+
+            BigDecimal computeCost = estimator.estimate(CloudProvider.AWS, configuration).resourceCosts().stream()
+                    .filter(item -> item.resourceType() == CostResourceType.COMPUTE)
+                    .findFirst().orElseThrow().monthlyCost();
+
+            assertThat(computeCost).as("AWS SERVER %s", tier)
+                    .isEqualByComparingTo(AwsComputeTierTable.of(tier).monthlyUsd());
         }
     }
 

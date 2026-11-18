@@ -8,7 +8,10 @@ import com.example.dvely.cloudconnection.domain.repository.CloudConnectionReposi
 import com.example.dvely.cloudconnection.domain.value.CloudConnectionStatus;
 import com.example.dvely.common.exception.NotFoundException;
 import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
+import com.example.dvely.project.domain.repository.ProjectInfrastructureSettingRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.project.domain.value.AwsComputeTierTable;
+import com.example.dvely.project.domain.value.ComputeTier;
 import com.example.dvely.provisioning.domain.model.ProvisionedServer;
 import com.example.dvely.provisioning.domain.value.DatabaseEngine;
 import com.example.dvely.provisioning.domain.value.ServerDeployMode;
@@ -38,8 +41,6 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class ServerProvisioningCommandService {
 
-    /** 기본 인스턴스 티어. 프리티어 대상이라 micro 기본. 사용자가 고르면 그게 우선. */
-    private static final String DEFAULT_INSTANCE_TYPE = "t3.micro";
     /** 앱 포트 고정(내부 규약). 백엔드 앱은 8080 에서 서빙한다. */
     private static final int APP_PORT = 8080;
 
@@ -54,6 +55,7 @@ public class ServerProvisioningCommandService {
     private final S3ArtifactStore s3;
     private final EcrImageRegistry ecr;
     private final Ec2ProvisioningProperties ec2Properties;
+    private final ProjectInfrastructureSettingRepository infrastructureSettingRepository;
 
     public ServerProvisionSubmitResult submit(Long ownerUserId, Long projectId, String instanceType,
                                               ServerDeployMode deployMode, DatabaseEngine bundledDbEngine,
@@ -71,8 +73,8 @@ public class ServerProvisioningCommandService {
                                               WebFrontendSpec web, boolean webOnly, Long conversationId) {
         resolveConnectedCloud(ownerUserId, projectId);   // 검증만(없거나 미연결이면 던짐)
 
-        String tier = (instanceType == null || instanceType.isBlank())
-                ? DEFAULT_INSTANCE_TYPE : instanceType;
+        InstanceChoice choice = chooseInstanceType(projectId, instanceType, webOnly);
+        String tier = choice.instanceType();
         ServerDeployMode mode = deployMode == null ? ServerDeployMode.NATIVE : deployMode;
         WebFrontendSpec webSpec = web == null ? new WebFrontendSpec(null, null, null) : web;
         // 웹 전용(독립 프론트 EC2): 백엔드 없이 프론트 nginx 만. 프론트 소스가 있어야 하고, 백엔드가 없어
@@ -107,13 +109,42 @@ public class ServerProvisioningCommandService {
         ProvisionedServer record = serverRepository.save(server);
         Approval approval = approvalRepository.save(Approval.standaloneInConversation(
                 ownerUserId, projectId, ApprovalType.SERVER_PROVISION,
-                (webOnly ? "EC2 프론트 서버 생성 (" : "EC2 백엔드 서버 생성 (") + tier + ", 과금)", conversationId));
+                (webOnly ? "EC2 프론트 서버 생성 (" : "EC2 백엔드 서버 생성 (") + tier + " · " + choice.source() + ", 과금)",
+                conversationId));
         record.linkApproval(approval.getId());
         serverRepository.save(record);
 
         log.info("EC2 서버 프로비저닝 승인 대기: serverId={} approvalId={} projectId={} type={}",
                 record.getId(), approval.getId(), projectId, tier);
         return new ServerProvisionSubmitResult(true, record.getId(), List.of(approval.getId()));
+    }
+
+    /** 띄울 인스턴스 유형과, 그것이 어디서 왔는지(승인 카드에 그대로 보인다). */
+    private record InstanceChoice(String instanceType, String source) {
+    }
+
+    /**
+     * 인스턴스 유형을 정한다(#597). 요청에 값이 있으면 그것, 없으면 프로젝트 인프라 설정의 컴퓨트 등급, 설정도 없으면 가장
+     * 작은 등급이다. 등급을 유형으로 바꾸는 표는 비용 추정과 같은 AwsComputeTierTable 이다.
+     *
+     * 반영 대기 중인 설정 변경은 보지 않는다. 승인이 끝나 적용된 설정만 서버 사양이 된다.
+     *
+     * 프론트 전용 서버(webOnly)는 등급을 따르지 않는다. 정적 화면만 서빙하는 nginx 라 가장 작은 유형으로 충분하고, 백엔드용
+     * 등급을 따라가면 비용만 조용히 늘어난다. 요청에 유형을 직접 적었다면 그것은 따른다.
+     */
+    private InstanceChoice chooseInstanceType(Long projectId, String requested, boolean webOnly) {
+        if (requested != null && !requested.isBlank()) {
+            return new InstanceChoice(requested, "요청 지정");
+        }
+        if (!webOnly) {
+            ComputeTier tier = infrastructureSettingRepository.findByProjectId(projectId)
+                    .map(setting -> setting.getConfiguration().computeTier())
+                    .orElse(null);
+            if (tier != null) {
+                return new InstanceChoice(AwsComputeTierTable.of(tier).instanceType(), "인프라 설정 " + tier);
+            }
+        }
+        return new InstanceChoice(AwsComputeTierTable.fallbackInstanceType(), "기본값");
     }
 
     /**

@@ -106,6 +106,18 @@ class BackendDeployAgentServiceTest {
     }
 
     @Test
+    void anEmptyInstanceTypeLeavesTheChoiceToTheServerSide() {
+        // 결정 에이전트는 사용자가 유형을 말하지 않으면 "" 를 준다. null 로 넘겨야 서버 생성이 인프라 설정의 등급을 쓴다(#597).
+        givenConnectedCloud();
+        when(serverCommandService.submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, NO_WEB, false, CONV))
+                .thenReturn(new ServerProvisionSubmitResult(true, 5L, List.of(2L)));
+
+        service.execute(step(Map.of("instanceType", "")), USER, PROJECT, CONV, TASK);
+
+        verify(serverCommandService).submit(USER, PROJECT, null, ServerDeployMode.NATIVE, null, NO_WEB, false, CONV);
+    }
+
+    @Test
     void serverOnlyWhenNoDbEngine() {
         givenConnectedCloud();
         when(serverCommandService.submit(USER, PROJECT, "t3.small", ServerDeployMode.NATIVE, null, NO_WEB, false, CONV))
