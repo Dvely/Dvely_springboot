@@ -490,7 +490,7 @@ Query `deleteMode`:
 필드는 4개 provider-중립 enum이다:
 
 - `deploymentArchitecture`: `SERVER` | `CONTAINER` | `SERVERLESS`
-- `computeTier`: `MICRO` | `SMALL` | `MEDIUM` | `LARGE`(구체적 인스턴스 타입 매핑은 아직 없음, EPIC 15 Cloud-Ops에서 결정 예정)
+- `computeTier`: `MICRO` | `SMALL` | `MEDIUM` | `LARGE`. AWS 서버 생성의 기본 인스턴스 유형이 된다: `MICRO`→`t3.micro`, `SMALL`→`t3.small`, `MEDIUM`→`t3.medium`, `LARGE`→`t3.large`(§19.2, #597). 반영 대기 중인 변경(`pendingChange`)은 쓰지 않고 적용된 값만 쓴다. GCP 매핑은 없다
 - `storageType`: `NONE` | `OBJECT_STORAGE`
 - `networkAccess`: `PUBLIC` | `PRIVATE`
 
@@ -556,7 +556,7 @@ Approval 승인/거절과의 연결(§14.3 참고):
 
 현재 한계:
 
-- 리소스별 세부 비용은 티어→구체 인스턴스 가격 매핑이 없는 정적 가정치다(§6.7의 `computeTier` 참고).
+- 리소스별 세부 비용은 정적 가정치다. AWS `SERVER` 의 컴퓨트 금액은 서버 생성이 등급을 인스턴스 유형으로 바꿀 때 쓰는 표와 같은 출처다(§6.7의 `computeTier`). 그 밖의 행(`CONTAINER`·`SERVERLESS`·GCP)은 Qeploy 가 아직 그 형태로 띄우지 않는 추정 전용 값이다. 실제 가격은 연결한 계정의 리전마다 다르며, 리전별 가격은 별도 과제다.
 - 예산 초과 시 알림(이메일/슬랙 등) 발송 채널은 없다. `budgetStatus` 필드 계산까지만 제공한다.
 - 오토스케일링/불필요 리소스 정리에 따른 비용 최적화(BI-148~151)는 범위 밖이다.
 
@@ -1119,7 +1119,7 @@ main에 merge되어도 라이브 사이트는 자동으로 바뀌지 않는다 �
 
 - **AWS 연결은 실제 리소스 생성에 쓰인다.** 프로젝트에 선택된(§6.6) `CONNECTED` 연결로 EC2 서버·RDS/EC2 DB(§19), S3 프론트 배포(§10.1), S3 프론트 HTTPS(CloudFront+ACM, §11)를 만든다.
 - GCP 연결은 검증(`CONNECTED` 판정)까지만 있고 실제 배포 경로는 없다.
-- §6.7 인프라 설정(desired state)은 프로비저닝에 쓰이지 않는다. 서버 인스턴스 타입은 `POST /servers` 요청값(기본 `t3.micro`)으로 정해진다.
+- §6.7 인프라 설정 중 `computeTier` 만 프로비저닝에 쓰인다. `POST /servers` 에서 `instanceType` 을 생략하면 그 등급의 인스턴스로 띄운다(§19.2). 아키텍처·스토리지·네트워크 설정은 비용 추정에만 쓰인다.
 - IaC plan/apply, 오토스케일링/로드밸런서 설정 API 는 없다.
 
 ---
@@ -1766,7 +1766,9 @@ PAT(§18)로는 이 중 **조회(GET)만** 된다. 쓰기 메서드는 `WRITE` �
 
 본문은 생략할 수 있다(전부 기본값).
 
-- `instanceType`: 생략 시 `t3.micro`.
+- `instanceType`: 값을 적으면 그 값을 쓴다. 생략하거나 비우면 프로젝트 인프라 설정(§6.7)의 `computeTier` 를 따른다(`MICRO`→`t3.micro`, `SMALL`→`t3.small`, `MEDIUM`→`t3.medium`, `LARGE`→`t3.large`). 인프라 설정이 없거나 `webOnly=true` 면 `t3.micro`(#597).
+  - 승인 요약(`summary`)에 사양과 출처가 함께 적힌다. 예: `EC2 백엔드 서버 생성 (t3.large · 인프라 설정 LARGE, 과금)`. 출처는 `요청 지정` · `인프라 설정 <등급>` · `기본값` 중 하나다.
+  - 이미지를 대상 EC2 에서 빌드하는 설정(`TARGET`, #556)에서는 JVM(Gradle·Maven) 앱에 `t3.small` 이상이 필요하다. 이 판정은 정해진 유형 문자열만 보므로, 등급이 `MICRO` 이고 `instanceType` 을 비웠다면 빌드 단계에서 실패한다. 등급을 `SMALL` 이상으로 바꾸거나 `instanceType` 을 직접 적는다.
 - `deployMode`: `NATIVE`(jar 를 `java -jar`, 기본) | `DOCKER`(저장소 Dockerfile 로 이미지 빌드 후 `docker run`). 그 외 값은 `400`.
 - `bundledDbEngine`: `MYSQL` | `POSTGRESQL`. 같은 EC2 에 DB 컨테이너를 compose 로 함께 띄운다. `DOCKER` 에서만 쓸 수 있다.
 - `frontendRepo`(별도 프론트 저장소 `owner/repo`) / `frontendDir`(하위 폴더): 하나라도 있으면 같은 EC2 에 nginx 프론트 컨테이너를 함께 띄운다. `apiPathPrefix`(기본 `/api`, 콤마로 여러 개)만 백엔드로 프록시한다. `DOCKER` 에서만 쓸 수 있다.

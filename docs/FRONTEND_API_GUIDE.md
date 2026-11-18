@@ -1031,6 +1031,20 @@ CODE 단계는 GitHub 저장소 연결과 무관하게 동작합니다(Docker �
 
 동일 값으로 다시 PUT하면 이력·승인 없이 현재 상태 그대로 반환(no-op)되고, 이미 대기 중인 변경이 있으면 409입니다(먼저 처리 필요).
 
+`computeTier` 는 AWS 서버를 만들 때의 기본 사양입니다(#597). `POST /api/v1/projects/{id}/servers` 에서 `instanceType` 을 비우면 적용된 등급으로 띄웁니다.
+
+| computeTier | 띄우는 EC2 |
+|---|---|
+| `MICRO` | `t3.micro` |
+| `SMALL` | `t3.small` |
+| `MEDIUM` | `t3.medium` |
+| `LARGE` | `t3.large` |
+
+- `instanceType` 을 직접 보내면 그 값이 등급보다 우선합니다.
+- 인프라 설정이 없거나 웹 전용 서버(`webOnly=true`)면 `t3.micro` 입니다.
+- 승인 대기 중인 설정 변경(`pendingChange`)은 쓰지 않습니다. 승인돼 `settings` 에 들어간 값만 씁니다.
+- 승인 카드 요약에 사양과 출처가 같이 나옵니다. 예: `EC2 백엔드 서버 생성 (t3.large · 인프라 설정 LARGE, 과금)`. 출처는 `요청 지정` · `인프라 설정 <등급>` · `기본값` 중 하나입니다. 응답 필드는 바뀌지 않았습니다.
+
 ### 5.7 Cost-budget 조회/설정
 
 ```
@@ -1047,7 +1061,7 @@ CODE 단계는 GitHub 저장소 연결과 무관하게 동작합니다(Docker �
 ③ DELETE /api/v1/projects/12/settings/cost-budget
 → 204(예산 해제, 멱등)
 ```
-`estimatedMonthlyCost`는 정적 가격표 기반 **가정 추정치**이며 실시간 클라우드 청구 금액이 아닙니다. 인프라 미구성/클라우드 미연결 상태여도 200과 `costAvailable=false`로 응답합니다(추정 필드는 null/빈 배열).
+`estimatedMonthlyCost`는 정적 가격표 기반 **가정 추정치**이며 실시간 클라우드 청구 금액이 아닙니다. 인프라 미구성/클라우드 미연결 상태여도 200과 `costAvailable=false`로 응답합니다(추정 필드는 null/빈 배열). AWS `SERVER` 의 `COMPUTE` 금액은 서버 생성이 쓰는 등급→인스턴스 표(위 5.6)와 같은 출처라, 등급을 바꾸면 추정과 실제로 뜨는 사양이 함께 바뀝니다. 실제 가격은 연결한 계정의 리전마다 다를 수 있습니다.
 `budgetStatus`: `NO_BUDGET`(예산 미설정) · `WITHIN_BUDGET` · `OVER_BUDGET` · `NOT_EVALUABLE`(예산은 있지만 추정 불가 상태).
 
 ### 5.8 Cloud Ops (자연어 chat 경유 — INFRA_OPERATE)
