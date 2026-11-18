@@ -36,7 +36,9 @@ public class ServerProvisioningController {
 
     @Operation(summary = "EC2 백엔드 서버 생성 요청",
             description = "과금 자원이라 항상 승인을 거칩니다. requiresApproval=true 와 approvalIds 가 내려오면 "
-                    + "승인 화면으로 연결하세요. CONNECTED 클라우드 연결이 없으면 404/409 입니다.")
+                    + "승인 화면으로 연결하세요. CONNECTED 클라우드 연결이 없으면 404/409 입니다. "
+                    + "instanceType 을 생략하면 프로젝트 인프라 설정의 컴퓨트 등급으로 띄우고, 승인 요약에 사양의 출처"
+                    + "(요청 지정·인프라 설정 등급·기본값)가 함께 적힙니다.")
     @PostMapping("/api/v1/projects/{projectId}/servers")
     public ServerProvisionSubmitResponse create(
             @Parameter(hidden = true) @AuthenticationPrincipal Long ownerUserId,

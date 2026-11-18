@@ -1,6 +1,7 @@
 package com.example.dvely.project.domain.service;
 
 import com.example.dvely.cloudconnection.domain.value.CloudProvider;
+import com.example.dvely.project.domain.value.AwsComputeTierTable;
 import com.example.dvely.project.domain.value.ComputeTier;
 import com.example.dvely.project.domain.value.CostEstimate;
 import com.example.dvely.project.domain.value.CostResourceType;
@@ -18,11 +19,11 @@ import org.springframework.stereotype.Component;
 /**
  * Turns a provider-neutral {@link InfrastructureConfiguration} into a monthly USD cost estimate
  * (design D1/D2/§2) using a static price table baked into this class — no network calls, no
- * persistence, deterministic given its two inputs. This is a design choice, not a shortcut: real
- * instance-type mapping and live pricing are EPIC 15's concern (actual provisioning), and by the
- * time that lands the desired-state tiers here may not even map 1:1 to what gets provisioned.
- * Until then, a static table is the only thing that is decidable, testable, and cheap to
- * recompute on every read (design D2 — estimates are never persisted).
+ * persistence, deterministic given its two inputs. Live pricing is still out of scope, so a static
+ * table is the only thing that is decidable, testable, and cheap to recompute on every read
+ * (design D2 — estimates are never persisted). Since #597 the AWS SERVER row is no longer typed
+ * here: it is read from {@link AwsComputeTierTable}, the same table server provisioning uses to
+ * turn a tier into an EC2 instance type, so the estimate and the launched size cannot drift.
  *
  * <p>Adjusting a price is a one-line change in {@link #buildComputeTable()}/
  * {@link #buildStorageTable()}/{@link #buildNetworkTable()} — the lookup/estimate logic below
@@ -120,7 +121,12 @@ public class InfrastructureCostEstimator {
     // design §2 table, row per (provider, architecture): MICRO/SMALL/MEDIUM/LARGE monthly USD.
     private static Map<ComputeKey, BigDecimal> buildComputeTable() {
         Map<ComputeKey, BigDecimal> table = new HashMap<>();
-        putComputeRow(table, CloudProvider.AWS, DeploymentArchitecture.SERVER, "8.50", "17.00", "34.00", "68.00");
+        // #597: AWS SERVER 는 실제로 띄우는 EC2 와 같은 표에서 읽는다 — 서버 생성이 등급을 유형으로 바꿀 때 쓰는 그 표다.
+        // 나머지 행(CONTAINER·SERVERLESS·GCP)은 Qeploy 가 아직 그 형태로 띄우지 않으므로 설계 §2 의 추정치 그대로다.
+        for (ComputeTier tier : ComputeTier.values()) {
+            table.put(new ComputeKey(CloudProvider.AWS, DeploymentArchitecture.SERVER, tier),
+                    AwsComputeTierTable.of(tier).monthlyUsd());
+        }
         putComputeRow(table, CloudProvider.GCP, DeploymentArchitecture.SERVER, "7.00", "14.00", "28.00", "56.00");
         putComputeRow(table, CloudProvider.AWS, DeploymentArchitecture.CONTAINER, "9.50", "19.00", "37.50", "75.00");
         putComputeRow(table, CloudProvider.GCP, DeploymentArchitecture.CONTAINER, "7.50", "15.50", "31.00", "61.50");

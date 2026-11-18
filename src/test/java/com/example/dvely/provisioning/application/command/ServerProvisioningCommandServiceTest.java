@@ -22,6 +22,18 @@ import com.example.dvely.project.domain.model.ProjectCloudConnectionSetting;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectCloudConnectionSettingRepository;
 import com.example.dvely.project.domain.repository.ProjectRepository;
+import com.example.dvely.project.domain.model.ProjectInfrastructureSetting;
+import com.example.dvely.project.domain.repository.ProjectInfrastructureSettingRepository;
+import com.example.dvely.project.domain.value.AwsComputeTierTable;
+import com.example.dvely.project.domain.value.ComputeTier;
+import com.example.dvely.project.domain.value.DeploymentArchitecture;
+import com.example.dvely.project.domain.value.InfrastructureConfiguration;
+import com.example.dvely.project.domain.value.NetworkAccess;
+import com.example.dvely.project.domain.value.StorageType;
+import com.example.dvely.provisioning.domain.value.WebFrontendSpec;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import com.example.dvely.provisioning.domain.value.ServerStatus;
 import com.example.dvely.provisioning.infrastructure.Ec2Provisioner;
 import com.example.dvely.provisioning.application.port.out.ProjectDomainCleanupPort;
@@ -55,6 +67,7 @@ class ServerProvisioningCommandServiceTest {
     @Mock private com.example.dvely.provisioning.infrastructure.EcrImageRegistry ecr;
     @Mock private com.example.dvely.provisioning.infrastructure.config.Ec2ProvisioningProperties ec2Properties;
     @Mock private ProjectDomainCleanupPort projectDomainCleanupPort;
+    @Mock private ProjectInfrastructureSettingRepository infrastructureSettingRepository;
 
     @InjectMocks private ServerProvisioningCommandService service;
 
@@ -362,9 +375,115 @@ class ServerProvisioningCommandServiceTest {
         verify(serverRepository, never()).save(any());
     }
 
+    // ── #597 인프라 설정의 컴퓨트 등급이 서버 생성의 기본 사양이 된다 ──────────────────────────────
+
+    private static final WebFrontendSpec NO_WEB = new WebFrontendSpec(null, null, null);
+
+    @Test
+    void blankRequestLaunchesTheProjectsComputeTier() {
+        givenSubmittable();
+        givenComputeTier(ComputeTier.LARGE);
+
+        service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, NO_WEB, false);
+
+        assertThat(savedServer().getInstanceType()).isEqualTo("t3.large");
+        assertThat(savedApprovalSummary()).isEqualTo("EC2 백엔드 서버 생성 (t3.large · 인프라 설정 LARGE, 과금)");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "   "})
+    void emptyRequestAlsoFallsBackToTheTier(String requested) {
+        // 에이전트는 사용자가 유형을 말하지 않으면 "" 를 넘긴다(BackendDeployAgentService 가 null 로 바꾸지만 여기서도 막는다).
+        givenSubmittable();
+        givenComputeTier(ComputeTier.SMALL);
+
+        service.submit(OWNER, PROJECT, requested, ServerDeployMode.NATIVE, null, NO_WEB, false);
+
+        assertThat(savedServer().getInstanceType()).isEqualTo("t3.small");
+    }
+
+    @Test
+    void requestedInstanceTypeWinsOverTheTier() {
+        givenSubmittable();
+        Mockito.lenient().when(infrastructureSettingRepository.findByProjectId(PROJECT))
+                .thenReturn(Optional.of(settingWith(ComputeTier.MICRO)));
+
+        service.submit(OWNER, PROJECT, "t3.xlarge", ServerDeployMode.NATIVE, null, NO_WEB, false);
+
+        assertThat(savedServer().getInstanceType()).isEqualTo("t3.xlarge");
+        assertThat(savedApprovalSummary()).isEqualTo("EC2 백엔드 서버 생성 (t3.xlarge · 요청 지정, 과금)");
+    }
+
+    @Test
+    void withoutAnInfrastructureSettingTheServerIsMicro() {
+        givenSubmittable();
+        when(infrastructureSettingRepository.findByProjectId(PROJECT)).thenReturn(Optional.empty());
+
+        service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, NO_WEB, false);
+
+        assertThat(savedServer().getInstanceType()).isEqualTo("t3.micro");
+        assertThat(savedApprovalSummary()).isEqualTo("EC2 백엔드 서버 생성 (t3.micro · 기본값, 과금)");
+    }
+
+    @Test
+    void webOnlyServerStaysMicroWhateverTheTier() {
+        // 정적 화면만 서빙하는 nginx 서버다. 백엔드용 등급을 따라가면 비용만 늘어난다.
+        givenSubmittable();
+        Mockito.lenient().when(infrastructureSettingRepository.findByProjectId(PROJECT))
+                .thenReturn(Optional.of(settingWith(ComputeTier.LARGE)));
+
+        service.submit(OWNER, PROJECT, null, ServerDeployMode.DOCKER, null,
+                new WebFrontendSpec(null, "frontend", null), true);
+
+        assertThat(savedServer().getInstanceType()).isEqualTo("t3.micro");
+        assertThat(savedApprovalSummary()).isEqualTo("EC2 프론트 서버 생성 (t3.micro · 기본값, 과금)");
+    }
+
+    @ParameterizedTest
+    @EnumSource(ComputeTier.class)
+    void everyTierLaunchesWhatTheCostEstimateIsPricedOn(ComputeTier tier) {
+        givenSubmittable();
+        givenComputeTier(tier);
+
+        service.submit(OWNER, PROJECT, null, ServerDeployMode.NATIVE, null, NO_WEB, false);
+
+        assertThat(savedServer().getInstanceType()).isEqualTo(AwsComputeTierTable.of(tier).instanceType());
+    }
+
+    private void givenSubmittable() {
+        when(cloudConnectionSettingRepository.findByProjectId(PROJECT))
+                .thenReturn(Optional.of(new ProjectCloudConnectionSetting(PROJECT, CONN_ID)));
+        when(cloudConnectionRepository.findByIdAndOwnerUserId(CONN_ID, OWNER))
+                .thenReturn(Optional.of(connection(CloudConnectionStatus.CONNECTED)));
+        when(serverRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        // 돌려주는 값은 id 가 있는 고정 승인이다. 요약 문구는 save 에 넘어간 인자(savedApprovalSummary)로 본다.
+        when(approvalRepository.save(any())).thenReturn(approval(99L));
+    }
+
+    private void givenComputeTier(ComputeTier tier) {
+        when(infrastructureSettingRepository.findByProjectId(PROJECT)).thenReturn(Optional.of(settingWith(tier)));
+    }
+
+    private static ProjectInfrastructureSetting settingWith(ComputeTier tier) {
+        return new ProjectInfrastructureSetting(PROJECT, new InfrastructureConfiguration(
+                DeploymentArchitecture.SERVER, tier, StorageType.NONE, NetworkAccess.PUBLIC));
+    }
+
+    private ProvisionedServer savedServer() {
+        ArgumentCaptor<ProvisionedServer> saved = ArgumentCaptor.forClass(ProvisionedServer.class);
+        verify(serverRepository, times(2)).save(saved.capture());
+        return saved.getAllValues().get(0);
+    }
+
+    private String savedApprovalSummary() {
+        ArgumentCaptor<Approval> saved = ArgumentCaptor.forClass(Approval.class);
+        verify(approvalRepository).save(saved.capture());
+        return saved.getValue().getSummary();
+    }
+
     private Approval approval(Long id) {
         return new Approval(id, OWNER, PROJECT, null, null, ApprovalType.SERVER_PROVISION,
-                ApprovalStatus.PENDING, "EC2 백엔드 서버 생성 (t3.micro, 과금)", LocalDateTime.now(), LocalDateTime.now());
+                ApprovalStatus.PENDING, "EC2 백엔드 서버 생성 (t3.micro · 기본값, 과금)", LocalDateTime.now(), LocalDateTime.now());
     }
 
     private CloudConnection connection(CloudConnectionStatus status) {

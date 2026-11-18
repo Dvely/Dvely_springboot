@@ -2,10 +2,9 @@ package com.example.dvely.project.domain.value;
 
 /**
  * Provider-neutral compute sizing tier (design D2) — Dvely's non-developer users pick
- * "small vs. large", not a concrete instance type. The tier-to-instance mapping
- * (e.g. AWS t3.micro/small/medium/large ~ GCP e2-micro/small/medium/standard-2) is decided
- * later by EPIC 15 Cloud-Ops when actual provisioning is implemented; this unit only stores
- * the desired tier.
+ * "small vs. large", not a concrete instance type. On AWS the tier is the default size of a new
+ * backend server (#597): {@link AwsComputeTierTable} maps it to t3.micro/small/medium/large and is
+ * also where the cost estimate reads its AWS SERVER price from.
  */
 public enum ComputeTier {
     MICRO,
