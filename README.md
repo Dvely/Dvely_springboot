@@ -7,7 +7,7 @@ AI를 활용하여 웹 서비스를 생성, 수정, 배포까지 자동으로 �
 ## ☕ Java Version
 
 - Java 25 사용
-- Project SDK: 25
+- Project SDK: 25 
 
 ### ⚠️ 주의
  
