@@ -295,17 +295,17 @@ export class TunnelSession {
       if (this.closed) return;
       let accepted = null;
       try {
-        accepted = await this.askFeedback(`피드백 #${notice.feedbackId} 을 받아 코딩 에이전트에게 넘길까요?`);
+        accepted = await this.askFeedback(`#${notice.feedbackId} 피드백을 받아 코딩 에이전트에게 넘길까요?`);
       } catch {
         accepted = null;
       }
       if (this.closed) return;
       if (accepted === null) {
-        this.log(`  → 피드백 #${notice.feedbackId} 은 받기 전으로 둡니다. 웹에서 받거나 무시할 수 있습니다.`);
+        this.log(`  → #${notice.feedbackId} 피드백은 받기 전으로 둡니다. 웹에서 받거나 무시할 수 있습니다.`);
         return;
       }
       this.sendRaw(encodeJsonFrame(KIND.FEEDBACK_DECISION, { feedbackId: notice.feedbackId, accepted: accepted === true }));
-      this.log(accepted ? `  → 피드백 #${notice.feedbackId} 을 받았습니다.` : `  → 피드백 #${notice.feedbackId} 을 받지 않았습니다.`);
+      this.log(accepted ? `  → #${notice.feedbackId} 피드백을 받았습니다.` : `  → #${notice.feedbackId} 피드백을 받지 않았습니다.`);
     });
   }
 

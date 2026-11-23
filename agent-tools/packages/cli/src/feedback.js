@@ -128,17 +128,17 @@ async function fixed({ client, args, flags, confirm }) {
     if (Array.from(note).length > MAX_NOTE) throw new UsageError(`--note 는 ${MAX_NOTE}자까지입니다.`);
   }
   // Naming the feedback in the prompt: "#12" alone gives nothing to check against.
-  let label = `피드백 #${id}`;
+  let label = `#${id} 피드백`;
   try {
     const detail = await client.getShareFeedback(id);
-    if (detail?.feedback?.label) label = `피드백 #${id} (${detail.feedback.label})`;
+    if (detail?.feedback?.label) label = `#${id} 피드백(${detail.feedback.label})`;
   } catch {
     // the confirmation matters more than the name
   }
-  const ok = await confirm(`${label} 를 고쳤다고 표시합니다. 짚은 사람의 화면에 알림이 갑니다. 진행할까요?`, flags);
+  const ok = await confirm(`${label}을 고쳤다고 표시합니다. 짚은 사람의 화면에 알림이 갑니다. 진행할까요?`, flags);
   if (!ok) return { data: null, text: '취소했습니다.', cancelled: true };
   const data = await client.markShareFeedbackFixed(id, { note: note || undefined });
-  return { data, text: `${label} 를 고침으로 표시했습니다. 짚은 사람이 확인하거나 다시 열 수 있습니다.` };
+  return { data, text: `${label}을 고침으로 표시했습니다. 짚은 사람이 확인하거나 다시 열 수 있습니다.` };
 }
 
 export const feedbackCommand = {

@@ -527,7 +527,7 @@ describe('feedback (#683)', () => {
       err: () => {},
     });
     assert.equal(code, EXIT.OK);
-    assert.match(prompt, /피드백 #21 \(<button> "저장"\)/);
+    assert.match(prompt, /#21 피드백\(<button> "저장"\)을 고쳤다고/);
     assert.deepEqual(seen, { id: 21, o: { note: '패딩을 16px 로 늘렸습니다' } });
     assert.match(out.join('\n'), /고침으로 표시했습니다/);
 
