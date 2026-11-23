@@ -699,7 +699,7 @@ describe('pinning over a real tunnel socket (§14, #682)', () => {
     conn.send(KIND.FEEDBACK_NOTICE, notice(23));
     decision = await conn.next();
     assert.deepEqual(decision.json, { feedbackId: 23, accepted: false });
-    assert.ok(logs.some((l) => l.includes('#22 은 받기 전으로 둡니다')));
+    assert.ok(logs.some((l) => l.includes('#22 피드백은 받기 전으로 둡니다')));
 
     // The owner's own feedback is already taken: told, not asked.
     conn.send(KIND.FEEDBACK_NOTICE, notice(24, { author: { role: 'OWNER', name: '주인' }, state: 'ACCEPTED' }));
