@@ -43,6 +43,9 @@ class ChatQueryServiceTest {
     @Mock
     private ProjectRepository projectRepository;
 
+    @Mock
+    private com.example.dvely.chat.application.pin.PreviewPinService previewPinService;
+
     @InjectMocks
     private ChatQueryService service;
 

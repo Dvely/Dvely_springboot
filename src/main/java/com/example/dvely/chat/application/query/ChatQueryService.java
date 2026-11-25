@@ -1,15 +1,18 @@
 package com.example.dvely.chat.application.query;
 
+import com.example.dvely.chat.application.pin.PreviewPinService;
 import com.example.dvely.chat.application.result.ConversationResult;
 import com.example.dvely.common.paging.CursorPage;
 import com.example.dvely.common.paging.CursorPaging;
 import com.example.dvely.chat.application.result.MessageResult;
 import com.example.dvely.chat.domain.exception.ConversationNotFoundException;
 import com.example.dvely.chat.domain.model.ChatMessage;
+import com.example.dvely.chat.domain.model.ChatMessagePinLabel;
 import com.example.dvely.chat.domain.model.Conversation;
 import com.example.dvely.chat.domain.policy.ChatTrashPolicy;
 import com.example.dvely.chat.domain.repository.ChatMessageRepository;
 import com.example.dvely.chat.domain.repository.ConversationRepository;
+import com.example.dvely.chat.domain.value.ChatRole;
 import com.example.dvely.project.domain.model.Project;
 import com.example.dvely.project.domain.repository.ProjectRepository;
 import java.time.LocalDateTime;
@@ -29,6 +32,7 @@ public class ChatQueryService {
     private final ConversationRepository conversationRepository;
     private final ChatMessageRepository chatMessageRepository;
     private final ProjectRepository projectRepository;
+    private final PreviewPinService previewPinService;
 
     public List<ConversationResult> getConversations(Long userId, Long projectId) {
         Project project = resolveActiveProject(userId, projectId);
@@ -95,8 +99,13 @@ public class ChatQueryService {
         int size = CursorPaging.clamp(limit, DEFAULT_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT);
         List<ChatMessage> probed = chatMessageRepository.findPageByConversationId(
             conversationId, CursorPaging.parseCursor(after), size + 1);
-        return CursorPaging.slice(probed, size, message -> String.valueOf(message.getId()))
-            .map(this::toMessageResult);
+        CursorPage<ChatMessage> page = CursorPaging.slice(probed, size, message -> String.valueOf(message.getId()));
+        // 짚은 곳(§16.6)은 사용자 줄에만 있다. 한 쪽에 한 번만 묻고, 칩 이름만 읽는다
+        Map<Long, List<ChatMessagePinLabel>> pins = previewPinService.labelsOf(page.items().stream()
+            .filter(message -> message.getRole() == ChatRole.USER)
+            .map(ChatMessage::getId)
+            .toList());
+        return page.map(message -> toMessageResult(message, pins.getOrDefault(message.getId(), List.of())));
     }
 
     private Project resolveActiveProject(Long userId, Long projectId) {
@@ -121,7 +130,7 @@ public class ChatQueryService {
         );
     }
 
-    private MessageResult toMessageResult(ChatMessage message) {
+    private MessageResult toMessageResult(ChatMessage message, List<ChatMessagePinLabel> pins) {
         // V59 부터 chat_messages.task_id 가 있어 과거 조회에서도 태스크를 잇는다. 그 칼럼 이전에
         // 쌓인 줄과 태스크와 무관한 줄은 여전히 null 이다.
         return new MessageResult(
@@ -132,7 +141,8 @@ public class ChatQueryService {
                 message.getTokenCount(),
                 message.getCreatedAt(),
                 message.getTaskId(),
-                message.getKind()
+                message.getKind(),
+                pins
         );
     }
 

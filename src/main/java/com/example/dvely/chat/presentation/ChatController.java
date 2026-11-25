@@ -162,6 +162,7 @@ public class ChatController {
                                        @Parameter(description = "메시지를 저장할 대화 ID") @PathVariable Long conversationId,
                                        @Valid @RequestBody SendMessageRequest request) {
         return chatMapper.toMessageResponse(
-                chatFacade.sendMessage(userId, conversationId, request.content(), request.aiProvider()));
+                chatFacade.sendMessage(userId, conversationId, request.content(), request.aiProvider(),
+                        chatMapper.toPinInputs(request.pins())));
     }
 }

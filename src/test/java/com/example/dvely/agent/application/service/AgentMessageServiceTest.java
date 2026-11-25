@@ -25,7 +25,9 @@ class AgentMessageServiceTest {
 
     private final ChatMessageRepository repository = mock(ChatMessageRepository.class);
     private final RequestOutcomeResolver outcomes = mock(RequestOutcomeResolver.class);
-    private final AgentMessageService service = new AgentMessageService(repository, outcomes);
+    private final com.example.dvely.chat.application.pin.PreviewPinService pins =
+            mock(com.example.dvely.chat.application.pin.PreviewPinService.class);
+    private final AgentMessageService service = new AgentMessageService(repository, outcomes, pins);
 
     @org.junit.jupiter.api.BeforeEach
     void unknownOutcomesByDefault() {
@@ -59,6 +61,30 @@ class AgentMessageServiceTest {
                 "[지금 처리할 요청]\n'서버 clone 점검' 한 줄만 추가해줘");
         // 지금 요청의 결과는 묻지 않는다 — 아직 계획 전이다
         org.mockito.Mockito.verify(outcomes, org.mockito.Mockito.never()).resolve("t-now");
+    }
+
+    /**
+     * 프리뷰에서 짚은 곳(§16.6): 지금 요청에만 블록 전체가 붙고, 지난 요청에는 몇 곳이었는지만 붙는다. 지난 블록까지 실으면
+     * 대화 창의 글자 상한을 짚기 기술이 먹는다.
+     */
+    @Test
+    void onlyTheCurrentRequestCarriesItsPinnedPlaces() {
+        ChatMessage past = new ChatMessage(1L, 21L, ChatRole.USER, "버튼을 키워줘", 0, null, "t-past", null);
+        ChatMessage now = new ChatMessage(2L, 21L, ChatRole.USER, "이것도 더 크게", 0, null, "t-now", null);
+        when(repository.findLatestByConversationIdAndRole(21L, ChatRole.USER, ConversationWindow.MAX_TURNS))
+                .thenReturn(List.of(past, now));
+        when(pins.labelsOf(List.of(1L, 2L))).thenReturn(java.util.Map.of(
+                1L, List.of(new com.example.dvely.chat.domain.model.ChatMessagePinLabel(1, "버튼 「저장」"),
+                        new com.example.dvely.chat.domain.model.ChatMessagePinLabel(2, "화면 전체")),
+                2L, List.of(new com.example.dvely.chat.domain.model.ChatMessagePinLabel(1, "버튼 「취소」"))));
+        when(pins.promptFor(2L)).thenReturn(java.util.Optional.of("## 프리뷰에서 짚은 곳\n\n- 짚은 요소: `<button>`\n"));
+
+        List<String> contents = service.getUserIntentHistory(21L).stream().map(LlmMessage::content).toList();
+
+        assertThat(contents.get(0)).endsWith("버튼을 키워줘\n(프리뷰에서 2곳 짚음)");
+        assertThat(contents.get(1)).isEqualTo(
+                "[지금 처리할 요청]\n이것도 더 크게\n\n## 프리뷰에서 짚은 곳\n\n- 짚은 요소: `<button>`\n");
+        org.mockito.Mockito.verify(pins, org.mockito.Mockito.never()).promptFor(1L);
     }
 
     private static ChatMessage userMessage(String content, String taskId) {

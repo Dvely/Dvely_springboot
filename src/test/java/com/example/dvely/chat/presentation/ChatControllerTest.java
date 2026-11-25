@@ -149,14 +149,14 @@ class ChatControllerTest {
                 ,
                         null);
 
-                when(chatFacade.sendMessage(1L, 30L, "hi", null)).thenReturn(result);
+                when(chatFacade.sendMessage(1L, 30L, "hi", null, java.util.List.of())).thenReturn(result);
                 when(chatMapper.toMessageResponse(result)).thenReturn(response);
 
                 MessageResponse actual = chatController.sendMessage(1L, 30L, request);
 
                 assertThat(actual.messageId()).isEqualTo(101L);
                 assertThat(actual.taskId()).isEqualTo("task-abc123");
-                verify(chatFacade).sendMessage(1L, 30L, "hi", null);
+                verify(chatFacade).sendMessage(1L, 30L, "hi", null, java.util.List.of());
         }
 
         @Test

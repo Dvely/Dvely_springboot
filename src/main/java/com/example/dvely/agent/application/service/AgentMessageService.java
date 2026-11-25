@@ -1,11 +1,14 @@
 package com.example.dvely.agent.application.service;
 
 import com.example.dvely.agent.application.port.out.LlmMessage;
+import com.example.dvely.chat.application.pin.PreviewPinService;
 import com.example.dvely.chat.domain.model.ChatMessage;
+import com.example.dvely.chat.domain.model.ChatMessagePinLabel;
 import com.example.dvely.chat.domain.repository.ChatMessageRepository;
 import com.example.dvely.chat.domain.value.ChatMessageKind;
 import com.example.dvely.chat.domain.value.ChatRole;
 import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,6 +28,7 @@ public class AgentMessageService {
 
     private final ChatMessageRepository chatMessageRepository;
     private final RequestOutcomeResolver outcomeResolver;
+    private final PreviewPinService previewPinService;
 
     /** 종류를 붙이지 않는 줄(순수 대화 답변 등). */
     @Transactional
@@ -117,6 +121,10 @@ public class AgentMessageService {
         }
 
         int last = userMessages.size() - 1;
+        // 프리뷰에서 짚은 곳(§16.6): 지금 요청에는 블록 전체를, 지난 요청에는 몇 곳이었는지만 붙인다. 지난 요청의
+        // 블록까지 실으면 대화 창의 글자 상한을 짚기 기술이 먹는다(마지막 턴은 상한을 넘어도 남는다 — ConversationWindow).
+        Map<Long, List<ChatMessagePinLabel>> pinned = previewPinService.labelsOf(
+                userMessages.stream().map(ChatMessage::getId).filter(java.util.Objects::nonNull).toList());
         // 표시를 먼저 붙이고 그다음에 자른다. 순서가 반대면 창 안의 마지막 턴에 [지금 처리할
         // 요청] 이 붙어, 이미 처리된 옛 요청이 새 요청으로 둔갑한다.
         return ConversationWindow.apply(java.util.stream.IntStream.range(0, userMessages.size())
@@ -124,8 +132,20 @@ public class AgentMessageService {
                         ChatRole.USER.toStorage(),
                         (index == last ? CURRENT_REQUEST_LABEL : pastLabel(userMessages.get(index).getTaskId()))
                                 + userMessages.get(index).getContent()
+                                + pinsOf(userMessages.get(index), index == last, pinned)
                 ))
                 .toList());
+    }
+
+    private String pinsOf(ChatMessage message, boolean current, Map<Long, List<ChatMessagePinLabel>> pinned) {
+        List<ChatMessagePinLabel> labels = pinned.get(message.getId());
+        if (labels == null || labels.isEmpty()) {
+            return "";
+        }
+        if (!current) {
+            return "\n(프리뷰에서 " + labels.size() + "곳 짚음)";
+        }
+        return previewPinService.promptFor(message.getId()).map(block -> "\n\n" + block).orElse("");
     }
 
     /**

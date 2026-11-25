@@ -100,7 +100,7 @@ public class UserWithdrawalStore {
 
     /** 직접 지우지 않고 부모의 ON DELETE CASCADE 로 함께 지워지는 테이블. */
     public static final Set<String> CASCADED_TABLES = Set.of(
-            "chat_messages",                       // chat_sessions
+            "chat_messages",                       // chat_sessions. 메시지에 붙은 짚은 곳(chat_message_pins, #575)도 메시지 CASCADE 로 함께
             "ai_provider_credentials",             // users
             "api_tokens",                          // users
             "environment_variables",               // projects
