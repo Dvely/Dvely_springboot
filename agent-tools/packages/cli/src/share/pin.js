@@ -155,16 +155,25 @@ export function fitResult(result, max = MAX_RESULT_JSON_BYTES) {
   if (Buffer.byteLength(json) <= limit) return json;
   const slim = structuredClone(result);
   const steps = [];
+  // §15.9: the look-alikes' boxes go first; their count stays on the step.
+  if (Array.isArray(slim.scopes) && slim.scopes.some((sc) => sc?.peers?.bounds?.length)) {
+    steps.push(() => slim.scopes.forEach((sc) => sc?.peers && (sc.peers = { count: sc.peers.count, bounds: [] })));
+  }
   if (Array.isArray(slim.members) && slim.members.some((m) => m?.text !== undefined)) {
     steps.push(() => (slim.members = slim.members.map((m) => (m && typeof m === 'object' ? withoutText(m) : m))));
   }
   if (slim.near !== undefined) steps.push(() => delete slim.near);
   if (slim.members !== undefined) steps.push(() => delete slim.members);
-  // Narrow to wide, the screen last: the step before the screen is the widest one left.
-  const outer = Array.isArray(slim.scopes) ? slim.scopes.length - 2 : 0;
+  // The containers, widest first. The element, a sentence (§15.7), a dragged region and the screen stay.
+  const container = (sc) => sc?.kind === 'group' || sc?.kind === 'component';
+  const outer = Array.isArray(slim.scopes) ? slim.scopes.filter(container).length : 0;
   for (let i = 0; i < outer; i++) {
     steps.push(() => {
-      slim.scopes.splice(slim.scopes.length - 2, 1);
+      let at = -1;
+      slim.scopes.forEach((sc, j) => container(sc) && (at = j));
+      if (at < 0) return;
+      slim.scopes.splice(at, 1);
+      if (at < slim.defaultScope) slim.defaultScope -= 1;
       if (!(slim.defaultScope < slim.scopes.length)) slim.defaultScope = 0;
     });
   }
@@ -175,8 +184,10 @@ export function fitResult(result, max = MAX_RESULT_JSON_BYTES) {
     () => delete slim.sourceHints,
     () => {
       if (slim.element) slim.element = { type: slim.element.type, bounds: slim.element.bounds };
-      const first = Array.isArray(slim.scopes) ? slim.scopes[0] : null;
-      if (first?.kind === 'element') slim.scopes[0] = { kind: first.kind, type: first.type, bounds: first.bounds };
+      // The element step is the first, or the second after a sentence step (§15.7).
+      const at = Array.isArray(slim.scopes) ? slim.scopes.findIndex((sc) => sc?.kind === 'element') : -1;
+      const first = at >= 0 ? slim.scopes[at] : null;
+      if (first) slim.scopes[at] = { kind: first.kind, type: first.type, bounds: first.bounds };
     },
     () => delete slim.components,
     () => slim.screen && (slim.screen = { label: clip(slim.screen.label, 100) })
