@@ -2,6 +2,7 @@ package com.example.dvely.chat.application.facade;
 
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.chat.application.command.ChatCommandService;
+import com.example.dvely.chat.application.pin.PreviewPinInput;
 import com.example.dvely.chat.application.query.ChatQueryService;
 import com.example.dvely.chat.application.result.ConversationResult;
 import com.example.dvely.chat.application.result.MessageResult;
@@ -46,7 +47,13 @@ public class ChatFacade {
     }
 
     public MessageResult sendMessage(Long userId, Long conversationId, String content, AiProvider aiProvider) {
-        return chatCommandService.sendMessage(userId, conversationId, content, aiProvider);
+        return sendMessage(userId, conversationId, content, aiProvider, List.of());
+    }
+
+    /** 서버 프리뷰에서 짚은 곳(§16.6)을 함께 보낸다 */
+    public MessageResult sendMessage(Long userId, Long conversationId, String content, AiProvider aiProvider,
+                                     List<PreviewPinInput> pins) {
+        return chatCommandService.sendMessage(userId, conversationId, content, aiProvider, pins);
     }
 
     public CursorPage<MessageResult> getMessages(Long userId,

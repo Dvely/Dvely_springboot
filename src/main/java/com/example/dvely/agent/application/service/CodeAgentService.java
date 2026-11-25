@@ -26,6 +26,7 @@ import com.example.dvely.template.domain.model.Template;
 import com.example.dvely.agent.infrastructure.docker.ContainerFileWriteException;
 import com.example.dvely.agent.infrastructure.docker.ContainerFileWriter;
 import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
+import com.example.dvely.chat.application.pin.PreviewPinService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -77,6 +78,7 @@ public class CodeAgentService {
     private final AiProperties            aiProperties;
     private final CodingAgentWorkspaceBridge codingAgentWorkspaceBridge;
     private final ContainerFileWriter     containerFileWriter;
+    private final PreviewPinService       previewPinService;
 
     private static final String SYSTEM_PROMPT = """
             You are an expert full-stack developer working inside a Docker container (node:20-alpine).
@@ -207,6 +209,8 @@ public class CodeAgentService {
         if (seededTemplate.isPresent()) {
             instruction = withTemplateContext(instruction, seededTemplate.get());
         }
+        // 사용자가 프리뷰에서 짚은 곳(§16.6). 계획이 지시를 고쳐 쓰면서 요소 정보를 빠뜨려도 여기서는 빠지지 않는다
+        instruction = withPreviewPins(instruction, taskId);
 
         try {
             // GLM shares OpenAI's loop rather than getting its own: OpenRouter returns
@@ -348,6 +352,13 @@ public class CodeAgentService {
                 .append(instruction);
 
         return prompt.toString();
+    }
+
+    /** 태스크를 낳은 사용자 발화에 짚은 곳이 있으면 지시 뒤에 붙인다. 화면 글은 그 블록의 펜스 안에만 있다 */
+    private String withPreviewPins(String instruction, String taskId) {
+        return previewPinService.promptForTask(taskId)
+                .map(block -> instruction + "\n\n" + block)
+                .orElse(instruction);
     }
 
     public record CodeResult(String previewUrl, String summary) {}

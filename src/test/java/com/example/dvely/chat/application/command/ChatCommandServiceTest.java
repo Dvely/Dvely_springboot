@@ -57,6 +57,9 @@ class ChatCommandServiceTest {
     @Mock
     private AiProperties aiProperties;
 
+    @Mock
+    private com.example.dvely.chat.application.pin.PreviewPinService previewPinService;
+
     @InjectMocks
     private ChatCommandService chatCommandService;
 

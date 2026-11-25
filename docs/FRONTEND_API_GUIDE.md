@@ -432,7 +432,7 @@ Accept: text/event-stream
 | POST | `/api/v1/trash/conversations/{id}/restore` | 휴지통 대화 복구(7일 경과 시 불가) | - | `ConversationResponse` | 404, 409(7일 경과) |
 | DELETE | `/api/v1/trash/conversations/{id}` | 휴지통 대화 영구 삭제 | - | 204 | 404 |
 | GET | `/api/v1/conversations/{id}/messages` | 대화 메시지 목록(생성순) | - | `[MessageResponse]` | 404 |
-| POST | `/api/v1/conversations/{id}/messages` | 메시지 저장 + Decision Agent 동기 판단(승인 정책에 따라 Agent task 큐잉) | `{ content, aiProvider }` — **`aiProvider` 필수**(#364) | 201 `{ messageId, conversationId, role, content, tokenCount, createdAt, taskId }`(`taskId`는 판단 성공 시에만 채워짐) | 400, 404 |
+| POST | `/api/v1/conversations/{id}/messages` | 메시지 저장 + Decision Agent 동기 판단(승인 정책에 따라 Agent task 큐잉) | `{ content, aiProvider, pins? }` — **`aiProvider` 필수**(#364). `pins` 는 프리뷰에서 짚은 곳 5개까지(#575, 아래) | 201 `{ messageId, conversationId, role, content, tokenCount, createdAt, taskId, kind, pins }`(`taskId`는 판단 성공 시에만 채워짐, `pins` 는 칩 `[{position, label}]`) | 400, 404 |
 
 ### 4.5 Agent — `com.example.dvely.agent.presentation` (8)
 
@@ -473,6 +473,11 @@ Accept: text/event-stream
 
 FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
 
+- **프리뷰에서 짚기(#575, Dvely_FE #211).** 프리뷰 iframe 문서에는 짚기 브리지가 들어 있습니다(설계 `docs/device-preview-share-design.md` §16).
+  - iframe 에 `postMessage({qeploy:'pin', v:1, type:'hello'}, '*')` 를 보내 `{qeploy:'pin', v:1, type:'ready', caps}` 가 오면 짚을 수 있습니다. 1.5초 안에 안 오면 짚기 버튼을 끕니다.
+  - `hover {x, y}` → `hit {x, y, bounds?}`(테두리 그리기), `probe {id:'p1', x, y}` · `probe {id, rect:{x,y,w,h}}` · `probe {id, screen:true}` → `result {id, result}`, `scroll {dx, dy}`. 좌표는 iframe 뷰포트에 대한 0~1 비율입니다.
+  - 받는 쪽은 `event.source === iframe.contentWindow` 이고 `data.qeploy === 'pin'` 인 것만 받습니다(origin 은 `"null"`). iframe 에 `sandbox` 속성은 달지 않습니다(쿠키가 빠져 401).
+  - 보낼 때 `pins: [{result, scope}]`(`result` 는 받은 그대로, `scope` 는 고른 사다리 칸). 형식이 틀리거나 6개 이상이면 400 이고 아무것도 저장되지 않으니 입력창을 지우지 않습니다.
 - **`aiProvider` 를 생략할 수 없습니다.** `POST /conversations/{id}/messages` 에서도 필수가 됐습니다(예전에는 생략 시 서버 기본 제공자로 실행). 비워 보내면 **400** 입니다. `POST /agent/decision` 은 원래부터 필수였습니다.
 - **`GET /agent/ai-providers` 의 의미가 바뀌었습니다.** 이제 "배포가 키를 가진 제공자"가 아니라 **"이 사용자가 키를 등록한 제공자"** 목록입니다. 키를 하나도 등록하지 않았으면 **빈 배열**이 옵니다 — 그 상태에서는 입력을 잠그고 키 등록(`/api/v1/ai-credentials`)으로 보내면 됩니다.
 - **키가 없으면 `AI_CREDENTIAL_NOT_REGISTERED`(400)** 입니다. 코딩 에이전트뿐 아니라 **모든 AI 실행 경로**(계획·채팅·코드 생성)가 이 코드를 낼 수 있습니다. `message` 에 어느 벤더 키가 없는지 담기므로 그대로 안내해도 됩니다.

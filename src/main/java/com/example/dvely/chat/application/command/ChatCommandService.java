@@ -2,10 +2,14 @@ package com.example.dvely.chat.application.command;
 
 import com.example.dvely.agent.application.orchestrator.AgentOrchestrator;
 import com.example.dvely.agent.domain.value.AiProvider;
+import com.example.dvely.chat.application.pin.PreviewPinInput;
+import com.example.dvely.chat.application.pin.PreviewPinService;
 import com.example.dvely.chat.application.result.ConversationResult;
 import com.example.dvely.chat.application.result.MessageResult;
 import com.example.dvely.chat.domain.exception.ConversationNotFoundException;
 import com.example.dvely.chat.domain.model.ChatMessage;
+import com.example.dvely.chat.domain.model.ChatMessagePin;
+import com.example.dvely.chat.domain.model.ChatMessagePinLabel;
 import com.example.dvely.chat.domain.model.Conversation;
 import com.example.dvely.chat.domain.policy.ChatTrashPolicy;
 import com.example.dvely.chat.domain.repository.ChatMessageRepository;
@@ -31,6 +35,7 @@ public class ChatCommandService {
     private final ProjectRepository projectRepository;
     private final AgentOrchestrator agentOrchestrator;
     private final AsyncDecisionRunner asyncDecisionRunner;
+    private final PreviewPinService previewPinService;
 
     @Transactional
     public ConversationResult createConversation(Long userId, Long projectId) {
@@ -100,8 +105,19 @@ public class ChatCommandService {
 
     @Transactional
     public MessageResult sendMessage(Long userId, Long conversationId, String content, AiProvider requestedProvider) {
+        return sendMessage(userId, conversationId, content, requestedProvider, List.of());
+    }
+
+    /**
+     * 서버 프리뷰에서 짚은 곳(설계 §16.6)과 함께 보낸다. 짚은 곳은 태스크를 열기 전에 정리한다 — 형식이 틀린 것이 있으면
+     * 400 으로 끝나고 PENDING 태스크도 메시지도 남지 않는다.
+     */
+    @Transactional
+    public MessageResult sendMessage(Long userId, Long conversationId, String content, AiProvider requestedProvider,
+                                     List<PreviewPinInput> pinInputs) {
         Conversation conversation = conversationRepository.findByIdAndUserIdAndDeletedFalse(conversationId, userId)
                 .orElseThrow(() -> new ConversationNotFoundException(conversationId, userId));
+        List<ChatMessagePin> pins = previewPinService.normalize(pinInputs);
         // 예전에는 여기서 서버 기본 제공자로 떨어졌다. 그 한 줄이 "제공자를 안 적은 요청은 운영자
         // 키로 실행된다"는 뜻이었고, 공개 운영에서는 로그인한 누구나 운영자 계정에 과금할 수 있는
         // 경로였다(#364). 이제 누구의 키로 돌지 모르는 요청은 실행하지 않는다.
@@ -127,9 +143,13 @@ public class ChatCommandService {
         if (conversation.assignTitleFromFirstMessage(content)) {
             conversationRepository.save(conversation);
         }
+        // 계획이 이 메시지를 읽기 전에(커밋 뒤 비동기) 같은 트랜잭션으로 붙인다
+        previewPinService.attach(message.getId(), pins);
 
         dispatchDecisionAfterCommit(taskId, userId, conversationId, projectId, requestedProvider);
-        return toMessageResult(message, taskId);
+        return toMessageResult(message, taskId, pins.stream()
+                .map(pin -> new ChatMessagePinLabel(pin.position(), pin.label()))
+                .toList());
     }
 
     /**
@@ -226,7 +246,7 @@ public class ChatCommandService {
         );
     }
 
-    private MessageResult toMessageResult(ChatMessage message, String taskId) {
+    private MessageResult toMessageResult(ChatMessage message, String taskId, List<ChatMessagePinLabel> pins) {
         return new MessageResult(
                 message.getId(),
                 message.getConversationId(),
@@ -235,7 +255,8 @@ public class ChatCommandService {
                 message.getTokenCount(),
                 message.getCreatedAt(),
                 taskId,
-                message.getKind()
+                message.getKind(),
+                pins
         );
     }
 }

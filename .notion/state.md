@@ -2052,6 +2052,20 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - **테스트**: 서버 기기 공유 125건(새 18 — `ref` 를 모든 답에, 보는 사람 몫·공유 상한·같은 `ref` 대신하기, `pin-keep` 15분 상한, 모두 있을 때만 가져가기, 화면 지문과 같은 화면 그림 하나, 큰 그림 줄이기, dHash(같은 화면·스크롤·띠 화면·4px), 번호 그린 화면, 여러 곳 이름·프롬프트, 끝까지(저장·상세 marks·mark=2·annotated·pin-missing)), CLI 410건(새 2 — 여러 곳 그림 저장, MCP 번호 그린 화면·곳마다 3장)
 - **남은 것**: 같은 것 모두·글자 일부(PR-6), FE(Dvely_FE)의 여러 곳·번호 그린 화면 보기
 
+## 4.79 서버 프리뷰에서 짚어 대화에 붙이기 — 브리지·계약·프롬프트 (Issue #575 BE PR-1, 2026-11-26)
+
+설계 §16. 기기 화면 공유(§14·§15) 없이도, 프로젝트 화면의 서버 프리뷰에서 요소를 짚어 대화에 붙이면 Qeploy 의 계획·CODE 에이전트가 그 요소를 근거로 고친다. Flyway **V78**. #576(프리뷰 전용 오리진)을 기다리지 않는다 — 이유는 §16.2.
+
+- **브리지**: `src/main/resources/preview/pin-bridge.js`. 게이트웨이가 HTML 문서 head 에 경로 shim 다음으로 넣는다(`qeploy.preview.pin-bridge-enabled`, 기본 켜짐). `inspectPoint` 는 CLI `pin-web.js` 의 함수를 글자 그대로 옮겼고 `PreviewPinBridgeSyncTest` 가 같은지 본다. 부모 창의 `hello`·`hover`·`probe`(점·사각형·화면)·`scroll` 에만 답한다. production 빌드의 줄인 컴포넌트 이름(`Xe`)과 파일 위치는 보내지 않는다
+- **계약**: `POST /conversations/{id}/messages` 의 `pins`(5개까지, `{result, scope?}`). `PinResultSanitizer` 로 다시 만들고, 브리지가 내지 않는 `sourceHints`·컴포넌트 `file`·`line` 은 버린다. 하나라도 틀리면 400 — 태스크를 열기 전에 정리하므로 메시지·태스크가 남지 않는다. 응답·목록 `pins: [{position, label}]`
+- **저장(V78)**: `chat_message_pins(message_id, position, label, element_json)` — PK (메시지, 번호), 메시지 FK CASCADE(대화 영구 삭제·휴지통 정리·탈퇴가 함께 지운다). 목록은 칩 이름만 읽는다(JDBC)
+- **프롬프트**: `FeedbackPromptRenderer.renderPinned` 를 떼어 내 같이 쓴다. 계획에는 지금 요청에만 "## 프리뷰에서 짚은 곳" 블록, 지난 요청에는 "(프리뷰에서 N곳 짚음)". CODE 에는 계획의 지시 뒤에 같은 블록(`CodeAgentService.withPreviewPins`). 화면 글은 펜스 블록 안에만
+- **실측**(브리지만): 실제 Chrome 에서 CSP sandbox iframe(오리진 `"null"`) 안의 브리지가 부모의 `hello` 에 `ready`, 「저장」 버튼 짚기에 사다리 `button.save` → `form#profile` → 화면, 끌기 영역에 안의 요소 5개, 화면 전체, 입력란의 친 값은 결과에 없음, 형식이 틀린 `id` 에는 답 없음
+- **로컬 끝까지 실측**(BE 이 브랜치 + FE `feature/preview-pin` + 예제 앱 컨테이너를 가리킨 ACTIVE 프리뷰 세션, 실제 게이트웨이 경유): 짚기 버튼 켜짐(브리지 `ready`) → 「저장」 위 점선 테두리 → 눌러 ① · Alt+↑ 로 `폼 #profile` → Shift+누르기로 ② 「요금제」 → Alt+↑ 로 `구역` → 입력창 칩 ①② → Esc. 같은 모양으로 메시지 API 에 보내 201·`pins` 칩, 꾸민 결과는 400, 계획 이력·CODE 블록 확인. 브리지 한 번 묻기 6ms
+- **실측에서 고친 것**: 브리지가 읽는 `location` 은 게이트웨이 경로라 **프리뷰 열람 토큰**이 "화면:" 줄로 저장·프롬프트에 나갔다. 서버(`PreviewPinService.appPath`)와 브리지(`cleanScreen`) 모두 `/api/v1/previews/{sid}/{token}` 을 걷어 앱 경로(`/`, `/settings?tab=1`)로 바꾼다
+- **테스트**: 게이트웨이(브리지가 shim 뒤에 한 번, `</script` 없음), 브리지 동기화, `PreviewPinServiceTest` 8(열람 토큰 걷기, 사다리 칸·6개 거절·하나 틀리면 전부 거절·꾸민 필드 버림·펜스 밖으로 화면 글이 안 나옴·태스크로 찾기), 계획 이력(지금 요청에만 블록), CODE 지시에 블록, 실 MySQL 통합 4(저장·칩·태스크로 찾기, 목록 칩과 계획 블록, 대화를 지우면 함께, 틀린 짚기는 메시지·태스크를 남기지 않음)
+- **남은 것**: AI 키가 있는 계정으로 "짚고 더 크게 → 그 버튼만 바뀜"(에이전트 실행까지), 잘라 낸 그림·소스 후보(§16.7). FE 는 Dvely_FE #211 PR
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

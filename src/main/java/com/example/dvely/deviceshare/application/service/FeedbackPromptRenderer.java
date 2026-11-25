@@ -43,11 +43,22 @@ public final class FeedbackPromptRenderer {
             screenText.add("화면 제목: " + title);
         }
 
+        boolean multi = renderPinned(out, element, screenText, true);
+        footer(out, feedback, notes, screenText, multi);
+        return out.toString();
+    }
+
+    /**
+     * 짚은 곳 줄들(§15.11 위쪽 요약). 화면 글은 {@code screenText} 에 모은다 — 펜스 블록에 넣는 것은 부르는 쪽이다.
+     * 서버 프리뷰 짚기(§16.6)도 같은 줄을 쓴다. 그쪽에는 번호 그린 화면이 없다({@code numberedImage}).
+     *
+     * @return 여러 곳이면 true
+     */
+    public static boolean renderPinned(StringBuilder out, JsonNode element, List<String> screenText, boolean numberedImage) {
         List<JsonNode> places = com.example.dvely.deviceshare.application.session.PinResultSanitizer.places(element);
         if (places.size() > 1) {
-            renderPlaces(out, places, screenText);
-            footer(out, feedback, notes, screenText, true);
-            return out.toString();
+            renderPlaces(out, places, screenText, numberedImage);
+            return true;
         }
 
         JsonNode node = element.path("element");
@@ -165,8 +176,7 @@ public final class FeedbackPromptRenderer {
             }
         }
 
-        footer(out, feedback, notes, screenText, false);
-        return out.toString();
+        return false;
     }
 
     /** 남긴 사람, 화면에서 읽은 글, 요청, 이어진 대화. 한 곳·여러 곳이 같이 쓴다 */
@@ -210,8 +220,9 @@ public final class FeedbackPromptRenderer {
      * 짚은 곳 여러 개(§15.5·§15.11). 곳마다 번호(①②…)를 달고 고른 범위를 한 줄로 말한다. 번호는 번호 그린 화면·뷰어 배지와 같다.
      * 소스 후보는 곳마다 두 개, 합쳐서 다섯 개까지 번호를 달아 적는다.
      */
-    private static void renderPlaces(StringBuilder out, List<JsonNode> places, List<String> screenText) {
-        out.append("- 짚은 곳 ").append(places.size()).append("개(번호를 그린 화면 이미지와 같은 번호)\n");
+    private static void renderPlaces(StringBuilder out, List<JsonNode> places, List<String> screenText, boolean numberedImage) {
+        out.append("- 짚은 곳 ").append(places.size())
+                .append(numberedImage ? "개(번호를 그린 화면 이미지와 같은 번호)\n" : "개\n");
         List<List<JsonNode>> hintsByPlace = new ArrayList<>();
         for (int i = 0; i < places.size(); i++) {
             JsonNode place = places.get(i);
@@ -456,7 +467,7 @@ public final class FeedbackPromptRenderer {
     }
 
     /** 글 안의 가장 긴 백틱 줄보다 하나 긴 펜스로 감싼다. */
-    static void fence(StringBuilder out, String text, String indent) {
+    public static void fence(StringBuilder out, String text, String indent) {
         String body = text == null ? "" : text.replaceAll("[\\p{Cntrl}&&[^\\n\\t]]", "");
         int longest = 0;
         int run = 0;
@@ -473,7 +484,7 @@ public final class FeedbackPromptRenderer {
     }
 
     /** 한 줄로 만든다. 줄바꿈·제어 문자는 공백이 된다. */
-    static String inline(String value) {
+    public static String inline(String value) {
         return value == null ? "" : value.replaceAll("\\p{Cntrl}", " ").strip();
     }
 

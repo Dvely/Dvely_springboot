@@ -3,6 +3,7 @@ package com.example.dvely.chat.presentation.dto;
 import com.example.dvely.chat.domain.value.ChatMessageKind;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Schema(description = "대화 메시지 정보")
 public record MessageResponse(
@@ -45,6 +46,24 @@ public record MessageResponse(
                 평범한 어시스턴트 줄로 그릴 것</b> — 종류는 늘어난다.
                 """,
                 example = "TASK_PROGRESS", nullable = true)
-        ChatMessageKind kind
+        ChatMessageKind kind,
+
+        @Schema(description = """
+                사용자가 이 메시지와 함께 서버 프리뷰에서 짚은 곳(§16.6). 번호(①~⑤) 순서이고, 짚은 곳이 없는 메시지는 빈 목록이다.
+                말풍선의 칩으로 그린다. 짚기 기술 본문은 싣지 않는다.
+                """)
+        List<PinResponse> pins
 ) {
+
+    public MessageResponse(Long messageId, Long conversationId, String role, String content, long tokenCount,
+                           LocalDateTime createdAt, String taskId, ChatMessageKind kind) {
+        this(messageId, conversationId, role, content, tokenCount, createdAt, taskId, kind, List.of());
+    }
+
+    @Schema(description = "짚은 곳 칩")
+    public record PinResponse(
+            @Schema(description = "번호(1~5, ①~⑤)", example = "1") int position,
+            @Schema(description = "칩 이름 — 고른 범위의 이름", example = "버튼 「저장」") String label
+    ) {
+    }
 }

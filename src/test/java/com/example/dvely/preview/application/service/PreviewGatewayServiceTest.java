@@ -296,6 +296,32 @@ class PreviewGatewayServiceTest {
     }
 
     /**
+     * 짚기 브리지(설계 §16.4)는 경로 shim 바로 뒤에 한 번 들어간다. shim 보다 앞서면 브리지가 읽는
+     * 위치·요청이 재작성 전 모양이 되고, 두 번 들어가면 부모 한 번의 물음에 두 번 답한다.
+     */
+    @Test
+    void injectsThePinBridgeOnceRightAfterThePathShim() throws IOException {
+        ResponseEntity<Resource> response = service.proxy(session(), "/api/v1/previews/s/t/", "", null);
+
+        String html = bodyOf(response);
+        int shim = html.indexOf("window.fetch");
+        int bridge = html.indexOf("function inspectPoint(args)");
+        assertThat(shim).isNotNegative();
+        assertThat(bridge).isGreaterThan(shim);
+        assertThat(html.indexOf("function inspectPoint(args)", bridge + 1)).isNegative();
+        assertThat(html).contains("data.qeploy !== 'pin'");
+        // 브리지는 문서 앞에 들어가고 본문은 그대로다.
+        assertThat(html).contains("<body>preview</body>");
+    }
+
+    /** 브리지 글이 인라인 script 를 닫아 버리면 문서가 그 자리에서 끊긴다. */
+    @Test
+    void thePinBridgeNeverClosesItsOwnScriptTag() {
+        assertThat(PreviewGatewayService.PIN_BRIDGE.toLowerCase(java.util.Locale.ROOT)).doesNotContain("</script");
+        assertThat(PreviewGatewayService.PIN_BRIDGE).contains("parentWindow === window");
+    }
+
+    /**
      * 쓰기(POST)도 method·본문을 그대로 컨테이너로 전달하고 응답을 돌려준다 — 에이전트가 만든 앱의 등록·폼이
      * 프리뷰에서 동작하려면 필요하다. 앱이 method 와 본문을 되돌려주는 엔드포인트로 왕복을 확인한다.
      */
