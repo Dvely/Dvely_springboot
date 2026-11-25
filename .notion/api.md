@@ -688,6 +688,19 @@ Base path: `/api/v1/projects/{projectId}/environment-variables`
 - `MessageResponse.kind`(nullable, V58): 어시스턴트 줄의 종류. 화면이 본문 문자열로 의미를 추론하지 않도록 서버가 붙인다. `AGENT_RESULT` · `TASK_PROGRESS` · `APPROVAL_REQUESTED` · `INPUT_REQUIRED` · `CLARIFICATION_ANSWER` · `TASK_FAILED` · `TASK_CANCELLED` · `TASK_CLOSED`(#461: 작업은 `DONE`인데 시스템이 마무리함. 예: 저장소 연결을 묻는 동안 프리뷰가 정리돼 연결하지 못하고 끝남. 취소처럼 그리지 말 것). 사용자 메시지와 도입 이전 줄은 `null`이다. **모르는 값이 오면 평범한 어시스턴트 줄로 그린다** — 종류는 늘어난다.
 - `GET messages`는 생성순(오래된 것부터)이고 `limit` 기본 500·최대 1000이다. 더 남아 있으면 응답 헤더 `X-Qeploy-Next-Cursor`가 붙으며, 그 값을 `after`로 넘기면 그 메시지보다 뒤의 것을 받는다. 헤더가 없으면 마지막 페이지다. 숫자가 아닌 커서는 `400`.
 - V66(#405): #391 이전 승인 메시지에 박혀 있던 죽은 `- preview: https://…` 줄을 이력에서 지웠다(그 줄만 지우고 주변 줄은 유지).
+- **프리뷰에서 짚은 곳(#575, V78)**: 요청에 `pins`(선택, 5개까지 — 순서대로 ①~⑤)를 넣을 수 있다. 하나는 `{result, scope?}` 이고 `result` 는 프리뷰 문서의 짚기 브리지가 낸 결과 그대로다(설계 `docs/device-preview-share-design.md` §16.4).
+  - 서버가 기기 공유 짚기와 같은 검사(`PinResultSanitizer`)로 다시 만든다. 형식이 틀린 것이 하나라도 있거나 6개 이상이면 **400** 이고, 메시지도 태스크도 남지 않는다. 브리지가 내지 않는 `sourceHints`·컴포넌트 `file`·`line` 은 버린다.
+  - `scope` 는 사람이 고른 범위 사다리 칸(0 = 짚은 요소)이다. 사다리 밖이면 기본 칸이다.
+  - 응답과 `GET messages` 의 `pins: [{position, label}]` 가 말풍선 칩이다(짚은 곳이 없으면 `[]`). 짚기 기술 본문은 싣지 않는다.
+  - 계획(Decision)에는 지금 요청에만 "## 프리뷰에서 짚은 곳" 블록 전체가, 지난 요청에는 "(프리뷰에서 N곳 짚음)" 한 줄이 붙는다. CODE 단계에는 계획이 쓴 지시 뒤에 같은 블록이 붙는다. 화면에서 읽은 글은 그 블록의 펜스 안에만 있다.
+
+```json
+{
+  "content": "이 버튼을 더 크게",
+  "aiProvider": "CLAUDE_CODE",
+  "pins": [{ "result": { "probeId": "p1", "ok": true, "point": {"x": 0.317, "y": 0.234}, "element": {"type": "button", "text": "저장", "selector": "#profile > button.save", "bounds": {"x": 0.28, "y": 0.2, "w": 0.07, "h": 0.06}}, "scopes": ["…"], "defaultScope": 0 }, "scope": 1 }]
+}
+```
 
 휴지통/삭제 정책 (코드 실측, `ChatTrashPolicy`/`ChatTrashCleanupScheduler`):
 
@@ -1146,7 +1159,7 @@ POST /conversations/{conversationId}/messages
 GET  /conversations/{conversationId}/messages
 ```
 
-메시지 `POST`는 PENDING task의 `taskId`를 즉시 돌려주고, 계획 수립은 백그라운드에서 사용자 발화만으로 진행된다. FE는 그 `taskId`로 SSE(`GET /agent/tasks/{taskId}/events/stream`)를 열어 진행을 받는다. 필요한 승인을 거쳐 Agent가 실행되며, 승인 대기/질문/결과/오류는 `kind`가 붙은 ASSISTANT 메시지로 저장된다(§8, §9 참고).
+메시지 `POST`는 PENDING task의 `taskId`를 즉시 돌려주고, 계획 수립은 백그라운드에서 사용자 발화만으로 진행된다. 프리뷰에서 짚은 곳(`pins`, #575)이 있으면 계획·CODE 에 데이터로 붙는다(§8). FE는 그 `taskId`로 SSE(`GET /agent/tasks/{taskId}/events/stream`)를 열어 진행을 받는다. 필요한 승인을 거쳐 Agent가 실행되며, 승인 대기/질문/결과/오류는 `kind`가 붙은 ASSISTANT 메시지로 저장된다(§8, §9 참고).
 
 ### 13.3 Agent 직접 호출
 
@@ -1170,6 +1183,8 @@ GET  /preview-sessions/{sessionId}/status
 GET  /preview-sessions/{sessionId}/logs
 DELETE /preview-sessions/{sessionId}            # 204 / 404 없음·타유저·이미 닫힘 / 409 PREVIEW_IN_USE
 ```
+
+**짚기 브리지(#575).** 게이트웨이는 프리뷰 HTML 문서 head 에 경로 shim 다음으로 짚기 브리지(`src/main/resources/preview/pin-bridge.js`)를 넣는다. 부모 창이 `postMessage({qeploy:'pin', v:1, type:'hello'|'hover'|'probe'|'scroll', …}, '*')` 로 물으면 `ready`·`hit`·`result` 로 답한다(설계 §16.4). 부모가 아닌 창의 물음에는 답하지 않고, DOM 은 읽기만 한다. 끄려면 `qeploy.preview.pin-bridge-enabled=false`. 8MiB 가 넘는 문서는 재작성을 건너뛰므로 브리지도 없다.
 
 **내 프리뷰 목록(#651).** `GET /preview-sessions` 는 내 ACTIVE·PROVISIONING 세션을 `lastAccessedAt` 오름차순(상한 회수가 고르는 순서)으로 준다. 브라우저·PAT(READ) 모두 된다.
 

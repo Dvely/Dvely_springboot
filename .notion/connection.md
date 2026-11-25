@@ -66,7 +66,7 @@ AuditRecorder(횡단) ──→ Project/Deploy Agent/ResultApprovalGate/ResultAp
 
 현재 중요한 경계:
 
-- Chat 메시지 저장은 Decision Agent 실행으로 바로 이어진다(더 이상 별도 진입점이 아니다. §7 참고). CHAT으로 분류된 요청은 `ChatAgentService`가, 서버/서비스 운영 질의는 Cloud Ops Agent가 처리한다(§8 참고).
+- Chat 메시지 저장은 Decision Agent 실행으로 바로 이어진다(더 이상 별도 진입점이 아니다. §7 참고). 메시지에 프리뷰에서 짚은 곳(`pins`, #575)이 있으면 `chat_message_pins` 에 함께 저장되고, `AgentMessageService`(계획 이력)와 `CodeAgentService`(CODE 지시)가 `PreviewPinService` 로 그 블록을 붙인다. 짚기 결과는 Preview 게이트웨이가 문서에 넣은 브리지가 만든다(설계 §16). CHAT으로 분류된 요청은 `ChatAgentService`가, 서버/서비스 운영 질의는 Cloud Ops Agent가 처리한다(§8 참고).
 - Agent task, plan, PreviewSession은 DB에 영속화되며 DB queue worker가 lease로 실행을 claim한다(메모리 전용이 아니다. §8 참고).
 - PreviewSession은 Agent를 거치지 않는 경로로도 만들어진다(Issue #94): `Project → ProjectPreviewService → Docker PreviewSession(task_id NULL)`. 준비(clone/build/serve)는 `previewExecutor`에서 비동기로 돌고, 절차 자체는 CODE 스텝과 `PreviewWorkspaceService`를 공유한다.
 - Deployment는 프로젝트 `frontendHostingType` 으로 갈린다 — `GITHUB_PAGES`(workflow), `S3`(사용자 AWS 버킷, worker 안에서 동기 완료), `EC2`(Provisioning 의 웹 전용 서버로 위임, `SERVER_PROVISION` 승인). 백엔드는 Provisioning(EC2·RDS/EC2 DB)이 사용자 AWS 계정에 만든다(`api.md` §10.1·§19, `state.md` §3.11).

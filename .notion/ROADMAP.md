@@ -10,6 +10,11 @@
 
 ## 1. 현재 상태
 
+- 2026-11-26: **졸업작품 경진대회 예선 통과 → 12/1 본선. 본선 전 추가 개발로 "서버 프리뷰에서 짚기"(#575 · Dvely_FE #211)를 시작했다.** 설계 `docs/device-preview-share-design.md` §16. Flyway **V78**(머지 직전 번호 확인)
+  - **방향**: #576(프리뷰 전용 오리진)을 기다리지 않는다. 지금의 CSP sandbox 문서에 게이트웨이가 짚기 브리지를 넣고(프리뷰 코드와 같은 권한), FE 는 `event.source` 로, 서버는 `PinResultSanitizer` 로, 프롬프트는 펜스로 결과를 데이터로만 다룬다(§16.2)
+  - **BE PR-1**(`danto/preview-pin`): 설계 + 브리지 주입(`pin-bridge.js`, CLI `inspectPoint` 그대로·동기화 테스트) + `POST /conversations/{id}/messages` 의 `pins`(5개, 하나라도 틀리면 400) + `chat_message_pins` + 계획(지금 요청만 블록)·CODE(지시 뒤 블록) 프롬프트. 상세 `state.md` §4.79
+  - **다음**: PR 병합(사용자 승인, 직전에 Flyway 번호 확인) → FE PR(Dvely_FE #211: 짚기 모드·범위 칩·영역·①~⑤·입력창·말풍선 칩) → 로컬 FE·BE + 실제 프리뷰 컨테이너로 "버튼을 짚고 더 크게" 실측. A1 자리(재시도 계속)
+
 - 2026-11-17: **다음 기능을 "짚기 피드백"으로 정했다(#681 서버·뷰어, #682 CLI 요소 풀기, #683 MCP·CLI 내보내기, Dvely_FE #210 주인 목록, #211 서버 프리뷰에서 짚기). 첫 PR 은 설계 §14 다.** 코드 변경 0, 마이그레이션 없음(develop 최신 **V75**)
   - **방향(사용자 결정)**
     - Qeploy 는 Claude Code·Codex 를 대신하지 않고 보완한다. 개발·로컬 실행·MCP 로 배포 연결은 그쪽으로도 된다
