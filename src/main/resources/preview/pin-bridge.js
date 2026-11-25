@@ -243,8 +243,10 @@ function inspectPoint(args) {
     }
   };
   const meaningful = (a) => Boolean(componentAt(a) || GROUP.test(a.localName) || a.getAttribute('role') || stableId(a.id));
-  // The node each step stands for, to count its look-alikes (§15.3 peers) once the ladder is built.
+  // The node each step stands for, to count its look-alikes (§15.3 peers) once the ladder is built,
+  // and the same-size nodes merged into it: in `li > a` the links have no look-alikes, their items do.
   const nodeOf = new Map();
+  const mergedOf = new Map();
   // Two nodes with nearly the same box are one step, named by the most telling of them: a
   // component name over a stable id over a bare tag. The step keeps the inner node's type, so a
   // `<form id="profile">` that `ProfileForm` draws reads "form · ProfileForm". The innermost
@@ -289,6 +291,8 @@ function inspectPoint(args) {
       if (measured && alike(area, areaOf(last.bounds))) {
         // The step's look-alikes are counted on the node its component drew.
         if (name && !last.component) nodeOf.set(last, a);
+        if (!mergedOf.has(last)) mergedOf.set(last, []);
+        mergedOf.get(last).push(a);
         merge(last, step);
         continue;
       }
@@ -331,7 +335,9 @@ function inspectPoint(args) {
       if (clock() - start > BUDGET_MS) break;
       const s = steps[i];
       if (s.kind !== 'element' && s.kind !== 'group' && s.kind !== 'component') continue;
-      const peers = peersOf(nodeOf.get(s), s.component || null);
+      let peers = peersOf(nodeOf.get(s), s.component || null);
+      const outer = mergedOf.get(s) || [];
+      for (let j = 0; !peers && j < outer.length; j++) peers = peersOf(outer[j], null);
       if (peers) s.peers = peers;
     }
   };

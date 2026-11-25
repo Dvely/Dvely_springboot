@@ -760,6 +760,16 @@ describe('reading the page at a point (inspectPoint, §14.3)', () => {
     assert.equal(step.peers.count, 3);
   });
 
+  it('counts the look-alikes of a same-size item merged into the element step (li > a menus)', () => {
+    const nav = el('ul', { attrs: { 'aria-label': '주 메뉴' }, rect: box(600, 0, 1000, 60) });
+    const items = [0, 1, 2].map((i) => el('li', { rect: box(600 + i * 120, 10, 700 + i * 120, 50), parent: nav }));
+    const link = el('a', { text: '주문', attrs: { href: '#' }, rect: box(720, 10, 820, 50), parent: items[1] });
+    nav.parentElement = page(link);
+    const out = inspectPoint({ x: 0.77, y: 0.0375, limit: LIMIT });
+    assert.equal(out.scopes[0].kind, 'element');
+    assert.equal(out.scopes[0].peers.count, 3, 'the links have no siblings; the items they fill do');
+  });
+
   it('gives bare boxes no look-alikes: a div is like every other div', () => {
     const wrap = el('section', { id: 'wrap', rect: box(0, 0, 600, 400) });
     const a = el('div', { rect: box(0, 0, 300, 200), parent: wrap, attrs: { role: 'group' } });
