@@ -149,7 +149,8 @@ public final class PinResultSanitizer {
         }
         ObjectNode out = json.createObjectNode().put("kind", kind);
         putText(out, "type", node.path("type"), MAX_TYPE);
-        putText(out, "text", node.path("text"), MAX_SCOPE_TEXT);
+        // §15.7: 문장 칸은 고칠 글 그 자체라 요소 글자만큼(200자) 둔다
+        putText(out, "text", node.path("text"), "text".equals(kind) ? MAX_TEXT : MAX_SCOPE_TEXT);
         putText(out, "id", node.path("id"), MAX_NAME);
         putText(out, "selector", node.path("selector"), MAX_SELECTOR);
         putText(out, "component", node.path("component"), MAX_NAME);
@@ -157,7 +158,45 @@ public final class PinResultSanitizer {
             out.put("members", Math.max(0, Math.min(MAX_MEMBERS, node.path("members").asInt())));
         }
         out.set("bounds", bounds);
+        if (PEER_KINDS.contains(kind)) {
+            ObjectNode peers = peers(node.path("peers"));
+            if (peers != null) {
+                out.set("peers", peers);
+            }
+        }
         return out;
+    }
+
+    /** §15.3: 같은 것 모두를 고를 수 있는 칸 */
+    static final Set<String> PEER_KINDS = Set.of("element", "group", "component");
+    static final int MAX_PEER_BOUNDS = 20;
+    private static final int MAX_PEER_COUNT = 10_000;
+
+    /** 같은 모양 형제의 수(2 이상)와 화면 안의 테두리(20개까지). 하나뿐이면 "같은 것 모두" 가 아니다 */
+    private ObjectNode peers(JsonNode node) {
+        if (!node.isObject() || !node.path("count").isIntegralNumber() || node.path("count").asInt() < 2) {
+            return null;
+        }
+        ObjectNode out = json.createObjectNode().put("count", Math.min(MAX_PEER_COUNT, node.path("count").asInt()));
+        ArrayNode bounds = out.putArray("bounds");
+        for (JsonNode b : node.path("bounds")) {
+            if (bounds.size() >= MAX_PEER_BOUNDS) {
+                break;
+            }
+            ObjectNode rect = ratioRect(b);
+            if (rect != null && rect.path("w").asDouble() > 0 && rect.path("h").asDouble() > 0) {
+                bounds.add(rect);
+            }
+        }
+        return out;
+    }
+
+    /** 사람이 이 곳에서 "같은 것 모두" 를 골랐고, 고른 칸에 같은 것이 있는가(§15.10 {@code peers}) */
+    public static Optional<JsonNode> chosenPeers(JsonNode description) {
+        if (!description.path("peers").asBoolean(false)) {
+            return Optional.empty();
+        }
+        return selectedScope(description).map(scope -> scope.path("peers")).filter(JsonNode::isObject);
     }
 
     /** §15.4: 끈 영역 안의 요소 하나. 테두리가 있어야 하고, 글은 60자 */
@@ -273,6 +312,9 @@ public final class PinResultSanitizer {
                 if (mark.path("scope").isInt()) {
                     place.put("scope", mark.path("scope").asInt());
                 }
+                if (mark.path("peers").isBoolean()) {
+                    place.put("peers", mark.path("peers").asBoolean());
+                }
                 out.add(place);
             }
         }
@@ -281,16 +323,25 @@ public final class PinResultSanitizer {
 
     /** 짚은 곳 하나에서 사람이 고른 범위의 이름 */
     public static String placeLabel(JsonNode description) {
+        String label = null;
         JsonNode scopes = description.path("scopes");
         if (scopes.isArray() && !scopes.isEmpty()) {
             int chosen = description.path("scope").asInt(description.path("defaultScope").asInt(0));
             JsonNode scope = scopes.path(chosen >= 0 && chosen < scopes.size() ? chosen : 0);
             if (!"element".equals(scope.path("kind").asText())) {
-                return scopeLabel(scope, true);
+                label = scopeLabel(scope, true);
             }
         }
-        JsonNode element = description.path("element");
-        return element.isObject() ? viewerLabel(element) : null;
+        if (label == null) {
+            JsonNode element = description.path("element");
+            label = element.isObject() ? viewerLabel(element) : null;
+        }
+        // §15.3: 같은 것 모두를 골랐으면 한 곳이 아니라 그 모양 전부다
+        Optional<JsonNode> peers = chosenPeers(description);
+        if (label != null && peers.isPresent()) {
+            label = cut("같은 것 " + peers.get().path("count").asInt() + "개 모두 · " + label, MAX_VIEWER_LABEL);
+        }
+        return label;
     }
 
     /** 사람이 고른 칸. 사다리가 없으면 빈 값 */

@@ -91,7 +91,7 @@ public final class FeedbackPromptRenderer {
         } else if (!region) {
             out.append("- 짚은 요소: 찾지 못함(").append(reason(element.path("reason").asText(""))).append(")\n");
         }
-        chosen.ifPresent(scope -> out.append("- 고른 범위: ").append(scopeLine(scope, element)).append('\n'));
+        chosen.ifPresent(scope -> out.append("- 고른 범위: ").append(withPeers(scopeLine(scope, element), element)).append('\n'));
         // 영역 안 요소들과 빈 자리 둘레의 글은 "화면에서 읽은 글" 에(§15.11)
         JsonNode members = element.path("members");
         int memberNo = 0;
@@ -119,7 +119,7 @@ public final class FeedbackPromptRenderer {
         }
         chosen.map(scope -> inline(scope.path("text").asText("")))
                 .filter(text -> !text.isEmpty() && !"element".equals(chosen.get().path("kind").asText()))
-                .ifPresent(text -> screenText.add("고른 범위: " + text));
+                .ifPresent(text -> screenText.add(("text".equals(chosen.get().path("kind").asText()) ? "고칠 글: " : "고른 범위: ") + text));
         JsonNode point = element.path("point");
         if (point.path("x").isNumber()) {
             out.append("- 짚은 위치: 가로 ").append(percent(point.path("x").asDouble()))
@@ -237,9 +237,9 @@ public final class FeedbackPromptRenderer {
             } else if ("region".equals(kind)) {
                 out.append(regionLine(place));
             } else if (!kind.isEmpty() && !"element".equals(kind)) {
-                out.append(scopeLine(chosen.get(), place));
+                out.append(withPeers(scopeLine(chosen.get(), place), place));
             } else if (node.isObject()) {
-                out.append("요소 ").append(elementLine);
+                out.append(withPeers("요소 " + elementLine, place));
             } else {
                 out.append("빈 곳");
                 JsonNode point = place.path("point");
@@ -286,7 +286,7 @@ public final class FeedbackPromptRenderer {
             }
             chosen.map(scope -> inline(scope.path("text").asText("")))
                     .filter(t -> !t.isEmpty() && !"element".equals(kind))
-                    .ifPresent(t -> screenText.add(no + " 고른 범위: " + t));
+                    .ifPresent(t -> screenText.add(no + ("text".equals(kind) ? " 고칠 글: " : " 고른 범위: ") + t));
             JsonNode hints = place.path("sourceHints");
             int chosenIndex = place.path("scope").asInt(place.path("defaultScope").asInt(0));
             hintsByPlace.add(hints.isArray()
@@ -402,6 +402,10 @@ public final class FeedbackPromptRenderer {
         if ("element".equals(kind)) {
             return "짚은 요소 하나";
         }
+        if ("text".equals(kind)) {
+            // §15.7·§15.11: 문장은 "화면에서 읽은 글" 의 "고칠 글" 에 있다
+            return "고칠 글 — 짚은 요소 안의 문장 하나다(아래 \"화면에서 읽은 글\" 의 \"고칠 글\"). 그 글자만 바꾸면 된다";
+        }
         if ("region".equals(kind)) {
             return regionLine(element);
         }
@@ -425,6 +429,17 @@ public final class FeedbackPromptRenderer {
             line.append(" — 짚은 요소를 품은 범위를 골랐다");
         }
         return line.toString();
+    }
+
+    /**
+     * §15.3·§15.11: "같은 것 모두" 를 골랐으면 한 곳이 아니라 그 모양 전부다. 예: {@code 같은 것 5개 모두(컴포넌트 PlanCard)}
+     */
+    static String withPeers(String line, JsonNode place) {
+        return com.example.dvely.deviceshare.application.session.PinResultSanitizer.chosenPeers(place)
+                .map(peers -> "같은 것 " + peers.path("count").asInt() + "개 모두("
+                        + ("짚은 요소 하나".equals(line) ? "짚은 요소와 같은 모양" : line)
+                        + ") — 한 곳이 아니라 이 모양 전부를 고치라는 뜻이다")
+                .orElse(line);
     }
 
     /** 끈 영역 그대로(§15.4·§15.11): 안의 요소들, 비었으면 둘레. 글자는 "화면에서 읽은 글" 에 번호로 있다 */

@@ -66,6 +66,55 @@ class FeedbackPromptRendererTest {
         assertThat(md).contains("- 남긴 사람: 주인");
     }
 
+    /** §15.3·§15.11: "같은 것 모두" 는 한 곳이 아니라 그 모양 전부를 고치라는 뜻이 드러나야 한다 */
+    @Test
+    void 같은_것_모두를_고르면_개수와_그_모양_전부라는_뜻을_적는다() throws Exception {
+        String md = FeedbackPromptRenderer.render(feedback("카드마다 그림자가 진해요", FeedbackAuthorRole.GUEST), json.readTree("""
+                {"screen":{"label":"/plans"},"ok":true,"v":2,"scope":1,"defaultScope":0,"peers":true,
+                 "element":{"type":"button","text":"고르기","selector":"li.plan-card > button.pick"},
+                 "scopes":[{"kind":"element","type":"button","text":"고르기","bounds":{"x":0.1,"y":0.5,"w":0.1,"h":0.05}},
+                           {"kind":"component","type":"li","selector":"ul.plans > li.plan-card","component":"PlanCard",
+                            "bounds":{"x":0.05,"y":0.2,"w":0.3,"h":0.4},
+                            "peers":{"count":5,"bounds":[{"x":0.05,"y":0.2,"w":0.3,"h":0.4}]}},
+                           {"kind":"screen","type":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}]}
+                """), List.of());
+
+        assertThat(md).contains("- 고른 범위: 같은 것 5개 모두(항목 `ul.plans > li.plan-card` · 컴포넌트 `PlanCard` — 짚은 요소를 품은 범위를 골랐다)"
+                + " — 한 곳이 아니라 이 모양 전부를 고치라는 뜻이다\n");
+    }
+
+    @Test
+    void 같은_것이_있어도_고르지_않았으면_한_곳으로_적는다() throws Exception {
+        String md = FeedbackPromptRenderer.render(feedback("이 카드만", FeedbackAuthorRole.GUEST), json.readTree("""
+                {"screen":{"label":"/plans"},"ok":true,"v":2,"scope":0,"defaultScope":0,
+                 "element":{"type":"li","text":"팀"},
+                 "scopes":[{"kind":"element","type":"li","text":"팀","bounds":{"x":0.1,"y":0.5,"w":0.1,"h":0.05},
+                            "peers":{"count":3,"bounds":[]}},
+                           {"kind":"screen","type":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}]}
+                """), List.of());
+
+        assertThat(md).contains("- 고른 범위: 짚은 요소 하나\n").doesNotContain("같은 것");
+    }
+
+    /** §15.7·§15.11: 고칠 글은 "화면에서 읽은 글" 에, 위쪽에는 그 글이 든 요소 */
+    @Test
+    void 문장을_고르면_고칠_글을_화면_글에_넣고_그_글이_든_요소를_적는다() throws Exception {
+        String md = FeedbackPromptRenderer.render(feedback("'3명' 을 '5명' 으로", FeedbackAuthorRole.GUEST), json.readTree("""
+                {"screen":{"label":"/plans"},"ok":true,"v":2,"scope":0,"defaultScope":1,
+                 "element":{"type":"p","text":"지금은 무료입니다. 팀원을 3명까지 초대할 수 있습니다.","selector":"#intro"},
+                 "scopes":[{"kind":"text","type":"text","text":"팀원을 3명까지 초대할 수 있습니다.","bounds":{"x":0.3,"y":0.1,"w":0.3,"h":0.05}},
+                           {"kind":"element","type":"p","bounds":{"x":0,"y":0.1,"w":0.8,"h":0.05}},
+                           {"kind":"screen","type":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}]}
+                """), List.of());
+
+        assertThat(md).contains("- 짚은 요소: `<p>` · `#intro`\n");
+        assertThat(md).contains("- 고른 범위: 고칠 글 — 짚은 요소 안의 문장 하나다");
+        assertThat(md).contains("고칠 글: 팀원을 3명까지 초대할 수 있습니다.\n");
+        // 문장은 펜스 밖으로 나오지 않는다
+        int fence = md.indexOf("## 화면에서 읽은 글");
+        assertThat(md.substring(0, fence)).doesNotContain("3명까지");
+    }
+
     @Test
     void 넓힌_범위를_고르면_그_범위와_처음_짚은_요소를_함께_적는다() throws Exception {
         String md = FeedbackPromptRenderer.render(feedback("여백을 넓혀 주세요", FeedbackAuthorRole.GUEST), json.readTree("""

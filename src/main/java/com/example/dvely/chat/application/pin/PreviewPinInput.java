@@ -9,6 +9,11 @@ import java.util.Map;
  *
  * @param result 브리지의 짚기 결과(§14.3·§15 모양)
  * @param scope  사람이 고른 사다리 칸. 없으면 결과의 기본 칸
+ * @param peers  고른 칸의 "같은 것 모두"(§15.3). 고른 칸에 같은 것이 없으면 무시한다
  */
-public record PreviewPinInput(Map<String, Object> result, Integer scope) {
+public record PreviewPinInput(Map<String, Object> result, Integer scope, Boolean peers) {
+
+    public PreviewPinInput(Map<String, Object> result, Integer scope) {
+        this(result, scope, null);
+    }
 }

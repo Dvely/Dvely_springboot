@@ -793,10 +793,14 @@ public class ShareSession {
             ArrayNode out = message.putArray("scopes");
             for (JsonNode scope : scopes) {
                 boolean element = "element".equals(scope.path("kind").asText());
-                out.addObject()
+                ObjectNode step = out.addObject()
                         .put("kind", scope.path("kind").asText())
-                        .put("label", PinResultSanitizer.scopeLabel(scope, viewer.owner() || element))
-                        .set("bounds", scope.path("bounds"));
+                        .put("label", PinResultSanitizer.scopeLabel(scope, viewer.owner() || element));
+                step.set("bounds", scope.path("bounds"));
+                // §15.3: 같은 것 모두 — 수와 화면 안 테두리만(이름은 없다)
+                if (scope.path("peers").isObject()) {
+                    step.set("peers", scope.path("peers"));
+                }
             }
             message.put("defaultScope", r.description().path("defaultScope").asInt(0));
         }
