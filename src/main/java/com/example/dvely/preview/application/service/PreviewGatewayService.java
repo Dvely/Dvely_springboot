@@ -134,6 +134,32 @@ public class PreviewGatewayService {
     @Value("${qeploy.preview.gateway-diagnostic-enabled:false}")
     private boolean diagnosticEnabled;
 
+    /**
+     * 짚기 브리지(설계 §16.4). 기다리기만 하는 스크립트라 늘 넣지만, 프리뷰 앱과 부딪히는 일이 생기면
+     * 서버만 다시 띄워 끌 수 있게 둔다. 필드 주입이라 테스트가 {@code new} 로 만든 서비스에서도 켜져 있다.
+     */
+    @Value("${qeploy.preview.pin-bridge-enabled:true}")
+    private boolean pinBridgeEnabled = true;
+
+    /** 프리뷰 문서에 넣는 짚기 브리지 전문. 서버가 뜰 때 한 번 읽는다(없으면 기동 실패). */
+    static final String PIN_BRIDGE = loadPinBridge();
+
+    private static String loadPinBridge() {
+        try (InputStream in = PreviewGatewayService.class.getResourceAsStream("/preview/pin-bridge.js")) {
+            if (in == null) {
+                throw new IllegalStateException("preview/pin-bridge.js 가 클래스패스에 없습니다");
+            }
+            String script = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            // 인라인 <script> 안에 들어가므로 닫는 태그가 있으면 문서가 그 자리에서 끊긴다.
+            if (script.toLowerCase(java.util.Locale.ROOT).contains("</script")) {
+                throw new IllegalStateException("preview/pin-bridge.js 에 </script 가 있습니다");
+            }
+            return script;
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
     public PreviewGatewayService(
             @Value("${qeploy.preview.frame-ancestors:'self'}") String frameAncestors,
             @Value("${qeploy.preview.gateway-reclaim-enabled:true}") boolean reclaimEnabled,
@@ -764,14 +790,17 @@ public class PreviewGatewayService {
                 // 조용히 무시되므로(Chrome 실측) 시도하지 않는다 — 위 doc 의 "안 덮는 것" 참고.
                 + "try{var wo=window.open;if(wo)window.open=function(){var a=[].slice.call(arguments);if(a.length)a[0]=r(a[0]);return wo.apply(window,a);};}catch(e){}"
                 + "})();</script>";
+        // 짚기 브리지(§16.4)는 shim 바로 뒤. 앱 스크립트보다 먼저 듣기 시작하지만, 부모가 묻기 전에는
+        // 아무것도 하지 않는다.
+        String scripts = pinBridgeEnabled ? shim + "<script>" + PIN_BRIDGE + "</script>" : shim;
         int headOpen = html.indexOf("<head");
         if (headOpen >= 0) {
             int headEnd = html.indexOf('>', headOpen);
             if (headEnd >= 0) {
-                return html.substring(0, headEnd + 1) + shim + html.substring(headEnd + 1);
+                return html.substring(0, headEnd + 1) + scripts + html.substring(headEnd + 1);
             }
         }
-        return shim + html;
+        return scripts + html;
     }
 
     private String sanitizePath(String path) {
