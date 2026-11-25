@@ -621,11 +621,24 @@ function inspectPoint(args) {
     return out.w > 0 && out.h > 0 ? out : null;
   }
 
+  /**
+   * 이 문서의 주소는 게이트웨이 경로(/api/v1/previews/{세션}/{열람 토큰}/…)다. 토큰을 밖으로 내보내지 않게 앱이 보는 경로로
+   * 바꾼다. 서버도 같은 일을 한다(PreviewPinService.appPath) — 여기서는 부모 창에까지 토큰이 가지 않게.
+   */
+  var GATEWAY_PREFIX = /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\/?#]*)?\/api\/v1\/previews\/[^\/?#]+\/[^\/?#]+/;
+  function appPath(value) {
+    if (typeof value !== 'string') return value;
+    var m = GATEWAY_PREFIX.exec(value);
+    if (!m) return value;
+    var rest = value.slice(m[0].length);
+    return !rest ? '/' : rest.charAt(0) === '/' ? rest : '/' + rest;
+  }
+
   function cleanScreen(s) {
     if (!s || typeof s !== 'object') return undefined;
     var out = {};
-    var label = str(s.label, LIMIT.label);
-    var url = typeof s.url === 'string' ? s.url.slice(0, 2048) : null;
+    var label = str(appPath(s.label), LIMIT.label);
+    var url = typeof s.url === 'string' ? appPath(s.url).slice(0, 2048) : null;
     var title = str(s.title, LIMIT.text);
     if (label) out.label = label;
     if (url) out.url = url;

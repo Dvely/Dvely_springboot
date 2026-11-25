@@ -67,6 +67,15 @@ public class PreviewPinService {
                     .orElseThrow(() -> new IllegalArgumentException(
                             "짚은 곳 " + position + "의 형식이 올바르지 않습니다. 다시 짚어 주세요."));
             ObjectNode description = resolution.description();
+            // 브리지가 읽는 location 은 게이트웨이 경로다 — 그 안에 프리뷰 열람 토큰이 있다. 저장·프롬프트(외부 LLM)로 가기 전에
+            // 앱이 보는 경로로 바꾼다(2026-11-26 로컬 실측에서 "화면: 프리뷰 · /api/v1/previews/{sid}/{token}/" 로 나갔다)
+            if (description.path("screen") instanceof ObjectNode screen) {
+                for (String field : List.of("label", "url")) {
+                    if (screen.path(field).isTextual()) {
+                        screen.put(field, appPath(screen.path(field).asText()));
+                    }
+                }
+            }
             // 브리지는 소스 후보와 컴포넌트 파일 위치를 내지 않는다(§16.4 — 그 경로는 빌드 컨테이너의 것). 있다면 꾸민 것이다
             description.remove("sourceHints");
             for (JsonNode component : description.path("components")) {
@@ -119,6 +128,23 @@ public class PreviewPinService {
             }
         }
         return places.isEmpty() ? Optional.empty() : Optional.of(PreviewPinPromptRenderer.render(places));
+    }
+
+    /** 게이트웨이 접두({@code [scheme://host]/api/v1/previews/{sid}/{token}}) — 세션 id 와 열람 토큰을 담는다 */
+    private static final java.util.regex.Pattern GATEWAY_PREFIX = java.util.regex.Pattern.compile(
+            "^(?:[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*)?/api/v1/previews/[^/?#]+/[^/?#]+");
+
+    /** 게이트웨이 경로면 앱이 보는 경로로({@code /settings?tab=1}), 아니면 그대로 */
+    static String appPath(String value) {
+        java.util.regex.Matcher m = GATEWAY_PREFIX.matcher(value);
+        if (!m.lookingAt()) {
+            return value;
+        }
+        String rest = value.substring(m.end());
+        if (rest.isEmpty()) {
+            return "/";
+        }
+        return rest.startsWith("/") ? rest : "/" + rest;
     }
 
     private String label(JsonNode description) {

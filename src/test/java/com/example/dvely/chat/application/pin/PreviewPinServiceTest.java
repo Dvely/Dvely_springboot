@@ -70,6 +70,34 @@ class PreviewPinServiceTest {
         assertThat(pin.label()).contains("저장");
     }
 
+    /**
+     * 브리지가 읽는 location 은 게이트웨이 경로라 프리뷰 열람 토큰을 담는다. 2026-11-26 로컬 실측에서 프롬프트의 "화면:" 줄이
+     * {@code /api/v1/previews/{sid}/{token}/} 로 나갔다 — 저장·외부 LLM 으로 가기 전에 앱 경로로 바꾼다.
+     */
+    @Test
+    void thePreviewAccessTokenNeverLeavesInTheScreenPath() throws Exception {
+        Map<String, Object> pinned = new HashMap<>(map(SAVE_BUTTON));
+        pinned.put("screen", Map.of(
+                "label", "/api/v1/previews/433ead66-ddb6/06f63a7ad0384fddbd04068d3d550d88/settings",
+                "url", "http://localhost:8080/api/v1/previews/433ead66-ddb6/06f63a7ad0384fddbd04068d3d550d88/settings?tab=1",
+                "title", "Acme 설정"));
+        Map<String, Object> root = new HashMap<>(map(WHOLE_SCREEN));
+        root.put("screen", Map.of("label", "/api/v1/previews/433ead66-ddb6/06f63a7ad0384fddbd04068d3d550d88/"));
+
+        List<ChatMessagePin> pins = service.normalize(List.of(new PreviewPinInput(pinned, null), new PreviewPinInput(root, null)));
+        repository.saveAll(9L, pins);
+
+        assertThat(pins).allSatisfy(pin -> assertThat(pin.elementJson()).doesNotContain("06f63a7ad0384fddbd04068d3d550d88"));
+        var screen = JSON.readTree(pins.get(0).elementJson()).path("screen");
+        assertThat(screen.path("label").asText()).isEqualTo("/settings");
+        assertThat(screen.path("url").asText()).isEqualTo("/settings?tab=1");
+        assertThat(JSON.readTree(pins.get(1).elementJson()).path("screen").path("label").asText()).isEqualTo("/");
+        assertThat(service.promptFor(9L).orElseThrow()).contains("- 화면: 프리뷰 · /settings\n").doesNotContain("previews");
+        // 프리뷰가 아닌 주소는 그대로
+        assertThat(PreviewPinService.appPath("/settings")).isEqualTo("/settings");
+        assertThat(PreviewPinService.appPath("https://example.com/a")).isEqualTo("https://example.com/a");
+    }
+
     @Test
     void sixPinsAreRefused() {
         List<PreviewPinInput> six = new ArrayList<>();
