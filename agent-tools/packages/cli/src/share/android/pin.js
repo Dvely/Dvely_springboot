@@ -179,7 +179,7 @@ function pointResult(nodes, probe, size, top) {
     element,
     ancestors,
     components: components.slice(0, LIMIT.components),
-    scopes: androidLadder(node, element, size),
+    scopes: androidLadder(node, element, size, nodes),
     defaultScope: 0,
   };
 }
@@ -195,7 +195,7 @@ function pointResult(nodes, probe, size, top) {
 export function describeAndroidRegion(nodes, probe, size, top) {
   const centre = { probeId: probe.probeId, ...probePoint(probe) };
   const at = pointResult(nodes, centre, size, top);
-  const region = buildRegion({ rect: probe.rect, nodes, boundsOf: boundsIn(size), describe: describeStep, memberOf: memberOfIn(nodes) });
+  const region = buildRegion({ rect: probe.rect, nodes, boundsOf: boundsIn(size), describe: describeStep, memberOf: memberOfIn(nodes), sameShape: sameAndroidShape });
   const screen = top ? screenOf(top) : undefined;
   return {
     probeId: probe.probeId,
@@ -257,8 +257,20 @@ const LIST_CLASS = /(RecyclerView|ListView|GridView)$/;
  * app's own (a component) — then the screen. The platform's frame (`android:id/content`, decor
  * views) is never a step.
  */
-function androidLadder(node, element, size) {
-  return buildLadder({ element, node, component: appClass(node.cls), boundsOf: boundsIn(size), describe: describeStep });
+function androidLadder(node, element, size, nodes) {
+  return buildLadder({ element, node, component: appClass(node.cls), boundsOf: boundsIn(size), describe: describeStep, nodes, sameShape: sameAndroidShape });
+}
+
+/**
+ * §15.3: two siblings are the same thing when they carry the same app `resource-id` and class (a list's
+ * rows reuse one layout), or — in a list (RecyclerView, ListView, GridView) — when they are the same class.
+ * The platform's own ids (`android:id/…`) and bare views without either say nothing.
+ */
+function sameAndroidShape(a, b) {
+  if (a.cls !== b.cls) return false;
+  const appId = (n) => (n.rid && !n.rid.startsWith('android:') ? n.rid : '');
+  if (appId(a) || appId(b)) return appId(a) === appId(b);
+  return LIST_CLASS.test(a.parent?.cls ?? '');
 }
 
 function describeStep(n) {

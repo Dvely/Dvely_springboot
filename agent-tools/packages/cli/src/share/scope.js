@@ -56,9 +56,11 @@ export function overlapArea(a, b) {
  *   component?: string}|null)} o.describe what a node is as a step, or null when it says nothing
  * @param {string|null} [o.component] the element's own component name, if the platform knows one
  * @param {number} [o.max] steps at most, the screen included
- * @returns {object[]} the steps, `{kind, type, text?, id?, component?, bounds}`, screen last
+ * @param {object[]} [o.nodes] the whole tree, flat; with `sameShape`, each step says how many look the same (§15.3 peers)
+ * @param {(a: object, b: object) => boolean} [o.sameShape] whether two siblings are the same thing (the platform's rule)
+ * @returns {object[]} the steps, `{kind, type, text?, id?, component?, bounds, peers?}`, screen last
  */
-export function buildLadder({ element, node, boundsOf, describe, component = null, max = LIMIT.scopes }) {
+export function buildLadder({ element, node, boundsOf, describe, component = null, max = LIMIT.scopes, nodes = null, sameShape = null }) {
   const first = { kind: 'element', type: clip(element.type, 40) ?? 'element' };
   const said = clip(element.text, LIMIT.scopeText);
   if (said) first.text = said;
@@ -67,9 +69,40 @@ export function buildLadder({ element, node, boundsOf, describe, component = nul
   if (component) first.component = component;
   if (element.bounds) first.bounds = element.bounds;
   const steps = [first];
-  climb(steps, node?.parent, { boundsOf, describe, max });
+  const nodesOf = new Map([[first, [node]]]);
+  climb(steps, node?.parent, { boundsOf, describe, max, nodesOf });
+  if (Array.isArray(nodes) && typeof sameShape === 'function') {
+    for (const step of steps) {
+      // The step's own node first, then the same-size ones merged into it: in a list the row, not the label in it, has look-alikes
+      for (const n of nodesOf.get(step) ?? []) {
+        const peers = peersOf({ node: n, nodes, boundsOf, sameShape });
+        if (peers) {
+          step.peers = peers;
+          break;
+        }
+      }
+    }
+  }
   steps.push(screenStep());
   return steps;
+}
+
+/**
+ * §15.3: how many siblings look the same as `node` (itself included), and the boxes of those on screen
+ * (20 at most). One alone is not "the same thing, all of them".
+ */
+export function peersOf({ node, nodes, boundsOf, sameShape, max = 20 }) {
+  const parent = node?.parent;
+  if (!parent) return null;
+  let count = 0;
+  const bounds = [];
+  for (const n of nodes) {
+    if (n.parent !== parent || !sameShape(n, node)) continue;
+    count++;
+    const b = bounds.length < max ? boundsOf(n) : null;
+    if (usable(b)) bounds.push(ratioBox(b));
+  }
+  return count >= 2 ? { count, bounds } : null;
 }
 
 /**
@@ -77,7 +110,7 @@ export function buildLadder({ element, node, boundsOf, describe, component = nul
  * merges into it and nothing is measured against it, so the container that holds it is always a
  * step of its own, even one nearly as big.
  */
-function climb(steps, from, { boundsOf, describe, max }) {
+function climb(steps, from, { boundsOf, describe, max, nodesOf = null }) {
   for (let a = from, i = 0; a && i < 40; a = a.parent, i++) {
     const what = describe(a);
     if (!what) continue;
@@ -96,6 +129,7 @@ function climb(steps, from, { boundsOf, describe, max }) {
     const last = steps[steps.length - 1];
     const measured = last.bounds && last.kind !== 'region';
     if (measured && alike(area, areaOf(last.bounds))) {
+      nodesOf?.get(last)?.push(a);
       merge(last, step);
       continue;
     }
@@ -103,6 +137,7 @@ function climb(steps, from, { boundsOf, describe, max }) {
     // be smaller than the control in it (measured: a 338×28 box around a 370×52 switch row).
     if (measured && area < areaOf(last.bounds)) continue;
     if (steps.length >= max - 1) break;
+    nodesOf?.set(step, [a]);
     steps.push(step);
   }
 }
@@ -152,9 +187,10 @@ export function scopeIdsOf(scopes) {
  *   o.memberOf what a node is when it is named, or null when a person would not name it. Never what
  *   was typed into it
  * @param {number} [o.max] steps at most, the region and the screen included
+ * @param {Function} [o.sameShape] as buildLadder: the container steps say how many look the same
  * @returns {{scopes: object[], members: object[], empty: boolean, near?: object[]}}
  */
-export function buildRegion({ rect, nodes, boundsOf, describe, memberOf, max = LIMIT.scopes }) {
+export function buildRegion({ rect, nodes, boundsOf, describe, memberOf, max = LIMIT.scopes, sameShape = null }) {
   const found = namedNodes(nodes, boundsOf, memberOf, (b) => overlapArea(b, rect) >= MEMBER_INSIDE * areaOf(b) - EPS);
   const members = readingOrder(found)
     .slice(0, LIMIT.members)
@@ -177,7 +213,19 @@ export function buildRegion({ rect, nodes, boundsOf, describe, memberOf, max = L
       container = node;
     }
   }
-  if (container) climb(steps, container, { boundsOf, describe, max });
+  const nodesOf = new Map();
+  if (container) climb(steps, container, { boundsOf, describe, max, nodesOf });
+  if (typeof sameShape === 'function') {
+    for (const step of steps) {
+      for (const n of nodesOf.get(step) ?? []) {
+        const peers = peersOf({ node: n, nodes, boundsOf, sameShape });
+        if (peers) {
+          step.peers = peers;
+          break;
+        }
+      }
+    }
+  }
   steps.push(screenStep());
 
   const out = { scopes: steps, members, empty: members.length === 0 };

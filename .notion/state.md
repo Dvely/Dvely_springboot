@@ -2078,7 +2078,17 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
   - 기기 공유(실제 `share web` + 로컬 서버 + 손님 뷰어): 카드 안 「고르기」 → 사다리 `글자 "고르기"` · `<button>` · `항목` · `목록` · `화면 전체` + `같은 것 3개` → 켜면 나머지 카드 점선 → 보내면 주인 터미널 `같은 것 3개 모두 · 항목`, 프롬프트 같은 줄. 문단의 둘째 문장 → `글자 "팀원을 3명까지 초대할 수 있습니다."` → 프롬프트 `고칠 글`
   - 프리뷰 + 실제 Claude Code(사용자 키): 머리글 메뉴 「주문」 짚고 `같은 것 3개 모두` → "메뉴 글자를 모두 굵게" → 계획이 "all 3 of the same kind" 로 읽고 `nav.main-nav > ul > li > a` 전부로 지시 → 바뀐 것은 공통 규칙 `.main-nav a`·`.main-nav a.active` 의 `font-weight` 둘(12초)
 - **테스트**: CLI 420(새 — 같은 것 셋: 클래스·컴포넌트·`li > a`, 맨 `div` 없음, 문장 칸·입력란·떨어진 캐럿, `fitResult` 두 개, `resolveWebPin` 전달), 서버(검사기 3, 프롬프트 3, 기기 공유 끝까지 1), FE 3
-- **남은 것**: Android·iOS 의 같은 것(`scope.js` — 같은 부모의 같은 `resource-id`·같은 `AXUniqueId`·같은 종류 `Cell`), 웹 textarea 를 짚으면 `NO_ELEMENT` 로 나오는 것(PR-6 전부터, 따로 볼 것)
+- **남은 것**: Android·iOS 의 같은 것 → §4.81. ("웹 textarea 를 짚으면 NO_ELEMENT" 는 실측 좌표가 textarea 바로 위였던 것으로, 결함이 아니었다)
+
+## 4.81 짚기 범위 — Android·iOS 의 같은 것 모두 (Issue #694 PR-6 모바일, 2026-11-26)
+
+설계 §15.3·§15.16 "PR-6 모바일". CLI 만 바뀐다(서버·뷰어는 §4.80 그대로 `peers` 를 받는다).
+
+- `scope.js`: `buildLadder`·`buildRegion` 에 `nodes`·`sameShape`. 칸의 노드(와 같은 크기로 합친 바깥 노드)의 형제 중 같은 모양이 둘 이상이면 `peers: {count, bounds[≤20]}`
+- Android: 같은 클래스 + 같은 앱 `resource-id`, 없으면 목록 안의 같은 클래스. iOS: 같은 `AXUniqueId`, 또는 둘 다 `Cell`
+- **iOS 이름 없는 행**: 실제 iOS 26 SwiftUI `List` 의 행은 이름 없는 `Group` 이라 행 칸이 없다. 요소 칸에 한해 같은 모양의 형제 행을 찾아 행마다 같은 자리의 같은 종류 요소를 센다(`rowPeers`)
+- 실측: 전용 시뮬레이터의 3행 SwiftUI `List`(임시 앱, 실측 뒤 지움) → 「고르기」·「팀」 모두 `peers 3/3`. Android 는 픽스처(디스크 여유로 에뮬레이터 못 띄움)
+- 테스트: CLI 425(새 5 — Android 목록 카드·같은 `resource-id`·플랫폼 id 제외, iOS `Cell`·이름 없는 행, 규칙 없으면 세지 않음)
 
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
