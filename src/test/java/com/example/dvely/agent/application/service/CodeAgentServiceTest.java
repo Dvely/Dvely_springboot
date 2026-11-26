@@ -94,6 +94,7 @@ class CodeAgentServiceTest {
     @Mock private CodingAgentWorkspaceBridge codingAgentWorkspaceBridge;
     // 스텁하지 않으면 Optional.empty() — 프리뷰에서 짚은 곳이 없는 요청과 같은 경로다.
     @Mock private com.example.dvely.chat.application.pin.PreviewPinService previewPinService;
+    @Mock private PreviewPinSourceFinder previewPinSourceFinder;
 
     private CodeAgentService service;
 
@@ -126,7 +127,8 @@ class CodeAgentServiceTest {
                 aiProperties,
                 codingAgentWorkspaceBridge,
                 containerFileWriter,
-                previewPinService
+                previewPinService,
+                previewPinSourceFinder
         );
         when(previewSessionService.acquire(TASK_ID)).thenReturn(previewSession());
         // Lenient because each test drives one provider and leaves the other two routes unused.
@@ -478,7 +480,7 @@ class CodeAgentServiceTest {
     @Test
     void thePlacesPinnedInThePreviewFollowThePlannersInstruction() {
         String block = "## 프리뷰에서 짚은 곳\n\n- 짚은 요소: `<button>` · `#profile > button.save`\n";
-        when(previewPinService.promptForTask(TASK_ID)).thenReturn(java.util.Optional.of(block));
+        when(previewPinService.promptForTask(eq(TASK_ID), any())).thenReturn(java.util.Optional.of(block));
         UserLimitExceededException stop = new UserLimitExceededException(
                 ErrorCode.CODING_AGENT_CAPACITY_EXCEEDED, "멈춤");
         when(codingAgentWorkspaceBridge.run(CONTAINER_ID, USER_ID, AiProvider.CLAUDE_CODE, "투두 앱을 만들어줘\n\n" + block))
