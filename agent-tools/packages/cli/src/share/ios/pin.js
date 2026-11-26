@@ -213,7 +213,7 @@ function pointResult(nodes, probe, points, shared) {
     element,
     ancestors,
     components: [],
-    scopes: iosLadder(node, element, points),
+    scopes: iosLadder(node, element, points, nodes),
     defaultScope: 0,
   };
 }
@@ -233,7 +233,7 @@ export function describeIosRegion(nodes, probe, points, shared = {}) {
   const centre = { probeId: probe.probeId, ...probePoint(probe) };
   const at = pointResult(nodes, centre, points, shared);
   const where = describeIosScreen(nodes, points, shared);
-  const region = buildRegion({ rect: probe.rect, nodes, boundsOf: boundsIn(points), describe: describeStep, memberOf: memberOfIn(nodes) });
+  const region = buildRegion({ rect: probe.rect, nodes, boundsOf: boundsIn(points), describe: describeStep, memberOf: memberOfIn(nodes), sameShape: sameIosShape });
   return {
     probeId: probe.probeId,
     ok: true,
@@ -268,8 +268,66 @@ const boundsIn = (points) => (n) => {
  * most wrapper groups neither, so its ladders are short until the app names a container
  * (`.accessibilityElement(children: .contain)` with an identifier).
  */
-function iosLadder(node, element, points) {
-  return buildLadder({ element, node, boundsOf: boundsIn(points), describe: describeStep });
+function iosLadder(node, element, points, nodes) {
+  const steps = buildLadder({ element, node, boundsOf: boundsIn(points), describe: describeStep, nodes, sameShape: sameIosShape });
+  // SwiftUI's List rows are nameless Groups, not Cells (measured, iOS 26): no row step, so the element
+  // itself says how many rows hold the same thing in the same place — every row's 「고르기」.
+  if (steps[0] && !steps[0].peers) {
+    const peers = rowPeers(node, nodes, boundsIn(points));
+    if (peers) steps[0].peers = peers;
+  }
+  return steps;
+}
+
+/**
+ * §15.3 for repeated rows nobody named: going up from `node` (5 levels at most), the first ancestor
+ * with siblings of the same make — the same type, the same children's types, the same width — is a
+ * row; the same thing is what sits at the same place in each of those rows, of the element's type
+ * (and identifier, if it has one).
+ */
+export function rowPeers(node, nodes, boundsOf, max = 20) {
+  if (!node || !Array.isArray(nodes)) return null;
+  const kids = new Map();
+  for (const n of nodes) {
+    if (!n.parent) continue;
+    if (!kids.has(n.parent)) kids.set(n.parent, []);
+    kids.get(n.parent).push(n);
+  }
+  const make = (n) => n.type + ':' + (kids.get(n) ?? []).map((c) => c.type).join(',');
+  const path = [];
+  for (let a = node, depth = 0; a?.parent && depth < 5; a = a.parent, depth++) {
+    const siblings = kids.get(a.parent) ?? [];
+    path.unshift(siblings.indexOf(a));
+    const rows = siblings.filter((s) => s !== a && make(s) === make(a) && s.frame && a.frame && Math.abs(s.frame.w - a.frame.w) <= 2);
+    if (!rows.length) continue;
+    const found = [];
+    for (const row of [a, ...rows]) {
+      let c = row;
+      for (let i = 1; i < path.length && c; i++) c = (kids.get(c) ?? [])[path[i]];
+      if (c && c.type === node.type && (!node.id || c.id === node.id)) found.push(c);
+    }
+    if (found.length < 2) return null;
+    // In screen order, the one pressed among them
+    found.sort((x, y) => x.frame.y - y.frame.y || x.frame.x - y.frame.x);
+    const bounds = [];
+    for (const c of found) {
+      if (bounds.length >= max) break;
+      const b = boundsOf(c);
+      if (b && b.w > 0 && b.h > 0) bounds.push({ x: r4(b.x), y: r4(b.y), w: r4(b.w), h: r4(b.h) });
+    }
+    return { count: found.length, bounds };
+  }
+  return null;
+}
+
+/**
+ * §15.3: two siblings are the same thing when they share an accessibilityIdentifier (ForEach rows that
+ * name their row), or when both are cells of the same list.
+ */
+function sameIosShape(a, b) {
+  if (a.id || b.id) return a.id === b.id && a.type === b.type;
+  const cell = (n) => n.type === 'Cell' || n.role === 'AXCell';
+  return cell(a) && cell(b);
 }
 
 function describeStep(n) {

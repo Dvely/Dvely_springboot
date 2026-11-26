@@ -334,3 +334,100 @@ describe('source candidates for the wider steps (§15.3, #694 PR-3)', () => {
     assert.ok(['Acme/ProfileScreen.swift', 'Acme/Other.swift'].includes(wider[0].file));
   });
 });
+
+describe('the same thing, all of them, on Android and iOS (§15.3 peers, #694 PR-6)', () => {
+  it('Android: the cards a list repeats are the same thing; the button inside one has no look-alikes', () => {
+    const card = (i) => `<node text="" resource-id="" class="com.example.pin.ui.PlanCard" package="com.example.pin" content-desc="요금제 ${i}" clickable="true" bounds="[20,${220 + i * 220}][520,${420 + i * 220}]">
+<node text="바꾸기" resource-id="com.example.pin:id/change" class="android.widget.Button" package="com.example.pin" content-desc="" clickable="true" bounds="[360,${340 + i * 220}][500,${400 + i * 220}]" />
+</node>`;
+    const dump = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">
+<node text="" resource-id="" class="android.widget.FrameLayout" package="com.example.pin" content-desc="" clickable="false" bounds="[0,0][540,1200]">
+<node text="" resource-id="com.example.pin:id/plans" class="androidx.recyclerview.widget.RecyclerView" package="com.example.pin" content-desc="" clickable="false" bounds="[0,200][540,1100]">
+${[0, 1, 2].map(card).join('\n')}
+<node text="" resource-id="" class="android.widget.TextView" package="com.example.pin" content-desc="" clickable="false" bounds="[0,1080][540,1100]" />
+</node>
+</node>
+</hierarchy>`;
+    const r = describeAndroidPoint(parseUiDump(dump), { probeId: 'p1', x: 430 / 540, y: 590 / 1200 }, { width: 540, height: 1200 }, null);
+    const cards = r.scopes.find((s) => s.component === 'PlanCard');
+    assert.equal(cards.peers.count, 3, 'three PlanCard rows under the list; the footer TextView is another class');
+    assert.equal(cards.peers.bounds.length, 3);
+    assert.equal(r.scopes[0].peers, undefined, 'one 바꾸기 button per card');
+  });
+
+  it('Android: views that share an app resource-id are the same thing outside lists too; the platform’s own ids are not', () => {
+    const nodes = parseUiDump(`<hierarchy rotation="0">
+<node text="" resource-id="com.example.pin:id/row" class="android.widget.LinearLayout" package="p" content-desc="" clickable="false" bounds="[0,0][540,600]">
+<node text="A" resource-id="com.example.pin:id/chip" class="android.widget.TextView" package="p" content-desc="" clickable="true" bounds="[0,0][100,50]" />
+<node text="B" resource-id="com.example.pin:id/chip" class="android.widget.TextView" package="p" content-desc="" clickable="true" bounds="[110,0][210,50]" />
+<node text="C" resource-id="android:id/text1" class="android.widget.TextView" package="p" content-desc="" clickable="true" bounds="[220,0][320,50]" />
+</node>
+</hierarchy>`);
+    const r = describeAndroidPoint(nodes, { probeId: 'p2', x: 50 / 540, y: 25 / 1200 }, { width: 540, height: 1200 }, null);
+    assert.equal(r.scopes[0].peers.count, 2);
+  });
+
+  it('iOS: the cells of a list are the same thing', () => {
+    const cell = (i) => ({
+      type: 'Cell',
+      role: 'AXCell',
+      frame: { x: 0, y: 200 + i * 60, width: 402, height: 60 },
+      children: [{ type: 'StaticText', role: 'AXStaticText', AXLabel: `요금제 ${i}`, frame: { x: 16, y: 210 + i * 60, width: 200, height: 40 } }],
+    });
+    const tree = [
+      {
+        type: 'Application',
+        role: 'AXApplication',
+        AXLabel: 'Acme',
+        pid: 4242,
+        frame: { x: 0, y: 0, width: 402, height: 874 },
+        children: [{ type: 'Table', role: 'AXTable', frame: { x: 0, y: 180, width: 402, height: 400 }, children: [0, 1, 2].map(cell) }],
+      },
+    ];
+    const r = describeIosPoint(parseAxTree(tree), { probeId: 'p3', x: 60 / 402, y: 290 / 874 }, { width: 402, height: 874 });
+    const row = r.scopes.find((s) => s.type === 'Cell');
+    assert.equal(row.peers.count, 3);
+    assert.equal(r.scopes.find((s) => s.type === 'Table').peers, undefined);
+  });
+
+  it('iOS: SwiftUI List rows are nameless groups — the same thing is what sits at the same place in each row', () => {
+    // As iOS 26 describes a List of three plans: each row three nested Groups the row's size, then the texts and the button
+    const row = (i, name) => {
+      const y = 168 + i * 64;
+      const inner = {
+        type: 'Group',
+        role: 'AXGroup',
+        frame: { x: 16, y, width: 370, height: 64 },
+        children: [
+          { type: 'StaticText', role: 'AXStaticText', AXLabel: name, frame: { x: 32, y: y + 22, width: 30, height: 20 } },
+          { type: 'StaticText', role: 'AXStaticText', AXLabel: '₩0', frame: { x: 220, y: y + 22, width: 60, height: 20 } },
+          { type: 'Button', role: 'AXButton', AXLabel: '고르기', frame: { x: 302, y: y + 15, width: 68, height: 34 } },
+        ],
+      };
+      return { type: 'Group', role: 'AXGroup', frame: { x: 16, y, width: 370, height: 64 }, children: [{ type: 'Group', role: 'AXGroup', frame: { x: 16, y, width: 370, height: 64 }, children: [inner] }] };
+    };
+    const tree = [
+      {
+        type: 'Application',
+        role: 'AXApplication',
+        AXLabel: 'Plans',
+        pid: 4243,
+        frame: { x: 0, y: 0, width: 402, height: 874 },
+        children: [{ type: 'Group', role: 'AXGroup', frame: { x: 0, y: 0, width: 402, height: 874 }, children: [row(0, '무료'), row(1, '팀'), row(2, '회사')] }],
+      },
+    ];
+    const nodes = parseAxTree(tree);
+    const button = describeIosPoint(nodes, { probeId: 'p4', x: 336 / 402, y: 264 / 874 }, { width: 402, height: 874 });
+    assert.equal(button.element.text, '고르기');
+    assert.equal(button.scopes[0].peers.count, 3, 'every row’s 「고르기」');
+    const title = describeIosPoint(nodes, { probeId: 'p5', x: 47 / 402, y: 264 / 874 }, { width: 402, height: 874 });
+    assert.equal(title.scopes[0].peers.count, 3, 'every row’s title, not its price');
+    assert.ok(title.scopes[0].peers.bounds.every((b) => b.x < 0.2));
+  });
+
+  it('scope.js: nothing is counted unless the platform says what the same shape is', () => {
+    const [button] = chain({ name: 'button' }, { name: 'row', type: 'li', box: [0, 0, 0.5, 0.1] });
+    const steps = buildLadder({ element: { type: 'button', bounds: { x: 0, y: 0, w: 0.1, h: 0.1 } }, node: button, boundsOf, describe: describeAll });
+    assert.equal(steps.some((s) => s.peers), false);
+  });
+});
