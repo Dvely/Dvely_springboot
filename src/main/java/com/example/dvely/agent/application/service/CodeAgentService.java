@@ -80,6 +80,7 @@ public class CodeAgentService {
     private final ContainerFileWriter     containerFileWriter;
     private final PreviewPinService       previewPinService;
     private final PreviewPinSourceFinder  previewPinSourceFinder;
+    private final CodingAgentActivityLog  codingAgentActivityLog;
 
     private static final String SYSTEM_PROMPT = """
             You are an expert full-stack developer working inside a Docker container (node:20-alpine).
@@ -228,13 +229,15 @@ public class CodeAgentService {
                 // bind-mounted host checkout, while everything here drives tools inside the running
                 // preview container. The bridge carries the project across and back, so the rest of
                 // the step — preview launch, diff, push — sees the same /workspace/app it always has.
-                case CLAUDE_CODE, CODEX ->
-                        codingAgentWorkspaceBridge.run(containerId, userId, provider, instruction);
+                // 도는 동안 한 일(읽기·고치기·명령)은 태스크 이벤트로 남아 타임라인에 바로 보인다(#600)
+                case CLAUDE_CODE, CODEX -> codingAgentWorkspaceBridge.run(
+                        containerId, userId, provider, instruction, codingAgentActivityLog.forTask(taskId));
             };
 
             // 세션은 PROVISIONING 으로 만들어져 있다. 서버가 실제로 뜬 뒤에만 ACTIVE 로 올려야
             // FE 가 "열면 보인다"는 계약대로 iframe 을 붙일 수 있다. 실패하면 PROVISIONING 인 채
             // 두지 않고 사유와 함께 FAILED 로 닫는다 — 안 그러면 FE 가 준비 중 화면을 무한히 돈다.
+            codingAgentActivityLog.previewStarting(taskId);
             try {
                 // 에이전트가 만든 코드도 런타임 타입에 맞춰 서빙한다(정적/NODE_SERVER/JAVA).
                 previewRuntimeLauncher.launch(projectId, containerId);

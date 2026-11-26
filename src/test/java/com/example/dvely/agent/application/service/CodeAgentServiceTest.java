@@ -95,6 +95,7 @@ class CodeAgentServiceTest {
     // 스텁하지 않으면 Optional.empty() — 프리뷰에서 짚은 곳이 없는 요청과 같은 경로다.
     @Mock private com.example.dvely.chat.application.pin.PreviewPinService previewPinService;
     @Mock private PreviewPinSourceFinder previewPinSourceFinder;
+    @Mock private CodingAgentActivityLog codingAgentActivityLog;
 
     private CodeAgentService service;
 
@@ -128,7 +129,8 @@ class CodeAgentServiceTest {
                 codingAgentWorkspaceBridge,
                 containerFileWriter,
                 previewPinService,
-                previewPinSourceFinder
+                previewPinSourceFinder,
+                codingAgentActivityLog
         );
         when(previewSessionService.acquire(TASK_ID)).thenReturn(previewSession());
         // Lenient because each test drives one provider and leaves the other two routes unused.
@@ -464,7 +466,7 @@ class CodeAgentServiceTest {
         // 닫혀 사용자는 기다리면 된다는 것을 모르고, 재시도 예산만 탄다.
         UserLimitExceededException full = new UserLimitExceededException(
                 ErrorCode.CODING_AGENT_CAPACITY_EXCEEDED, "지금은 서버의 코딩 에이전트가 모두 사용 중이라 실행하지 못했습니다.");
-        when(codingAgentWorkspaceBridge.run(CONTAINER_ID, USER_ID, AiProvider.CLAUDE_CODE, "투두 앱을 만들어줘"))
+        when(codingAgentWorkspaceBridge.run(eq(CONTAINER_ID), eq(USER_ID), eq(AiProvider.CLAUDE_CODE), eq("투두 앱을 만들어줘"), any()))
                 .thenThrow(full);
 
         assertThatThrownBy(() -> execute(AiProvider.CLAUDE_CODE)).isSameAs(full);
@@ -483,7 +485,7 @@ class CodeAgentServiceTest {
         when(previewPinService.promptForTask(eq(TASK_ID), any())).thenReturn(java.util.Optional.of(block));
         UserLimitExceededException stop = new UserLimitExceededException(
                 ErrorCode.CODING_AGENT_CAPACITY_EXCEEDED, "멈춤");
-        when(codingAgentWorkspaceBridge.run(CONTAINER_ID, USER_ID, AiProvider.CLAUDE_CODE, "투두 앱을 만들어줘\n\n" + block))
+        when(codingAgentWorkspaceBridge.run(eq(CONTAINER_ID), eq(USER_ID), eq(AiProvider.CLAUDE_CODE), eq("투두 앱을 만들어줘\n\n" + block), any()))
                 .thenThrow(stop);
 
         assertThatThrownBy(() -> execute(AiProvider.CLAUDE_CODE)).isSameAs(stop);

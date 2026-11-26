@@ -5,6 +5,7 @@ import com.example.dvely.agent.application.port.out.CodingAgentPort;
 import com.example.dvely.agent.application.port.out.CodingAgentResult;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -67,6 +68,22 @@ abstract class AbstractCliCodingAgentAdapter implements CodingAgentPort {
     /** Human-readable CLI name, used only in log lines. */
     protected abstract String cliName();
 
+    /**
+     * Reads the CLI's stdout line by line while it runs (#600), or {@code null} when this CLI's
+     * output is only read at the end. The reader reports activity to
+     * {@link CodingAgentCommand#onActivity()} and may turn the raw stdout into the run's answer.
+     */
+    protected StreamReader streamReader(CodingAgentCommand command) {
+        return null;
+    }
+
+    /** One run's stdout reader. */
+    protected interface StreamReader extends Consumer<String> {
+
+        /** The run's closing text, given the stdout the runner kept. */
+        String answer(String stdout);
+    }
+
     @Override
     public final CodingAgentResult run(CodingAgentCommand command) {
         List<String> argv = new ArrayList<>(argvPrefix());
@@ -84,20 +101,22 @@ abstract class AbstractCliCodingAgentAdapter implements CodingAgentPort {
         // never on the command line, and never on a docker-java command field (see the runner).
         CodingAgentContainerRunner.Credential credential = credentialing(command.apiKey());
 
+        StreamReader reader = streamReader(command);
         CodingAgentContainerRunner.ContainerRunOutcome outcome =
-                runWithProvisionRetry(command, List.copyOf(argv), credential);
+                runWithProvisionRetry(command, List.copyOf(argv), credential, reader);
+        String output = reader == null ? outcome.stdout() : reader.answer(outcome.stdout());
 
         if (outcome.timedOut()) {
             log.warn("{} 실행 시간 초과: workspace={} timeout={}",
                     cliName(), command.workspaceDir(), command.timeout());
-            return CodingAgentResult.timedOut(outcome.stdout(), outcome.stderr());
+            return CodingAgentResult.timedOut(output, outcome.stderr());
         }
         if (outcome.exitCode() != 0) {
             log.warn("{} 비정상 종료: workspace={} exitCode={}",
                     cliName(), command.workspaceDir(), outcome.exitCode());
-            return CodingAgentResult.failed(outcome.stdout(), outcome.stderr(), outcome.exitCode());
+            return CodingAgentResult.failed(output, outcome.stderr(), outcome.exitCode());
         }
-        return CodingAgentResult.succeeded(outcome.stdout(), outcome.stderr());
+        return CodingAgentResult.succeeded(output, outcome.stderr());
     }
 
     /**
@@ -108,14 +127,14 @@ abstract class AbstractCliCodingAgentAdapter implements CodingAgentPort {
      */
     private CodingAgentContainerRunner.ContainerRunOutcome runWithProvisionRetry(
             CodingAgentCommand command, List<String> argv,
-            CodingAgentContainerRunner.Credential credential) {
+            CodingAgentContainerRunner.Credential credential, StreamReader reader) {
 
         int attempts = Math.max(1, properties.getMaxProvisionAttempts());
         CodingAgentProvisionException last = null;
 
         for (int attempt = 1; attempt <= attempts; attempt++) {
             try {
-                return runner.run(command.workspaceDir(), credential, argv, command.timeout());
+                return runner.run(command.workspaceDir(), credential, argv, command.timeout(), reader);
             } catch (CodingAgentProvisionException e) {
                 last = e;
                 log.warn("코딩 에이전트 컨테이너 준비 실패({}/{}): {}", attempt, attempts, e.getMessage());

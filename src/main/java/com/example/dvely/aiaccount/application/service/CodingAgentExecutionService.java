@@ -1,5 +1,6 @@
 package com.example.dvely.aiaccount.application.service;
 
+import com.example.dvely.agent.application.port.out.CodingAgentActivity;
 import com.example.dvely.agent.application.port.out.CodingAgentCommand;
 import com.example.dvely.agent.application.port.out.CodingAgentResult;
 import com.example.dvely.agent.domain.value.AiProvider;
@@ -9,6 +10,7 @@ import com.example.dvely.aiaccount.domain.model.AiProviderCredential;
 import com.example.dvely.aiaccount.domain.repository.AiProviderCredentialRepository;
 import com.example.dvely.common.exception.AiCredentialNotRegisteredException;
 import java.time.Duration;
+import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -42,7 +44,13 @@ public class CodingAgentExecutionService {
      * @param workspaceDir  absolute host path of the checkout the agent may edit
      */
     public CodingAgentResult run(Long userId, AiProvider provider, String prompt, String workspaceDir) {
-        return run(userId, provider, prompt, workspaceDir, properties.getTimeout());
+        return run(userId, provider, prompt, workspaceDir, properties.getTimeout(), null);
+    }
+
+    /** @param onActivity what the agent does while it runs (#600), or {@code null} to ignore it */
+    public CodingAgentResult run(Long userId, AiProvider provider, String prompt, String workspaceDir,
+                                 Consumer<CodingAgentActivity> onActivity) {
+        return run(userId, provider, prompt, workspaceDir, properties.getTimeout(), onActivity);
     }
 
     public CodingAgentResult run(Long userId,
@@ -50,6 +58,15 @@ public class CodingAgentExecutionService {
                                  String prompt,
                                  String workspaceDir,
                                  Duration timeout) {
+        return run(userId, provider, prompt, workspaceDir, timeout, null);
+    }
+
+    private CodingAgentResult run(Long userId,
+                                  AiProvider provider,
+                                  String prompt,
+                                  String workspaceDir,
+                                  Duration timeout,
+                                  Consumer<CodingAgentActivity> onActivity) {
         if (!provider.isCodingAgent()) {
             throw new IllegalArgumentException("코딩 에이전트 제공자가 아닙니다: " + provider);
         }
@@ -66,7 +83,7 @@ public class CodingAgentExecutionService {
 
         // The plaintext key lives only in this command, whose toString() redacts it.
         CodingAgentCommand command =
-                new CodingAgentCommand(prompt, workspaceDir, credential.getApiKey(), timeout);
+                new CodingAgentCommand(prompt, workspaceDir, credential.getApiKey(), timeout, onActivity);
 
         return router.route(provider).run(command);
     }

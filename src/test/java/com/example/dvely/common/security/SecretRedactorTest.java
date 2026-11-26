@@ -22,6 +22,18 @@ class SecretRedactorTest {
                 .contains("***REDACTED***");
     }
 
+    /** #600: 코딩 에이전트 진행 줄이 명령 첫 줄을 싣는다. 에이전트 환경에는 사용자의 AI 키가 있다 */
+    @Test
+    void redactsAiProviderKeys() {
+        String anthropic = "x-api-key: " + "sk-ant-" + "api03-abcdefghijklmnop_QRSTUV";
+        String openai = "Authorization: " + "sk-" + "proj-" + "abcdefghijklmnopqrstuvwxyz0123456789";
+
+        assertThat(SecretRedactor.redact(anthropic)).doesNotContain("abcdefghijklmnop").contains("***REDACTED***");
+        assertThat(SecretRedactor.redact(openai)).doesNotContain("abcdefghijklmnopqrstuvwxyz").contains("***REDACTED***");
+        // 짧은 sk- 낱말은 그대로 둔다
+        assertThat(SecretRedactor.redact("pip install sk-learn")).isEqualTo("pip install sk-learn");
+    }
+
     @Test
     void redactsAwsAccessKeyId() {
         String text = "aws key: " + "AKIA" + "ABCDEFGHIJKLMNOP";

@@ -1,5 +1,6 @@
 package com.example.dvely.agent.infrastructure.codingagent;
 
+import com.example.dvely.agent.application.port.out.CodingAgentActivity;
 import com.example.dvely.agent.application.port.out.CodingAgentResult;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.docker.ContainerPaths;
@@ -10,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -70,16 +72,23 @@ public class CodingAgentWorkspaceBridge {
      * @throws com.example.dvely.common.limit.UserLimitExceededException when every slot is taken
      */
     public String run(String containerId, Long userId, AiProvider provider, String instruction) {
+        return run(containerId, userId, provider, instruction, null);
+    }
+
+    /** @param onActivity what the agent does while it runs (#600), or {@code null} to ignore it */
+    public String run(String containerId, Long userId, AiProvider provider, String instruction,
+                      Consumer<CodingAgentActivity> onActivity) {
         CodingAgentCapacity.Slot slot = capacity.acquire(userId);
         try {
-            return runHoldingSlot(slot, containerId, userId, provider, instruction);
+            return runHoldingSlot(slot, containerId, userId, provider, instruction, onActivity);
         } finally {
             slot.close();
         }
     }
 
     private String runHoldingSlot(CodingAgentCapacity.Slot slot, String containerId, Long userId,
-                                  AiProvider provider, String instruction) {
+                                  AiProvider provider, String instruction,
+                                  Consumer<CodingAgentActivity> onActivity) {
         Path hostWorkspace = createHostWorkspace();
         try {
             copyOut(containerId, hostWorkspace);
@@ -88,7 +97,7 @@ public class CodingAgentWorkspaceBridge {
             // /workspace/app for it too — the same path every other step in the pipeline uses.
             CodingAgentResult result;
             try {
-                result = executionService.run(userId, provider, prompt(instruction), hostWorkspace.toString());
+                result = executionService.run(userId, provider, prompt(instruction), hostWorkspace.toString(), onActivity);
             } finally {
                 slot.close();
             }
