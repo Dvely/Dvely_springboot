@@ -1025,12 +1025,21 @@ PIN_RESULT payload 는 `[JSON 길이 u32 BE][JSON][잘라 낸 이미지 길이 u
 **PR-6**(같은 것 모두 + 글자 일부, `state.md` §4.80, 마이그레이션 없음)
 
 - 설계와 다르게 한 것
-  - **Android·iOS 의 같은 것은 아직이다.** 웹(기기 공유·프리뷰)만 했다. `scope.js` 쪽은 다음 단위
+  - Android·iOS 의 같은 것은 뒤따른 PR 에서 했다(아래 "PR-6 모바일")
   - 같은 모양은 클래스 없는 맨 `div` 를 모양으로 치지 않는다(아무 `div` 나 같은 것이 된다). `li`·`tr`·`article`·`option`·`dt`·`dd`·`figure` 는 태그만으로 같다
   - **같은 크기로 합친 바깥 노드에서도 센다.** `li > a` 메뉴에서 `a` 는 형제가 없고 `li` 가 같은 것이다(실제 에이전트가 만든 페이지에서 처음엔 토글이 안 떴다)
   - 문장 칸 때문에 사다리가 6칸을 넘으면 가장 바깥 덩어리 칸 하나를 덜어 낸다(화면 칸은 남는다)
   - 뷰어 토글 이름은 `같은 것 N개` → 켜면 `같은 것 N개 모두`. 시트 제목·내 피드백·주인 알림이 `같은 것 N개 모두 · …`
 - 실측: 위 §4.80. 기기 공유 뷰어와 프리뷰(실제 Claude Code)에서 모두 확인
+
+**PR-6 모바일**(Android·iOS 의 같은 것, `state.md` §4.81)
+
+- `scope.js` 의 `buildLadder`·`buildRegion` 이 `nodes`·`sameShape`(플랫폼 규칙)를 받으면 칸마다 `peers` 를 붙인다. 같은 크기로 합친 바깥 노드에서도 센다(웹과 같다)
+- Android: 같은 클래스 + 같은 앱 `resource-id`, 둘 다 없으면 목록(`RecyclerView`·`ListView`·`GridView`) 안의 같은 클래스. `android:id/…` 는 이름으로 치지 않는다
+- iOS: 같은 `AXUniqueId`(+ 같은 종류), 또는 둘 다 `Cell`
+- **설계와 다르게 한 것 — iOS 의 이름 없는 행.** 실제 iOS 26 SwiftUI `List` 의 행은 `Cell` 이 아니라 이름 없는 `Group` 세 겹이었다(행 칸 자체가 사다리에 없다). 그래서 요소 칸에 한해, 위로 5단까지 올라가며 같은 모양(종류·자식 종류·폭)의 형제 행을 찾고, 행마다 같은 자리에 있는 같은 종류의 요소를 같은 것으로 센다(`rowPeers`). 행마다의 「고르기」 셋, 행마다의 제목 셋
+- 실측: 전용 시뮬레이터에 3행 SwiftUI `List` 앱(임시 번들 `dev.qeploy.acme.peers`, 실측 뒤 지움)을 띄워 `axe describe-ui` 트리로 `describeIosPoint` — 「고르기」·「팀」 모두 `peers 3/3`. Android 는 디스크 여유(6.5GB)로 에뮬레이터를 못 띄워 픽스처로만
+- PR-6 때 "웹 textarea 를 짚으면 NO_ELEMENT" 로 적은 것은 실측 좌표가 textarea 바로 위였던 것이다(안을 짚으면 `textarea` 로 잡힌다). 결함이 아니다
 
 ---
 
