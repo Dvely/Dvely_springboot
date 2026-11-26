@@ -79,6 +79,7 @@ public class CodeAgentService {
     private final CodingAgentWorkspaceBridge codingAgentWorkspaceBridge;
     private final ContainerFileWriter     containerFileWriter;
     private final PreviewPinService       previewPinService;
+    private final PreviewPinSourceFinder  previewPinSourceFinder;
 
     private static final String SYSTEM_PROMPT = """
             You are an expert full-stack developer working inside a Docker container (node:20-alpine).
@@ -210,7 +211,7 @@ public class CodeAgentService {
             instruction = withTemplateContext(instruction, seededTemplate.get());
         }
         // 사용자가 프리뷰에서 짚은 곳(§16.6). 계획이 지시를 고쳐 쓰면서 요소 정보를 빠뜨려도 여기서는 빠지지 않는다
-        instruction = withPreviewPins(instruction, taskId);
+        instruction = withPreviewPins(instruction, taskId, containerId);
 
         try {
             // GLM shares OpenAI's loop rather than getting its own: OpenRouter returns
@@ -354,9 +355,12 @@ public class CodeAgentService {
         return prompt.toString();
     }
 
-    /** 태스크를 낳은 사용자 발화에 짚은 곳이 있으면 지시 뒤에 붙인다. 화면 글은 그 블록의 펜스 안에만 있다 */
-    private String withPreviewPins(String instruction, String taskId) {
-        return previewPinService.promptForTask(taskId)
+    /**
+     * 태스크를 낳은 사용자 발화에 짚은 곳이 있으면 지시 뒤에 붙인다. 화면 글은 그 블록의 펜스 안에만 있다. 소스 후보는 이 작업의
+     * 프리뷰 컨테이너 작업 공간에서 찾는다(§16.7) — 기기 공유 짚기처럼 에이전트가 먼저 열어 볼 곳이다.
+     */
+    private String withPreviewPins(String instruction, String taskId, String containerId) {
+        return previewPinService.promptForTask(taskId, places -> previewPinSourceFinder.find(containerId, places))
                 .map(block -> instruction + "\n\n" + block)
                 .orElse(instruction);
     }

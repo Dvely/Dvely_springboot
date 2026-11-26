@@ -2090,6 +2090,14 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - 실측: 전용 시뮬레이터의 3행 SwiftUI `List`(임시 앱, 실측 뒤 지움) → 「고르기」·「팀」 모두 `peers 3/3`. Android 는 픽스처(디스크 여유로 에뮬레이터 못 띄움)
 - 테스트: CLI 425(새 5 — Android 목록 카드·같은 `resource-id`·플랫폼 id 제외, iOS `Cell`·이름 없는 행, 규칙 없으면 세지 않음)
 
+## 4.82 프리뷰 짚기 — 소스 후보 (Issue #575 BE PR-2, 2026-11-26)
+
+설계 §16.7 "소스 후보". 기기 공유 짚기의 정답 파일까지 −61%(11/24 실측)의 바탕이던 소스 후보를 프리뷰 짚기에도 준다. 마이그레이션 없음.
+
+- `PreviewPinSourceFinder`: CODE 단계가 컨테이너를 잡은 뒤 `/workspace/app` 에서 곳마다 id · 고른 칸(문장 칸이면 그 문장) · 컴포넌트 · 긴 클래스 둘 · 글을 찾아 `sourceHints`(곳마다 3개)를 만들고, `PreviewPinService.promptForTask(taskId, hints)` 가 "프리뷰에서 짚은 곳" 블록에 `- 소스 후보:` 로 넣는다. 까닭 `CLASS` 는 프롬프트에 "클래스 이름"
+- 찾는 말은 exec 환경변수로만(셸 주입·로그 노출 없음), 5초, `node_modules`·`dist` 등 제외, 스타일 파일 포함. BusyBox grep 이라 `find -print0 | xargs -0 grep -HnF`
+- 테스트: 단위 4(명령에 값 없음·환경변수 순서, 순위·작업 공간 밖 경로 버림·같은 줄 합침, 문장 칸, 실패하면 후보 없이), Docker 통합 1(실제 node:20-alpine 에서 `index.html:4`·`styles.css:2`, `node_modules` 제외, `$(…)`·백틱·따옴표가 실행되지 않음 — `-Ddocker.it=true`), CODE 지시 테스트
+
 ## Phase 1. 안전한 핵심 흐름 (완료)
 
 1. Deployment/Agent 소유권 검증

@@ -15,6 +15,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 import org.springframework.stereotype.Service;
 
 /**
@@ -117,10 +118,22 @@ public class PreviewPinService {
 
     /** 이 태스크를 낳은 사용자 발화에 붙은 곳을 에이전트용 글로. 없으면 빈 값 */
     public Optional<String> promptForTask(String taskId) {
-        return render(repository.findByTaskId(taskId));
+        return promptForTask(taskId, null);
+    }
+
+    /**
+     * 소스 후보와 함께(설계 §16.7). {@code hints} 는 곳들(①②… 순서)을 받아 곳마다의 후보 {@code {file, line, reason}} 를
+     * 돌려준다 — CODE 단계가 프리뷰 컨테이너의 작업 공간에서 찾는다. 후보는 저장하지 않는다(작업 공간은 바뀐다).
+     */
+    public Optional<String> promptForTask(String taskId, Function<List<JsonNode>, List<List<JsonNode>>> hints) {
+        return render(repository.findByTaskId(taskId), hints);
     }
 
     private Optional<String> render(List<ChatMessagePin> pins) {
+        return render(pins, null);
+    }
+
+    private Optional<String> render(List<ChatMessagePin> pins, Function<List<JsonNode>, List<List<JsonNode>>> hints) {
         if (pins.isEmpty()) {
             return Optional.empty();
         }
@@ -132,7 +145,18 @@ public class PreviewPinService {
                 // 저장할 때 우리가 쓴 JSON 이다. 읽지 못하면 그 곳만 빼고 나머지를 준다
             }
         }
-        return places.isEmpty() ? Optional.empty() : Optional.of(PreviewPinPromptRenderer.render(places));
+        if (places.isEmpty()) {
+            return Optional.empty();
+        }
+        if (hints != null) {
+            List<List<JsonNode>> found = hints.apply(places);
+            for (int i = 0; i < places.size() && found != null && i < found.size(); i++) {
+                if (places.get(i) instanceof ObjectNode place && found.get(i) != null && !found.get(i).isEmpty()) {
+                    place.putArray("sourceHints").addAll(found.get(i));
+                }
+            }
+        }
+        return Optional.of(PreviewPinPromptRenderer.render(places));
     }
 
     /** 게이트웨이 접두({@code [scheme://host]/api/v1/previews/{sid}/{token}}) — 세션 id 와 열람 토큰을 담는다 */

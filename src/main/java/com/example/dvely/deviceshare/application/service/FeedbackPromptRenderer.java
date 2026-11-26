@@ -533,6 +533,7 @@ public final class FeedbackPromptRenderer {
             case "COMPONENT" -> "컴포넌트 이름";
             case "ID" -> "요소 id";
             case "TEXT" -> "보이는 텍스트";
+            case "CLASS" -> "클래스 이름";
             default -> "";
         };
     }
