@@ -2090,6 +2090,17 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - 실측: 전용 시뮬레이터의 3행 SwiftUI `List`(임시 앱, 실측 뒤 지움) → 「고르기」·「팀」 모두 `peers 3/3`. Android 는 픽스처(디스크 여유로 에뮬레이터 못 띄움)
 - 테스트: CLI 425(새 5 — Android 목록 카드·같은 `resource-id`·플랫폼 id 제외, iOS `Cell`·이름 없는 행, 규칙 없으면 세지 않음)
 
+## 4.83 코딩 에이전트 진행 실시간 표시 — Claude Code (Issue #600 PR-1, 2026-11-26)
+
+에이전트가 도는 동안 CODE 단계가 "코드를 만들고 있습니다" 한 줄 뒤로 끝날 때까지 조용하던 것을 고쳤다. 프리뷰에서 짚고 "더 크게" 를 보내면 그 사이 무엇을 읽고 고치는지가 타임라인에 보인다. 마이그레이션 없음, 새 엔드포인트 없음(기존 이벤트 목록·SSE 로 나간다), FE 변경 없음(타임라인이 글 있는 이벤트를 모두 그린다).
+
+- Claude Code argv 에 `--output-format stream-json --verbose`(프로퍼티 기본값·dev·prod yml). 러너 `run(…, stdoutLines)` 가 줄 단위로 넘기고 꼬리 256KiB 만 남긴다
+- `ClaudeStreamReader`(어댑터 쪽): 도구 호출 → `CodingAgentActivity`(READ·EDIT·COMMAND·SEARCH·MESSAGE), 마지막 `result` 글이 답. 맺음말은 진행 줄로 다시 넘기지 않는다. 대상은 키를 가리고 160자
+- `CodingAgentActivityLog` → `TaskStore.appendActivityEvent`: `CODING_*` 이벤트, 지금 단계의 단계 정보, 실행당 60줄(넘으면 `CODING_MORE`), 끝난 뒤 `PREVIEW_STARTING`. `SecretRedactor` 에 Anthropic·OpenAI 키 모양 추가
+- 실측(로컬 BE·FE + 사용자 키, 두 번): "명령 실행 · ls -la /workspace/app" → "파일 고치기 · index.html" → "파일 고치기 · styles.css" 가 2~5초 간격으로 실행 중에 쌓이고, 끝나면 "바뀐 코드로 프리뷰를 띄우고 있습니다". 첫 실행에서 맺음말이 잘린 채 요약 위에 한 번 더 나오는 것을 보고 맺음말은 버리게 고쳤다
+- 남은 것: Codex `exec --json`(PR-2), 세션 이어 가기 실측(PR-3), FE 묶어 보기(Dvely_FE #189)
+- 관찰: 첫 실행에서 계획 모델이 한국어 요청의 지시를 영어로 써서 요약이 영어로 나왔다(두 번째는 한국어). 이번 변경과 무관 — 계획 프롬프트는 같은 언어로 쓰라고 이미 적고 있다
+
 ## 4.82 프리뷰 짚기 — 소스 후보 (Issue #575 BE PR-2, 2026-11-26)
 
 설계 §16.7 "소스 후보". 기기 공유 짚기의 정답 파일까지 −61%(11/24 실측)의 바탕이던 소스 후보를 프리뷰 짚기에도 준다. 마이그레이션 없음.
