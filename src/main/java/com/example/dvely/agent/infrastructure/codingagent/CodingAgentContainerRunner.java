@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import lombok.extern.slf4j.Slf4j;
@@ -125,6 +126,21 @@ public class CodingAgentContainerRunner {
                                    Credential credential,
                                    List<String> argv,
                                    Duration timeout) {
+        return run(hostWorkspaceDir, credential, argv, timeout, null);
+    }
+
+    /**
+     * @param stdoutLines when non-null, gets the agent's stdout one line at a time as it arrives
+     *                    (#600), and the outcome keeps only the last {@link #STREAMED_STDOUT_TAIL}
+     *                    bytes — a streaming CLI echoes every tool result, so its stdout grows
+     *                    with the files it reads and the caller has already seen it line by line.
+     *                    A throwing listener never stops the run
+     */
+    public ContainerRunOutcome run(String hostWorkspaceDir,
+                                   Credential credential,
+                                   List<String> argv,
+                                   Duration timeout,
+                                   Consumer<String> stdoutLines) {
         assertImagePresent();
 
         CodingAgentProperties.Egress egress = properties.getEgress();
@@ -135,7 +151,7 @@ public class CodingAgentContainerRunner {
             proxyId = startEgressProxy(egress, network);
         }
         try {
-            return runInContainer(hostWorkspaceDir, network, credential, argv, timeout);
+            return runInContainer(hostWorkspaceDir, network, credential, argv, timeout, stdoutLines);
         } finally {
             if (proxyId != null) {
                 removeQuietly(proxyId);
@@ -147,23 +163,24 @@ public class CodingAgentContainerRunner {
                                                String network,
                                                Credential credential,
                                                List<String> argv,
-                                               Duration timeout) {
+                                               Duration timeout,
+                                               Consumer<String> stdoutLines) {
         String containerId = createAndStart(hostWorkspaceDir, network);
         try {
             return switch (credential) {
                 case Credential.LoginCommand login -> {
                     ContainerRunOutcome auth =
-                            exec(containerId, login.argv(), login.secret(), null, timeout);
+                            exec(containerId, login.argv(), login.secret(), null, timeout, null);
                     // Failing here rather than running the agent anyway: without a credential the
                     // agent would burn its whole timeout retrying a 401, and the resulting output
                     // would blame the model instead of the missing key.
                     yield (auth.timedOut() || auth.exitCode() != 0)
                             ? auth
-                            : exec(containerId, argv, null, null, timeout);
+                            : exec(containerId, argv, null, null, timeout, stdoutLines);
                 }
                 case Credential.EnvVar env ->
-                        exec(containerId, argv, env.secret(), env.name(), timeout);
-                case null -> exec(containerId, argv, null, null, timeout);
+                        exec(containerId, argv, env.secret(), env.name(), timeout, stdoutLines);
+                case null -> exec(containerId, argv, null, null, timeout, stdoutLines);
             };
         } finally {
             removeQuietly(containerId);
@@ -378,7 +395,8 @@ public class CodingAgentContainerRunner {
                                      List<String> argv,
                                      String secret,
                                      String envName,
-                                     Duration timeout) {
+                                     Duration timeout,
+                                     Consumer<String> stdoutLines) {
         // Only the executable name is logged. argv carries the prompt (which can contain source
         // code) and the secret is staged separately; neither belongs in a log line.
         log.debug("코딩 에이전트 exec: containerId={} cmd={}", containerId, argv.isEmpty() ? "?" : argv.getFirst());
@@ -405,8 +423,9 @@ public class CodingAgentContainerRunner {
                 .withCmd(command.toArray(String[]::new))
                 .exec();
 
-        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        ByteArrayOutputStream stdout = stdoutLines == null ? new ByteArrayOutputStream() : new TailBuffer(STREAMED_STDOUT_TAIL);
         ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+        LineSplitter lines = stdoutLines == null ? null : new LineSplitter(stdoutLines);
 
         boolean completed;
         try {
@@ -422,6 +441,9 @@ public class CodingAgentContainerRunner {
                             } catch (Exception ignored) {
                                 // A failed capture must not abort the run; the exit code still decides.
                             }
+                            if (lines != null && sink == stdout) {
+                                lines.accept(frame.getPayload());
+                            }
                         }
                     })
                     .awaitCompletion(timeout.toMillis(), TimeUnit.MILLISECONDS);
@@ -430,6 +452,9 @@ public class CodingAgentContainerRunner {
             throw new IllegalStateException("코딩 에이전트 실행이 인터럽트되었습니다.", e);
         }
 
+        if (lines != null) {
+            lines.flush();
+        }
         String out = stdout.toString(StandardCharsets.UTF_8);
         String err = stderr.toString(StandardCharsets.UTF_8);
 
@@ -487,6 +512,107 @@ public class CodingAgentContainerRunner {
     }
 
     /** One container run's raw outcome, before it is interpreted as a coding-agent result. */
+    /** How much of a streamed stdout the outcome keeps — enough for a failure message, not a transcript. */
+    static final int STREAMED_STDOUT_TAIL = 256 * 1024;
+
+    /**
+     * Cuts a byte stream into UTF-8 lines. A line is only decoded once its newline arrives, so a
+     * multi-byte character split across two frames is never torn. A line longer than
+     * {@link #MAX_LINE} is skipped whole rather than held: the stream-json event that carries a
+     * large file's contents is a tool result, which the listener does not need.
+     */
+    static final class LineSplitter {
+
+        static final int MAX_LINE = 1024 * 1024;
+
+        private final Consumer<String> listener;
+        private final ByteArrayOutputStream line = new ByteArrayOutputStream();
+        private boolean skipping;
+
+        LineSplitter(Consumer<String> listener) {
+            this.listener = listener;
+        }
+
+        void accept(byte[] payload) {
+            if (payload == null) {
+                return;
+            }
+            int start = 0;
+            for (int i = 0; i < payload.length; i++) {
+                if (payload[i] == '\n') {
+                    append(payload, start, i - start);
+                    emit();
+                    start = i + 1;
+                }
+            }
+            append(payload, start, payload.length - start);
+        }
+
+        /** The last line when the stream ends without a newline. */
+        void flush() {
+            emit();
+        }
+
+        private void append(byte[] payload, int offset, int length) {
+            if (skipping || length <= 0) {
+                return;
+            }
+            if (line.size() + length > MAX_LINE) {
+                skipping = true;
+                line.reset();
+                return;
+            }
+            line.write(payload, offset, length);
+        }
+
+        private void emit() {
+            boolean skipped = skipping;
+            skipping = false;
+            if (skipped || line.size() == 0) {
+                line.reset();
+                return;
+            }
+            String text = line.toString(StandardCharsets.UTF_8);
+            line.reset();
+            try {
+                listener.accept(text);
+            } catch (RuntimeException e) {
+                // Progress is a view of the run, not part of it: a listener bug must not kill the agent.
+                log.debug("코딩 에이전트 출력 줄 처리 실패(실행은 계속): {}", e.toString());
+            }
+        }
+    }
+
+    /** Keeps the last {@code capacity} bytes written; earlier bytes are dropped. */
+    static final class TailBuffer extends ByteArrayOutputStream {
+
+        private final int capacity;
+
+        TailBuffer(int capacity) {
+            this.capacity = capacity;
+        }
+
+        @Override
+        public synchronized void write(byte[] b, int off, int len) {
+            if (len >= capacity) {
+                reset();
+                super.write(b, off + len - capacity, capacity);
+                return;
+            }
+            int overflow = count + len - capacity;
+            if (overflow > 0) {
+                System.arraycopy(buf, overflow, buf, 0, count - overflow);
+                count -= overflow;
+            }
+            super.write(b, off, len);
+        }
+
+        @Override
+        public synchronized void write(int b) {
+            write(new byte[] {(byte) b}, 0, 1);
+        }
+    }
+
     public record ContainerRunOutcome(int exitCode, String stdout, String stderr, boolean timedOut) {
     }
 }

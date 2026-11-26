@@ -1,5 +1,6 @@
 package com.example.dvely.agent.infrastructure.codingagent;
 
+import com.example.dvely.agent.application.port.out.CodingAgentCommand;
 import com.example.dvely.agent.domain.value.AiProvider;
 import java.util.List;
 import org.springframework.stereotype.Component;
@@ -62,5 +63,26 @@ public class ClaudeCodeCliAdapter extends AbstractCliCodingAgentAdapter {
     @Override
     protected String cliName() {
         return "Claude Code";
+    }
+
+    /**
+     * The default argv asks for {@code --output-format stream-json} (#600), so stdout is one JSON
+     * event per line: the reader turns tool calls into activity and keeps the closing
+     * {@code result} text as the answer, which is what plain text output used to print.
+     */
+    @Override
+    protected StreamReader streamReader(CodingAgentCommand command) {
+        ClaudeStreamReader reader = new ClaudeStreamReader(command.onActivity(), command.apiKey());
+        return new StreamReader() {
+            @Override
+            public void accept(String line) {
+                reader.accept(line);
+            }
+
+            @Override
+            public String answer(String stdout) {
+                return reader.answer(stdout);
+            }
+        };
     }
 }

@@ -112,7 +112,9 @@ public class CodingAgentProperties {
      *
      * A -p run with no permission mode denies every write, so acceptEdits lets it edit files and run
      * filesystem commands inside the working directory while other shell commands stay denied, and
-     * --permission-prompts none tells it not to retry what was denied. Turns are capped here and
+     * --permission-prompts none tells it not to retry what was denied. --output-format stream-json
+     * prints one JSON event per line so the run's progress can be shown while it runs (#600); the
+     * CLI refuses it in print mode without --verbose, which adds nothing else to stdout. Turns are capped here and
      * estimated spend by maxBudgetUsd, because the spend is the user's own key.
      *
      * Measured against the version pinned in docker/coding-agent/Dockerfile. The dev and prod
@@ -124,7 +126,9 @@ public class CodingAgentProperties {
             "--permission-prompts", "none",
             "--setting-sources", "user",
             "--max-turns", "40",
-            "--no-session-persistence"), "3");
+            "--no-session-persistence",
+            "--output-format", "stream-json",
+            "--verbose"), "3");
 
     /**
      * {@code codex exec} is Codex's non-interactive mode, preceded by a login step because the CLI

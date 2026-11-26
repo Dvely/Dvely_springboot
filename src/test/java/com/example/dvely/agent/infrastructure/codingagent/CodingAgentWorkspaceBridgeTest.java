@@ -3,6 +3,7 @@ package com.example.dvely.agent.infrastructure.codingagent;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -19,6 +20,7 @@ import com.example.dvely.common.limit.GlobalLimitProperties;
 import com.example.dvely.common.limit.UserLimitExceededException;
 import com.example.dvely.common.response.ErrorCode;
 import java.nio.file.Path;
+import java.util.function.Consumer;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,7 +53,7 @@ class CodingAgentWorkspaceBridgeTest {
     }
 
     private CodingAgentResult runWith(CodingAgentResult result) {
-        when(executionService.run(any(), any(), anyString(), anyString())).thenReturn(result);
+        when(executionService.run(any(), any(), anyString(), anyString(), nullable(Consumer.class))).thenReturn(result);
         return result;
     }
 
@@ -74,7 +76,7 @@ class CodingAgentWorkspaceBridgeTest {
     @Test
     void holdsTheSlotWhileTheAgentRunsAndGivesItBackBeforeTheReinstall() {
         int[] inUseDuringRun = new int[1];
-        when(executionService.run(any(), any(), anyString(), anyString())).thenAnswer(invocation -> {
+        when(executionService.run(any(), any(), anyString(), anyString(), nullable(Consumer.class))).thenAnswer(invocation -> {
             inUseDuringRun[0] = capacity.inUse();
             return CodingAgentResult.succeeded("done", "");
         });
@@ -94,7 +96,7 @@ class CodingAgentWorkspaceBridgeTest {
 
     @Test
     void givesTheSlotBackWhenTheAgentFailsOrThrows() {
-        when(executionService.run(any(), any(), anyString(), anyString()))
+        when(executionService.run(any(), any(), anyString(), anyString(), nullable(Consumer.class)))
                 .thenReturn(CodingAgentResult.failed("", "boom", 1))
                 .thenThrow(new IllegalStateException("docker"))
                 .thenReturn(CodingAgentResult.succeeded("done", ""));
@@ -118,7 +120,7 @@ class CodingAgentWorkspaceBridgeTest {
 
         assertThat(summary).isEqualTo("할 일 목록을 추가했습니다.");
         ArgumentCaptor<String> workspace = ArgumentCaptor.forClass(String.class);
-        verify(executionService).run(eq(7L), eq(AiProvider.CODEX), anyString(), workspace.capture());
+        verify(executionService).run(eq(7L), eq(AiProvider.CODEX), anyString(), workspace.capture(), nullable(Consumer.class));
         // 에이전트 컨테이너가 이 디렉터리를 /workspace 로 마운트하므로, 프로젝트는 그쪽에서도
         // /workspace/app 이 된다 — 파이프라인의 나머지가 쓰는 경로와 같다.
         assertThat(workspace.getValue()).isNotBlank();
@@ -131,7 +133,7 @@ class CodingAgentWorkspaceBridgeTest {
         bridge.run("container-1", 7L, AiProvider.CODEX, "버튼 색을 바꿔줘");
 
         ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
-        verify(executionService).run(any(), any(), prompt.capture(), anyString());
+        verify(executionService).run(any(), any(), prompt.capture(), anyString(), nullable(Consumer.class));
         // 자유 형식 프롬프트라, 파이프라인이 의존하는 약속은 여기 적지 않으면 성립하지 않는다.
         assertThat(prompt.getValue()).contains(ContainerPaths.APP_DIR);
         assertThat(prompt.getValue()).contains("버튼 색을 바꿔줘");

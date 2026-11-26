@@ -2,6 +2,7 @@ package com.example.dvely.agent.application.port.out;
 
 import java.time.Duration;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /**
  * One headless run of an official coding-agent CLI (Claude Code, Codex).
@@ -16,13 +17,23 @@ import java.util.Objects;
  *                     the container at the configured workspace mount path
  * @param apiKey       the end user's own vendor key (BYOK), injected as an env var by the adapter
  * @param timeout      hard wall-clock bound; the adapter kills the process when it elapses
+ * @param onActivity   called while the agent runs, once per thing it does (#600); an adapter whose
+ *                     CLI streams nothing never calls it. Called on the container stream's thread,
+ *                     so it must not throw and must not block for long
  */
 public record CodingAgentCommand(
         String prompt,
         String workspaceDir,
         String apiKey,
-        Duration timeout
+        Duration timeout,
+        Consumer<CodingAgentActivity> onActivity
 ) {
+
+    private static final Consumer<CodingAgentActivity> IGNORE = activity -> { };
+
+    public CodingAgentCommand(String prompt, String workspaceDir, String apiKey, Duration timeout) {
+        this(prompt, workspaceDir, apiKey, timeout, null);
+    }
 
     public CodingAgentCommand {
         if (prompt == null || prompt.isBlank()) {
@@ -38,6 +49,7 @@ public record CodingAgentCommand(
         if (timeout.isNegative() || timeout.isZero()) {
             throw new IllegalArgumentException("timeout은 0보다 커야 합니다.");
         }
+        onActivity = onActivity == null ? IGNORE : onActivity;
     }
 
     @Override

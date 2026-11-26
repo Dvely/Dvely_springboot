@@ -145,6 +145,15 @@ CREATE TABLE ai_provider_credentials (
 
 DoD: 각 PR `./gradlew test` 통과 + FE 정본 repo(`/Users/otter/Dvely_FE_test`) 관련 플로우 확인.
 
+## 진행 표시 (#600 PR-1, 2026-11-26)
+
+- Claude Code 를 `--output-format stream-json --verbose` 로 돌린다(기본 argv, dev·prod yml 도 같이). `-p` 에서 stream-json 은 `--verbose` 없이는 거절된다
+- 러너가 stdout 을 줄 단위로 넘기고(`LineSplitter`, 1MiB 넘는 줄 — 큰 파일을 실은 도구 결과 — 은 건너뜀), 스트리밍할 때는 stdout 꼬리 256KiB 만 남긴다(도구 결과가 다 실려 커진다)
+- `ClaudeStreamReader`: `assistant` 줄의 `tool_use` 를 한 일로(Read → 읽기, Edit·Write·MultiEdit → 고치기, Bash → 명령 첫 줄, Grep·Glob → 찾기), `text` 는 다음 도구 호출이 오면 중간 말로 넘기고 `result` 가 오면 버린다(맺음말은 요약으로 따로 보인다). 마지막 `result` 줄의 `result` 가 답 — 예전 텍스트 출력과 같은 글. 파일 내용·도구 결과(`user` 줄)는 싣지 않는다. 대상은 실행의 키를 그대로 가리고 `SecretRedactor`(AI 키 모양 추가)도 거친다
+- `CodingAgentActivityLog` 가 한 일을 태스크 이벤트(`CODING_*`)로 남긴다. 지금 단계 정보를 달고, 실행당 60줄, 바로 앞과 같은 줄은 생략. 실패해도 실행은 계속. 끝난 뒤 `PREVIEW_STARTING` 한 줄
+- 모양은 고정 판 2.1.316 에서 찍어 확인했다(`--bare` 의 도구는 Bash·Edit·Read). 실측: 로컬 BE·FE + 사용자 키로 두 번 — 진행 줄이 실행 중 2~5초 간격으로 쌓이고 FE 타임라인이 고치지 않고 그린다
+- Codex(`exec --json`)는 PR-2, 세션 이어 가기는 PR-3
+
 ## 향후 (현재 범위 밖)
 
 - **변형 B — 클라이언트측 실행:** 사용자 키를 브라우저에만 보관하고 확장(MV3)이 공식 API를 호출한 뒤 결과를 WebSocket으로 컨테이너에 토스. 키를 서버에 두지 않는 게 유일한 이점, 복잡도↑. 키 서버저장을 꺼리는 사용자 요구가 생기면 별도 단위로 검토.

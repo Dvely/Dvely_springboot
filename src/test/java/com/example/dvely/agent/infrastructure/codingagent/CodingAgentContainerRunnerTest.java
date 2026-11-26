@@ -253,6 +253,22 @@ class CodingAgentContainerRunnerTest {
         assertThat(outcome.timedOut()).isFalse();
     }
 
+    /** #600: 도는 동안 stdout 을 줄 단위로 넘긴다. stderr 는 넘기지 않고, 끝에 줄바꿈이 없는 마지막 줄도 넘긴다 */
+    @Test
+    void handsStdoutLinesToTheListenerAsTheyArrive() {
+        stubImagePresent();
+        stubContainerLifecycle();
+        stubExec(true, 0, "{\"type\":\"system\"}\n{\"type\":\"result\",\"result\":\"끝\"}", "경고");
+        java.util.List<String> lines = new java.util.ArrayList<>();
+
+        ContainerRunOutcome outcome = runner.run("/host/checkout", null, List.of("claude", "-p", "hi"),
+                Duration.ofSeconds(5), lines::add);
+
+        assertThat(lines).containsExactly("{\"type\":\"system\"}", "{\"type\":\"result\",\"result\":\"끝\"}");
+        assertThat(outcome.stdout()).endsWith("\"끝\"}");
+        assertThat(outcome.stderr()).isEqualTo("경고");
+    }
+
     @Test
     void reportsATimeoutWhenTheExecNeverCompletes() {
         stubImagePresent();

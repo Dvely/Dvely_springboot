@@ -13,7 +13,8 @@
 - 2026-11-26(새벽): **프리뷰 짚기를 실제 Claude Code(사용자 키, 로컬)로 끝까지 확인했고, 짚기 범위 PR-6(같은 것 모두 · 고칠 글)을 웹·서버·뷰어·프리뷰에 넣었다(#694).** 마이그레이션 없음
   - 실측: 「저장」 짚고 "① 버튼만 더 크게" → `styles.css` 에 `#profile-form .actions .btn-primary` 규칙 하나(18초), 메뉴 「주문」 `같은 것 3개 모두` + "모두 굵게" → 공통 규칙 `.main-nav a` 만(12초). 로컬에서 에이전트를 돌리는 우회(이미지·2단 중계·세션 잇기)는 메모리 `preview-pin-server-preview`
   - 프리뷰 짚기 소스 후보(§4.82, BE PR-2): CODE 직전 프리뷰 컨테이너에서 id·클래스·글을 찾아 "소스 후보" 로. BusyBox grep 함정
-  - PR-6 상세 `state.md` §4.80(#708·Dvely_FE #219 병합). Android·iOS 같은 것은 §4.81(iOS SwiftUI 의 이름 없는 행은 행마다 같은 자리 요소로 센다). 웹 textarea `NO_ELEMENT` 는 실측 좌표 실수였다. **다음**: 모바일 PR 병합(사용자 승인). A1 자리(재시도 계속)
+  - PR-6 상세 `state.md` §4.80(#708·Dvely_FE #219 병합). Android·iOS 같은 것은 §4.81(iOS SwiftUI 의 이름 없는 행은 행마다 같은 자리 요소로 센다, #709 병합). 웹 textarea `NO_ELEMENT` 는 실측 좌표 실수였다
+  - 소스 후보 #710 병합(e68e8346). **코딩 에이전트 진행 실시간 표시(#600 PR-1, §4.83)**: Claude Code stream-json → `CODING_*` 태스크 이벤트 → 기존 SSE·타임라인. 사용자 키로 로컬 실측 두 번. **다음**: PR 병합(사용자 승인). Codex 스트림(PR-2)·FE 묶어 보기(Dvely_FE #189)는 그 뒤. A1 자리(재시도 계속)
 
 - 2026-11-26: **졸업작품 경진대회 예선 통과 → 12/1 본선. 본선 전 추가 개발로 "서버 프리뷰에서 짚기"(#575 · Dvely_FE #211)를 시작했다.** 설계 `docs/device-preview-share-design.md` §16. Flyway **V78**(머지 직전 번호 확인)
   - **방향**: #576(프리뷰 전용 오리진)을 기다리지 않는다. 지금의 CSP sandbox 문서에 게이트웨이가 짚기 브리지를 넣고(프리뷰 코드와 같은 권한), FE 는 `event.source` 로, 서버는 `PinResultSanitizer` 로, 프롬프트는 펜스로 결과를 데이터로만 다룬다(§16.2)

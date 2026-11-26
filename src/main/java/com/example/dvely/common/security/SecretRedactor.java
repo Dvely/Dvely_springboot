@@ -23,6 +23,9 @@ public final class SecretRedactor {
                     + "|xox[baprs]-[A-Za-z0-9-]{10,}"
                     + "|eyJ[A-Za-z0-9._-]{20,}"
                     + "|(?i:bearer\\s+\\S{16,})"
+                    // AI 제공자 키(BYOK). 코딩 에이전트의 진행 줄(#600)이 명령 첫 줄을 싣는다
+                    + "|sk-ant-[A-Za-z0-9_-]{16,}"
+                    + "|sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}"
     );
     private static final String REDACTED = "***REDACTED***";
 

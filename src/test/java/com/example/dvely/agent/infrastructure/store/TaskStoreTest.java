@@ -566,4 +566,34 @@ class TaskStoreTest {
                 "task-1", "STEP_STARTED", TaskStatus.RUNNING, "코드를 만들고 있습니다", 1, 1, "CODE"))
                 .doesNotThrowAnyException();
     }
+
+    /** #600: 코딩 에이전트의 진행 줄은 지금 단계의 단계 정보를 그대로 단다 — 단계 막대·아이콘이 그 단계에 머문다 */
+    @Test
+    void activityEventsTakeTheLatestStepAndLeaveTheStatusAlone() {
+        taskStore.save(task(TaskStatus.RUNNING));
+        when(eventRepository.findFirstByTaskIdAndStepIndexIsNotNullOrderByIdDesc("task-1")).thenReturn(Optional.of(
+                new AgentRunEventEntity("task-1", "STEP_STARTED", TaskStatus.RUNNING, "코드를 만들고 있습니다 (2/3)", 2, 3, "CODE")));
+
+        taskStore.appendActivityEvent("task-1", "CODING_EDIT", "파일 고치기 · styles.css");
+
+        assertThat(taskStore.getOwned("task-1", 1L).status()).isEqualTo(TaskStatus.RUNNING);
+        ArgumentCaptor<AgentRunEventEntity> captor = ArgumentCaptor.forClass(AgentRunEventEntity.class);
+        verify(eventRepository, atLeastOnce()).save(captor.capture());
+        AgentRunEventEntity saved = captor.getAllValues().getLast();
+        assertThat(saved.getType()).isEqualTo("CODING_EDIT");
+        assertThat(saved.getMessage()).isEqualTo("파일 고치기 · styles.css");
+        assertThat(saved.getStatus()).isEqualTo("RUNNING");
+        assertThat(saved.getStepIndex()).isEqualTo(2);
+        assertThat(saved.getStepTotal()).isEqualTo(3);
+        assertThat(saved.getAgentType()).isEqualTo("CODE");
+    }
+
+    @Test
+    void aFailedActivityEventDoesNotBreakTheRun() {
+        when(eventRepository.findFirstByTaskIdAndStepIndexIsNotNullOrderByIdDesc("task-1"))
+                .thenThrow(new RuntimeException("DB down"));
+
+        assertThatCode(() -> taskStore.appendActivityEvent("task-1", "CODING_READ", "파일 읽기 · a.css"))
+                .doesNotThrowAnyException();
+    }
 }

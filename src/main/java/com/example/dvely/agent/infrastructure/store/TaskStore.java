@@ -893,6 +893,26 @@ public class TaskStore {
         }
     }
 
+    /**
+     * 코딩 에이전트가 도는 동안 한 일 한 줄(#600). 태스크 상태는 건드리지 않고, 가장 최근 단계 이벤트의 단계 정보를
+     * 그대로 달아 화면의 단계 막대·아이콘이 지금 단계에 머물게 한다.
+     *
+     * <p>{@link #appendStepEvent} 처럼 실패해도 작업을 멈추지 않는다. 컨테이너 출력 스레드에서 불린다.</p>
+     */
+    @Transactional
+    public void appendActivityEvent(String taskId, String type, String message) {
+        try {
+            AgentRunEventEntity step = eventRepository.findFirstByTaskIdAndStepIndexIsNotNullOrderByIdDesc(taskId).orElse(null);
+            eventRepository.save(new AgentRunEventEntity(taskId, type, TaskStatus.RUNNING, message,
+                    step == null ? null : step.getStepIndex(),
+                    step == null ? null : step.getStepTotal(),
+                    step == null ? null : step.getAgentType()));
+            signalEventAppended(taskId);
+        } catch (RuntimeException e) {
+            log.warn("코딩 에이전트 진행 이벤트 적재 실패(작업은 계속): taskId={} type={}", taskId, type, e);
+        }
+    }
+
     private String writePlan(AgentPlan plan) {
         try {
             return objectMapper.writeValueAsString(plan);
