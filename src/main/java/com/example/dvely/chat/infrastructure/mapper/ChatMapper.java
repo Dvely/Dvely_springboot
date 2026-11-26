@@ -49,7 +49,7 @@ public class ChatMapper {
         }
         // 빈 자리(null)도 넘긴다 — 번호(①②)가 밀리지 않게, 서버가 그 자리를 형식 오류로 거절한다
         return pins.stream()
-                .map(pin -> pin == null ? new PreviewPinInput(null, null) : new PreviewPinInput(pin.result(), pin.scope()))
+                .map(pin -> pin == null ? new PreviewPinInput(null, null) : new PreviewPinInput(pin.result(), pin.scope(), pin.peers()))
                 .toList();
     }
 }

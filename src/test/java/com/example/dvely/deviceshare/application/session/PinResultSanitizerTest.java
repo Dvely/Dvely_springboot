@@ -251,6 +251,58 @@ class PinResultSanitizerTest {
         assertThat(PinResultSanitizer.groupWord("")).isEqualTo("덩어리");
     }
 
+    /** §15.3: 같은 것은 요소·덩어리·컴포넌트 칸에만, 둘 이상일 때만, 테두리는 20개까지 화면 비율로 */
+    @Test
+    void 같은_것은_칸마다_수와_테두리만_남기고_하나뿐이면_버린다() throws Exception {
+        StringBuilder twentyFive = new StringBuilder();
+        for (int i = 0; i < 25; i++) {
+            twentyFive.append(i == 0 ? "" : ",").append("{\"x\":0.1,\"y\":0.1,\"w\":0.1,\"h\":0.1}");
+        }
+        PinResolution r = sanitizer.sanitize(json.readTree("""
+                {"probeId":"p3","ok":true,"element":{"type":"button","text":"고르기"},"defaultScope":0,
+                 "scopes":[{"kind":"element","type":"button","bounds":{"x":0.1,"y":0.1,"w":0.1,"h":0.1},"peers":{"count":1,"bounds":[]}},
+                           {"kind":"group","type":"li","bounds":{"x":0,"y":0,"w":0.3,"h":0.3},
+                            "peers":{"count":30,"bounds":[%s,{"x":"a"}],"names":["x"]}},
+                           {"kind":"screen","bounds":{"x":0,"y":0,"w":1,"h":1},"peers":{"count":9,"bounds":[]}}]}
+                """.formatted(twentyFive))).orElseThrow();
+
+        JsonNode scopes = r.description().path("scopes");
+        assertThat(scopes.get(0).has("peers")).isFalse();
+        assertThat(scopes.get(1).path("peers").path("count").asInt()).isEqualTo(30);
+        assertThat(scopes.get(1).path("peers").path("bounds")).hasSize(20);
+        assertThat(scopes.get(1).path("peers").has("names")).isFalse();
+        assertThat(scopes.get(2).has("peers")).isFalse();
+    }
+
+    /** §15.7: 문장 칸의 글은 고칠 글 그 자체라 60자로 자르지 않는다(200자) */
+    @Test
+    void 문장_칸은_글을_200자까지_둔다() throws Exception {
+        String sentence = "가".repeat(150);
+        PinResolution r = sanitizer.sanitize(json.readTree("""
+                {"probeId":"p4","ok":true,"element":{"type":"p","text":"x"},"defaultScope":1,
+                 "scopes":[{"kind":"text","type":"text","text":"%s","bounds":{"x":0.1,"y":0.1,"w":0.3,"h":0.05}},
+                           {"kind":"element","type":"p","text":"%s","bounds":{"x":0,"y":0.1,"w":0.8,"h":0.05}},
+                           {"kind":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}]}
+                """.formatted(sentence, sentence))).orElseThrow();
+
+        assertThat(r.description().path("scopes").get(0).path("text").asText()).hasSize(150);
+        assertThat(r.description().path("scopes").get(1).path("text").asText()).hasSize(60);
+        assertThat(r.description().path("defaultScope").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void 같은_것_모두를_고른_곳의_이름은_개수를_앞에_단다() throws Exception {
+        JsonNode description = json.readTree("""
+                {"element":{"type":"button","text":"고르기"},"scope":1,"peers":true,
+                 "scopes":[{"kind":"element","type":"button","bounds":{"x":0,"y":0,"w":0.1,"h":0.1}},
+                           {"kind":"group","type":"li","id":"plan","bounds":{"x":0,"y":0,"w":0.3,"h":0.3},"peers":{"count":3,"bounds":[]}}]}
+                """);
+
+        assertThat(PinResultSanitizer.placeLabel(description)).isEqualTo("같은 것 3개 모두 · 항목 #plan");
+        ((com.fasterxml.jackson.databind.node.ObjectNode) description).put("peers", false);
+        assertThat(PinResultSanitizer.placeLabel(description)).isEqualTo("항목 #plan");
+    }
+
     @Test
     void 여러_곳이면_첫_곳의_이름과_개수로_부르고_곳마다_고른_칸이_있다() throws Exception {
         com.fasterxml.jackson.databind.JsonNode description = new ObjectMapper().readTree("""

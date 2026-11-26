@@ -243,6 +243,10 @@ export function inspectPoint(args) {
     }
   };
   const meaningful = (a) => Boolean(componentAt(a) || GROUP.test(a.localName) || a.getAttribute('role') || stableId(a.id));
+  // The node each step stands for, to count its look-alikes (§15.3 peers) once the ladder is built,
+  // and the same-size nodes merged into it: in `li > a` the links have no look-alikes, their items do.
+  const nodeOf = new Map();
+  const mergedOf = new Map();
   // Two nodes with nearly the same box are one step, named by the most telling of them: a
   // component name over a stable id over a bare tag. The step keeps the inner node's type, so a
   // `<form id="profile">` that `ProfileForm` draws reads "form · ProfileForm". The innermost
@@ -285,15 +289,109 @@ export function inspectPoint(args) {
       const last = steps[steps.length - 1];
       const measured = last.bounds && last.kind !== 'region';
       if (measured && alike(area, areaOf(last.bounds))) {
+        // The step's look-alikes are counted on the node its component drew.
+        if (name && !last.component) nodeOf.set(last, a);
+        if (!mergedOf.has(last)) mergedOf.set(last, []);
+        mergedOf.get(last).push(a);
         merge(last, step);
         continue;
       }
       if (region && measured && area < areaOf(last.bounds)) continue;
       if (steps.length >= L.scopes - 1) break;
+      nodeOf.set(step, a);
       steps.push(step);
     }
   };
   const screenStep = () => ({ kind: 'screen', type: 'screen', bounds: { x: 0, y: 0, w: 1, h: 1 } });
+
+  // ── the same thing, all of them (§15.3, case 3) ─────────────────────────────
+  // A sibling looks the same when the same component drew it, or — without one — when it has the same
+  // tag and the same stable classes. A bare `div` looks like every other bare `div`: that is no shape.
+  const LISTY = /^(li|tr|article|option|dt|dd|figure)$/;
+  const shapeOf = (e) => {
+    const classes = Array.from(e.classList || []).filter(stableClass).sort().slice(0, 3);
+    return classes.length || LISTY.test(e.localName) ? e.localName + '.' + classes.join('.') : null;
+  };
+  const peersOf = (node, component) => {
+    const parent = node && node.parentElement;
+    if (!parent) return null;
+    const shape = component ? null : shapeOf(node);
+    if (!component && !shape) return null;
+    const kids = parent.children || [];
+    let count = 0;
+    const bounds = [];
+    for (let i = 0; i < kids.length && i < 500; i++) {
+      const k = kids[i];
+      if (!k || k.nodeType !== 1) continue;
+      if (component ? componentAt(k) !== component : shapeOf(k) !== shape) continue;
+      count++;
+      const b = bounds.length < 20 ? boxOf(k) : null;
+      if (b) bounds.push(b);
+    }
+    return count >= 2 ? { count, bounds } : null;
+  };
+  const addPeers = (steps, start) => {
+    for (let i = 0; i < steps.length; i++) {
+      if (clock() - start > BUDGET_MS) break;
+      const s = steps[i];
+      if (s.kind !== 'element' && s.kind !== 'group' && s.kind !== 'component') continue;
+      let peers = peersOf(nodeOf.get(s), s.component || null);
+      const outer = mergedOf.get(s) || [];
+      for (let j = 0; !peers && j < outer.length; j++) peers = peersOf(outer[j], null);
+      if (peers) s.peers = peers;
+    }
+  };
+
+  // ── a sentence under the point (§15.7, case 8) ──────────────────────────────
+  // From the text node under the point only, cut at sentence ends. Never inside a field someone types
+  // into. A caret snaps to the nearest text even off it, so only a point on the sentence's own lines counts.
+  const SENTENCE_END = /[.!?。！？\n]/;
+  const sentenceAt = (x, y, within) => {
+    let node = null;
+    let offset = 0;
+    if (typeof document.caretPositionFromPoint === 'function') {
+      const p = document.caretPositionFromPoint(x, y);
+      if (p) {
+        node = p.offsetNode;
+        offset = p.offset;
+      }
+    } else if (typeof document.caretRangeFromPoint === 'function') {
+      const r = document.caretRangeFromPoint(x, y);
+      if (r) {
+        node = r.startContainer;
+        offset = r.startOffset;
+      }
+    }
+    if (!node || node.nodeType !== 3 || !within || !within.contains || !within.contains(node)) return null;
+    const host = node.parentElement;
+    if (!host || host.isContentEditable || (host.closest && host.closest('input,textarea,select,[contenteditable]'))) return null;
+    const data = String(node.data || '');
+    let s = Math.min(Math.max(0, offset), data.length);
+    let e = s;
+    while (s > 0 && !SENTENCE_END.test(data[s - 1])) s--;
+    while (e < data.length && !SENTENCE_END.test(data[e])) e++;
+    if (e < data.length && data[e] !== '\n') e++;
+    while (s < e && /\s/.test(data[s])) s++;
+    while (e > s && /\s/.test(data[e - 1])) e--;
+    if (e <= s) return null;
+    const range = document.createRange();
+    range.setStart(node, s);
+    range.setEnd(node, e);
+    const lines = range.getClientRects();
+    let on = false;
+    for (let i = 0; i < lines.length && !on; i++) {
+      const r = lines[i];
+      on = x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    }
+    if (!on) return null;
+    const r = range.getBoundingClientRect();
+    const l = Math.max(0, r.left);
+    const t = Math.max(0, r.top);
+    const rr = Math.min(W, r.right);
+    const b = Math.min(H, r.bottom);
+    const text = fold(data.slice(s, e), L.text);
+    return text && rr > l && b > t ? { kind: 'text', type: 'text', text, bounds: { x: l / W, y: t / H, w: (rr - l) / W, h: (b - t) / H } } : null;
+  };
 
   // ── what is in an area, and around an empty spot (§15.4) ─────────────────────
   // Boxes here are CSS pixels of the viewport, `{x, y, w, h}`.
@@ -525,6 +623,7 @@ export function inspectPoint(args) {
           break;
         }
       }
+      addPeers(steps, start);
       steps.push(screenStep());
       out.scopes = steps;
       out.defaultScope = 0;
@@ -578,10 +677,26 @@ export function inspectPoint(args) {
     if (own) first.component = own;
     if (element.bounds) first.bounds = element.bounds;
     const steps = [first];
+    nodeOf.set(first, el);
     climb(steps, up(el), start, false);
+    addPeers(steps, start);
     steps.push(screenStep());
-    out.scopes = steps;
-    out.defaultScope = 0;
+    // §15.7: the sentence under the point is one step narrower than the element. The element stays the
+    // default; the ladder keeps its length, giving up its widest container step for it.
+    let sentence = null;
+    try {
+      sentence = sentenceAt(px, py, el);
+    } catch (e) {
+      sentence = null;
+    }
+    if (sentence) {
+      if (steps.length >= L.scopes) steps.splice(steps.length - 2, 1);
+      out.scopes = [sentence].concat(steps);
+      out.defaultScope = 1;
+    } else {
+      out.scopes = steps;
+      out.defaultScope = 0;
+    }
   } catch (e) {
     // The device side falls back to the element and the screen.
   }
@@ -679,6 +794,12 @@ export async function resolveWebPin({ page, probe, project, origin, screen = nul
 
   const sourceHints = await findHints({ project, components, element }).catch(() => []);
   const rect = cleanRect(raw.rect);
+  // §15.7: a sentence step, when the page found one, comes before the element step; the element stays the default.
+  const rawScopes = Array.isArray(raw.scopes) ? raw.scopes : [];
+  const sentence = cleanSentence(rawScopes[0]);
+  const ladder = sentence ? rawScopes.slice(1) : rawScopes;
+  const scopes = cleanScopes(ladder, elementStep(ladder, element));
+  if (sentence && scopes.length >= LIMIT.scopes) scopes.splice(scopes.length - 2, 1);
   const result = {
     probeId: probe.probeId,
     ok: true,
@@ -688,8 +809,8 @@ export async function resolveWebPin({ page, probe, project, origin, screen = nul
     ancestors,
     components,
     sourceHints,
-    scopes: cleanScopes(raw.scopes, elementStep(raw.scopes, element)),
-    defaultScope: 0,
+    scopes: sentence ? [sentence, ...scopes] : scopes,
+    defaultScope: sentence ? 1 : 0,
   };
   const area = rect && view ? padded(rect, view) : view ? spotAround(probe, view) : null;
   return { result, crop: area ? await crop(page, area, view) : null, screen };
@@ -749,10 +870,27 @@ function cleanScopes(raw, first) {
     if (name) step.component = name;
     else if (s.kind === 'component') continue; // a component step without its name says nothing
     step.bounds = bounds;
+    const peers = cleanPeers(s.peers);
+    if (peers) step.peers = peers;
     steps.push(step);
   }
   steps.push(screenScope());
   return steps;
+}
+
+/** §15.3: how many look the same, and where (20 boxes at most). One is not "the same thing, all of them". */
+function cleanPeers(p) {
+  if (!p || typeof p !== 'object' || !Number.isInteger(p.count) || p.count < 2) return null;
+  const bounds = (Array.isArray(p.bounds) ? p.bounds : []).slice(0, 20).map(cleanBounds).filter(Boolean);
+  return { count: Math.min(p.count, 10000), bounds };
+}
+
+/** §15.7: the sentence step, with the sentence as long as an element's text may be. */
+function cleanSentence(s) {
+  if (!s || typeof s !== 'object' || s.kind !== 'text') return null;
+  const bounds = cleanBounds(s.bounds);
+  const text = str(s.text, LIMIT.text);
+  return bounds && text ? { kind: 'text', type: 'text', text, bounds } : null;
 }
 
 /**
@@ -771,6 +909,8 @@ function elementStep(raw, element) {
   const component = str(head.component, 100);
   if (component) first.component = component;
   if (element.bounds) first.bounds = element.bounds;
+  const peers = cleanPeers(head.peers);
+  if (peers) first.peers = peers;
   return first;
 }
 

@@ -65,6 +65,8 @@ button[aria-pressed="true"]:hover:not(:disabled){background:var(--pin)}
 #pin-orig{position:absolute;border:1px solid var(--pin);border-radius:3px;opacity:.6;pointer-events:none}
 #pin-prev{position:absolute;border:2px dashed var(--pin);border-radius:3px;pointer-events:none}
 #pin-marks{position:absolute;inset:0;pointer-events:none}
+#pin-peerbox{position:absolute;inset:0;pointer-events:none}
+.pin-peer{position:absolute;border:2px dashed var(--pin);border-radius:3px;opacity:.75;pointer-events:none}
 .pin-other{position:absolute;border:2px solid var(--pin);border-radius:3px;opacity:.5;pointer-events:none}
 .pin-badge{position:absolute;transform:translate(-50%,-50%);min-width:22px;height:22px;padding:0 4px;border-radius:11px;background:var(--pin);color:var(--pin-fg);font-size:14px;font-weight:700;line-height:22px;text-align:center;box-shadow:0 0 0 2px rgba(255,255,255,.85);pointer-events:none}
 .pin-badge.on{box-shadow:0 0 0 2px rgba(255,255,255,.85),0 0 0 4px var(--focus)}
@@ -78,6 +80,8 @@ button[aria-pressed="true"]:hover:not(:disabled){background:var(--pin)}
 #pin-scope{position:absolute;z-index:3;display:flex;gap:4px;max-width:calc(100% - 16px);overflow-x:auto;padding:4px;border:1px solid var(--line);border-radius:8px;background:var(--bar);box-shadow:0 2px 10px rgba(0,0,0,.18)}
 #pin-scope button{flex:none;white-space:nowrap;padding:2px 8px;font-size:12px}
 #pin-scope button[aria-checked="true"]{background:var(--pin);border-color:var(--pin);color:#fff}
+#pin-scope .pin-peers{margin-left:4px;border-style:dashed}
+#pin-scope .pin-peers[aria-pressed="true"]{background:var(--pin);border-color:var(--pin);border-style:solid;color:#fff}
 #sheet #pin-scope{position:static;max-width:none;padding:0 0 2px;border:0;background:none;box-shadow:none}
 #sh-w{align-self:flex-start;font-size:12px;padding:2px 8px}
 @keyframes pinwait{50%{transform:scale(1.6);opacity:.55}}
@@ -135,6 +139,7 @@ button[aria-pressed="true"]:hover:not(:disabled){background:var(--pin)}
   <div id="pin-prev" hidden></div>
   <div id="pin-dot" hidden></div>
   <div id="pin-marks"></div>
+  <div id="pin-peerbox"></div>
   <div id="pin-scope" role="radiogroup" aria-label="범위 — 넓히기·좁히기는 Alt+위·아래" hidden></div>
   <section id="sheet" class="card" aria-label="짚은 곳에 글 남기기" hidden>
     <ul id="sh-marks" aria-label="짚은 곳" hidden></ul>
@@ -766,7 +771,7 @@ function probePin(p, add) {
 }
 // 같은 곳을 다시 묻는다(대상이 바뀌었거나 결과가 지났다). 고른 칸은 처음으로 돌아간다
 function reprobe(mk) {
-  Object.assign(mk, { waiting: true, result: null, probeId: null, resolvedAt: 0, stale: false, scope: 0, preview: -1 });
+  Object.assign(mk, { waiting: true, result: null, probeId: null, resolvedAt: 0, stale: false, scope: 0, preview: -1, peers: false });
   if (P.conflict === mk.ref) P.conflict = null;
   if (P.queue.indexOf(mk.ref) < 0) P.queue.push(mk.ref);
   pumpProbes();
@@ -836,7 +841,14 @@ function scopes(list) {
   const out = [];
   for (const sc of list.slice(0, 6)) {
     const b = sc && typeof sc === 'object' ? bounds(sc.bounds) : null;
-    if (b && str(sc.label)) out.push({ kind: str(sc.kind) || 'group', label: sc.label.slice(0, 80), bounds: b });
+    if (!b || !str(sc.label)) continue;
+    const step = { kind: str(sc.kind) || 'group', label: sc.label.slice(0, 80), bounds: b };
+    // §15.3: 같은 것 모두 — 수와 화면 안 테두리(20개까지)
+    const pe = sc.peers && typeof sc.peers === 'object' ? sc.peers : null;
+    if (pe && Number.isInteger(pe.count) && pe.count >= 2) {
+      step.peers = { count: pe.count, bounds: (Array.isArray(pe.bounds) ? pe.bounds : []).slice(0, 20).map(bounds).filter(Boolean) };
+    }
+    out.push(step);
   }
   return out;
 }
@@ -875,8 +887,16 @@ function markLabel(mk) {
   if (!mk) return '짚은 자리';
   if (!mk.result) return mk.waiting ? '찾는 중…' : '짚지 못함';
   const c = chosen(mk);
-  if (c && c.kind !== 'element') return c.label;
-  return mk.result.label || '짚은 자리';
+  const name = c && c.kind !== 'element' ? c.label : mk.result.label || '짚은 자리';
+  // §15.3: 같은 것 모두를 골랐으면 그 수를 앞에(서버 placeLabel 과 같다)
+  return peersOn(mk) ? '같은 것 ' + c.peers.count + '개 모두 · ' + name : name;
+}
+const peersOn = (mk) => { const c = chosen(mk); return !!(mk && mk.peers && c && c.peers); };
+function togglePeers() {
+  const mk = A(), c = chosen(mk);
+  if (!mk || !c || !c.peers) return;
+  mk.peers = !mk.peers;
+  renderPin();
 }
 // 내 피드백 목록·알림에 보일 이름(서버의 selectedLabel 과 같다): 여러 곳이면 "① … 외 N곳"
 function listLabel() {
@@ -889,6 +909,8 @@ function setScope(i, focus) {
   const next = Math.max(0, Math.min(list.length - 1, i));
   if (next === mk.scope) return;
   mk.scope = next; mk.preview = -1;
+  // 같은 것 모두는 고른 칸의 것이다. 같은 것이 없는 칸으로 옮기면 꺼진다
+  if (!(mk.result.scopes[next] && mk.result.scopes[next].peers)) mk.peers = false;
   renderPin();
   if (focus) { const b = $('pin-scope').children[next]; if (b) b.focus({ preventScroll: true }); }
 }
@@ -1016,6 +1038,15 @@ function placePin() {
   frame($('pin-orig'), c && c.kind !== 'element' && r.bounds ? r.bounds : null);
   const prev = r && mk.preview >= 0 && mk.preview !== mk.scope ? r.scopes[mk.preview] : null;
   frame($('pin-prev'), prev ? prev.bounds : null);
+  // §15.8: 같은 것 모두를 켜면 나머지는 점선으로
+  const peerbox = $('pin-peerbox');
+  peerbox.textContent = '';
+  if (mk && peersOn(mk) && view.w) {
+    c.peers.bounds.forEach((pb) => {
+      if (b && Math.abs(pb.x - b.x) < 0.002 && Math.abs(pb.y - b.y) < 0.002) return; // 고른 칸 자신
+      const o = el('div', 'pin-peer'); frame(o, pb); peerbox.append(o);
+    });
+  }
   dot.classList.toggle('wait', !!(p && mk.waiting));
   if (!b && p && !p.screen && !p.rect) {
     dot.style.left = view.x + p.x * view.w + 'px'; dot.style.top = view.y + p.y * view.h + 'px';
@@ -1060,9 +1091,25 @@ function placeScope(b) {
     bar.dataset.for = mk.ref + ':' + mk.probeId + ':' + list.length;
   }
   Array.from(bar.children).forEach((btn, i) => {
+    if (btn.classList.contains('pin-peers')) return;
     btn.setAttribute('aria-checked', String(i === mk.scope));
     btn.tabIndex = i === mk.scope ? 0 : -1;
   });
+  // §15.8: 같은 것 모두 토글. 고른 칸에 같은 것이 있을 때만 보인다(글 칸 밖에서 A)
+  let tog = bar.querySelector('.pin-peers');
+  if (!tog) {
+    tog = el('button', 'pin-peers', '');
+    tog.type = 'button';
+    tog.addEventListener('click', togglePeers);
+    bar.append(tog);
+  }
+  const cs = chosen(mk);
+  tog.hidden = !(cs && cs.peers);
+  if (cs && cs.peers) {
+    tog.textContent = '같은 것 ' + cs.peers.count + '개' + (mk.peers ? ' 모두' : '');
+    tog.setAttribute('aria-pressed', String(!!mk.peers));
+    tog.title = '이 모양 전부를 고르기(A)';
+  }
   bar.hidden = false;
   const sheet = $('sheet');
   if (narrow.matches) {
@@ -1103,6 +1150,7 @@ function submitPin() {
   const msg = { type: 'pin-submit', comment: comment.value.trim(), marks: marks.map((mk) => {
     const one = { probeId: mk.probeId };
     if (mk.result.scopes.length) one.scope = mk.scope;
+    if (peersOn(mk)) one.peers = true;
     return one;
   }) };
   if (send(msg)) { P.submitting = true; updateSend(); }
@@ -1285,6 +1333,16 @@ document.addEventListener('keydown', (e) => {
   if (!e.altKey || e.isComposing || !P.mode || !mk || !mk.result || !mk.result.scopes.length) return;
   if (e.key === 'ArrowUp') { e.preventDefault(); setScope(mk.scope + 1, false); }
   else if (e.key === 'ArrowDown') { e.preventDefault(); setScope(mk.scope - 1, false); }
+});
+// 같은 것 모두(§15.8): 글 칸 밖에서 A. 글을 쓰는 중에는 글자다
+document.addEventListener('keydown', (e) => {
+  if (e.altKey || e.ctrlKey || e.metaKey || e.isComposing || !P.mode || (e.key !== 'a' && e.key !== 'A')) return;
+  const t = e.target;
+  if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable || t === kbd)) return;
+  const mk = A(), c = chosen(mk);
+  if (!c || !c.peers) return;
+  e.preventDefault();
+  togglePeers();
 });
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || e.target === kbd || e.isComposing) return;

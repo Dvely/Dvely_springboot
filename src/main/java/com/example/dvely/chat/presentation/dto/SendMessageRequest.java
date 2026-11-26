@@ -37,8 +37,15 @@ public record SendMessageRequest(
             @Schema(description = "브리지의 짚기 결과(probeId · ok · screen · point · element · ancestors · components · scopes …)")
             @NotNull Map<String, Object> result,
 
-            @Schema(description = "사람이 고른 범위 사다리 칸(0 = 짚은 요소). 없거나 사다리 밖이면 기본 칸", nullable = true)
-            Integer scope
+            @Schema(description = "사람이 고른 범위 사다리 칸. 없거나 사다리 밖이면 결과의 기본 칸(defaultScope)", nullable = true)
+            Integer scope,
+
+            @Schema(description = "고른 칸의 \"같은 것 모두\"(그 칸에 peers 가 있을 때만 의미가 있다)", nullable = true)
+            Boolean peers
     ) {
+
+        public PinRequest(Map<String, Object> result, Integer scope) {
+            this(result, scope, null);
+        }
     }
 }

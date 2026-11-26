@@ -477,7 +477,7 @@ FE 가 실제로 바뀌어야 하는 것은 세 가지입니다.
   - iframe 에 `postMessage({qeploy:'pin', v:1, type:'hello'}, '*')` 를 보내 `{qeploy:'pin', v:1, type:'ready', caps}` 가 오면 짚을 수 있습니다. 1.5초 안에 안 오면 짚기 버튼을 끕니다.
   - `hover {x, y}` → `hit {x, y, bounds?}`(테두리 그리기), `probe {id:'p1', x, y}` · `probe {id, rect:{x,y,w,h}}` · `probe {id, screen:true}` → `result {id, result}`, `scroll {dx, dy}`. 좌표는 iframe 뷰포트에 대한 0~1 비율입니다.
   - 받는 쪽은 `event.source === iframe.contentWindow` 이고 `data.qeploy === 'pin'` 인 것만 받습니다(origin 은 `"null"`). iframe 에 `sandbox` 속성은 달지 않습니다(쿠키가 빠져 401).
-  - 보낼 때 `pins: [{result, scope}]`(`result` 는 받은 그대로, `scope` 는 고른 사다리 칸). 형식이 틀리거나 6개 이상이면 400 이고 아무것도 저장되지 않으니 입력창을 지우지 않습니다.
+  - 보낼 때 `pins: [{result, scope, peers?}]`(`result` 는 받은 그대로, `scope` 는 고른 사다리 칸, `peers` 는 고른 칸에 `peers` 가 있을 때 "같은 것 모두"). 웹 결과에는 문장 칸(`kind: "text"`)이 요소 칸 앞에 올 수 있고 그때 `defaultScope` 는 1 이다(#694 PR-6). 형식이 틀리거나 6개 이상이면 400 이고 아무것도 저장되지 않으니 입력창을 지우지 않습니다.
 - **`aiProvider` 를 생략할 수 없습니다.** `POST /conversations/{id}/messages` 에서도 필수가 됐습니다(예전에는 생략 시 서버 기본 제공자로 실행). 비워 보내면 **400** 입니다. `POST /agent/decision` 은 원래부터 필수였습니다.
 - **`GET /agent/ai-providers` 의 의미가 바뀌었습니다.** 이제 "배포가 키를 가진 제공자"가 아니라 **"이 사용자가 키를 등록한 제공자"** 목록입니다. 키를 하나도 등록하지 않았으면 **빈 배열**이 옵니다 — 그 상태에서는 입력을 잠그고 키 등록(`/api/v1/ai-credentials`)으로 보내면 됩니다.
 - **키가 없으면 `AI_CREDENTIAL_NOT_REGISTERED`(400)** 입니다. 코딩 에이전트뿐 아니라 **모든 AI 실행 경로**(계획·채팅·코드 생성)가 이 코드를 낼 수 있습니다. `message` 에 어느 벤더 키가 없는지 담기므로 그대로 안내해도 됩니다.

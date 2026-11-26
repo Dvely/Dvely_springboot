@@ -110,6 +110,7 @@ public class ShareFeedbackService {
         boolean multi = marks.isArray();
         List<String> probeIds = new ArrayList<>();
         List<JsonNode> scopeChoices = new ArrayList<>();
+        List<Boolean> peerChoices = new ArrayList<>();
         if (multi) {
             if (marks.isEmpty() || marks.size() > MAX_MARKS) {
                 viewerError(link, viewerId, "짚은 곳은 1~" + MAX_MARKS + "개여야 합니다.");
@@ -118,10 +119,12 @@ public class ShareFeedbackService {
             for (JsonNode mark : marks) {
                 probeIds.add(mark.path("probeId").asText(""));
                 scopeChoices.add(mark.path("scope"));
+                peerChoices.add(mark.path("peers").asBoolean(false));
             }
         } else {
             probeIds.add(message.path("probeId").asText(""));
             scopeChoices.add(message.path("scope"));
+            peerChoices.add(message.path("peers").asBoolean(false));
         }
         PinClaim claim = sessions.claimPins(link.getId(), viewerId, probeIds);
         if (claim.claimed().isEmpty()) {
@@ -160,10 +163,15 @@ public class ShareFeedbackService {
             }
             drawn.add(new AnnotatedScreen.Mark(i + 1, outline.isObject() ? outline : null,
                     place.path("point").isObject() ? place.path("point") : null));
+            // §15.3: 같은 것 모두는 고른 칸에 같은 것이 있을 때만 남긴다
+            boolean peers = chosen != null && peerChoices.get(i) && scopes.get(chosen).path("peers").isObject();
             if (i == 0) {
                 description = place;
                 if (chosen != null) {
                     description.put("v", 2).put("scope", chosen);
+                }
+                if (peers) {
+                    description.put("peers", true);
                 }
                 crop = placeCrop;
                 continue;
@@ -174,7 +182,7 @@ public class ShareFeedbackService {
             if (chosen != null) {
                 entry.put("scope", chosen);
             }
-            entry.put("peers", false);
+            entry.put("peers", peers);
             if (placeCrop != null) {
                 markCrops.put(i + 1, placeCrop);
             }

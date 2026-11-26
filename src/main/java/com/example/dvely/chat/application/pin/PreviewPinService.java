@@ -88,6 +88,11 @@ public class PreviewPinService {
             if (input.scope() != null && scopes.isArray() && input.scope() >= 0 && input.scope() < scopes.size()) {
                 description.put("scope", input.scope().intValue());
             }
+            // §15.3: 같은 것 모두는 고른 칸에 같은 것이 있을 때만
+            if (Boolean.TRUE.equals(input.peers())
+                    && PinResultSanitizer.selectedScope(description).map(s -> s.path("peers").isObject()).orElse(false)) {
+                description.put("peers", true);
+            }
             String text = write(description);
             if (text.getBytes(StandardCharsets.UTF_8).length > MAX_PIN_JSON_BYTES) {
                 throw new IllegalArgumentException("짚은 곳 " + position + "이 너무 큽니다. 범위를 좁혀 다시 짚어 주세요.");

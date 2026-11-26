@@ -325,6 +325,50 @@ class ShareFeedbackIntegrationTest {
         device.tunnel.abort();
     }
 
+    /** §15.3·§15.9·§15.10: 같은 것 모두 — 뷰어에 수와 테두리, 고르면 알림·목록·프롬프트가 "그 모양 전부" 다 */
+    @Test
+    void 같은_것_모두를_골라_보내면_주인_알림과_프롬프트가_그_모양_전부다() throws Exception {
+        JsonNode share = createShare();
+        String viewHost = URI.create(share.path("viewUrl").asText()).getHost() + ":8080";
+        Device device = connectDevice(share);
+        sendConfig(device);
+        byte[] screen = screenJpeg();
+
+        try (RawViewerSocket socket = new RawViewerSocket(port, viewHost, "/__qeploy/ws")) {
+            Viewer guest = new Viewer(socket);
+            socket.sendText("{\"type\":\"join\",\"name\":\"민지\"}");
+            guest.nextOfType("welcome");
+            socket.sendText("{\"type\":\"pin-probe\",\"x\":0.2,\"y\":0.52}");
+            String probeId = json.readTree(device.device.nextOfKind(ShareFrames.PIN_PROBE).payloadText()).path("probeId").asText();
+            device.tunnel.sendBinary(scopedResult(probeId, screen, true), true).join();
+            JsonNode pin = guest.nextOfType("pin", "resolved");
+            assertThat(pin.path("scopes").get(1).path("peers").path("count").asInt()).isEqualTo(3);
+            assertThat(pin.path("scopes").get(1).path("peers").path("bounds")).hasSize(2);
+            assertThat(pin.path("scopes").get(0).has("peers")).isFalse();
+
+            socket.sendText("{\"type\":\"pin-submit\",\"probeId\":\"" + probeId + "\",\"scope\":1,\"peers\":true,"
+                    + "\"comment\":\"폼마다 여백을 넓혀 주세요\"}");
+            long id = guest.nextOfType("feedback", "NEW").path("id").asLong();
+            JsonNode notice = json.readTree(device.device.nextOfKind(ShareFrames.FEEDBACK_NOTICE).payloadText());
+            assertThat(notice.path("label").asText()).isEqualTo("같은 것 3개 모두 · 컴포넌트 ProfileForm");
+            String md = data(get("/api/v1/device-share-feedback/" + id + "/prompt", bearer)).path("markdown").asText();
+            assertThat(md).contains("- 고른 범위: 같은 것 3개 모두(폼 `form#profile` · 컴포넌트 `ProfileForm`");
+            assertThat(md).contains("한 곳이 아니라 이 모양 전부를 고치라는 뜻이다");
+
+            // 같은 것이 없는 칸(요소)에서 peers 를 보내도 한 곳이다
+            Thread.sleep(1_100);
+            socket.sendText("{\"type\":\"pin-probe\",\"x\":0.2,\"y\":0.52}");
+            probeId = json.readTree(device.device.nextOfKind(ShareFrames.PIN_PROBE).payloadText()).path("probeId").asText();
+            device.tunnel.sendBinary(scopedResult(probeId, screen, true), true).join();
+            guest.nextOfType("pin", "resolved");
+            socket.sendText("{\"type\":\"pin-submit\",\"probeId\":\"" + probeId + "\",\"scope\":0,\"peers\":true,\"comment\":\"이것만\"}");
+            long single = guest.nextOfType("feedback", "NEW").path("id").asLong();
+            assertThat(data(get("/api/v1/device-share-feedback/" + single + "/prompt", bearer)).path("markdown").asText())
+                    .doesNotContain("같은 것");
+        }
+        device.tunnel.abort();
+    }
+
     @Test
     void 여러_곳을_짚어_보내면_곳마다_범위와_그림이_저장되고_번호_그린_화면과_프롬프트가_같은_번호다() throws Exception {
         JsonNode share = createShare();
@@ -414,6 +458,14 @@ class ShareFeedbackIntegrationTest {
     }
 
     private static ByteBuffer scopedResult(String probeId, byte[] screen) {
+        return scopedResult(probeId, screen, false);
+    }
+
+    /** @param peers 폼 칸에 같은 모양 3개(화면 안 2개)를 붙인다(§15.3) */
+    private static ByteBuffer scopedResult(String probeId, byte[] screen, boolean peers) {
+        String formPeers = peers
+                ? ",\"peers\":{\"count\":3,\"bounds\":[{\"x\":0.05,\"y\":0.3,\"w\":0.9,\"h\":0.4},{\"x\":0.05,\"y\":0.72,\"w\":0.9,\"h\":0.2}]}"
+                : "";
         byte[] body = ("""
                 {"probeId":"%s","ok":true,"screen":{"label":"/settings"},"point":{"x":0.2,"y":0.52},
                  "element":{"type":"button","text":"저장","bounds":{"x":0.1,"y":0.5,"w":0.2,"h":0.05}},
@@ -421,10 +473,10 @@ class ShareFeedbackIntegrationTest {
                  "scopes":[{"kind":"element","type":"button","text":"저장","component":"SaveButton",
                              "bounds":{"x":0.1,"y":0.5,"w":0.2,"h":0.05}},
                            {"kind":"component","type":"form","id":"profile","component":"ProfileForm","selector":"form#profile",
-                             "bounds":{"x":0.05,"y":0.3,"w":0.9,"h":0.4}},
+                             "bounds":{"x":0.05,"y":0.3,"w":0.9,"h":0.4}%s},
                            {"kind":"screen","type":"screen","bounds":{"x":0,"y":0,"w":1,"h":1}}],
                  "defaultScope":0}
-                """.formatted(probeId)).getBytes(StandardCharsets.UTF_8);
+                """.formatted(probeId, formPeers)).getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.writeBytes(ByteBuffer.allocate(4).putInt(body.length).array());
         out.writeBytes(body);

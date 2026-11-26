@@ -21,7 +21,7 @@ import {
   unresolved,
 } from '../src/share/pin.js';
 import { clearListings, definitionLine, findSourceHints, listSourceFiles, projectRoot, searchableText, toProjectPath } from '../src/share/source-hints.js';
-import { inspectPoint, padded, spotAround } from '../src/share/pin-web.js';
+import { inspectPoint, padded, resolveWebPin, spotAround } from '../src/share/pin-web.js';
 import { LIMIT } from '../src/share/pin.js';
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x01, 0xff, 0xd9]);
@@ -225,6 +225,56 @@ describe('fitting a dragged area’s result (§15.9)', () => {
     ...(near ? { near } : {}),
   });
   const member = (i, text) => ({ type: 'a', text, id: 'm' + i, bounds: { x: 0.1, y: 0.2 + i * 0.01, w: 0.1, h: 0.01 } });
+
+  it('carries a sentence step first and the look-alikes through from the page to the result (§15.3, §15.7)', async () => {
+    const b = { x: 0.1, y: 0.2, w: 0.2, h: 0.2 };
+    const raw = {
+      ok: true,
+      screen: { label: '/plans' },
+      view: { width: 1000, height: 800, dpr: 1, pageX: 0, pageY: 0 },
+      element: { type: 'p', text: '지금은 무료입니다. 팀원을 3명까지 초대할 수 있습니다.', bounds: { x: 0, y: 0.1, w: 0.8, h: 0.05 } },
+      rect: { x: 0, y: 80, width: 800, height: 40 },
+      ancestors: [],
+      components: [],
+      scopes: [
+        { kind: 'text', type: 'text', text: '팀원을 3명까지 초대할 수 있습니다.', bounds: { x: 0.3, y: 0.1, w: 0.3, h: 0.05 } },
+        { kind: 'element', type: 'p', bounds: { x: 0, y: 0.1, w: 0.8, h: 0.05 } },
+        { kind: 'group', type: 'li', selector: 'li.plan-card', bounds: b, peers: { count: 3, bounds: [b, b, b, { x: 9 }] } },
+        SCREEN,
+      ],
+      defaultScope: 1,
+    };
+    const page = { send: async (method) => (method === 'Runtime.evaluate' ? { result: { value: raw } } : {}) };
+    const { result } = await resolveWebPin({ page, probe: { probeId: 'p1', x: 0.4, y: 0.12 }, project: null, origin: null, findHints: async () => [] });
+    assert.deepEqual(result.scopes.map((sc) => sc.kind), ['text', 'element', 'group', 'screen']);
+    assert.equal(result.defaultScope, 1);
+    assert.equal(result.scopes[0].text, '팀원을 3명까지 초대할 수 있습니다.');
+    assert.deepEqual(result.scopes[2].peers, { count: 3, bounds: [b, b, b] }, 'a box outside the screen is dropped');
+  });
+
+  it('drops the look-alikes’ boxes before anything else, keeping their count (§15.9)', () => {
+    const box = { x: 0.1, y: 0.2, w: 0.2, h: 0.2 };
+    const result = region({ members: [member(0, 'x'.repeat(40000))] });
+    result.scopes[1] = { ...result.scopes[1], peers: { count: 20, bounds: Array.from({ length: 20 }, () => box) } };
+    const fitted = JSON.parse(fitResult(result));
+    const step = fitted.scopes.find((sc) => sc.peers);
+    assert.deepEqual(step.peers, { count: 20, bounds: [] });
+  });
+
+  it('keeps the element step when a sentence step comes first, widest containers going first (§15.7)', () => {
+    const sentence = { kind: 'text', type: 'text', text: '팀원을 3명까지 초대할 수 있습니다.', bounds: { x: 0.3, y: 0.1, w: 0.3, h: 0.05 } };
+    const result = {
+      probeId: 'p6', ok: true, point: { x: 0.4, y: 0.12 },
+      element: { type: 'p', text: 'y'.repeat(200), bounds: { x: 0, y: 0.1, w: 0.8, h: 0.05 } },
+      components: [{ name: 'x'.repeat(100) }], ancestors: [], sourceHints: [],
+      scopes: [sentence, { kind: 'element', type: 'p', text: 'x', bounds: { x: 0, y: 0.1, w: 0.8, h: 0.05 } },
+        { kind: 'group', type: 'section', text: 'z'.repeat(20000), bounds: { x: 0, y: 0, w: 0.9, h: 0.6 } }, SCREEN],
+      defaultScope: 1,
+    };
+    const fitted = JSON.parse(fitResult(result));
+    assert.deepEqual(fitted.scopes.map((sc) => sc.kind), ['text', 'element', 'screen']);
+    assert.equal(fitted.defaultScope, 1);
+  });
 
   it('drops the members’ words first, keeping everything else', () => {
     const members = Array.from({ length: 12 }, (_, i) => member(i, String(i).repeat(1500)));
@@ -673,6 +723,103 @@ describe('reading the page at a point (inspectPoint, §14.3)', () => {
     assert.equal(out.scopes[0].component, undefined, 'the button is not the root of PlanCard, and much smaller than it');
     assert.deepEqual(out.scopes[1], { kind: 'component', type: 'div', selector: 'div.plan', component: 'PlanCard', bounds: { x: 0, y: 0, w: 0.4, h: 0.375 } });
     assert.deepEqual(out.scopes.at(-1), SCREEN_STEP);
+  });
+
+  // ── the same thing, all of them (§15.3, case 3) ──────────────────────────────
+  /** ul > li.plan-card ×3 (one off screen) > button "고르기", and a bare div beside them. */
+  function cardsPage() {
+    const list = el('ul', { classes: ['plans'], rect: box(0, 100, 1000, 500) });
+    const cards = [0, 1, 2].map((i) => el('li', { classes: ['plan-card'], rect: box(20 + i * 330, 120, 320 + i * 330, 480), parent: list }));
+    const offscreen = el('li', { classes: ['plan-card'], rect: box(0, 900, 300, 1200), parent: list });
+    const stray = el('div', { rect: box(0, 600, 100, 650), parent: list });
+    const button = el('button', { text: '고르기', rect: box(370, 420, 470, 460), parent: cards[1] });
+    list.parentElement = page(button);
+    return { cards, offscreen, stray };
+  }
+
+  it('says how many look the same as a step, and where those on screen are (§15.3 peers)', () => {
+    cardsPage();
+    const out = inspectPoint({ x: 0.42, y: 0.55, limit: LIMIT });
+    const card = out.scopes.find((s) => s.type === 'li');
+    assert.equal(card.peers.count, 4, 'every li.plan-card under the list, the one off screen too');
+    assert.equal(card.peers.bounds.length, 3, 'only the boxes on screen are drawn');
+    assert.equal(out.scopes[0].peers, undefined, 'one button per card: the button has no look-alikes');
+    assert.equal(out.scopes.find((s) => s.type === 'ul').peers, undefined);
+  });
+
+  it('counts the cards one component drew as the same, whatever their classes', () => {
+    function PlanCard() {}
+    const host = (i) => ({ __reactFiber$k1: { tag: 5, type: 'div', return: { tag: 0, type: PlanCard, return: { tag: 5, type: 'section' } } }, id: '' });
+    const grid = el('section', { attrs: { 'aria-label': '요금제' }, rect: box(0, 0, 1000, 600) });
+    const cards = [0, 1, 2].map((i) => el('div', { classes: [`plan-${i}`], rect: box(i * 330, 0, i * 330 + 300, 400), parent: grid, extra: host(i) }));
+    const button = el('button', { text: '고르기', rect: box(30, 300, 130, 340), parent: cards[0] });
+    grid.parentElement = page(button);
+    const out = inspectPoint({ x: 0.05, y: 0.4, limit: LIMIT });
+    const step = out.scopes.find((s) => s.component === 'PlanCard');
+    assert.equal(step.kind, 'component');
+    assert.equal(step.peers.count, 3);
+  });
+
+  it('counts the look-alikes of a same-size item merged into the element step (li > a menus)', () => {
+    const nav = el('ul', { attrs: { 'aria-label': '주 메뉴' }, rect: box(600, 0, 1000, 60) });
+    const items = [0, 1, 2].map((i) => el('li', { rect: box(600 + i * 120, 10, 700 + i * 120, 50), parent: nav }));
+    const link = el('a', { text: '주문', attrs: { href: '#' }, rect: box(720, 10, 820, 50), parent: items[1] });
+    nav.parentElement = page(link);
+    const out = inspectPoint({ x: 0.77, y: 0.0375, limit: LIMIT });
+    assert.equal(out.scopes[0].kind, 'element');
+    assert.equal(out.scopes[0].peers.count, 3, 'the links have no siblings; the items they fill do');
+  });
+
+  it('gives bare boxes no look-alikes: a div is like every other div', () => {
+    const wrap = el('section', { id: 'wrap', rect: box(0, 0, 600, 400) });
+    const a = el('div', { rect: box(0, 0, 300, 200), parent: wrap, attrs: { role: 'group' } });
+    el('div', { rect: box(300, 0, 600, 200), parent: wrap, attrs: { role: 'group' } });
+    const button = el('button', { text: '확인', rect: box(10, 10, 110, 50), parent: a });
+    wrap.parentElement = page(button);
+    const out = inspectPoint({ x: 0.05, y: 0.03, limit: LIMIT });
+    assert.equal(out.scopes.some((s) => s.peers), false);
+  });
+
+  // ── a sentence under the point (§15.7, case 8) ───────────────────────────────
+  function sentencePage({ inField = false, off = false } = {}) {
+    const p = el('p', { text: '지금은 무료 요금제를 쓰고 있습니다. 팀원을 3명까지 초대할 수 있습니다.', rect: box(0, 100, 800, 140), attrs: { role: 'note' } });
+    const data = '지금은 무료 요금제를 쓰고 있습니다. 팀원을 3명까지 초대할 수 있습니다.';
+    const node = { nodeType: 3, data, parentElement: inField ? el('textarea', { rect: box(0, 100, 800, 140) }) : p };
+    if (inField) node.parentElement.closest = () => node.parentElement;
+    p.contains = (n) => n === node || inField;
+    const body = page(p);
+    p.parentElement = body;
+    const line = { left: 300, top: 100, right: 620, bottom: 140 };
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: node, offset: data.indexOf('3명') });
+    globalThis.document.createRange = () => {
+      const range = {
+        setStart: (n, o) => (range.s = o),
+        setEnd: (n, o) => (range.e = o),
+        getClientRects: () => [off ? { left: 0, top: 0, right: 10, bottom: 10 } : line],
+        getBoundingClientRect: () => line,
+      };
+      return range;
+    };
+    return { p, data };
+  }
+
+  it('offers the sentence under the point one step narrower than the element, which stays the default (§15.7)', () => {
+    sentencePage();
+    const out = inspectPoint({ x: 0.4, y: 0.15, limit: LIMIT });
+    assert.equal(out.defaultScope, 1);
+    assert.deepEqual(out.scopes[0], { kind: 'text', type: 'text', text: '팀원을 3명까지 초대할 수 있습니다.', bounds: { x: 0.3, y: 0.125, w: 0.32, h: 0.05 } });
+    assert.equal(out.scopes[1].kind, 'element');
+    assert.equal(out.element.type, 'note', 'what older readers take is still the element');
+  });
+
+  it('makes no sentence step inside a field, nor when the caret snapped to text away from the point', () => {
+    sentencePage({ inField: true });
+    let out = inspectPoint({ x: 0.4, y: 0.15, limit: LIMIT });
+    assert.equal(out.scopes.some((s) => s.kind === 'text'), false);
+    assert.equal(out.defaultScope, 0);
+    sentencePage({ off: true });
+    out = inspectPoint({ x: 0.4, y: 0.15, limit: LIMIT });
+    assert.equal(out.scopes.some((s) => s.kind === 'text'), false);
   });
 
   /**
