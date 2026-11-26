@@ -213,6 +213,8 @@ public class CodeAgentService {
         }
         // 사용자가 프리뷰에서 짚은 곳(§16.6). 계획이 지시를 고쳐 쓰면서 요소 정보를 빠뜨려도 여기서는 빠지지 않는다
         instruction = withPreviewPins(instruction, taskId, containerId);
+        // 맺음말은 사람에게 그대로 보인다. 계획이 한국어 요청을 영어 지시로 옮겨도 한국어로 답하게
+        instruction = ReplyLanguage.append(instruction, step.parameters().getOrDefault("userSummary", ""));
 
         try {
             // GLM shares OpenAI's loop rather than getting its own: OpenRouter returns
