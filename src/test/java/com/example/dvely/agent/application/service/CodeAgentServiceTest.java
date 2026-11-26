@@ -491,6 +491,28 @@ class CodeAgentServiceTest {
         assertThatThrownBy(() -> execute(AiProvider.CLAUDE_CODE)).isSameAs(stop);
     }
 
+    /**
+     * 계획 모델이 한국어 요청을 영어 지시로 옮겨도(2026-11-26 실측) 맺음말은 한국어로 — 승인 카드 문장(userSummary)의 말을
+     * 지시 끝에 못박는다.
+     */
+    @Test
+    void anEnglishInstructionForAKoreanRequestAsksForAKoreanSummary() {
+        UserLimitExceededException stop = new UserLimitExceededException(
+                ErrorCode.CODING_AGENT_CAPACITY_EXCEEDED, "멈춤");
+        org.mockito.ArgumentCaptor<String> instruction = org.mockito.ArgumentCaptor.forClass(String.class);
+        when(codingAgentWorkspaceBridge.run(eq(CONTAINER_ID), eq(USER_ID), eq(AiProvider.CLAUDE_CODE), instruction.capture(), any()))
+                .thenThrow(stop);
+        AgentStep step = new AgentStep(AgentType.CODE, Map.of(
+                "instruction", "Create a new single-page project with a title and a button.",
+                "userSummary", "\"진행 표시 확인\" 제목과 \"시작\" 버튼이 있는 페이지를 만듭니다"));
+
+        assertThatThrownBy(() -> service.execute(step, AiProvider.CLAUDE_CODE, USER_ID, null, TASK_ID)).isSameAs(stop);
+
+        assertThat(instruction.getValue())
+                .startsWith("Create a new single-page project with a title and a button.")
+                .endsWith("Write your closing summary for them in Korean, even though this instruction may be in another language.");
+    }
+
     // ── write_file 결과가 모델에게 그대로 간다(#617) ─────────────────────────────
 
     @Test
