@@ -82,6 +82,17 @@ abstract class AbstractCliCodingAgentAdapter implements CodingAgentPort {
 
         /** The run's closing text, given the stdout the runner kept. */
         String answer(String stdout);
+
+        /**
+         * Why the run failed, as the CLI reported it in the stream, or {@code null} when it did
+         * not. Used in place of stderr for a failed run: a CLI printing events to stdout may print
+         * its error there too and leave stderr with nothing but noise (Codex does — measured on
+         * 0.153.2, a rejected key ends in a {@code turn.failed} line while stderr holds only
+         * "Reading additional input from stdin...").
+         */
+        default String failure() {
+            return null;
+        }
     }
 
     @Override
@@ -114,7 +125,9 @@ abstract class AbstractCliCodingAgentAdapter implements CodingAgentPort {
         if (outcome.exitCode() != 0) {
             log.warn("{} 비정상 종료: workspace={} exitCode={}",
                     cliName(), command.workspaceDir(), outcome.exitCode());
-            return CodingAgentResult.failed(output, outcome.stderr(), outcome.exitCode());
+            String failure = reader == null ? null : reader.failure();
+            return CodingAgentResult.failed(output,
+                    failure == null || failure.isBlank() ? outcome.stderr() : failure, outcome.exitCode());
         }
         return CodingAgentResult.succeeded(output, outcome.stderr());
     }

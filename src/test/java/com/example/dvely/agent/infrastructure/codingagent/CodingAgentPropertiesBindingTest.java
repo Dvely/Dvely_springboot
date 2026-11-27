@@ -43,7 +43,7 @@ class CodingAgentPropertiesBindingTest {
         // because a single "claude -p" element would be looked up as one executable of that name.
         assertThat(properties.getClaude().getArgvPrefix()).startsWith("claude", "--bare", "-p");
         assertThat(properties.getCodex().getArgvPrefix())
-                .containsExactly("codex", "exec", "--dangerously-bypass-approvals-and-sandbox");
+                .containsExactly("codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json");
     }
 
     @Test

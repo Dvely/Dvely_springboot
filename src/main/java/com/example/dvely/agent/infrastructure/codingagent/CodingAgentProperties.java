@@ -138,6 +138,12 @@ public class CodingAgentProperties {
      * work outside a git repository so that its edits stay recoverable, and Qeploy's workspace is a
      * clone, so the check passes on its own and is worth keeping. A deployment that needs to run
      * against a non-repo directory can add the flag here.</p>
+     *
+     * <p>{@code --json} prints one JSON event per line, so the run's progress can be shown while
+     * it runs (#600) — and moves the CLI's own error report from stderr into that stream, which
+     * {@link CodexStreamReader} reads back out. The dev and prod profile yml repeat this list as
+     * their default, so change both together (CodingAgentProfileDefaultsTest fails when they
+     * drift).</p>
      */
     private Cli codex = Cli.withLogin(
             // --dangerously-bypass-approvals-and-sandbox is required, not a shortcut. Codex's own
@@ -149,7 +155,7 @@ public class CodingAgentProperties {
             // that is exactly what the throwaway container is: no published port, capped memory
             // and pids, and nothing mounted but the one workspace. With the flag the same prompt
             // actually writes the file.
-            List.of("codex", "exec", "--dangerously-bypass-approvals-and-sandbox"),
+            List.of("codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json"),
             List.of("codex", "login", "--with-api-key"),
             // The CLI would otherwise default to gpt-5.6-sol; the cheapest tier finishes the same
             // work, so paying for the largest one by default is a cost with nothing behind it.

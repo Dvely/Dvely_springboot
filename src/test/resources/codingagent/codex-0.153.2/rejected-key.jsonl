@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"01a21e67-c641-7640-a307-e3e1d6b32e54"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 1/5 (unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-****abcd., url: http://host.docker.internal:18555/v1/responses)"}
+{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-****abcd., url: http://host.docker.internal:18555/v1/responses)"}
+{"type":"error","message":"Reconnecting... 3/5 (unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-****abcd., url: http://host.docker.internal:18555/v1/responses)"}
+{"type":"error","message":"Reconnecting... 4/5 (unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-****abcd., url: http://host.docker.internal:18555/v1/responses)"}
+{"type":"error","message":"Reconnecting... 5/5 (unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-****abcd., url: http://host.docker.internal:18555/v1/responses)"}
+{"type":"error","message":"unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-****abcd., url: http://host.docker.internal:18555/v1/responses"}
+{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-****abcd., url: http://host.docker.internal:18555/v1/responses"}}

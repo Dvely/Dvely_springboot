@@ -23,7 +23,9 @@ public record CodingAgentActivity(Kind kind, String target) {
         /** 파일·글을 찾았다 */
         SEARCH,
         /** 에이전트가 중간에 남긴 말 */
-        MESSAGE
+        MESSAGE,
+        /** 파일을 지웠다(Codex 의 apply_patch 가 따로 알린다) */
+        DELETE
     }
 
     public CodingAgentActivity {

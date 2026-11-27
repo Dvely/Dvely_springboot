@@ -72,17 +72,6 @@ public class ClaudeCodeCliAdapter extends AbstractCliCodingAgentAdapter {
      */
     @Override
     protected StreamReader streamReader(CodingAgentCommand command) {
-        ClaudeStreamReader reader = new ClaudeStreamReader(command.onActivity(), command.apiKey());
-        return new StreamReader() {
-            @Override
-            public void accept(String line) {
-                reader.accept(line);
-            }
-
-            @Override
-            public String answer(String stdout) {
-                return reader.answer(stdout);
-            }
-        };
+        return new ClaudeStreamReader(command.onActivity(), command.apiKey());
     }
 }

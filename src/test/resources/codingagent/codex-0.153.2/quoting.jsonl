@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"01a21e68-cf12-7d83-b67f-b0cecf8aae39"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/sh -lc \"printf \\\"%s\\\\n\\\" \\\"it's\\\"\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/sh -lc \"printf \\\"%s\\\\n\\\" \\\"it's\\\"\"","aggregated_output":"it's\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/sh -lc 'echo \"x $HOME\" && echo '\"'y'\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/sh -lc 'echo \"x $HOME\" && echo '\"'y'\"","aggregated_output":"x /root\ny\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"끝"}}
+{"type":"turn.completed","usage":{"input_tokens":200,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0}}

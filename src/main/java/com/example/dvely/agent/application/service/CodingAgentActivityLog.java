@@ -10,7 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /**
- * 코딩 에이전트(Claude Code)가 도는 동안 한 일을 태스크 이벤트로 남긴다(#600).
+ * 코딩 에이전트(Claude Code·Codex)가 도는 동안 한 일을 태스크 이벤트로 남긴다(#600).
  *
  * <p>여태 CODE 단계는 "코드를 작성하고 있습니다" 한 줄 뒤로 끝날 때까지 조용했다. 프리뷰에서 짚고 "더 크게" 를
  * 보내면 에이전트는 파일을 읽고 고치는데, 화면은 그동안 멈춘 것과 구분되지 않았다. 이벤트는 기존 SSE 가
@@ -74,6 +74,7 @@ public class CodingAgentActivityLog {
             case COMMAND -> "명령 실행 · " + activity.target();
             case SEARCH -> "찾기 · " + activity.target();
             case MESSAGE -> "에이전트: " + activity.target();
+            case DELETE -> "파일 지우기 · " + activity.target();
         };
     }
 }

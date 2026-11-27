@@ -9,7 +9,8 @@ package com.example.dvely.agent.application.port.out;
  *
  * @param success  true only on a clean zero exit within the timeout
  * @param output   the agent's stdout (its answer / transcript)
- * @param errorOutput the agent's stderr, kept for diagnostics
+ * @param errorOutput the agent's stderr, kept for diagnostics — or, for a failed run whose CLI
+ *                    reported the error in its event stream instead, that error
  * @param exitCode process exit code; {@code -1} when the process was killed on timeout
  * @param timedOut whether the run was killed for exceeding its wall-clock bound
  */
