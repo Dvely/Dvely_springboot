@@ -2090,6 +2090,16 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - 실측: 전용 시뮬레이터의 3행 SwiftUI `List`(임시 앱, 실측 뒤 지움) → 「고르기」·「팀」 모두 `peers 3/3`. Android 는 픽스처(디스크 여유로 에뮬레이터 못 띄움)
 - 테스트: CLI 425(새 5 — Android 목록 카드·같은 `resource-id`·플랫폼 id 제외, iOS `Cell`·이름 없는 행, 규칙 없으면 세지 않음)
 
+## 4.85 코딩 에이전트 진행 실시간 표시 — Codex (Issue #600 PR-2, 2026-11-28)
+
+§4.83 을 Codex 로 넓혔다. Codex 로 돌려도 타임라인에 한 일이 실행 중에 쌓인다. 마이그레이션·새 엔드포인트·FE 변경 없음(새 type `CODING_DELETE` 하나 — 타임라인은 `CODING_` 로 묶는다).
+
+- Codex argv 에 `--json`(프로퍼티 기본값·dev·prod yml). `CodexStreamReader`: `command_execution` → 명령(`item.started` 에서, 감싼 `/bin/sh -lc '…'` 를 벗겨), `file_change` → 파일마다 고치기(`add`·`update`)·지우기(`delete` → 새 `Kind.DELETE`), `agent_message` → 말(다음 item 이 오면 중간 말, `turn.completed` 면 맺음말이라 버리고 답으로). 추론 요약·경고·명령 출력·파일 내용은 싣지 않는다. 답은 마지막 말 — 예전 텍스트 출력과 같은 글
+- `--json` 에서는 실패 이유가 stdout(`turn.failed`·`error` 줄)으로 가고 stderr 에는 "Reading additional input from stdin..." 만 남는다. 그대로 두면 실패 안내에 그 줄이 나가므로, `StreamReader.failure()` 가 스트림의 실패 이유를 넘기고 어댑터가 실패한 실행의 `errorOutput` 으로 쓴다(Claude 는 그대로)
+- 두 읽기의 공통(키 가리기·`SecretRedactor`·160자 자르기·경로)은 `ActivityEmitter` 로 모았다
+- 실측: 키가 없어 고정 판(0.153.2)을 이미지 그대로 가짜 Responses API 에 붙여 찍었다(운영 모델 이름 gpt-5.6-luna). 그 모델에서 Codex 는 도구를 JavaScript 한 칸(`exec`)으로 묶어 부르는데, 안의 `exec_command`·`apply_patch` 가 item 으로 하나씩 나온다. 찍은 출력 네 벌(도구·지우기·키 거절·따옴표)을 테스트 자료로 두었다. 게이트 통합 테스트 `CodexStreamIntegrationTest`(`-Ddocker.it=true`, 키 불필요)가 진짜 러너·CLI 로 한 일·답·실패 이유를 확인한다 — CLI 판을 올릴 때 키 없이 돌린다
+- 실제 OpenAI 키로 앱 전체(BE·FE)를 돌린 실측은 하지 않았다. 이벤트 → SSE → 타임라인 길은 §4.83 과 같다
+
 ## 4.84 CODE 결과 요약의 말 — 계획의 userSummary 로 정한다 (Issue #712, 2026-11-26)
 
 한국어 요청인데 결과 요약이 영어로 나왔다(§4.83 실측 첫 번째). #469 로 코딩 에이전트 프롬프트에 "요청과 같은 말로" 를 넣었지만, 에이전트가 보는 요청은 계획 모델이 다시 쓴 지시라 그 지시가 영어면 영어로 답한다. 같은 실측에서 승인 카드 문장(`userSummary`)은 한국어였다.
@@ -2106,7 +2116,7 @@ npm 의 `@qeploy/cli` 는 0.1.4 라 `share`(§4.60~§4.62)가 없다. client·mc
 - `ClaudeStreamReader`(어댑터 쪽): 도구 호출 → `CodingAgentActivity`(READ·EDIT·COMMAND·SEARCH·MESSAGE), 마지막 `result` 글이 답. 맺음말은 진행 줄로 다시 넘기지 않는다. 대상은 키를 가리고 160자
 - `CodingAgentActivityLog` → `TaskStore.appendActivityEvent`: `CODING_*` 이벤트, 지금 단계의 단계 정보, 실행당 60줄(넘으면 `CODING_MORE`), 끝난 뒤 `PREVIEW_STARTING`. `SecretRedactor` 에 Anthropic·OpenAI 키 모양 추가
 - 실측(로컬 BE·FE + 사용자 키, 두 번): "명령 실행 · ls -la /workspace/app" → "파일 고치기 · index.html" → "파일 고치기 · styles.css" 가 2~5초 간격으로 실행 중에 쌓이고, 끝나면 "바뀐 코드로 프리뷰를 띄우고 있습니다". 첫 실행에서 맺음말이 잘린 채 요약 위에 한 번 더 나오는 것을 보고 맺음말은 버리게 고쳤다
-- 남은 것: Codex `exec --json`(PR-2), 세션 이어 가기 실측(PR-3), FE 묶어 보기(Dvely_FE #189)
+- 남은 것: Codex `exec --json`(PR-2, §4.85), 세션 이어 가기 실측(PR-3), FE 묶어 보기(Dvely_FE #189 → FE #220 병합)
 - 관찰: 첫 실행에서 계획 모델이 한국어 요청의 지시를 영어로 써서 요약이 영어로 나왔다(두 번째는 한국어). 이번 변경과 무관 — §4.84(#712)에서 고쳤다
 
 ## 4.82 프리뷰 짚기 — 소스 후보 (Issue #575 BE PR-2, 2026-11-26)

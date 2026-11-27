@@ -152,7 +152,15 @@ DoD: 각 PR `./gradlew test` 통과 + FE 정본 repo(`/Users/otter/Dvely_FE_test
 - `ClaudeStreamReader`: `assistant` 줄의 `tool_use` 를 한 일로(Read → 읽기, Edit·Write·MultiEdit → 고치기, Bash → 명령 첫 줄, Grep·Glob → 찾기), `text` 는 다음 도구 호출이 오면 중간 말로 넘기고 `result` 가 오면 버린다(맺음말은 요약으로 따로 보인다). 마지막 `result` 줄의 `result` 가 답 — 예전 텍스트 출력과 같은 글. 파일 내용·도구 결과(`user` 줄)는 싣지 않는다. 대상은 실행의 키를 그대로 가리고 `SecretRedactor`(AI 키 모양 추가)도 거친다
 - `CodingAgentActivityLog` 가 한 일을 태스크 이벤트(`CODING_*`)로 남긴다. 지금 단계 정보를 달고, 실행당 60줄, 바로 앞과 같은 줄은 생략. 실패해도 실행은 계속. 끝난 뒤 `PREVIEW_STARTING` 한 줄
 - 모양은 고정 판 2.1.316 에서 찍어 확인했다(`--bare` 의 도구는 Bash·Edit·Read). 실측: 로컬 BE·FE + 사용자 키로 두 번 — 진행 줄이 실행 중 2~5초 간격으로 쌓이고 FE 타임라인이 고치지 않고 그린다
-- Codex(`exec --json`)는 PR-2, 세션 이어 가기는 PR-3
+- 세션 이어 가기는 PR-3
+
+### Codex (#600 PR-2, 2026-11-28)
+
+- `codex exec … --json`. 줄은 `thread.started` → `turn.started` → `item.started`/`item.completed` 여럿 → `turn.completed`(실패면 `error` 줄들 뒤 `turn.failed`, exit 1)
+- `CodexStreamReader`: `command_execution` 은 `item.started` 에서 명령으로(`/bin/sh -lc '…'` 를 셸 낱말 하나로 풀어 벗긴다 — 작은따옴표가 있으면 `"…"` 나 `'…'"'…'"` 로 섞여 온다), `file_change` 는 `changes[]` 의 파일마다 고치기·지우기, `agent_message` 는 Claude 와 같이 한 박자 늦게. 마지막 말이 답
+- 실패 이유가 stdout 으로 간다 → `StreamReader.failure()` 를 실패한 실행의 `errorOutput` 으로. stderr 는 "Reading additional input from stdin..." 뿐이었다
+- 모양 실측: 키 없이 고정 판 0.153.2 를 가짜 Responses API(`-c model_provider=…`)에 붙였다. 운영 모델(gpt-5.6-luna)에서 Codex 는 도구를 JavaScript 한 칸(`exec`, 안에서 `tools.exec_command`·`tools.apply_patch`)으로 묶어 부르지만 `--json` 에는 안의 호출이 item 으로 하나씩 나온다. 모르는 모델 이름이면 도구 목록이 다르고(`exec_command` 직접) 경고 item(`error`) 이 하나 더 나온다. `rm -f` 같은 명령은 Codex 가 스스로 거절하고 item 을 남기지 않는다
+- `CodexStreamIntegrationTest`(`-Ddocker.it=true`, 키 불필요, Docker Desktop): 진짜 러너·CLI 로 명령·패치·맺음말, 키 거절 시 실패 이유를 확인
 
 ## 향후 (현재 범위 밖)
 
