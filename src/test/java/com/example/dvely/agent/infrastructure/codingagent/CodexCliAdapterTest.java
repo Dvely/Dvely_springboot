@@ -10,12 +10,15 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.dvely.agent.application.port.out.CodingAgentActivity;
 import com.example.dvely.agent.application.port.out.CodingAgentCommand;
 import com.example.dvely.agent.application.port.out.CodingAgentResult;
 import com.example.dvely.agent.domain.value.AiProvider;
 import com.example.dvely.agent.infrastructure.codingagent.CodingAgentContainerRunner.ContainerRunOutcome;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -56,7 +59,7 @@ class CodexCliAdapterTest {
 
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
         verify(runner).run(eq("/host/checkout"), any(), argv.capture(), eq(Duration.ofMinutes(4)), any());
-        assertThat(argv.getValue()).containsExactly("codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.6-luna", "Dockerfile 을 최적화해줘");
+        assertThat(argv.getValue()).containsExactly("codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "--model", "gpt-5.6-luna", "Dockerfile 을 최적화해줘");
     }
 
     @Test
@@ -140,7 +143,7 @@ class CodexCliAdapterTest {
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
         verify(runner).run(any(), any(), argv.capture(), any(), any());
         assertThat(argv.getValue())
-                .containsExactly("codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.6-luna", "Dockerfile 을 최적화해줘");
+                .containsExactly("codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "--model", "gpt-5.6-luna", "Dockerfile 을 최적화해줘");
     }
 
     @Test
@@ -154,6 +157,67 @@ class CodexCliAdapterTest {
         ArgumentCaptor<List<String>> argv = ArgumentCaptor.captor();
         verify(runner).run(any(), any(), argv.capture(), any(), any());
         assertThat(argv.getValue()).doesNotContain("--model");
+    }
+
+    /**
+     * #600: stdout is {@code exec --json}, one event per line, handed to the adapter as it arrives.
+     * Commands and patches become activity, and the last agent message is the answer — the same
+     * text the plain output used to be. The lines are the shapes printed by the pinned 0.153.2.
+     */
+    @Test
+    void readsTheJsonStreamAsActivityAndTakesTheLastMessageAsTheAnswer() {
+        List<String> stream = List.of(
+                "{\"type\":\"thread.started\",\"thread_id\":\"01a21e67-00a1-72a3-8835-867a88a8ebf9\"}",
+                "{\"type\":\"turn.started\"}",
+                "{\"type\":\"item.started\",\"item\":{\"id\":\"item_2\",\"type\":\"command_execution\",\"command\":\"/bin/sh -lc 'cat index.html'\",\"aggregated_output\":\"\",\"exit_code\":null,\"status\":\"in_progress\"}}",
+                "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_2\",\"type\":\"command_execution\",\"command\":\"/bin/sh -lc 'cat index.html'\",\"aggregated_output\":\"<h1>hi</h1>\\n\",\"exit_code\":0,\"status\":\"completed\"}}",
+                "{\"type\":\"item.started\",\"item\":{\"id\":\"item_3\",\"type\":\"file_change\",\"changes\":[{\"path\":\"/workspace/app/index.html\",\"kind\":\"update\"}],\"status\":\"in_progress\"}}",
+                "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_8\",\"type\":\"agent_message\",\"text\":\"제목을 바꿨습니다.\"}}",
+                "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":400,\"cached_input_tokens\":0,\"output_tokens\":40}}");
+        when(runner.run(any(), any(), anyList(), any(), any())).thenAnswer(invocation -> {
+            Consumer<String> lines = invocation.getArgument(4);
+            stream.forEach(lines);
+            return new ContainerRunOutcome(0, String.join("\n", stream), "Reading additional input from stdin...", false);
+        });
+        List<CodingAgentActivity> seen = new ArrayList<>();
+
+        CodingAgentResult result = adapter.run(new CodingAgentCommand(
+                "제목을 바꿔줘", "/host/checkout", API_KEY, Duration.ofMinutes(3), seen::add));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).isEqualTo("제목을 바꿨습니다.");
+        assertThat(seen).containsExactly(
+                new CodingAgentActivity(CodingAgentActivity.Kind.COMMAND, "cat index.html"),
+                new CodingAgentActivity(CodingAgentActivity.Kind.EDIT, "index.html"));
+    }
+
+    @Test
+    void aFailedRunCarriesTheErrorFromTheStreamNotStderrNoise() {
+        // Measured on 0.153.2: with --json a rejected key ends in a turn.failed line on stdout and
+        // stderr holds only "Reading additional input from stdin..." — describeFailure prefers the
+        // error output, so without this the user would see that line instead of the reason.
+        String failed = "{\"type\":\"turn.failed\",\"error\":{\"message\":\"unexpected status 401 Unauthorized: Incorrect API key provided\"}}";
+        when(runner.run(any(), any(), anyList(), any(), any())).thenAnswer(invocation -> {
+            Consumer<String> lines = invocation.getArgument(4);
+            lines.accept(failed);
+            return new ContainerRunOutcome(1, failed, "Reading additional input from stdin...", false);
+        });
+
+        CodingAgentResult result = adapter.run(command());
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.exitCode()).isEqualTo(1);
+        assertThat(result.errorOutput()).isEqualTo("unexpected status 401 Unauthorized: Incorrect API key provided");
+    }
+
+    @Test
+    void aFailedRunWithoutAStreamErrorKeepsStderr() {
+        when(runner.run(any(), any(), anyList(), any(), any()))
+                .thenReturn(new ContainerRunOutcome(2, "", "codex: unknown flag", false));
+
+        CodingAgentResult result = adapter.run(command());
+
+        assertThat(result.errorOutput()).isEqualTo("codex: unknown flag");
     }
 
     @Test

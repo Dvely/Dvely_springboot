@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a21e69-2719-7ec3-8d4e-fbcc2f0dea52"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"file_change","changes":[{"path":"/workspace/app/index.html","kind":"update"},{"path":"/workspace/app/src/styles.css","kind":"delete"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"file_change","changes":[{"path":"/workspace/app/index.html","kind":"update"},{"path":"/workspace/app/src/styles.css","kind":"delete"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"끝"}}
+{"type":"turn.completed","usage":{"input_tokens":200,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0}}

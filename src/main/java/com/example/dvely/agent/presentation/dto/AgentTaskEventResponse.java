@@ -16,7 +16,7 @@ public record AgentTaskEventResponse(
                 이벤트 종류. 태스크 생명주기(CREATED/QUEUED/STARTED/COMPLETED/FAILED/CANCELLED/
                 WAITING_APPROVAL/WAITING_INPUT/WAITING_RESULT_APPROVAL/REPLANNED/INPUT_RECEIVED/
                 RETRY_QUEUED) 와 스텝 진행(STEP_STARTED/STEP_COMPLETED), 그리고 코딩 에이전트가 도는 동안 한 일
-                (CODING_READ/CODING_EDIT/CODING_COMMAND/CODING_SEARCH/CODING_MESSAGE/CODING_MORE,
+                (CODING_READ/CODING_EDIT/CODING_DELETE/CODING_COMMAND/CODING_SEARCH/CODING_MESSAGE/CODING_MORE,
                 PREVIEW_STARTING — #600) 이다. 한 일 이벤트는 지금 단계의 stepIndex·stepTotal·agentType 을 그대로 단다.
                 모르는 종류가 와도 무시하고 넘어갈 것 — 종류는 늘어난다.
                 """,

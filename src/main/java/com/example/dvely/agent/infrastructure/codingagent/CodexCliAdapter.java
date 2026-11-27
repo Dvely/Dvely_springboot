@@ -1,5 +1,6 @@
 package com.example.dvely.agent.infrastructure.codingagent;
 
+import com.example.dvely.agent.application.port.out.CodingAgentCommand;
 import com.example.dvely.agent.domain.value.AiProvider;
 import java.util.List;
 import org.springframework.stereotype.Component;
@@ -59,5 +60,11 @@ public class CodexCliAdapter extends AbstractCliCodingAgentAdapter {
     @Override
     protected String cliName() {
         return "Codex";
+    }
+
+    /** {@code exec --json} 의 줄을 읽어 한 일을 넘기고, 마지막 말을 답으로 둔다(#600) */
+    @Override
+    protected StreamReader streamReader(CodingAgentCommand command) {
+        return new CodexStreamReader(command.onActivity(), command.apiKey());
     }
 }

@@ -155,7 +155,8 @@ qeploy:
       # 툴 호출이 전부 exit 1 로 죽고, 실측에서 "성공" 을 보고하면서 파일을 하나도 만들지 못했다.
       # 이 플래그의 문서가 바로 이 경우를 가리킨다("외부에서 이미 샌드박싱된 환경 전용").
       # 일회용 컨테이너가 그 외부 샌드박스다: 퍼블리시 포트 없음, 메모리·pids 상한, 워크스페이스만 마운트.
-      argv-prefix: ${QEPLOY_CODING_AGENT_CODEX_ARGV:codex,exec,--dangerously-bypass-approvals-and-sandbox}
+      # --json 은 실행 중 진행을 보이려는 줄 단위 이벤트다(#600). 실패 이유도 stderr 가 아니라 이 줄로 온다.
+      argv-prefix: ${QEPLOY_CODING_AGENT_CODEX_ARGV:codex,exec,--dangerously-bypass-approvals-and-sandbox,--json}
       # Codex 는 OPENAI_API_KEY 환경변수를 읽지 않는다(codex-cli 0.153.2 실측: 401 Missing bearer).
       # 이 로그인 명령을 먼저 실행하고 키를 stdin 으로 넘긴 뒤에야 codex exec 가 인증된다.
       login-argv: ${QEPLOY_CODING_AGENT_CODEX_LOGIN_ARGV:codex,login,--with-api-key}

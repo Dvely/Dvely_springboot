@@ -32,12 +32,14 @@ class CodingAgentActivityLogTest {
         sink.accept(new CodingAgentActivity(Kind.COMMAND, "npm run build"));
         sink.accept(new CodingAgentActivity(Kind.SEARCH, "btn-primary"));
         sink.accept(new CodingAgentActivity(Kind.MESSAGE, "저장 버튼만 키웠습니다."));
+        sink.accept(new CodingAgentActivity(Kind.DELETE, "src/old.css"));
 
         verify(taskStore).appendActivityEvent("task-1", "CODING_READ", "파일 읽기 · styles.css");
         verify(taskStore).appendActivityEvent("task-1", "CODING_EDIT", "파일 고치기 · styles.css");
         verify(taskStore).appendActivityEvent("task-1", "CODING_COMMAND", "명령 실행 · npm run build");
         verify(taskStore).appendActivityEvent("task-1", "CODING_SEARCH", "찾기 · btn-primary");
         verify(taskStore).appendActivityEvent("task-1", "CODING_MESSAGE", "에이전트: 저장 버튼만 키웠습니다.");
+        verify(taskStore).appendActivityEvent("task-1", "CODING_DELETE", "파일 지우기 · src/old.css");
     }
 
     @Test

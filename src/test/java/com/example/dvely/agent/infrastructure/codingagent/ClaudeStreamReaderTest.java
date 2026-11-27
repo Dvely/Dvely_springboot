@@ -107,8 +107,8 @@ class ClaudeStreamReaderTest {
         reader.accept(tool("Bash", "{\"command\":\"echo " + "가".repeat(300) + "\"}"));
 
         assertThat(seen.get(0).target()).startsWith("…").endsWith("Button.tsx")
-                .hasSize(ClaudeStreamReader.MAX_TARGET);
+                .hasSize(ActivityEmitter.MAX_TARGET);
         assertThat(seen.get(1).target()).startsWith("echo 가").endsWith("…")
-                .hasSize(ClaudeStreamReader.MAX_TARGET);
+                .hasSize(ActivityEmitter.MAX_TARGET);
     }
 }
